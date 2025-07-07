@@ -1,0 +1,348 @@
+import React, { useState } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { storageManager } from '@/lib/storage';
+import { CloudflareAPI } from '@/lib/cloudflare';
+import { useToast } from '@/hooks/use-toast';
+import { Key, Plus, Settings, Trash2 } from 'lucide-react';
+import { cryptoManager } from '@/lib/crypto';
+
+interface LoginFormProps {
+  onLogin: (apiKey: string) => void;
+}
+
+export function LoginForm({ onLogin }: LoginFormProps) {
+  const [selectedKeyId, setSelectedKeyId] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [showAddKey, setShowAddKey] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [newKeyLabel, setNewKeyLabel] = useState('');
+  const [newApiKey, setNewApiKey] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [encryptionSettings, setEncryptionSettings] = useState(cryptoManager.getConfig());
+  const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
+  
+  const { toast } = useToast();
+  const apiKeys = storageManager.getApiKeys();
+
+  const handleLogin = async () => {
+    if (!selectedKeyId || !password) {
+      toast({
+        title: "Error",
+        description: "Please select an API key and enter your password",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const decryptedKey = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      if (!decryptedKey) {
+        toast({
+          title: "Error",
+          description: "Invalid password or corrupted key",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Verify the API key works
+      const api = new CloudflareAPI(decryptedKey);
+      const isValid = await api.verifyToken();
+      
+      if (!isValid) {
+        toast({
+          title: "Error",
+          description: "Invalid API key",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      storageManager.setCurrentSession(selectedKeyId);
+      onLogin(decryptedKey);
+      
+      toast({
+        title: "Success",
+        description: "Logged in successfully"
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to login: " + (error as Error).message,
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddKey = async () => {
+    if (!newKeyLabel || !newApiKey || !newPassword) {
+      toast({
+        title: "Error",
+        description: "Please fill in all fields",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      // Test the API key first
+      const api = new CloudflareAPI(newApiKey);
+      const isValid = await api.verifyToken();
+      
+      if (!isValid) {
+        toast({
+          title: "Error",
+          description: "Invalid API key",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      await storageManager.addApiKey(newKeyLabel, newApiKey, newPassword);
+      setNewKeyLabel('');
+      setNewApiKey('');
+      setNewPassword('');
+      setShowAddKey(false);
+      
+      toast({
+        title: "Success",
+        description: "API key added successfully"
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to add API key: " + (error as Error).message,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleDeleteKey = (keyId: string) => {
+    storageManager.removeApiKey(keyId);
+    if (selectedKeyId === keyId) {
+      setSelectedKeyId('');
+    }
+    toast({
+      title: "Success",
+      description: "API key deleted"
+    });
+  };
+
+  const handleBenchmark = async () => {
+    try {
+      const result = await cryptoManager.benchmark(encryptionSettings.iterations);
+      setBenchmarkResult(result);
+      toast({
+        title: "Benchmark Complete",
+        description: `Encryption took ${result.toFixed(2)}ms`
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Benchmark failed: " + (error as Error).message,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleUpdateSettings = () => {
+    cryptoManager.updateConfig(encryptionSettings);
+    toast({
+      title: "Success",
+      description: "Encryption settings updated"
+    });
+    setShowSettings(false);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="flex justify-center mb-4">
+            <div className="p-3 bg-primary/10 rounded-full">
+              <Key className="h-8 w-8 text-primary" />
+            </div>
+          </div>
+          <CardTitle className="text-2xl">Cloudflare DNS Manager</CardTitle>
+          <CardDescription>
+            Select your API key and enter your password to continue
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="api-key">API Key</Label>
+            <Select value={selectedKeyId} onValueChange={setSelectedKeyId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select an API key" />
+              </SelectTrigger>
+              <SelectContent>
+                {apiKeys.map((key) => (
+                  <SelectItem key={key.id} value={key.id}>
+                    <div className="flex items-center justify-between w-full">
+                      <span>{key.label}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteKey(key.id);
+                        }}
+                        className="h-6 w-6 p-0 ml-2"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+            />
+          </div>
+
+          <Button 
+            onClick={handleLogin} 
+            className="w-full" 
+            disabled={isLoading || !selectedKeyId || !password}
+          >
+            {isLoading ? 'Logging in...' : 'Login'}
+          </Button>
+
+          <div className="flex gap-2">
+            <Dialog open={showAddKey} onOpenChange={setShowAddKey}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="flex-1">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Key
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add New API Key</DialogTitle>
+                  <DialogDescription>
+                    Add a new Cloudflare API key with a custom label
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="new-label">Label</Label>
+                    <Input
+                      id="new-label"
+                      value={newKeyLabel}
+                      onChange={(e) => setNewKeyLabel(e.target.value)}
+                      placeholder="e.g., Personal Account"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="new-api-key">API Key</Label>
+                    <Input
+                      id="new-api-key"
+                      type="password"
+                      value={newApiKey}
+                      onChange={(e) => setNewApiKey(e.target.value)}
+                      placeholder="Your Cloudflare API key"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="new-password">Encryption Password</Label>
+                    <Input
+                      id="new-password"
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Password to encrypt this key"
+                    />
+                  </div>
+                  <Button onClick={handleAddKey} className="w-full">
+                    Add API Key
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={showSettings} onOpenChange={setShowSettings}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="icon">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Encryption Settings</DialogTitle>
+                  <DialogDescription>
+                    Configure encryption parameters for security and performance
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="iterations">PBKDF2 Iterations</Label>
+                    <Input
+                      id="iterations"
+                      type="number"
+                      value={encryptionSettings.iterations}
+                      onChange={(e) => setEncryptionSettings({
+                        ...encryptionSettings,
+                        iterations: parseInt(e.target.value) || 100000
+                      })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="key-length">Key Length (bits)</Label>
+                    <Select
+                      value={encryptionSettings.keyLength.toString()}
+                      onValueChange={(value) => setEncryptionSettings({
+                        ...encryptionSettings,
+                        keyLength: parseInt(value)
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="128">128</SelectItem>
+                        <SelectItem value="192">192</SelectItem>
+                        <SelectItem value="256">256</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button onClick={handleBenchmark} variant="outline" className="flex-1">
+                      Benchmark
+                    </Button>
+                    <Button onClick={handleUpdateSettings} className="flex-1">
+                      Update
+                    </Button>
+                  </div>
+                  {benchmarkResult && (
+                    <p className="text-sm text-muted-foreground">
+                      Last benchmark: {benchmarkResult.toFixed(2)}ms
+                    </p>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
