@@ -9,7 +9,7 @@ export class CloudflareAPI {
     this.apiKey = apiKey;
   }
 
-  private async request(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${CLOUDFLARE_API_BASE}${endpoint}`, {
       ...options,
       headers: {
@@ -33,38 +33,39 @@ export class CloudflareAPI {
   }
 
   async getZones(): Promise<Zone[]> {
-    return this.request('/zones');
+    return this.request<Zone[]>('/zones');
   }
 
   async getDNSRecords(zoneId: string): Promise<DNSRecord[]> {
-    return this.request(`/zones/${zoneId}/dns_records`);
+    return this.request<DNSRecord[]>(`/zones/${zoneId}/dns_records`);
   }
 
   async createDNSRecord(zoneId: string, record: Partial<DNSRecord>): Promise<DNSRecord> {
-    return this.request(`/zones/${zoneId}/dns_records`, {
+    return this.request<DNSRecord>(`/zones/${zoneId}/dns_records`, {
       method: 'POST',
       body: JSON.stringify(record),
     });
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>): Promise<DNSRecord> {
-    return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
+    return this.request<DNSRecord>(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: 'PUT',
       body: JSON.stringify(record),
     });
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string): Promise<void> {
-    await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
+    await this.request<void>(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: 'DELETE',
     });
   }
 
   async verifyToken(): Promise<boolean> {
     try {
-      await this.request('/user/tokens/verify');
+      await this.request<void>('/user/tokens/verify');
       return true;
     } catch {
       return false;
     }
-  }}
+  }
+}
