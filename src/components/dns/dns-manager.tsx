@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -54,7 +54,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
       setIsLoading(true);
       const zonesData = await api.getZones();
       setZones(zonesData);
-    } catch (error) {
+    } catch {
       toast({
         title: "Error",
         description: "Failed to load zones: " + (error as Error).message,
@@ -72,7 +72,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
       setIsLoading(true);
       const recordsData = await api.getDNSRecords(selectedZone);
       setRecords(recordsData);
-    } catch (error) {
+    } catch {
       toast({
         title: "Error",
         description: "Failed to load DNS records: " + (error as Error).message,
@@ -228,7 +228,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
         title: "Success",
         description: "Records imported successfully"
       });
-    } catch (error) {
+    } catch {
       toast({
         title: "Error",
         description: "Failed to import records: Invalid JSON format",

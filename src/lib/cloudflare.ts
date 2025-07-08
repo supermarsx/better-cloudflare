@@ -9,7 +9,7 @@ export class CloudflareAPI {
     this.apiKey = apiKey;
   }
 
-  private async request(endpoint: string, options: RequestInit = {}): Promise<any> {
+  private async request(endpoint: string, options: RequestInit = {}): Promise<unknown> {
     const response = await fetch(`${CLOUDFLARE_API_BASE}${endpoint}`, {
       ...options,
       headers: {
