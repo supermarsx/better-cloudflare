@@ -54,7 +54,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
       setIsLoading(true);
       const zonesData = await api.getZones();
       setZones(zonesData);
-    } catch {
+    } catch (error) {
       toast({
         title: "Error",
         description: "Failed to load zones: " + (error as Error).message,
@@ -72,7 +72,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
       setIsLoading(true);
       const recordsData = await api.getDNSRecords(selectedZone);
       setRecords(recordsData);
-    } catch {
+    } catch (error) {
       toast({
         title: "Error",
         description: "Failed to load DNS records: " + (error as Error).message,
