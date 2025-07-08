@@ -37,3 +37,5 @@ export interface EncryptionConfig {
 }
 
 export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS' | 'PTR' | 'CAA';
+
+export {};
