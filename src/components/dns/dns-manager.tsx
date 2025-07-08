@@ -612,5 +612,4 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
         </div>
       </div>
     </div>
-  );
-}
+  );}
