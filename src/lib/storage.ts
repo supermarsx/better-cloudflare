@@ -1,4 +1,4 @@
-import { ApiKey } from '@/types/dns';
+import type { ApiKey } from '@/types/dns';
 import { cryptoManager } from './crypto';
 
 const STORAGE_KEY = 'cloudflare-dns-manager';

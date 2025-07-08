@@ -1,4 +1,4 @@
-import { DNSRecord, Zone } from '@/types/dns';
+import type { DNSRecord, Zone } from '@/types/dns';
 
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 

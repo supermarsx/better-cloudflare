@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { CloudflareAPI } from '@/lib/cloudflare';
-import { DNSRecord, Zone, RecordType } from '@/types/dns';
+import type { DNSRecord, Zone, RecordType } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
 import { Plus, Download, Upload, LogOut, Edit2, Trash2, Save, X } from 'lucide-react';
