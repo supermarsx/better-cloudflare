@@ -29,7 +29,7 @@ export class CloudflareAPI {
       throw new Error(data.errors?.[0]?.message || 'API request failed');
     }
 
-    return data.result;
+    return data.result as T;
   }
 
   async getZones(): Promise<Zone[]> {
