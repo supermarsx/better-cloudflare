@@ -161,29 +161,37 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     let mimeType = '';
 
     switch (format) {
-      case 'json':
+      case 'json': {
         content = JSON.stringify(records, null, 2);
         filename = `${selectedZone}-records.json`;
         mimeType = 'application/json';
         break;
-      case 'csv':
+      }
+      case 'csv': {
         const headers = 'Type,Name,Content,TTL,Priority,Proxied\n';
-        const rows = records.map(r => 
-          `${r.type},${r.name},${r.content},${r.ttl},${r.priority || ''},${r.proxied || false}`
-        ).join('\n');
+        const rows = records
+          .map(
+            (r) =>
+              `${r.type},${r.name},${r.content},${r.ttl},${r.priority || ''},${r.proxied || false}`
+          )
+          .join('\n');
         content = headers + rows;
         filename = `${selectedZone}-records.csv`;
         mimeType = 'text/csv';
         break;
-      case 'bind':
-        content = records.map(r => {
-          const ttl = r.ttl || 300;
-          const priority = r.priority ? `${r.priority} ` : '';
-          return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
-        }).join('\n');
+      }
+      case 'bind': {
+        content = records
+          .map((r) => {
+            const ttl = r.ttl || 300;
+            const priority = r.priority ? `${r.priority} ` : '';
+            return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
+          })
+          .join('\n');
         filename = `${selectedZone}.zone`;
         mimeType = 'text/plain';
         break;
+      }
     }
 
     const blob = new Blob([content], { type: mimeType });
