@@ -1,4 +1,4 @@
-import { EncryptionConfig } from '@/types/dns';
+import type { EncryptionConfig } from '@/types/dns';
 
 const DEFAULT_CONFIG: EncryptionConfig = {
   iterations: 100000,
