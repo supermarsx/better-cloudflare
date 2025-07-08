@@ -179,6 +179,7 @@ function useToast() {
         listeners.splice(index, 1)
       }
     }
+    // run only once on mount/unmount
   }, [])
 
   return {
