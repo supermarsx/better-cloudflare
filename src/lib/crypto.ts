@@ -120,5 +120,4 @@ export class CryptoManager {
     this.config = { ...this.config, ...newConfig };
   }
 }
-
 export const cryptoManager = new CryptoManager();

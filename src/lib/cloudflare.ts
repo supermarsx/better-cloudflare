@@ -67,5 +67,4 @@ export class CloudflareAPI {
     } catch {
       return false;
     }
-  }
-}
+  }}

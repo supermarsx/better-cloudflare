@@ -344,5 +344,4 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         </CardContent>
       </Card>
     </div>
-  );
-}
+  );}
