@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ChangeEvent } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -121,7 +121,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const handleUpdateRecord = async (record: DNSRecord) => {
     try {
       const updatedRecord = await api.updateDNSRecord(selectedZone, record.id, record);
-      setRecords(records.map(r => r.id === record.id ? updatedRecord : r));
+      setRecords(records.map((r: DNSRecord) => r.id === record.id ? updatedRecord : r));
       setEditingRecord(null);
       
       toast({
@@ -140,7 +140,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const handleDeleteRecord = async (recordId: string) => {
     try {
       await api.deleteDNSRecord(selectedZone, recordId);
-      setRecords(records.filter(r => r.id !== recordId));
+      setRecords(records.filter((r: DNSRecord) => r.id !== recordId));
       
       toast({
         title: "Success",
@@ -171,7 +171,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
         const headers = 'Type,Name,Content,TTL,Priority,Proxied\n';
         const rows = records
           .map(
-            (r) =>
+            (r: DNSRecord) =>
               `${r.type},${r.name},${r.content},${r.ttl},${r.priority || ''},${r.proxied || false}`
           )
           .join('\n');
@@ -182,7 +182,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
       }
       case 'bind': {
         content = records
-          .map((r) => {
+          .map((r: DNSRecord) => {
             const ttl = r.ttl || 300;
             const priority = r.priority ? `${r.priority} ` : '';
             return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
@@ -242,7 +242,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     onLogout();
   };
 
-  const selectedZoneData = zones.find(z => z.id === selectedZone);
+  const selectedZoneData = zones.find((z: Zone) => z.id === selectedZone);
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -272,7 +272,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                     <SelectValue placeholder="Select a domain" />
                   </SelectTrigger>
                   <SelectContent>
-                    {zones.map((zone) => (
+                    {zones.map((zone: Zone) => (
                       <SelectItem key={zone.id} value={zone.id}>
                         {zone.name} ({zone.status})
                       </SelectItem>
@@ -302,7 +302,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                             <Label>Type</Label>
                             <Select
                               value={newRecord.type}
-                              onValueChange={(value) => setNewRecord({
+                              onValueChange={(value: string) => setNewRecord({
                                 ...newRecord,
                                 type: value as RecordType
                               })}
@@ -311,7 +311,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {RECORD_TYPES.map((type) => (
+                                {RECORD_TYPES.map((type: RecordType) => (
                                   <SelectItem key={type} value={type}>
                                     {type}
                                   </SelectItem>
@@ -324,7 +324,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                             <Input
                               type="number"
                               value={newRecord.ttl}
-                              onChange={(e) => setNewRecord({
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
                                 ...newRecord,
                                 ttl: parseInt(e.target.value) || 300
                               })}
@@ -335,7 +335,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                           <Label>Name</Label>
                           <Input
                             value={newRecord.name}
-                            onChange={(e) => setNewRecord({
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
                               ...newRecord,
                               name: e.target.value
                             })}
@@ -346,7 +346,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                           <Label>Content</Label>
                           <Input
                             value={newRecord.content}
-                            onChange={(e) => setNewRecord({
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
                               ...newRecord,
                               content: e.target.value
                             })}
@@ -359,7 +359,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                             <Input
                               type="number"
                               value={newRecord.priority || ''}
-                              onChange={(e) => setNewRecord({
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
                                 ...newRecord,
                                 priority: parseInt(e.target.value) || undefined
                               })}
@@ -370,7 +370,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                           <div className="flex items-center space-x-2">
                             <Switch
                               checked={newRecord.proxied || false}
-                              onCheckedChange={(checked) => setNewRecord({
+                              onCheckedChange={(checked: boolean) => setNewRecord({
                                 ...newRecord,
                                 proxied: checked
                               })}
@@ -417,7 +417,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                           <textarea
                             className="w-full h-32 p-2 border rounded-md bg-background"
                             value={importData}
-                            onChange={(e) => setImportData(e.target.value)}
+                            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setImportData(e.target.value)}
                             placeholder="Paste your JSON data here..."
                           />
                         </div>
@@ -428,7 +428,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                     </DialogContent>
                   </Dialog>
                   
-                  <Select onValueChange={(format) => handleExport(format as 'json' | 'csv' | 'bind')}>
+                  <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
                     <SelectTrigger className="w-32">
                       <Download className="h-4 w-4 mr-2" />
                       <SelectValue placeholder="Export" />
@@ -451,13 +451,13 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {records.map((record) => (
+                  {records.map((record: DNSRecord) => (
                     <RecordRow
                       key={record.id}
                       record={record}
                       isEditing={editingRecord === record.id}
                       onEdit={() => setEditingRecord(record.id)}
-                      onSave={(updatedRecord) => handleUpdateRecord(updatedRecord)}
+                      onSave={(updatedRecord: DNSRecord) => handleUpdateRecord(updatedRecord)}
                       onCancel={() => setEditingRecord(null)}
                       onDelete={() => handleDeleteRecord(record.id)}
                     />
@@ -495,7 +495,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
           <div className="col-span-2">
             <Select
               value={editedRecord.type}
-              onValueChange={(value) => setEditedRecord({
+              onValueChange={(value: RecordType) => setEditedRecord({
                 ...editedRecord,
                 type: value
               })}
@@ -504,7 +504,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {RECORD_TYPES.map((type) => (
+                {RECORD_TYPES.map((type: RecordType) => (
                   <SelectItem key={type} value={type}>
                     {type}
                   </SelectItem>
@@ -515,7 +515,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
           <div className="col-span-3">
             <Input
               value={editedRecord.name}
-              onChange={(e) => setEditedRecord({
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setEditedRecord({
                 ...editedRecord,
                 name: e.target.value
               })}
@@ -525,7 +525,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
           <div className="col-span-4">
             <Input
               value={editedRecord.content}
-              onChange={(e) => setEditedRecord({
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setEditedRecord({
                 ...editedRecord,
                 content: e.target.value
               })}
@@ -536,7 +536,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
             <Input
               type="number"
               value={editedRecord.ttl}
-              onChange={(e) =>
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 setEditedRecord({
                   ...editedRecord,
                   ttl: parseInt(e.target.value) || 300,
@@ -548,7 +548,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
               <Input
                 type="number"
                 value={editedRecord.priority ?? ''}
-                onChange={(e) =>
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
                   setEditedRecord({
                     ...editedRecord,
                     priority: e.target.value
@@ -564,7 +564,7 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
             {(editedRecord.type === 'A' || editedRecord.type === 'AAAA' || editedRecord.type === 'CNAME') && (
               <Switch
                 checked={editedRecord.proxied || false}
-                onCheckedChange={(checked) => setEditedRecord({
+                onCheckedChange={(checked: boolean) => setEditedRecord({
                   ...editedRecord,
                   proxied: checked
                 })}
