@@ -1,5 +1,5 @@
 import type { ApiKey } from '@/types/dns';
-import { cryptoManager } from './crypto';
+import { cryptoManager, CryptoManager } from './crypto';
 
 const STORAGE_KEY = 'cloudflare-dns-manager';
 
@@ -37,13 +37,17 @@ export class StorageManager {
 
   async addApiKey(label: string, apiKey: string, password: string): Promise<string> {
     const { encrypted, salt, iv } = await cryptoManager.encrypt(apiKey, password);
-    
+    const config = cryptoManager.getConfig();
+
     const keyData: ApiKey = {
       id: crypto.randomUUID(),
       label,
       encryptedKey: encrypted,
       salt,
       iv,
+      iterations: config.iterations,
+      keyLength: config.keyLength,
+      algorithm: config.algorithm,
       createdAt: new Date().toISOString(),
     };
 
@@ -62,7 +66,12 @@ export class StorageManager {
     if (!keyData) return null;
 
     try {
-      return await cryptoManager.decrypt(
+      const cm = new CryptoManager({
+        iterations: keyData.iterations,
+        keyLength: keyData.keyLength,
+        algorithm: keyData.algorithm,
+      });
+      return await cm.decrypt(
         keyData.encryptedKey,
         keyData.salt,
         keyData.iv,

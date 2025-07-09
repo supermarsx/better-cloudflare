@@ -27,6 +27,9 @@ export interface ApiKey {
   encryptedKey: string;
   salt: string;
   iv: string;
+  iterations: number;
+  keyLength: number;
+  algorithm: string;
   createdAt: string;
 }
 
