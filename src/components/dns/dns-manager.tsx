@@ -40,19 +40,23 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const api = new CloudflareAPI(apiKey);
 
   useEffect(() => {
-    loadZones();
+    const controller = new AbortController();
+    loadZones(controller.signal);
+    return () => controller.abort();
   }, [loadZones]);
 
   useEffect(() => {
     if (selectedZone) {
-      loadRecords();
+      const controller = new AbortController();
+      loadRecords(controller.signal);
+      return () => controller.abort();
     }
   }, [selectedZone, loadRecords]);
 
-  const loadZones = useCallback(async () => {
+  const loadZones = useCallback(async (signal?: AbortSignal) => {
     try {
       setIsLoading(true);
-      const zonesData = await api.getZones();
+      const zonesData = await api.getZones(signal);
       setZones(zonesData);
     } catch (error) {
       toast({
@@ -65,12 +69,12 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     }
   }, [api, toast]);
 
-  const loadRecords = useCallback(async () => {
+  const loadRecords = useCallback(async (signal?: AbortSignal) => {
     if (!selectedZone) return;
-    
+
     try {
       setIsLoading(true);
-      const recordsData = await api.getDNSRecords(selectedZone);
+      const recordsData = await api.getDNSRecords(selectedZone, signal);
       setRecords(recordsData);
     } catch (error) {
       toast({
