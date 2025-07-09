@@ -228,10 +228,10 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
         title: "Success",
         description: "Records imported successfully"
       });
-    } catch {
+    } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to import records: Invalid JSON format",
+        description: "Failed to import records: " + (error as Error).message,
         variant: "destructive"
       });
     }
