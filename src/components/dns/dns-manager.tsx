@@ -1,4 +1,4 @@
-import { useState, useEffect, type ChangeEvent } from 'react';
+import { useState, useEffect, useCallback, type ChangeEvent } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,15 +41,15 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     loadZones();
-  }, []);
+  }, [loadZones]);
 
   useEffect(() => {
     if (selectedZone) {
       loadRecords();
     }
-  }, [selectedZone]);
+  }, [selectedZone, loadRecords]);
 
-  const loadZones = async () => {
+  const loadZones = useCallback(async () => {
     try {
       setIsLoading(true);
       const zonesData = await api.getZones();
@@ -63,9 +63,9 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [api, toast]);
 
-  const loadRecords = async () => {
+  const loadRecords = useCallback(async () => {
     if (!selectedZone) return;
     
     try {
@@ -81,7 +81,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [api, selectedZone, toast]);
 
   const handleAddRecord = async () => {
     if (!selectedZone || !newRecord.type || !newRecord.name || !newRecord.content) {
