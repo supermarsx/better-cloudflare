@@ -20,7 +20,7 @@ export class CloudflareAPI {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      const error = await response.json().catch(() => ({ errors: [{ message: 'Unknown error' }] }));
       throw new Error(error.errors?.[0]?.message || `HTTP ${response.status}: ${response.statusText}`);
     }
 
