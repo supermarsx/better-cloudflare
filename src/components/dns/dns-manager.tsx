@@ -215,23 +215,52 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const handleImport = () => {
     try {
       const imported = JSON.parse(importData);
-      if (Array.isArray(imported)) {
-        // Handle array of records
-        setRecords([...imported, ...records]);
-      } else if (imported.records) {
-        // Handle object with records property
-        setRecords([...imported.records, ...records]);
-      } else {
+      const items = Array.isArray(imported)
+        ? imported
+        : Array.isArray(imported.records)
+          ? imported.records
+          : null;
+
+      if (!items) {
         throw new Error('Invalid format');
       }
-      
-      setImportData('');
-      setShowImport(false);
-      
-      toast({
-        title: "Success",
-        description: "Records imported successfully"
-      });
+
+      const valid: DNSRecord[] = [];
+      let skipped = 0;
+
+      for (const item of items) {
+        if (item && item.type && item.name && item.content) {
+          const exists = records.some(
+            r => r.type === item.type && r.name === item.name && r.content === item.content
+          );
+          if (!exists) {
+            valid.push(item as DNSRecord);
+          } else {
+            skipped++;
+          }
+        } else {
+          skipped++;
+        }
+      }
+
+      if (valid.length) {
+        setRecords([...valid, ...records]);
+        setImportData('');
+        setShowImport(false);
+
+        toast({
+          title: "Success",
+          description: `Imported ${valid.length} record(s)` + (skipped ? `, skipped ${skipped}` : '')
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: skipped
+            ? `No new records imported. Skipped ${skipped} invalid or duplicate item(s).`
+            : 'No valid records found.',
+          variant: 'destructive'
+        });
+      }
     } catch (error) {
       toast({
         title: "Error",
