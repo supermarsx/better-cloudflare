@@ -532,16 +532,33 @@ function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: Re
               className="h-8"
             />
           </div>
-          <div className="col-span-1">
+          <div className="col-span-1 space-y-1">
             <Input
               type="number"
               value={editedRecord.ttl}
-              onChange={(e) => setEditedRecord({
-                ...editedRecord,
-                ttl: parseInt(e.target.value) || 300
-              })}
+              onChange={(e) =>
+                setEditedRecord({
+                  ...editedRecord,
+                  ttl: parseInt(e.target.value) || 300,
+                })
+              }
               className="h-8"
             />
+            {editedRecord.type === 'MX' && (
+              <Input
+                type="number"
+                value={editedRecord.priority ?? ''}
+                onChange={(e) =>
+                  setEditedRecord({
+                    ...editedRecord,
+                    priority: e.target.value
+                      ? parseInt(e.target.value)
+                      : undefined,
+                  })
+                }
+                className="h-8"
+              />
+            )}
           </div>
           <div className="col-span-1">
             {(editedRecord.type === 'A' || editedRecord.type === 'AAAA' || editedRecord.type === 'CNAME') && (
