@@ -1,5 +1,7 @@
 import type { EncryptionConfig } from '@/types/dns';
 
+const CONFIG_STORAGE_KEY = 'encryption-settings';
+
 const DEFAULT_CONFIG: EncryptionConfig = {
   iterations: 100000,
   keyLength: 256,
@@ -10,7 +12,31 @@ export class CryptoManager {
   private config: EncryptionConfig;
 
   constructor(config: Partial<EncryptionConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    const stored = this.loadFromStorage();
+    this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
+  }
+
+  private loadFromStorage(): Partial<EncryptionConfig> {
+    try {
+      const stored = localStorage.getItem(CONFIG_STORAGE_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch (error) {
+      console.error('Failed to load encryption config:', error);
+      return {};
+    }
+  }
+
+  private saveToStorage(): void {
+    try {
+      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.config));
+    } catch (error) {
+      console.error('Failed to save encryption config:', error);
+    }
+  }
+
+  reloadConfig(): void {
+    const stored = this.loadFromStorage();
+    this.config = { ...DEFAULT_CONFIG, ...stored };
   }
 
   async generateSalt(): Promise<Uint8Array> {
@@ -118,6 +144,7 @@ export class CryptoManager {
 
   updateConfig(newConfig: Partial<EncryptionConfig>): void {
     this.config = { ...this.config, ...newConfig };
+    this.saveToStorage();
   }
 }
 export const cryptoManager = new CryptoManager();

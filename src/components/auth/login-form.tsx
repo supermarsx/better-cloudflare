@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,6 +29,11 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   
   const { toast } = useToast();
   const apiKeys = storageManager.getApiKeys();
+
+  useEffect(() => {
+    cryptoManager.reloadConfig();
+    setEncryptionSettings(cryptoManager.getConfig());
+  }, []);
 
   const handleLogin = async () => {
     if (!selectedKeyId || !password) {
