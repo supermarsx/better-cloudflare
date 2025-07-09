@@ -23,6 +23,8 @@ export class StorageManager {
       }
     } catch (error) {
       console.error('Failed to load storage data:', error);
+      // Remove corrupted data so subsequent loads start with a clean slate.
+      localStorage.removeItem(STORAGE_KEY);
       this.data = { apiKeys: [] };
     }
   }
