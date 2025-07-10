@@ -1,5 +1,6 @@
 import type { ApiKey } from '@/types/dns';
 import { cryptoManager, CryptoManager } from './crypto';
+import { generateUUID } from './utils';
 
 const STORAGE_KEY = 'cloudflare-dns-manager';
 
@@ -42,7 +43,7 @@ export class StorageManager {
     const config = cryptoManager.getConfig();
 
     const keyData: ApiKey = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       label,
       encryptedKey: encrypted,
       salt,
