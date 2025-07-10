@@ -9,6 +9,31 @@ interface StorageData {
   currentSession?: string;
 }
 
+export function isStorageData(value: unknown): value is StorageData {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as any;
+  if (!Array.isArray(obj.apiKeys)) return false;
+  if (
+    obj.currentSession !== undefined &&
+    typeof obj.currentSession !== 'string'
+  ) {
+    return false;
+  }
+  return obj.apiKeys.every(
+    (k: any) =>
+      k &&
+      typeof k.id === 'string' &&
+      typeof k.label === 'string' &&
+      typeof k.encryptedKey === 'string' &&
+      typeof k.salt === 'string' &&
+      typeof k.iv === 'string' &&
+      typeof k.iterations === 'number' &&
+      typeof k.keyLength === 'number' &&
+      typeof k.algorithm === 'string' &&
+      typeof k.createdAt === 'string'
+  );
+}
+
 export class StorageManager {
   private data: StorageData = { apiKeys: [] };
 
@@ -119,19 +144,7 @@ export class StorageManager {
       throw new Error('Failed to import data: Invalid JSON');
     }
 
-    if (
-      !imported ||
-      typeof imported !== 'object' ||
-      !Array.isArray((imported as any).apiKeys) ||
-      !(imported as any).apiKeys.every((k: any) =>
-        k &&
-        typeof k.id === 'string' &&
-        typeof k.label === 'string' &&
-        typeof k.encryptedKey === 'string' &&
-        typeof k.salt === 'string' &&
-        typeof k.iv === 'string'
-      )
-    ) {
+    if (!isStorageData(imported)) {
       throw new Error('Invalid data format');
     }
 
