@@ -335,10 +335,14 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                             <Label>Type</Label>
                             <Select
                               value={newRecord.type}
-                              onValueChange={(value: string) => setNewRecord({
-                                ...newRecord,
-                                type: value as RecordType
-                              })}
+                              onValueChange={(value: string) =>
+                                setNewRecord(prev => ({
+                                  ...prev,
+                                  type: value as RecordType,
+                                  priority:
+                                    value === 'MX' ? prev.priority : undefined
+                                }))
+                              }
                             >
                               <SelectTrigger>
                                 <SelectValue />
