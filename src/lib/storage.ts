@@ -111,17 +111,31 @@ export class StorageManager {
   }
 
   importData(jsonData: string): void {
+    let imported: unknown;
     try {
-      const imported = JSON.parse(jsonData);
-      if (imported.apiKeys && Array.isArray(imported.apiKeys)) {
-        this.data = imported;
-        this.save();
-      } else {
-        throw new Error('Invalid data format');
-      }
+      imported = JSON.parse(jsonData);
     } catch (error) {
-      throw new Error('Failed to import data: ' + (error as Error).message);
+      throw new Error('Failed to import data: Invalid JSON');
     }
+
+    if (
+      !imported ||
+      typeof imported !== 'object' ||
+      !Array.isArray((imported as any).apiKeys) ||
+      !(imported as any).apiKeys.every((k: any) =>
+        k &&
+        typeof k.id === 'string' &&
+        typeof k.label === 'string' &&
+        typeof k.encryptedKey === 'string' &&
+        typeof k.salt === 'string' &&
+        typeof k.iv === 'string'
+      )
+    ) {
+      throw new Error('Invalid data format');
+    }
+
+    this.data = imported as StorageData;
+    this.save();
   }
 }
 export const storageManager = new StorageManager();
