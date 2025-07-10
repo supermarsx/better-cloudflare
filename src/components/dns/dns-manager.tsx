@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { CloudflareAPI } from '@/lib/cloudflare';
+import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone, RecordType } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
@@ -37,12 +37,18 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const [importData, setImportData] = useState('');
   
   const { toast } = useToast();
-  const api = new CloudflareAPI(apiKey);
+  const {
+    getZones,
+    getDNSRecords,
+    createDNSRecord,
+    updateDNSRecord,
+    deleteDNSRecord,
+  } = useCloudflareAPI(apiKey);
 
   const loadZones = useCallback(async (signal?: AbortSignal) => {
     try {
       setIsLoading(true);
-      const zonesData = await api.getZones(signal);
+      const zonesData = await getZones(signal);
       setZones(zonesData);
     } catch (error) {
       toast({
@@ -53,14 +59,14 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [api, toast]);
+  }, [getZones, toast]);
 
   const loadRecords = useCallback(async (signal?: AbortSignal) => {
     if (!selectedZone) return;
 
     try {
       setIsLoading(true);
-      const recordsData = await api.getDNSRecords(selectedZone, signal);
+      const recordsData = await getDNSRecords(selectedZone, signal);
       setRecords(recordsData);
     } catch (error) {
       toast({
@@ -71,7 +77,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [api, selectedZone, toast]);
+  }, [getDNSRecords, selectedZone, toast]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -98,7 +104,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     }
 
     try {
-      const createdRecord = await api.createDNSRecord(selectedZone, newRecord);
+      const createdRecord = await createDNSRecord(selectedZone, newRecord);
       setRecords([createdRecord, ...records]);
       setNewRecord({
         type: 'A',
@@ -124,7 +130,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
 
   const handleUpdateRecord = async (record: DNSRecord) => {
     try {
-      const updatedRecord = await api.updateDNSRecord(selectedZone, record.id, record);
+      const updatedRecord = await updateDNSRecord(selectedZone, record.id, record);
       setRecords(records.map((r: DNSRecord) => r.id === record.id ? updatedRecord : r));
       setEditingRecord(null);
       
@@ -143,7 +149,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
 
   const handleDeleteRecord = async (recordId: string) => {
     try {
-      await api.deleteDNSRecord(selectedZone, recordId);
+      await deleteDNSRecord(selectedZone, recordId);
       setRecords(records.filter((r: DNSRecord) => r.id !== recordId));
       
       toast({

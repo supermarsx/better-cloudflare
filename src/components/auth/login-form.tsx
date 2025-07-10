@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { storageManager } from '@/lib/storage';
-import { CloudflareAPI } from '@/lib/cloudflare';
+import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import { useToast } from '@/hooks/use-toast';
 import { Key, Plus, Settings, Trash2 } from 'lucide-react';
 import { cryptoManager } from '@/lib/crypto';
@@ -28,6 +28,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
   
   const { toast } = useToast();
+  const { verifyToken } = useCloudflareAPI();
   const apiKeys = storageManager.getApiKeys();
 
   useEffect(() => {
@@ -58,8 +59,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       }
 
       // Verify the API key works
-      const api = new CloudflareAPI(decryptedKey);
-      const isValid = await api.verifyToken();
+      const isValid = await verifyToken(decryptedKey);
       
       if (!isValid) {
         toast({
@@ -100,8 +100,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
     try {
       // Test the API key first
-      const api = new CloudflareAPI(newApiKey);
-      const isValid = await api.verifyToken();
+      const isValid = await verifyToken(newApiKey);
       
       if (!isValid) {
         toast({
