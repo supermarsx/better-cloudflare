@@ -1,17 +1,19 @@
 import type { DNSRecord, Zone } from '@/types/dns';
 
-const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
+const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 
 export class CloudflareAPI {
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl: string = (import.meta.env.VITE_CLOUDFLARE_API_BASE ?? DEFAULT_CLOUDFLARE_API_BASE)) {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const { signal, ...rest } = options;
-    const response = await fetch(`${CLOUDFLARE_API_BASE}${endpoint}`, {
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
       ...rest,
       signal,
       headers: {
@@ -22,8 +24,16 @@ export class CloudflareAPI {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ errors: [{ message: 'Unknown error' }] }));
-      throw new Error(error.errors?.[0]?.message || `HTTP ${response.status}: ${response.statusText}`);
+      let message = response.statusText;
+      try {
+        const error = await response.json();
+        if (Array.isArray(error.errors) && error.errors.length) {
+          message = error.errors[0].message || message;
+        }
+      } catch {
+        // ignore JSON parse errors and use status text
+      }
+      throw new Error(message);
     }
 
     const data = await response.json();
