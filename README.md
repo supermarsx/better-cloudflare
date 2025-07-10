@@ -19,6 +19,26 @@ npm run dev
 
 Then open <http://localhost:5173> in your browser.
 
+### Custom API base
+
+By default the app talks to the real Cloudflare API at
+`https://api.cloudflare.com/client/v4`. You can change this URL using the
+`VITE_CLOUDFLARE_API_BASE` environment variable, which is useful when working
+with a mock API during development.
+
+Create a `.env` file with your desired base URL:
+
+```bash
+# .env
+VITE_CLOUDFLARE_API_BASE=http://localhost:8787
+```
+
+Run the app with the custom base applied:
+
+```bash
+VITE_CLOUDFLARE_API_BASE=http://localhost:8787 npm run dev
+```
+
 ## Building for production
 
 Create an optimized build and preview it locally:
