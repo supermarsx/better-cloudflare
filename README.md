@@ -2,6 +2,12 @@
 
 Better Cloudflare is a minimalist interface for managing DNS records on Cloudflare. It lets you securely store your API tokens in local storage using password-based encryption and provides a simple UI for creating, updating and deleting records.
 
+## Requirements
+
+The project requires **Node 18 or higher**. Use a modern Node version when running
+`npm install`, `npm run dev`, and `npm run build`.
+
+
 ## Development
 
 Install dependencies and start the Vite development server:
