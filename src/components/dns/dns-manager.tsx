@@ -7,6 +7,11 @@ import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
+import { LogOut } from 'lucide-react';
+import { AddRecordDialog } from './add-record-dialog';
+import { ImportExportDialog } from './import-export-dialog';
+import { RecordRow } from './record-row';
+
 import { Download, LogOut } from 'lucide-react';
 import { RecordRow } from './RecordRow';
 import { AddRecordDialog } from './AddRecordDialog';
@@ -329,7 +334,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                     zoneName={selectedZoneData?.name}
                   />
                 </div>
-              )}
+                )}
             </div>
           </CardContent>
         </Card>
@@ -347,6 +352,8 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                     data={importData}
                     onDataChange={setImportData}
                     onImport={handleImport}
+                    onExport={handleExport}
+
                   />
                   
                   <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
