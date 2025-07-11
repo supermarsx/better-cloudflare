@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
-import type { DNSRecord, Zone, RecordType } from '@/types/dns';
+import type { DNSRecord, Zone } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
 import { LogOut } from 'lucide-react';
@@ -12,11 +12,18 @@ import { AddRecordDialog } from './add-record-dialog';
 import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './record-row';
 
+import { Download, LogOut } from 'lucide-react';
+import { RecordRow } from './RecordRow';
+import { AddRecordDialog } from './AddRecordDialog';
+import { ImportRecordsDialog } from './ImportRecordsDialog';
+
 interface DNSManagerProps {
   apiKey: string;
   onLogout: () => void;
 }
 
+
+export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>('');
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -339,14 +346,27 @@ interface DNSManagerProps {
               <div className="flex items-center justify-between">
                 <CardTitle>DNS Records</CardTitle>
                 <div className="flex gap-2">
-                    <ImportExportDialog
-                      open={showImport}
-                      onOpenChange={setShowImport}
-                      importData={importData}
-                      onImportDataChange={setImportData}
-                      onImport={handleImport}
-                      onExport={handleExport}
-                    />
+                  <ImportRecordsDialog
+                    open={showImport}
+                    onOpenChange={setShowImport}
+                    data={importData}
+                    onDataChange={setImportData}
+                    onImport={handleImport}
+                    onExport={handleExport}
+
+                  />
+                  
+                  <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
+                    <SelectTrigger className="w-32">
+                      <Download className="h-4 w-4 mr-2" />
+                      <SelectValue placeholder="Export" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="json">JSON</SelectItem>
+                      <SelectItem value="csv">CSV</SelectItem>
+                      <SelectItem value="bind">BIND</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardHeader>
