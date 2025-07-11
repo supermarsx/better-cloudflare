@@ -1,25 +1,22 @@
-import { useState, useEffect, useCallback, type ChangeEvent } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone, RecordType } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
-import { Plus, Download, Upload, LogOut, Edit2, Trash2, Save, X } from 'lucide-react';
+import { LogOut } from 'lucide-react';
+import { AddRecordDialog } from './add-record-dialog';
+import { ImportExportDialog } from './import-export-dialog';
+import { RecordRow } from './record-row';
 
 interface DNSManagerProps {
   apiKey: string;
   onLogout: () => void;
 }
 
-const RECORD_TYPES: RecordType[] = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'PTR', 'CAA'];
-
-export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>('');
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -321,114 +318,16 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
               </div>
               {selectedZone && (
                 <div className="flex gap-2">
-                  <Dialog open={showAddRecord} onOpenChange={setShowAddRecord}>
-                    <DialogTrigger asChild>
-                      <Button>
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add Record
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Add DNS Record</DialogTitle>
-                        <DialogDescription>
-                          Create a new DNS record for {selectedZoneData?.name}
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label>Type</Label>
-                            <Select
-                              value={newRecord.type}
-                              onValueChange={(value: string) =>
-                                setNewRecord(prev => ({
-                                  ...prev,
-                                  type: value as RecordType,
-                                  priority:
-                                    value === 'MX' ? prev.priority : undefined
-                                }))
-                              }
-                            >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {RECORD_TYPES.map((type: RecordType) => (
-                                  <SelectItem key={type} value={type}>
-                                    {type}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="space-y-2">
-                            <Label>TTL</Label>
-                            <Input
-                              type="number"
-                              value={newRecord.ttl}
-                              onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
-                                ...newRecord,
-                                ttl: parseInt(e.target.value) || 300
-                              })}
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Name</Label>
-                          <Input
-                            value={newRecord.name}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
-                              ...newRecord,
-                              name: e.target.value
-                            })}
-                            placeholder="e.g., www or @ for root"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Content</Label>
-                          <Input
-                            value={newRecord.content}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
-                              ...newRecord,
-                              content: e.target.value
-                            })}
-                            placeholder="e.g., 192.168.1.1"
-                          />
-                        </div>
-                        {newRecord.type === 'MX' && (
-                          <div className="space-y-2">
-                            <Label>Priority</Label>
-                            <Input
-                              type="number"
-                              value={newRecord.priority || ''}
-                              onChange={(e: ChangeEvent<HTMLInputElement>) => setNewRecord({
-                                ...newRecord,
-                                priority: parseInt(e.target.value) || undefined
-                              })}
-                            />
-                          </div>
-                        )}
-                        {(newRecord.type === 'A' || newRecord.type === 'AAAA' || newRecord.type === 'CNAME') && (
-                          <div className="flex items-center space-x-2">
-                            <Switch
-                              checked={newRecord.proxied || false}
-                              onCheckedChange={(checked: boolean) => setNewRecord({
-                                ...newRecord,
-                                proxied: checked
-                              })}
-                            />
-                            <Label>Proxied through Cloudflare</Label>
-                          </div>
-                        )}
-                        <Button onClick={handleAddRecord} className="w-full">
-                          Create Record
-                        </Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
+                  <AddRecordDialog
+                    open={showAddRecord}
+                    onOpenChange={setShowAddRecord}
+                    record={newRecord}
+                    onRecordChange={setNewRecord}
+                    onAdd={handleAddRecord}
+                    zoneName={selectedZoneData?.name}
+                  />
                 </div>
-              )}
+                )}
             </div>
           </CardContent>
         </Card>
@@ -440,48 +339,14 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
               <div className="flex items-center justify-between">
                 <CardTitle>DNS Records</CardTitle>
                 <div className="flex gap-2">
-                  <Dialog open={showImport} onOpenChange={setShowImport}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" size="sm">
-                        <Upload className="h-4 w-4 mr-2" />
-                        Import
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Import DNS Records</DialogTitle>
-                        <DialogDescription>
-                          Import DNS records from JSON format
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label>JSON Data</Label>
-                          <textarea
-                            className="w-full h-32 p-2 border rounded-md bg-background"
-                            value={importData}
-                            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setImportData(e.target.value)}
-                            placeholder="Paste your JSON data here..."
-                          />
-                        </div>
-                        <Button onClick={handleImport} className="w-full">
-                          Import Records
-                        </Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-                  
-                  <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
-                    <SelectTrigger className="w-32">
-                      <Download className="h-4 w-4 mr-2" />
-                      <SelectValue placeholder="Export" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="json">JSON</SelectItem>
-                      <SelectItem value="csv">CSV</SelectItem>
-                      <SelectItem value="bind">BIND</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    <ImportExportDialog
+                      open={showImport}
+                      onOpenChange={setShowImport}
+                      importData={importData}
+                      onImportDataChange={setImportData}
+                      onImport={handleImport}
+                      onExport={handleExport}
+                    />
                 </div>
               </div>
             </CardHeader>
@@ -515,169 +380,3 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
   );
 }
 
-interface RecordRowProps {
-  record: DNSRecord;
-  isEditing: boolean;
-  onEdit: () => void;
-  onSave: (record: DNSRecord) => void;
-  onCancel: () => void;
-  onDelete: () => void;
-}
-
-function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: RecordRowProps) {
-  const [editedRecord, setEditedRecord] = useState(record);
-
-  useEffect(() => {
-    setEditedRecord(record);
-  }, [record]);
-
-  if (isEditing) {
-    return (
-      <div className="p-4 border rounded-lg bg-muted/50">
-        <div className="grid grid-cols-12 gap-4 items-center">
-          <div className="col-span-2">
-            <Select
-              value={editedRecord.type}
-              onValueChange={(value: RecordType) => setEditedRecord({
-                ...editedRecord,
-                type: value
-              })}
-            >
-              <SelectTrigger className="h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {RECORD_TYPES.map((type: RecordType) => (
-                  <SelectItem key={type} value={type}>
-                    {type}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-3">
-            <Input
-              value={editedRecord.name}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setEditedRecord({
-                ...editedRecord,
-                name: e.target.value
-              })}
-              className="h-8"
-            />
-          </div>
-          <div className="col-span-4">
-            <Input
-              value={editedRecord.content}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setEditedRecord({
-                ...editedRecord,
-                content: e.target.value
-              })}
-              className="h-8"
-            />
-          </div>
-          <div className="col-span-1 space-y-1">
-            <Input
-              type="number"
-              value={editedRecord.ttl}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                setEditedRecord({
-                  ...editedRecord,
-                  ttl: parseInt(e.target.value) || 300,
-                })
-              }
-              className="h-8"
-            />
-            {editedRecord.type === 'MX' && (
-              <Input
-                type="number"
-                value={editedRecord.priority ?? ''}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setEditedRecord({
-                    ...editedRecord,
-                    priority: e.target.value
-                      ? parseInt(e.target.value)
-                      : undefined,
-                  })
-                }
-                className="h-8"
-              />
-            )}
-          </div>
-          <div className="col-span-1">
-            {(editedRecord.type === 'A' || editedRecord.type === 'AAAA' || editedRecord.type === 'CNAME') && (
-              <Switch
-                checked={editedRecord.proxied || false}
-                onCheckedChange={(checked: boolean) => setEditedRecord({
-                  ...editedRecord,
-                  proxied: checked
-                })}
-              />
-            )}
-          </div>
-          <div className="col-span-1 flex gap-1">
-            <Button
-              size="sm"
-              onClick={() => onSave(editedRecord)}
-              className="h-8 w-8 p-0"
-            >
-              <Save className="h-3 w-3" />
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onCancel}
-              className="h-8 w-8 p-0"
-            >
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
-      <div className="grid grid-cols-12 gap-4 items-center">
-        <div className="col-span-2">
-          <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-primary/10 text-primary">
-            {record.type}
-          </span>
-        </div>
-        <div className="col-span-3">
-          <span className="font-mono text-sm">{record.name}</span>
-        </div>
-        <div className="col-span-4">
-          <span className="font-mono text-sm break-all">{record.content}</span>
-        </div>
-        <div className="col-span-1">
-          <span className="text-sm text-muted-foreground">{record.ttl}</span>
-        </div>
-        <div className="col-span-1">
-          {record.proxied && (
-            <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
-              Proxied
-            </span>
-          )}
-        </div>
-        <div className="col-span-1 flex gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onEdit}
-            className="h-8 w-8 p-0"
-          >
-            <Edit2 className="h-3 w-3" />
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onDelete}
-            className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
-        </div>
-      </div>
-    </div>
-  );}
