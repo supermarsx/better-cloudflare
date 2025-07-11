@@ -4,12 +4,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+
 import { storageManager } from '@/lib/storage';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import { useToast } from '@/hooks/use-toast';
-import { Key, Plus, Settings, Trash2 } from 'lucide-react';
+import { Key, Trash2 } from 'lucide-react';
 import { cryptoManager } from '@/lib/crypto';
+import { AddKeyDialog } from './AddKeyDialog';
+import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
 
 interface LoginFormProps {
   onLogin: (apiKey: string) => void;
@@ -232,118 +234,27 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </Button>
 
           <div className="flex gap-2">
-            <Dialog open={showAddKey} onOpenChange={setShowAddKey}>
-              <DialogTrigger asChild>
-                <Button variant="outline" className="flex-1">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Key
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Add New API Key</DialogTitle>
-                  <DialogDescription>
-                    Add a new Cloudflare API key with a custom label
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="new-label">Label</Label>
-                    <Input
-                      id="new-label"
-                      value={newKeyLabel}
-                      onChange={(e) => setNewKeyLabel(e.target.value)}
-                      placeholder="e.g., Personal Account"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="new-api-key">API Key</Label>
-                    <Input
-                      id="new-api-key"
-                      type="password"
-                      value={newApiKey}
-                      onChange={(e) => setNewApiKey(e.target.value)}
-                      placeholder="Your Cloudflare API key"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="new-password">Encryption Password</Label>
-                    <Input
-                      id="new-password"
-                      type="password"
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Password to encrypt this key"
-                    />
-                  </div>
-                  <Button onClick={handleAddKey} className="w-full">
-                    Add API Key
-                  </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
+            <AddKeyDialog
+              open={showAddKey}
+              onOpenChange={setShowAddKey}
+              label={newKeyLabel}
+              onLabelChange={setNewKeyLabel}
+              apiKey={newApiKey}
+              onApiKeyChange={setNewApiKey}
+              password={newPassword}
+              onPasswordChange={setNewPassword}
+              onAdd={handleAddKey}
+            />
 
-            <Dialog open={showSettings} onOpenChange={setShowSettings}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="icon">
-                  <Settings className="h-4 w-4" />
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Encryption Settings</DialogTitle>
-                  <DialogDescription>
-                    Configure encryption parameters for security and performance
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="iterations">PBKDF2 Iterations</Label>
-                    <Input
-                      id="iterations"
-                      type="number"
-                      value={encryptionSettings.iterations}
-                      onChange={(e) => setEncryptionSettings({
-                        ...encryptionSettings,
-                        iterations: parseInt(e.target.value) || 100000
-                      })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="key-length">Key Length (bits)</Label>
-                    <Select
-                      value={encryptionSettings.keyLength.toString()}
-                      onValueChange={(value) => setEncryptionSettings({
-                        ...encryptionSettings,
-                        keyLength: parseInt(value)
-                      })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="128">128</SelectItem>
-                        <SelectItem value="192">192</SelectItem>
-                        <SelectItem value="256">256</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button onClick={handleBenchmark} variant="outline" className="flex-1">
-                      Benchmark
-                    </Button>
-                    <Button onClick={handleUpdateSettings} className="flex-1">
-                      Update
-                    </Button>
-                  </div>
-                  {benchmarkResult && (
-                    <p className="text-sm text-muted-foreground">
-                      Last benchmark: {benchmarkResult.toFixed(2)}ms
-                    </p>
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
+            <EncryptionSettingsDialog
+              open={showSettings}
+              onOpenChange={setShowSettings}
+              settings={encryptionSettings}
+              onSettingsChange={setEncryptionSettings}
+              onBenchmark={handleBenchmark}
+              onUpdate={handleUpdateSettings}
+              benchmarkResult={benchmarkResult}
+            />
           </div>
         </CardContent>
       </Card>
