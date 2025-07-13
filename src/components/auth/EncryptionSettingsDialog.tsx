@@ -70,7 +70,7 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
               Update
             </Button>
           </div>
-          {benchmarkResult && (
+          {benchmarkResult !== null && (
             <p className="text-sm text-muted-foreground">
               Last benchmark: {benchmarkResult.toFixed(2)}ms
             </p>
