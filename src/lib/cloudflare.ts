@@ -6,7 +6,7 @@ export class CloudflareAPI {
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(apiKey: string, baseUrl: string = ((typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE) ?? DEFAULT_CLOUDFLARE_API_BASE)) {
+  constructor(apiKey: string, baseUrl: string = import.meta.env?.VITE_CLOUDFLARE_API_BASE ?? DEFAULT_CLOUDFLARE_API_BASE) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
   }
