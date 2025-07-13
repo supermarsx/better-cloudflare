@@ -1,9 +1,10 @@
-import { useState, useEffect, type ChangeEvent } from 'react';
+import { useState, useEffect } from 'react';
+import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { RecordType, DNSRecord } from '@/types/dns';
+import type { RecordType, DNSRecord } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
 export interface RecordRowProps {
