@@ -31,7 +31,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
-  const apiKeys = storageManager.getApiKeys();
+  const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
 
   useEffect(() => {
     cryptoManager.reloadConfig();
@@ -114,6 +114,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       }
 
       await storageManager.addApiKey(newKeyLabel, newApiKey, newPassword);
+      setApiKeys(storageManager.getApiKeys());
       setNewKeyLabel('');
       setNewApiKey('');
       setNewPassword('');
@@ -134,6 +135,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
   const handleDeleteKey = (keyId: string) => {
     storageManager.removeApiKey(keyId);
+    setApiKeys(storageManager.getApiKeys());
     if (selectedKeyId === keyId) {
       setSelectedKeyId('');
     }
