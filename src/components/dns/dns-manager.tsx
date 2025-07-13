@@ -7,15 +7,10 @@ import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
-import { LogOut } from 'lucide-react';
-import { AddRecordDialog } from './add-record-dialog';
-import { ImportExportDialog } from './import-export-dialog';
-import { RecordRow } from './record-row';
-
 import { Download, LogOut } from 'lucide-react';
-import { RecordRow } from './RecordRow';
 import { AddRecordDialog } from './AddRecordDialog';
 import { ImportRecordsDialog } from './ImportRecordsDialog';
+import { RecordRow } from './RecordRow';
 
 interface DNSManagerProps {
   apiKey: string;
