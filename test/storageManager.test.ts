@@ -17,8 +17,12 @@ class LocalStorageMock {
   }
 }
 
+interface GlobalWithLocalStorage {
+  localStorage: LocalStorageMock;
+}
+
 function resetStorage() {
-  (globalThis as any).localStorage = new LocalStorageMock();
+  (globalThis as unknown as GlobalWithLocalStorage).localStorage = new LocalStorageMock();
 }
 
 test('importData accepts valid data', async () => {

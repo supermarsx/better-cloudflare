@@ -3,7 +3,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { DNSRecord } from '@/types/dns';
 import { Upload, Download } from 'lucide-react';
 
 interface ImportExportDialogProps {

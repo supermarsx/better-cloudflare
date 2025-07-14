@@ -11,7 +11,7 @@ interface StorageData {
 
 export function isStorageData(value: unknown): value is StorageData {
   if (!value || typeof value !== 'object') return false;
-  const obj = value as any;
+  const obj = value as { apiKeys?: unknown; currentSession?: unknown };
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
     obj.currentSession !== undefined &&
@@ -19,19 +19,21 @@ export function isStorageData(value: unknown): value is StorageData {
   ) {
     return false;
   }
-  return obj.apiKeys.every(
-    (k: any) =>
-      k &&
-      typeof k.id === 'string' &&
-      typeof k.label === 'string' &&
-      typeof k.encryptedKey === 'string' &&
-      typeof k.salt === 'string' &&
-      typeof k.iv === 'string' &&
-      typeof k.iterations === 'number' &&
-      typeof k.keyLength === 'number' &&
-      typeof k.algorithm === 'string' &&
-      typeof k.createdAt === 'string'
-  );
+  return obj.apiKeys.every(k => {
+    if (!k || typeof k !== 'object') return false;
+    const key = k as Record<string, unknown>;
+    return (
+      typeof key.id === 'string' &&
+      typeof key.label === 'string' &&
+      typeof key.encryptedKey === 'string' &&
+      typeof key.salt === 'string' &&
+      typeof key.iv === 'string' &&
+      typeof key.iterations === 'number' &&
+      typeof key.keyLength === 'number' &&
+      typeof key.algorithm === 'string' &&
+      typeof key.createdAt === 'string'
+    );
+  });
 }
 
 export class StorageManager {
@@ -140,7 +142,7 @@ export class StorageManager {
     let imported: unknown;
     try {
       imported = JSON.parse(jsonData);
-    } catch (error) {
+    } catch {
       throw new Error('Failed to import data: Invalid JSON');
     }
 
