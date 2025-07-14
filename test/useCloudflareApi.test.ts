@@ -5,15 +5,31 @@ import { act, create } from 'react-test-renderer';
 
 import { useCloudflareAPI } from '../src/hooks/use-cloudflare-api.ts';
 
+interface FetchCallOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+interface FetchCall {
+  url: string;
+  options: FetchCallOptions;
+}
+
+interface MockResponse {
+  ok: boolean;
+  json: () => Promise<unknown>;
+}
+
 test('verifyToken calls Cloudflare endpoint', async () => {
-  const calls: any[] = [];
+  const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as any).fetch = async (url: string, options: any) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true }) } as any;
+    return { ok: true, json: async () => ({ success: true }) } as MockResponse;
   };
 
-  let api: any;
+  let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI();
     return null;
@@ -31,14 +47,14 @@ test('verifyToken calls Cloudflare endpoint', async () => {
 });
 
 test('createDNSRecord posts record for provided key', async () => {
-  const calls: any[] = [];
+  const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as any).fetch = async (url: string, options: any) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true, result: { id: 'rec' } }) } as any;
+    return { ok: true, json: async () => ({ success: true, result: { id: 'rec' } }) } as MockResponse;
   };
 
-  let api: any;
+  let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI('abc');
     return null;
