@@ -6,9 +6,17 @@ export class CloudflareAPI {
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(apiKey: string, baseUrl: string = import.meta.env?.VITE_CLOUDFLARE_API_BASE ?? DEFAULT_CLOUDFLARE_API_BASE) {
+  constructor(
+    apiKey: string,
+    baseUrl: string =
+      (typeof import.meta !== 'undefined'
+        ?
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE
+        : undefined) ?? DEFAULT_CLOUDFLARE_API_BASE,
+  ) {
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl;
+    this.baseUrl = String(baseUrl);
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
