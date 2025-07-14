@@ -9,7 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
 import { Download, LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
-import { ImportRecordsDialog } from './ImportRecordsDialog';
+import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './RecordRow';
 
 interface DNSManagerProps {
@@ -341,27 +341,14 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
               <div className="flex items-center justify-between">
                 <CardTitle>DNS Records</CardTitle>
                 <div className="flex gap-2">
-                  <ImportRecordsDialog
+                  <ImportExportDialog
                     open={showImport}
                     onOpenChange={setShowImport}
-                    data={importData}
-                    onDataChange={setImportData}
+                    importData={importData}
+                    onImportDataChange={setImportData}
                     onImport={handleImport}
                     onExport={handleExport}
-
                   />
-                  
-                  <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
-                    <SelectTrigger className="w-32">
-                      <Download className="h-4 w-4 mr-2" />
-                      <SelectValue placeholder="Export" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="json">JSON</SelectItem>
-                      <SelectItem value="csv">CSV</SelectItem>
-                      <SelectItem value="bind">BIND</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
               </div>
             </CardHeader>
