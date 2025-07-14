@@ -7,6 +7,8 @@ import { Switch } from '@/components/ui/switch';
 import type { RecordType, DNSRecord } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
+const RECORD_TYPES: RecordType[] = ['A','AAAA','CNAME','MX','TXT','SRV','NS','PTR','CAA'];
+
 export interface RecordRowProps {
   record: DNSRecord;
   isEditing: boolean;
@@ -39,7 +41,7 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {['A','AAAA','CNAME','MX','TXT','SRV','NS','PTR','CAA'].map((type: RecordType) => (
+                {RECORD_TYPES.map((type) => (
                   <SelectItem key={type} value={type}>
                     {type}
                   </SelectItem>
