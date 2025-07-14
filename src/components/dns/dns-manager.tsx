@@ -347,8 +347,6 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
                     data={importData}
                     onDataChange={setImportData}
                     onImport={handleImport}
-                    onExport={handleExport}
-
                   />
                   
                   <Select onValueChange={(format: 'json' | 'csv' | 'bind') => handleExport(format)}>
