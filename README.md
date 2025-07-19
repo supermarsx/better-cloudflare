@@ -32,17 +32,18 @@ locally with permissive CORS headers. When the dev server runs in
 development mode it will automatically target this proxy if no custom
 `VITE_CLOUDFLARE_API_BASE` is provided. Start the proxy in one terminal:
 
+
 ```bash
 npm run proxy
 ```
 
-Then run the app normally in another terminal:
+Then start the app pointing at the proxy:
 
 ```bash
-npm run dev
+VITE_CLOUDFLARE_API_BASE=http://localhost:8787 npm run dev
 ```
 
-You can still override the base URL by creating a `.env` file:
+Create a `.env` file with your desired base URL:
 
 ```bash
 # .env
