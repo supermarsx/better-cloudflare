@@ -32,8 +32,8 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
         body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
       });
 
-      res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
       sendCorsHeaders(res);
+      res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
       if (cfRes.body) {
         cfRes.body.pipe(res);
       } else {
