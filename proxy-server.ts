@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
@@ -43,7 +44,12 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
 
       res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
       if (cfRes.body) {
-        cfRes.body.pipe(res);
+        const body: unknown = cfRes.body;
+        if (typeof (body as { pipe?: unknown }).pipe === 'function') {
+          (body as unknown as { pipe: (d: ServerResponse) => void }).pipe(res);
+        } else {
+          Readable.fromWeb(body as ReadableStream<Uint8Array>).pipe(res);
+        }
       } else {
         res.end();
       }
