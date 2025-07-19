@@ -32,11 +32,8 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
         body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
       });
 
-      const headers = Object.fromEntries(cfRes.headers.entries());
-      headers['Access-Control-Allow-Origin'] = '*';
-      headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
-      headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,PATCH,OPTIONS';
-      res.writeHead(cfRes.status, headers);
+      res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
+      sendCorsHeaders(res);
       if (cfRes.body) {
         cfRes.body.pipe(res);
       } else {
