@@ -43,6 +43,12 @@ Then start the app pointing at the proxy:
 VITE_CLOUDFLARE_API_BASE=http://localhost:8787 npm run dev
 ```
 
+Or launch both in one step:
+
+```bash
+npm run dev:proxy
+```
+
 Create a `.env` file with your desired base URL:
 
 ```bash
