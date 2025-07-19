@@ -1,6 +1,7 @@
 import type { DNSRecord, Zone } from '@/types/dns';
 
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
+const DEFAULT_PROXY_BASE = 'http://localhost:8787';
 
 export class CloudflareAPI {
   private apiKey: string;
@@ -13,7 +14,13 @@ export class CloudflareAPI {
         ?
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE
-        : undefined) ?? DEFAULT_CLOUDFLARE_API_BASE,
+        : undefined) ??
+      (((typeof import.meta !== 'undefined'
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (import.meta as any).env?.DEV
+        : undefined) || process.env.NODE_ENV === 'development'
+      ? DEFAULT_PROXY_BASE
+      : DEFAULT_CLOUDFLARE_API_BASE)),
   ) {
     this.apiKey = apiKey;
     this.baseUrl = String(baseUrl);

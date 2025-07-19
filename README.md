@@ -27,8 +27,11 @@ By default the app talks to the real Cloudflare API at
 with a mock API during development.
 
 If the browser blocks requests to the Cloudflare API because of CORS
-restrictions, you can run the included `proxy-server.ts` to forward requests
-locally with permissive CORS headers:
+restrictions, run the included `proxy-server.ts` to forward requests
+locally with permissive CORS headers. When the dev server runs in
+development mode it will automatically target this proxy if no custom
+`VITE_CLOUDFLARE_API_BASE` is provided. Start the proxy in one terminal:
+
 
 ```bash
 npm run proxy
