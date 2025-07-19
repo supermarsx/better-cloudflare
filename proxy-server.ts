@@ -4,15 +4,18 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 const PORT = Number(process.env.PORT ?? 8787);
 
-function sendCorsHeaders(res: ServerResponse): void {
+function setCorsHeaders(res: ServerResponse): void {
+  if (res.headersSent) {
+    return;
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
 }
 
 const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  setCorsHeaders(res);
   if (req.method === 'OPTIONS') {
-    sendCorsHeaders(res);
     res.writeHead(204);
     res.end();
     return;
@@ -32,7 +35,6 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
         body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
       });
 
-      sendCorsHeaders(res);
       res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
       if (cfRes.body) {
         cfRes.body.pipe(res);
@@ -40,9 +42,12 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
         res.end();
       }
     } catch (err) {
-      sendCorsHeaders(res);
-      res.writeHead(500);
-      res.end(String(err));
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end(String(err));
+      } else {
+        res.end();
+      }
     }
   });
 });
