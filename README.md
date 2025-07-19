@@ -26,7 +26,23 @@ By default the app talks to the real Cloudflare API at
 `VITE_CLOUDFLARE_API_BASE` environment variable, which is useful when working
 with a mock API during development.
 
-Create a `.env` file with your desired base URL:
+If the browser blocks requests to the Cloudflare API because of CORS
+restrictions, run the included `proxy-server.ts` to forward requests
+locally with permissive CORS headers. When the dev server runs in
+development mode it will automatically target this proxy if no custom
+`VITE_CLOUDFLARE_API_BASE` is provided. Start the proxy in one terminal:
+
+```bash
+npm run proxy
+```
+
+Then run the app normally in another terminal:
+
+```bash
+npm run dev
+```
+
+You can still override the base URL by creating a `.env` file:
 
 ```bash
 # .env
