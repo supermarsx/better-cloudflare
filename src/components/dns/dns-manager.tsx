@@ -7,7 +7,7 @@ import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
-import { Download, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
 import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './RecordRow';
