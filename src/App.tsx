@@ -28,7 +28,7 @@ function App() {
   };
 
   return (
-    <div className="dark min-h-screen bg-background text-foreground">
+    <div className="min-h-screen bg-background text-foreground">
       {isAuthenticated ? (
         <DNSManager apiKey={apiKey} onLogout={handleLogout} />
       ) : (
