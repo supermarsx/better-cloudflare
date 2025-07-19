@@ -15,7 +15,9 @@ function setCorsHeaders(res: ServerResponse): void {
 
 const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
   setCorsHeaders(res);
+  console.log(`Incoming request: ${req.method} ${req.url}`);
   if (req.method === 'OPTIONS') {
+    console.log(`CORS preflight for ${req.url}`);
     res.writeHead(204);
     res.end();
     return;
@@ -26,12 +28,16 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
   req.on('end', async () => {
     const body = Buffer.concat(chunks);
     try {
+      const headers = { ...req.headers } as Record<string, string>;
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        delete headers['content-length'];
+      }
+      headers.host = 'api.cloudflare.com';
+
+      console.log(`Forwarding to ${API_BASE}${req.url}`);
       const cfRes = await fetch(`${API_BASE}${req.url}`, {
         method: req.method,
-        headers: {
-          ...req.headers,
-          host: 'api.cloudflare.com',
-        } as Record<string, string>,
+        headers,
         body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
       });
 
@@ -41,7 +47,9 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
       } else {
         res.end();
       }
+      console.log(`Cloudflare response: ${cfRes.status} ${cfRes.statusText}`);
     } catch (err) {
+      console.error('Proxy error:', err);
       if (!res.headersSent) {
         res.writeHead(500);
         res.end(String(err));
