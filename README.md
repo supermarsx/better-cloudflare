@@ -49,6 +49,16 @@ Or launch both in one step:
 npm run dev:proxy
 ```
 
+### Debugging
+
+Enable verbose logs from both the proxy server and the Cloudflare API wrapper by running the development server in debug mode:
+
+```bash
+npm run dev:debug
+```
+
+This sets `DEBUG_PROXY=1` for the proxy and `VITE_DEBUG_CF_API=1` for the React app. You can also export these variables manually and use `npm run dev:proxy`.
+
 Create a `.env` file with your desired base URL:
 
 ```bash
