@@ -6,14 +6,12 @@
   "scripts": {
     "dev": "vite",
     "dev:proxy": "npm-run-all -p proxy dev",
-    "dev:server": "npm-run-all -p server dev",
     "dev:debug": "cross-env DEBUG_PROXY=1 VITE_DEBUG_CF_API=1 npm-run-all -p proxy dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "tsx --test test/*.test.ts",
-    "proxy": "tsx proxy-server.ts",
-    "server": "tsx server.ts"
+    "proxy": "tsx proxy-server.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.14",
