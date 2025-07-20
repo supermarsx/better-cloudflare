@@ -1,3 +1,5 @@
+import 'cloudflare/shims/web';
+import Cloudflare from 'cloudflare';
 import type { DNSRecord, Zone } from '@/types/dns';
 
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
@@ -11,9 +13,7 @@ const DEBUG = Boolean(
 );
 
 export class CloudflareAPI {
-  private apiKey: string;
-  private baseUrl: string;
-  private email?: string;
+  private client: Cloudflare;
 
   constructor(
     apiKey: string,
@@ -32,106 +32,63 @@ export class CloudflareAPI {
       : DEFAULT_CLOUDFLARE_API_BASE)),
     email?: string,
   ) {
-    this.apiKey = apiKey;
-    this.baseUrl = String(baseUrl);
-    this.email = email;
+    this.client = new Cloudflare({
+      apiToken: email ? null : apiKey,
+      apiKey: email ? apiKey : null,
+      apiEmail: email ?? null,
+      baseURL: String(baseUrl),
+      fetch: fetch,
+    });
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const { signal, ...rest } = options;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    };
-    if (this.email) {
-      headers['X-Auth-Key'] = this.apiKey;
-      headers['X-Auth-Email'] = this.email;
-    } else {
-      headers['Authorization'] = `Bearer ${this.apiKey}`;
-    }
-
-    const sanitizedHeaders = { ...headers };
-    if (sanitizedHeaders.Authorization) sanitizedHeaders.Authorization = '[redacted]';
-    if (sanitizedHeaders['X-Auth-Key']) sanitizedHeaders['X-Auth-Key'] = '[redacted]';
-    if (DEBUG) {
-      console.debug('CF API request:', {
-        url: `${this.baseUrl}${endpoint}`,
-        method: rest.method ?? 'GET',
-        headers: sanitizedHeaders,
-        body: rest.body,
-      });
-    }
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
-      ...rest,
-      signal,
-      headers,
+  private debugRequest(path: string, options?: { method?: string; body?: unknown }) {
+    if (!DEBUG) return;
+    console.debug('CF API request:', {
+      url: `${this.client.baseURL}${path}`,
+      method: options?.method ?? 'GET',
+      body: options?.body,
     });
-
-    if (DEBUG) {
-      console.debug('CF API response status:', response.status, response.statusText);
-      const respHeaders = Object.fromEntries(response.headers.entries());
-      console.debug('CF API response headers:', respHeaders);
-      try {
-        const text = await response.clone().text();
-        console.debug('CF API response body:', text);
-      } catch (err) {
-        console.debug('CF API response body read error:', err);
-      }
-    }
-
-    if (!response.ok) {
-      let message = response.statusText;
-      try {
-        const error = await response.json();
-        if (Array.isArray(error.errors) && error.errors.length) {
-          message = error.errors[0].message || message;
-        }
-      } catch {
-        // ignore JSON parse errors and use status text
-      }
-      throw new Error(message);
-    }
-
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.errors?.[0]?.message || 'API request failed');
-    }
-
-    return data.result as T;
   }
 
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
-    return this.request<Zone[]>('/zones', { signal });
+    const zones: Zone[] = [];
+    for await (const zone of this.client.zones.list({}, { signal })) {
+      zones.push(zone as Zone);
+    }
+    return zones;
   }
 
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
-    return this.request<DNSRecord[]>(`/zones/${zoneId}/dns_records`, { signal });
+    const records: DNSRecord[] = [];
+    for await (const record of this.client.dns.records.list({ zone_id: zoneId }, { signal })) {
+      records.push(record as DNSRecord);
+    }
+    return records;
   }
 
   async createDNSRecord(zoneId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
-    return this.request<DNSRecord>(`/zones/${zoneId}/dns_records`, {
+    this.debugRequest(`/zones/${zoneId}/dns_records`, {
       method: 'POST',
-      body: JSON.stringify(record),
-      signal,
+      body: record,
     });
+    return (await this.client.dns.records.create({ zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
-    return this.request<DNSRecord>(`/zones/${zoneId}/dns_records/${recordId}`, {
+    this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: 'PUT',
-      body: JSON.stringify(record),
-      signal,
+      body: record,
     });
+    return (await this.client.dns.records.update(recordId, { zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
-    await this.request<void>(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: 'DELETE',
-      signal,
-    });
+    this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, { method: 'DELETE' });
+    await this.client.dns.records.delete(recordId, { zone_id: zoneId }, { signal });
   }
 
   async verifyToken(signal?: AbortSignal): Promise<void> {
-    await this.request<void>('/user/tokens/verify', { signal });
+    this.debugRequest('/user/tokens/verify');
+    await this.client.user.tokens.verify({ signal });
   }
 }

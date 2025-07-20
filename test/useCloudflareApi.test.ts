@@ -16,17 +16,17 @@ interface FetchCall {
   options: FetchCallOptions;
 }
 
-interface MockResponse {
-  ok: boolean;
-  json: () => Promise<unknown>;
-}
+
 
 test('verifyToken calls Cloudflare endpoint', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
+    url: string,
+    options: FetchCallOptions,
+  ) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true }) } as MockResponse;
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
   let api: ReturnType<typeof useCloudflareAPI>;
@@ -41,7 +41,9 @@ test('verifyToken calls Cloudflare endpoint', async () => {
   const result = await api.verifyToken('token123');
   assert.equal(result, undefined);
   assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/user/tokens/verify');
-  assert.equal(calls[0].options.headers.Authorization, 'Bearer token123');
+  const headers = calls[0].options.headers as any;
+  const auth = headers.get ? headers.get('authorization') : headers.authorization;
+  assert.equal(auth, 'Bearer token123');
 
   globalThis.fetch = originalFetch;
 });
@@ -49,9 +51,12 @@ test('verifyToken calls Cloudflare endpoint', async () => {
 test('verifyToken uses email headers when provided', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
+    url: string,
+    options: FetchCallOptions,
+  ) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true }) } as MockResponse;
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
   let api: ReturnType<typeof useCloudflareAPI>;
@@ -65,8 +70,11 @@ test('verifyToken uses email headers when provided', async () => {
 
   const result = await api.verifyToken('key', 'user@example.com');
   assert.equal(result, undefined);
-  assert.equal(calls[0].options.headers['X-Auth-Key'], 'key');
-  assert.equal(calls[0].options.headers['X-Auth-Email'], 'user@example.com');
+  const headers = calls[0].options.headers as any;
+  const key = headers.get ? headers.get('x-auth-key') : headers['x-auth-key'];
+  const emailHeader = headers.get ? headers.get('x-auth-email') : headers['x-auth-email'];
+  assert.equal(key, 'key');
+  assert.equal(emailHeader, 'user@example.com');
 
   globalThis.fetch = originalFetch;
 });
@@ -74,9 +82,15 @@ test('verifyToken uses email headers when provided', async () => {
 test('createDNSRecord posts record for provided key', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
+    url: string,
+    options: FetchCallOptions,
+  ) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true, result: { id: 'rec' } }) } as MockResponse;
+    return new Response(JSON.stringify({ success: true, result: { id: 'rec' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   };
 
   let api: ReturnType<typeof useCloudflareAPI>;
@@ -92,7 +106,9 @@ test('createDNSRecord posts record for provided key', async () => {
   assert.equal(record.id, 'rec');
   assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/zones/zone/dns_records');
   assert.equal(calls[0].options.method, 'POST');
-  assert.equal(calls[0].options.headers.Authorization, 'Bearer abc');
+  const headers2 = calls[0].options.headers as any;
+  const auth2 = headers2.get ? headers2.get('authorization') : headers2.authorization;
+  assert.equal(auth2, 'Bearer abc');
 
   globalThis.fetch = originalFetch;
 });
@@ -100,9 +116,15 @@ test('createDNSRecord posts record for provided key', async () => {
 test('createDNSRecord posts record using email auth', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<MockResponse> }).fetch = async (url: string, options: FetchCallOptions) => {
+  (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
+    url: string,
+    options: FetchCallOptions,
+  ) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true, result: { id: 'r2' } }) } as MockResponse;
+    return new Response(JSON.stringify({ success: true, result: { id: 'r2' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   };
 
   let api: ReturnType<typeof useCloudflareAPI>;
@@ -116,8 +138,11 @@ test('createDNSRecord posts record using email auth', async () => {
 
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'r2');
-  assert.equal(calls[0].options.headers['X-Auth-Key'], 'abc');
-  assert.equal(calls[0].options.headers['X-Auth-Email'], 'me@example.com');
+  const headers3 = calls[0].options.headers as any;
+  const keyHeader = headers3.get ? headers3.get('x-auth-key') : headers3['x-auth-key'];
+  const emailHeader2 = headers3.get ? headers3.get('x-auth-email') : headers3['x-auth-email'];
+  assert.equal(keyHeader, 'abc');
+  assert.equal(emailHeader2, 'me@example.com');
 
   globalThis.fetch = originalFetch;
 });
