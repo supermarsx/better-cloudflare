@@ -64,12 +64,12 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       }
 
       // Verify the API key works
-      const isValid = await verifyToken(decryptedKey, email);
-      
-      if (!isValid) {
+      try {
+        await verifyToken(decryptedKey, email);
+      } catch (err) {
         toast({
           title: "Error",
-          description: "Invalid API key",
+          description: (err as Error).message,
           variant: "destructive"
         });
         return;
@@ -105,12 +105,12 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
     try {
       // Test the API key first
-      const isValid = await verifyToken(newApiKey, newEmail || undefined);
-      
-      if (!isValid) {
+      try {
+        await verifyToken(newApiKey, newEmail || undefined);
+      } catch (err) {
         toast({
           title: "Error",
-          description: "Invalid API key",
+          description: (err as Error).message,
           variant: "destructive"
         });
         return;

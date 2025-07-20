@@ -39,7 +39,7 @@ test('verifyToken calls Cloudflare endpoint', async () => {
   });
 
   const result = await api.verifyToken('token123');
-  assert.equal(result, true);
+  assert.equal(result, undefined);
   assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/user/tokens/verify');
   assert.equal(calls[0].options.headers.Authorization, 'Bearer token123');
 
@@ -64,7 +64,7 @@ test('verifyToken uses email headers when provided', async () => {
   });
 
   const result = await api.verifyToken('key', 'user@example.com');
-  assert.equal(result, true);
+  assert.equal(result, undefined);
   assert.equal(calls[0].options.headers['X-Auth-Key'], 'key');
   assert.equal(calls[0].options.headers['X-Auth-Email'], 'user@example.com');
 

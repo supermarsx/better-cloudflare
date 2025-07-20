@@ -12,7 +12,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
       signal?: AbortSignal,
     ) => {
       const client = new CloudflareAPI(key, undefined, keyEmail);
-      return client.verifyToken(signal);
+      await client.verifyToken(signal);
     },
     [apiKey, email],
   );

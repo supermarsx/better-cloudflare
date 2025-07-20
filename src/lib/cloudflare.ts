@@ -131,12 +131,7 @@ export class CloudflareAPI {
     });
   }
 
-  async verifyToken(signal?: AbortSignal): Promise<boolean> {
-    try {
-      await this.request<void>('/user/tokens/verify', { signal });
-      return true;
-    } catch {
-      return false;
-    }
+  async verifyToken(signal?: AbortSignal): Promise<void> {
+    await this.request<void>('/user/tokens/verify', { signal });
   }
 }
