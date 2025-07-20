@@ -3,7 +3,7 @@ import type { DNSRecord, Zone } from '@/types/dns';
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 const DEFAULT_PROXY_BASE = 'http://localhost:8787';
 const DEBUG = Boolean(
-  process.env.DEBUG_CF_API ||
+  (typeof process !== 'undefined' ? process.env.DEBUG_CF_API : undefined) ||
     (typeof import.meta !== 'undefined'
       ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (import.meta as any).env?.VITE_DEBUG_CF_API
@@ -26,7 +26,8 @@ export class CloudflareAPI {
       (((typeof import.meta !== 'undefined'
         ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (import.meta as any).env?.DEV
-        : undefined) || process.env.NODE_ENV === 'development'
+        : undefined) ||
+        (typeof process !== 'undefined' && process.env.NODE_ENV === 'development')
       ? DEFAULT_PROXY_BASE
       : DEFAULT_CLOUDFLARE_API_BASE)),
     email?: string,
