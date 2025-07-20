@@ -71,7 +71,19 @@ export class CloudflareAPI {
       method: 'POST',
       body: record,
     });
-    return (await this.client.dns.records.create({ zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
+    const params: Record<string, unknown> = {
+      zone_id: zoneId,
+      type: record.type,
+      name: record.name,
+      content: record.content,
+      ttl: record.ttl,
+      priority: record.priority,
+      proxied: record.proxied,
+    };
+    for (const key of Object.keys(params)) {
+      if (params[key] === undefined) delete params[key];
+    }
+    return (await this.client.dns.records.create(params as any, { signal })) as DNSRecord;
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
@@ -79,7 +91,19 @@ export class CloudflareAPI {
       method: 'PUT',
       body: record,
     });
-    return (await this.client.dns.records.update(recordId, { zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
+    const params: Record<string, unknown> = {
+      zone_id: zoneId,
+      type: record.type,
+      name: record.name,
+      content: record.content,
+      ttl: record.ttl,
+      priority: record.priority,
+      proxied: record.proxied,
+    };
+    for (const key of Object.keys(params)) {
+      if (params[key] === undefined) delete params[key];
+    }
+    return (await this.client.dns.records.update(recordId, params as any, { signal })) as DNSRecord;
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
