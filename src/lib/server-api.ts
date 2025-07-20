@@ -14,11 +14,13 @@ function authHeaders(key: string, email?: string) {
       'x-auth-key': key,
       'x-auth-email': email,
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
     };
   }
   return {
     authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
+    Authorization: `Bearer ${key}`,
   };
 }
 
