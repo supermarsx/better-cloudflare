@@ -43,7 +43,9 @@ test('verifyToken calls server endpoint', async () => {
   assert.equal(calls[0].url, 'http://localhost:8787/api/verify-token');
   const headers = calls[0].options.headers as any;
   const auth = headers.get ? headers.get('authorization') : headers.authorization;
+  const authHeader = headers.get ? headers.get('Authorization') : headers.Authorization;
   assert.equal(auth, 'Bearer token123');
+  assert.equal(authHeader, 'Bearer token123');
 
   globalThis.fetch = originalFetch;
 });
@@ -73,8 +75,10 @@ test('verifyToken uses email headers when provided', async () => {
   const headers = calls[0].options.headers as any;
   const key = headers.get ? headers.get('x-auth-key') : headers['x-auth-key'];
   const emailHeader = headers.get ? headers.get('x-auth-email') : headers['x-auth-email'];
+  const bearer = headers.get ? headers.get('Authorization') : headers.Authorization;
   assert.equal(key, 'key');
   assert.equal(emailHeader, 'user@example.com');
+  assert.equal(bearer, 'Bearer key');
 
   globalThis.fetch = originalFetch;
 });
@@ -108,7 +112,9 @@ test('createDNSRecord posts record for provided key', async () => {
   assert.equal(calls[0].options.method, 'POST');
   const headers2 = calls[0].options.headers as any;
   const auth2 = headers2.get ? headers2.get('authorization') : headers2.authorization;
+  const auth2Header = headers2.get ? headers2.get('Authorization') : headers2.Authorization;
   assert.equal(auth2, 'Bearer abc');
+  assert.equal(auth2Header, 'Bearer abc');
 
   globalThis.fetch = originalFetch;
 });
@@ -142,8 +148,10 @@ test('createDNSRecord posts record using email auth', async () => {
   const headers3 = calls[0].options.headers as any;
   const keyHeader = headers3.get ? headers3.get('x-auth-key') : headers3['x-auth-key'];
   const emailHeader2 = headers3.get ? headers3.get('x-auth-email') : headers3['x-auth-email'];
+  const bearer2 = headers3.get ? headers3.get('Authorization') : headers3.Authorization;
   assert.equal(keyHeader, 'abc');
   assert.equal(emailHeader2, 'me@example.com');
+  assert.equal(bearer2, 'Bearer abc');
 
   globalThis.fetch = originalFetch;
 });
