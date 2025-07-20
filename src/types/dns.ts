@@ -31,6 +31,8 @@ export interface ApiKey {
   keyLength: number;
   algorithm: string;
   createdAt: string;
+  /** Optional email for global API key authentication */
+  email?: string;
 }
 
 export interface EncryptionConfig {

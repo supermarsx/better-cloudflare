@@ -7,6 +7,7 @@ import { storageManager } from '@/lib/storage';
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [apiKey, setApiKey] = useState<string>('');
+  const [email, setEmail] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     // Check if there's an active session
@@ -17,8 +18,9 @@ function App() {
     }
   }, []);
 
-  const handleLogin = (decryptedApiKey: string) => {
+  const handleLogin = (decryptedApiKey: string, keyEmail?: string) => {
     setApiKey(decryptedApiKey);
+    setEmail(keyEmail);
     setIsAuthenticated(true);
   };
 
@@ -30,7 +32,7 @@ function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {isAuthenticated ? (
-        <DNSManager apiKey={apiKey} onLogout={handleLogout} />
+        <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
       ) : (
         <LoginForm onLogin={handleLogin} />
       )}

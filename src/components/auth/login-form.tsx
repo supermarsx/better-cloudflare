@@ -25,6 +25,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [newKeyLabel, setNewKeyLabel] = useState('');
   const [newApiKey, setNewApiKey] = useState('');
+  const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [encryptionSettings, setEncryptionSettings] = useState(cryptoManager.getConfig());
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
@@ -50,7 +51,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
     setIsLoading(true);
     try {
-      const decryptedKey = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey = decrypted?.key;
+      const email = decrypted?.email;
       if (!decryptedKey) {
         toast({
           title: "Error",
@@ -61,7 +64,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       }
 
       // Verify the API key works
-      const isValid = await verifyToken(decryptedKey);
+      const isValid = await verifyToken(decryptedKey, email);
       
       if (!isValid) {
         toast({
@@ -102,7 +105,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
     try {
       // Test the API key first
-      const isValid = await verifyToken(newApiKey);
+      const isValid = await verifyToken(newApiKey, newEmail || undefined);
       
       if (!isValid) {
         toast({
@@ -113,10 +116,11 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         return;
       }
 
-      await storageManager.addApiKey(newKeyLabel, newApiKey, newPassword);
+      await storageManager.addApiKey(newKeyLabel, newApiKey, newPassword, newEmail || undefined);
       setApiKeys(storageManager.getApiKeys());
       setNewKeyLabel('');
       setNewApiKey('');
+      setNewEmail('');
       setNewPassword('');
       setShowAddKey(false);
       
@@ -236,17 +240,19 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </Button>
 
           <div className="flex gap-2">
-            <AddKeyDialog
-              open={showAddKey}
-              onOpenChange={setShowAddKey}
-              label={newKeyLabel}
-              onLabelChange={setNewKeyLabel}
-              apiKey={newApiKey}
-              onApiKeyChange={setNewApiKey}
-              password={newPassword}
-              onPasswordChange={setNewPassword}
-              onAdd={handleAddKey}
-            />
+          <AddKeyDialog
+            open={showAddKey}
+            onOpenChange={setShowAddKey}
+            label={newKeyLabel}
+            onLabelChange={setNewKeyLabel}
+            apiKey={newApiKey}
+            onApiKeyChange={setNewApiKey}
+            email={newEmail}
+            onEmailChange={setNewEmail}
+            password={newPassword}
+            onPasswordChange={setNewPassword}
+            onAdd={handleAddKey}
+          />
 
             <EncryptionSettingsDialog
               open={showSettings}

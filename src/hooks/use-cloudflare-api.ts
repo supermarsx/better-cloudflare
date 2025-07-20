@@ -2,15 +2,19 @@ import { useCallback, useMemo } from 'react';
 import { CloudflareAPI } from '../lib/cloudflare';
 import type { DNSRecord, Zone } from '../types/dns';
 
-export function useCloudflareAPI(apiKey?: string) {
-  const api = useMemo(() => (apiKey ? new CloudflareAPI(apiKey) : undefined), [apiKey]);
+export function useCloudflareAPI(apiKey?: string, email?: string) {
+  const api = useMemo(() => (apiKey ? new CloudflareAPI(apiKey, undefined, email) : undefined), [apiKey, email]);
 
   const verifyToken = useCallback(
-    async (key: string = apiKey ?? '', signal?: AbortSignal) => {
-      const client = new CloudflareAPI(key);
+    async (
+      key: string = apiKey ?? '',
+      keyEmail: string | undefined = email,
+      signal?: AbortSignal,
+    ) => {
+      const client = new CloudflareAPI(key, undefined, keyEmail);
       return client.verifyToken(signal);
     },
-    [apiKey],
+    [apiKey, email],
   );
 
   const getZones = useCallback(

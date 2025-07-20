@@ -6,6 +6,7 @@ const DEFAULT_PROXY_BASE = 'http://localhost:8787';
 export class CloudflareAPI {
   private apiKey: string;
   private baseUrl: string;
+  private email?: string;
 
   constructor(
     apiKey: string,
@@ -21,21 +22,29 @@ export class CloudflareAPI {
         : undefined) || process.env.NODE_ENV === 'development'
       ? DEFAULT_PROXY_BASE
       : DEFAULT_CLOUDFLARE_API_BASE)),
+    email?: string,
   ) {
     this.apiKey = apiKey;
     this.baseUrl = String(baseUrl);
+    this.email = email;
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const { signal, ...rest } = options;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+    if (this.email) {
+      headers['X-Auth-Key'] = this.apiKey;
+      headers['X-Auth-Email'] = this.email;
+    } else {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
       ...rest,
       signal,
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
+      headers,
     });
 
     if (!response.ok) {
