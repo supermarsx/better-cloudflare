@@ -71,7 +71,10 @@ export class CloudflareAPI {
       method: 'POST',
       body: record,
     });
-    return (await this.client.dns.records.create({ zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
+    return (await this.client.dns.records.create(
+      { zone_id: zoneId, ...(record as Record<string, unknown>) },
+      { signal },
+    )) as DNSRecord;
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
@@ -79,7 +82,11 @@ export class CloudflareAPI {
       method: 'PUT',
       body: record,
     });
-    return (await this.client.dns.records.update(recordId, { zone_id: zoneId, ...(record as any) }, { signal })) as DNSRecord;
+    return (await this.client.dns.records.update(
+      recordId,
+      { zone_id: zoneId, ...(record as Record<string, unknown>) },
+      { signal },
+    )) as DNSRecord;
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
