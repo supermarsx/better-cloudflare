@@ -23,8 +23,8 @@ Then open <http://localhost:5173> in your browser.
 
 By default the app talks to the real Cloudflare API at
 `https://api.cloudflare.com/client/v4`. When developing locally you can run the
-included server which proxies requests. Configure the frontend with the
-`VITE_SERVER_API_BASE` environment variable if the server runs on a custom URL.
+included API server. Configure the frontend with the `VITE_SERVER_API_BASE`
+environment variable if the server runs on a custom URL.
 
 All API calls are handled server-side by `server.ts`. Start the API server
 first:
@@ -42,15 +42,19 @@ VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
 
 Or launch both in one step by running the server and Vite in parallel.
 
+```bash
+npm run dev:server
+```
+
 ### Debugging
 
-Enable verbose logs from both the proxy server and the Cloudflare API wrapper by running the development server in debug mode:
+Enable verbose logs from the Cloudflare API wrapper by running the development server in debug mode:
 
 ```bash
 npm run dev:debug
 ```
 
-This sets `DEBUG_PROXY=1` for the proxy and `VITE_DEBUG_CF_API=1` for the React app. You can also export these variables manually and use `npm run dev:proxy`.
+This sets `VITE_DEBUG_CF_API=1` for the React app. You can also export this variable manually and use `npm run dev:server`.
 
 Create a `.env` file with your desired base URL:
 
