@@ -2,6 +2,13 @@ import type { DNSRecord, Zone } from '@/types/dns';
 
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 const DEFAULT_PROXY_BASE = 'http://localhost:8787';
+const DEBUG = Boolean(
+  process.env.DEBUG_CF_API ||
+    (typeof import.meta !== 'undefined'
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (import.meta as any).env?.VITE_DEBUG_CF_API
+      : undefined)
+);
 
 export class CloudflareAPI {
   private apiKey: string;
@@ -41,11 +48,35 @@ export class CloudflareAPI {
     } else {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
+
+    const sanitizedHeaders = { ...headers };
+    if (sanitizedHeaders.Authorization) sanitizedHeaders.Authorization = '[redacted]';
+    if (sanitizedHeaders['X-Auth-Key']) sanitizedHeaders['X-Auth-Key'] = '[redacted]';
+    if (DEBUG) {
+      console.debug('CF API request:', {
+        url: `${this.baseUrl}${endpoint}`,
+        method: rest.method ?? 'GET',
+        headers: sanitizedHeaders,
+        body: rest.body,
+      });
+    }
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
       ...rest,
       signal,
       headers,
     });
+
+    if (DEBUG) {
+      console.debug('CF API response status:', response.status, response.statusText);
+      const respHeaders = Object.fromEntries(response.headers.entries());
+      console.debug('CF API response headers:', respHeaders);
+      try {
+        const text = await response.clone().text();
+        console.debug('CF API response body:', text);
+      } catch (err) {
+        console.debug('CF API response body read error:', err);
+      }
+    }
 
     if (!response.ok) {
       let message = response.statusText;

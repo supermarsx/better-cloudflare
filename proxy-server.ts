@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 const PORT = Number(process.env.PORT ?? 8787);
+const DEBUG = Boolean(process.env.DEBUG_PROXY);
 
 function setCorsHeaders(res: ServerResponse): void {
   if (res.headersSent) {
@@ -38,12 +39,36 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
       }
       headers.host = 'api.cloudflare.com';
 
+      const sanitizedHeaders = { ...headers };
+      if (sanitizedHeaders.authorization) sanitizedHeaders.authorization = '[redacted]';
+      if (sanitizedHeaders['x-auth-key']) sanitizedHeaders['x-auth-key'] = '[redacted]';
+      if (DEBUG) {
+        console.debug('Proxy request headers:', sanitizedHeaders);
+        if (body.length) {
+          console.debug('Proxy request body:', body.toString());
+        }
+      }
+
       console.log(`Forwarding to ${API_BASE}${req.url}`);
       const cfRes = await fetch(`${API_BASE}${req.url}`, {
         method: req.method,
         headers,
         body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
       });
+
+      if (DEBUG) {
+        console.debug('Cloudflare response status:', cfRes.status, cfRes.statusText);
+        console.debug(
+          'Cloudflare response headers:',
+          Object.fromEntries(cfRes.headers.entries())
+        );
+        try {
+          const text = await cfRes.clone().text();
+          console.debug('Cloudflare response body:', text);
+        } catch (err) {
+          console.debug('Cloudflare response body read error:', err);
+        }
+      }
 
       res.writeHead(cfRes.status, Object.fromEntries(cfRes.headers.entries()));
       if (cfRes.body) {
