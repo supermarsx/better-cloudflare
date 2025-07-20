@@ -1,9 +1,12 @@
 import { useCallback, useMemo } from 'react';
-import { ServerAPI } from '../lib/server-api';
+import { ServerClient } from '../lib/server-client';
 import type { DNSRecord, Zone } from '../types/dns';
 
 export function useCloudflareAPI(apiKey?: string, email?: string) {
-  const api = useMemo(() => (apiKey ? new ServerAPI(apiKey, undefined, email) : undefined), [apiKey, email]);
+  const api = useMemo(
+    () => (apiKey ? new ServerClient(apiKey, undefined, email) : undefined),
+    [apiKey, email],
+  );
 
   const verifyToken = useCallback(
     async (
@@ -11,7 +14,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
       keyEmail: string | undefined = email,
       signal?: AbortSignal,
     ) => {
-      const client = new ServerAPI(key, undefined, keyEmail);
+      const client = new ServerClient(key, undefined, keyEmail);
       await client.verifyToken(signal);
     },
     [apiKey, email],
