@@ -18,7 +18,7 @@ interface FetchCall {
 
 
 
-test('verifyToken calls Cloudflare endpoint', async () => {
+test('verifyToken calls server endpoint', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
   (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
@@ -40,7 +40,7 @@ test('verifyToken calls Cloudflare endpoint', async () => {
 
   const result = await api.verifyToken('token123');
   assert.equal(result, undefined);
-  assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/user/tokens/verify');
+  assert.equal(calls[0].url, 'http://localhost:8787/api/verify-token');
   const headers = calls[0].options.headers as any;
   const auth = headers.get ? headers.get('authorization') : headers.authorization;
   assert.equal(auth, 'Bearer token123');
@@ -87,7 +87,7 @@ test('createDNSRecord posts record for provided key', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ success: true, result: { id: 'rec' } }), {
+    return new Response(JSON.stringify({ id: 'rec' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -104,7 +104,7 @@ test('createDNSRecord posts record for provided key', async () => {
 
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'rec');
-  assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/zones/zone/dns_records');
+  assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
   assert.equal(calls[0].options.method, 'POST');
   const headers2 = calls[0].options.headers as any;
   const auth2 = headers2.get ? headers2.get('authorization') : headers2.authorization;
@@ -121,7 +121,7 @@ test('createDNSRecord posts record using email auth', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ success: true, result: { id: 'r2' } }), {
+    return new Response(JSON.stringify({ id: 'r2' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -138,6 +138,7 @@ test('createDNSRecord posts record using email auth', async () => {
 
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'r2');
+  assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
   const headers3 = calls[0].options.headers as any;
   const keyHeader = headers3.get ? headers3.get('x-auth-key') : headers3['x-auth-key'];
   const emailHeader2 = headers3.get ? headers3.get('x-auth-email') : headers3['x-auth-email'];
