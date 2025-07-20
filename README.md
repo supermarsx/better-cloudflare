@@ -24,7 +24,8 @@ Then open <http://localhost:5173> in your browser.
 By default the app talks to the real Cloudflare API at
 `https://api.cloudflare.com/client/v4`. When developing locally you can run the
 included API server. Configure the frontend with the `VITE_SERVER_API_BASE`
-environment variable if the server runs on a custom URL.
+environment variable if the server runs on a custom URL. The server itself can
+be pointed at a different Cloudflare base by setting `CLOUDFLARE_API_BASE`.
 
 All API calls are handled server-side by `server.ts`. Start the API server
 first:
@@ -55,12 +56,14 @@ npm run dev:debug
 ```
 
 This sets `VITE_DEBUG_CF_API=1` for the React app. You can also export this variable manually and use `npm run dev:server`.
+Setting `DEBUG_SERVER=1` enables detailed request logs from the Express server.
 
 Create a `.env` file with your desired base URL:
 
 ```bash
 # .env
 VITE_SERVER_API_BASE=http://localhost:8787/api
+CLOUDFLARE_API_BASE=https://api.cloudflare.com/client/v4
 ```
 
 Run the app with the custom base applied:
