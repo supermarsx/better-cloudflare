@@ -17,11 +17,13 @@ export class CloudflareAPI {
   constructor(
     apiKey: string,
     baseUrl: string =
+      (typeof process !== 'undefined'
+        ? process.env.CLOUDFLARE_API_BASE
+        : undefined) ??
       (typeof import.meta !== 'undefined'
-        ?
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE
-          : undefined) ??
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE
+        : undefined) ??
       DEFAULT_CLOUDFLARE_API_BASE,
     email?: string,
   ) {
@@ -43,11 +45,17 @@ export class CloudflareAPI {
     });
   }
 
+  private debugResponse(data: unknown) {
+    if (!DEBUG) return;
+    console.debug('CF API response:', data);
+  }
+
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     const zones: Zone[] = [];
     for await (const zone of this.client.zones.list({}, { signal })) {
       zones.push(zone as Zone);
     }
+    this.debugResponse(zones);
     return zones;
   }
 
@@ -56,6 +64,7 @@ export class CloudflareAPI {
     for await (const record of this.client.dns.records.list({ zone_id: zoneId }, { signal })) {
       records.push(record as DNSRecord);
     }
+    this.debugResponse(records);
     return records;
   }
 
@@ -76,7 +85,9 @@ export class CloudflareAPI {
     for (const key of Object.keys(params)) {
       if (params[key] === undefined) delete params[key];
     }
-    return (await this.client.dns.records.create(params as any, { signal })) as DNSRecord;
+    const result = (await this.client.dns.records.create(params as any, { signal })) as DNSRecord;
+    this.debugResponse(result);
+    return result;
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
@@ -96,16 +107,20 @@ export class CloudflareAPI {
     for (const key of Object.keys(params)) {
       if (params[key] === undefined) delete params[key];
     }
-    return (await this.client.dns.records.update(recordId, params as any, { signal })) as DNSRecord;
+    const result = (await this.client.dns.records.update(recordId, params as any, { signal })) as DNSRecord;
+    this.debugResponse(result);
+    return result;
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
     this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, { method: 'DELETE' });
     await this.client.dns.records.delete(recordId, { zone_id: zoneId }, { signal });
+    this.debugResponse({ deleted: recordId });
   }
 
   async verifyToken(signal?: AbortSignal): Promise<void> {
     this.debugRequest('/user/tokens/verify');
     await this.client.user.tokens.verify({ signal });
+    this.debugResponse({ verified: true });
   }
 }
