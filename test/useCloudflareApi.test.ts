@@ -18,7 +18,7 @@ interface FetchCall {
 
 
 
-test('verifyToken calls server endpoint', async () => {
+test('verifyToken calls Cloudflare endpoint', async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
   (globalThis as unknown as { fetch: (url: string, options: FetchCallOptions) => Promise<Response> }).fetch = async (
@@ -26,8 +26,10 @@ test('verifyToken calls server endpoint', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
+
+  process.env.CLOUDFLARE_API_BASE = 'http://example.com';
 
   let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
@@ -40,12 +42,12 @@ test('verifyToken calls server endpoint', async () => {
 
   const result = await api.verifyToken('token123');
   assert.equal(result, undefined);
-  assert.equal(calls[0].url, 'http://localhost:8787/api/verify-token');
+  assert.equal(calls[0].url, 'http://example.com/user/tokens/verify');
   const headers = calls[0].options.headers as any;
   const auth = headers.get ? headers.get('authorization') : headers.authorization;
-  const authHeader = headers.get ? headers.get('Authorization') : headers.Authorization;
   assert.equal(auth, 'Bearer token123');
-  assert.equal(authHeader, 'Bearer token123');
+
+  delete process.env.CLOUDFLARE_API_BASE;
 
   globalThis.fetch = originalFetch;
 });
@@ -58,8 +60,10 @@ test('verifyToken uses email headers when provided', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
+
+  process.env.CLOUDFLARE_API_BASE = 'http://example.com';
 
   let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
@@ -75,11 +79,12 @@ test('verifyToken uses email headers when provided', async () => {
   const headers = calls[0].options.headers as any;
   const key = headers.get ? headers.get('x-auth-key') : headers['x-auth-key'];
   const emailHeader = headers.get ? headers.get('x-auth-email') : headers['x-auth-email'];
-  const bearer = headers.get ? headers.get('Authorization') : headers.Authorization;
+  const bearer = headers.get ? headers.get('authorization') : headers.authorization;
   assert.equal(key, 'key');
   assert.equal(emailHeader, 'user@example.com');
-  assert.equal(bearer, 'Bearer key');
+  assert.equal(bearer, undefined);
 
+  delete process.env.CLOUDFLARE_API_BASE;
   globalThis.fetch = originalFetch;
 });
 
@@ -91,11 +96,13 @@ test('createDNSRecord posts record for provided key', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ id: 'rec' }), {
+    return new Response(JSON.stringify({ result: { id: 'rec' } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   };
+
+  process.env.CLOUDFLARE_API_BASE = 'http://example.com';
 
   let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
@@ -108,14 +115,13 @@ test('createDNSRecord posts record for provided key', async () => {
 
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'rec');
-  assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
+  assert.equal(calls[0].url, 'http://example.com/zones/zone/dns_records');
   assert.equal(calls[0].options.method, 'POST');
   const headers2 = calls[0].options.headers as any;
   const auth2 = headers2.get ? headers2.get('authorization') : headers2.authorization;
-  const auth2Header = headers2.get ? headers2.get('Authorization') : headers2.Authorization;
   assert.equal(auth2, 'Bearer abc');
-  assert.equal(auth2Header, 'Bearer abc');
 
+  delete process.env.CLOUDFLARE_API_BASE;
   globalThis.fetch = originalFetch;
 });
 
@@ -127,11 +133,13 @@ test('createDNSRecord posts record using email auth', async () => {
     options: FetchCallOptions,
   ) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ id: 'r2' }), {
+    return new Response(JSON.stringify({ result: { id: 'r2' } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   };
+
+  process.env.CLOUDFLARE_API_BASE = 'http://example.com';
 
   let api: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
@@ -144,14 +152,15 @@ test('createDNSRecord posts record using email auth', async () => {
 
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'r2');
-  assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
+  assert.equal(calls[0].url, 'http://example.com/zones/zone/dns_records');
   const headers3 = calls[0].options.headers as any;
   const keyHeader = headers3.get ? headers3.get('x-auth-key') : headers3['x-auth-key'];
   const emailHeader2 = headers3.get ? headers3.get('x-auth-email') : headers3['x-auth-email'];
-  const bearer2 = headers3.get ? headers3.get('Authorization') : headers3.Authorization;
+  const bearer2 = headers3.get ? headers3.get('authorization') : headers3.authorization;
   assert.equal(keyHeader, 'abc');
   assert.equal(emailHeader2, 'me@example.com');
-  assert.equal(bearer2, 'Bearer abc');
+  assert.equal(bearer2, undefined);
 
+  delete process.env.CLOUDFLARE_API_BASE;
   globalThis.fetch = originalFetch;
 });

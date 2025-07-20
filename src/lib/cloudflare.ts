@@ -34,6 +34,12 @@ export class CloudflareAPI {
       baseURL: String(baseUrl),
       fetch: fetch,
     });
+    if (DEBUG) {
+      console.debug('Initialized CloudflareAPI', {
+        baseUrl: this.client.baseURL,
+        email: email ? 'provided' : 'none',
+      });
+    }
   }
 
   private debugRequest(path: string, options?: { method?: string; body?: unknown }) {
@@ -51,6 +57,8 @@ export class CloudflareAPI {
   }
 
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
+    if (DEBUG) console.debug('getZones');
+    this.debugRequest('/zones');
     const zones: Zone[] = [];
     for await (const zone of this.client.zones.list({}, { signal })) {
       zones.push(zone as Zone);
@@ -60,6 +68,8 @@ export class CloudflareAPI {
   }
 
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
+    if (DEBUG) console.debug('getDNSRecords', { zoneId });
+    this.debugRequest(`/zones/${zoneId}/dns_records`);
     const records: DNSRecord[] = [];
     for await (const record of this.client.dns.records.list({ zone_id: zoneId }, { signal })) {
       records.push(record as DNSRecord);
@@ -69,6 +79,7 @@ export class CloudflareAPI {
   }
 
   async createDNSRecord(zoneId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
+    if (DEBUG) console.debug('createDNSRecord', { zoneId, record });
     this.debugRequest(`/zones/${zoneId}/dns_records`, {
       method: 'POST',
       body: record,
@@ -91,6 +102,7 @@ export class CloudflareAPI {
   }
 
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
+    if (DEBUG) console.debug('updateDNSRecord', { zoneId, recordId, record });
     this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: 'PUT',
       body: record,
@@ -113,12 +125,14 @@ export class CloudflareAPI {
   }
 
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
+    if (DEBUG) console.debug('deleteDNSRecord', { zoneId, recordId });
     this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, { method: 'DELETE' });
     await this.client.dns.records.delete(recordId, { zone_id: zoneId }, { signal });
     this.debugResponse({ deleted: recordId });
   }
 
   async verifyToken(signal?: AbortSignal): Promise<void> {
+    if (DEBUG) console.debug('verifyToken');
     this.debugRequest('/user/tokens/verify');
     await this.client.user.tokens.verify({ signal });
     this.debugResponse({ verified: true });

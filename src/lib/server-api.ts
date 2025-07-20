@@ -1,114 +1,63 @@
 import type { DNSRecord, Zone } from '@/types/dns';
+import { CloudflareAPI } from './cloudflare';
 
-const DEFAULT_BASE =
-  (typeof process !== 'undefined' && process.env.SERVER_API_BASE) ||
-  (typeof import.meta !== 'undefined'
-    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (import.meta as any).env?.VITE_SERVER_API_BASE
-    : undefined) ||
-  'http://localhost:8787/api';
-
-function authHeaders(key: string, email?: string) {
-  if (email) {
-    return {
-      'x-auth-key': key,
-      'x-auth-email': email,
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${key}`,
-    };
-  }
-  return {
-    authorization: `Bearer ${key}`,
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${key}`,
-  };
-}
+const DEBUG = Boolean(
+  (typeof process !== 'undefined' ? process.env.DEBUG_SERVER_API : undefined) ||
+    (typeof import.meta !== 'undefined'
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (import.meta as any).env?.VITE_DEBUG_SERVER_API
+      : undefined),
+);
 
 export class ServerAPI {
-  constructor(
-    private apiKey: string,
-    private baseUrl: string = DEFAULT_BASE,
-    private email?: string,
-  ) {}
+  private client: CloudflareAPI;
 
-  private headers() {
-    return authHeaders(this.apiKey, this.email);
+  constructor(apiKey: string, baseUrl?: string, email?: string) {
+    this.client = new CloudflareAPI(apiKey, baseUrl, email);
+    if (DEBUG) {
+      console.debug('ServerAPI initialized', {
+        baseUrl,
+        email: email ? 'provided' : 'none',
+      });
+    }
   }
 
-  async verifyToken(signal?: AbortSignal): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/verify-token`, {
-      method: 'POST',
-      headers: this.headers(),
-      signal,
-    });
-    if (!res.ok) throw new Error(await res.text());
+  verifyToken(signal?: AbortSignal): Promise<void> {
+    if (DEBUG) console.debug('ServerAPI.verifyToken');
+    return this.client.verifyToken(signal);
   }
 
-  async getZones(signal?: AbortSignal): Promise<Zone[]> {
-    const res = await fetch(`${this.baseUrl}/zones`, {
-      headers: this.headers(),
-      signal,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+  getZones(signal?: AbortSignal): Promise<Zone[]> {
+    if (DEBUG) console.debug('ServerAPI.getZones');
+    return this.client.getZones(signal);
   }
 
-  async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
-    const res = await fetch(`${this.baseUrl}/zones/${zoneId}/dns_records`, {
-      headers: this.headers(),
-      signal,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+  getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
+    if (DEBUG) console.debug('ServerAPI.getDNSRecords', { zoneId });
+    return this.client.getDNSRecords(zoneId, signal);
   }
 
-  async createDNSRecord(
+  createDNSRecord(
     zoneId: string,
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
-    const res = await fetch(`${this.baseUrl}/zones/${zoneId}/dns_records`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify(record),
-      signal,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    if (DEBUG) console.debug('ServerAPI.createDNSRecord', { zoneId, record });
+    return this.client.createDNSRecord(zoneId, record, signal);
   }
 
-  async updateDNSRecord(
+  updateDNSRecord(
     zoneId: string,
     recordId: string,
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
-    const res = await fetch(
-      `${this.baseUrl}/zones/${zoneId}/dns_records/${recordId}`,
-      {
-        method: 'PUT',
-        headers: this.headers(),
-        body: JSON.stringify(record),
-        signal,
-      },
-    );
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    if (DEBUG) console.debug('ServerAPI.updateDNSRecord', { zoneId, recordId, record });
+    return this.client.updateDNSRecord(zoneId, recordId, record, signal);
   }
 
-  async deleteDNSRecord(
-    zoneId: string,
-    recordId: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const res = await fetch(
-      `${this.baseUrl}/zones/${zoneId}/dns_records/${recordId}`,
-      {
-        method: 'DELETE',
-        headers: this.headers(),
-        signal,
-      },
-    );
-    if (!res.ok) throw new Error(await res.text());
+  deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
+    if (DEBUG) console.debug('ServerAPI.deleteDNSRecord', { zoneId, recordId });
+    return this.client.deleteDNSRecord(zoneId, recordId, signal);
   }
 }
