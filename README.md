@@ -22,32 +22,25 @@ Then open <http://localhost:5173> in your browser.
 ### Custom API base
 
 By default the app talks to the real Cloudflare API at
-`https://api.cloudflare.com/client/v4`. You can change this URL using the
-`VITE_CLOUDFLARE_API_BASE` environment variable, which is useful when working
-with a mock API during development.
+`https://api.cloudflare.com/client/v4`. When developing locally you can run the
+included server which proxies requests. Configure the frontend with the
+`VITE_SERVER_API_BASE` environment variable if the server runs on a custom URL.
 
-If the browser blocks requests to the Cloudflare API because of CORS
-restrictions, run the included `proxy-server.ts` to forward requests
-locally with permissive CORS headers. When the dev server runs in
-development mode it will automatically target this proxy if no custom
-`VITE_CLOUDFLARE_API_BASE` is provided. Start the proxy in one terminal:
+All API calls are handled server-side by `server.ts`. Start the API server
+first:
 
 
 ```bash
-npm run proxy
+npm run server
 ```
 
-Then start the app pointing at the proxy:
+Then start the app pointing at the API server:
 
 ```bash
-VITE_CLOUDFLARE_API_BASE=http://localhost:8787 npm run dev
+VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
 ```
 
-Or launch both in one step:
-
-```bash
-npm run dev:proxy
-```
+Or launch both in one step by running the server and Vite in parallel.
 
 ### Debugging
 
@@ -63,13 +56,13 @@ Create a `.env` file with your desired base URL:
 
 ```bash
 # .env
-VITE_CLOUDFLARE_API_BASE=http://localhost:8787
+VITE_SERVER_API_BASE=http://localhost:8787/api
 ```
 
 Run the app with the custom base applied:
 
 ```bash
-VITE_CLOUDFLARE_API_BASE=http://localhost:8787 npm run dev
+VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
 ```
 
 ## Building for production
