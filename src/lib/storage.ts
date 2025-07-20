@@ -31,7 +31,8 @@ export function isStorageData(value: unknown): value is StorageData {
       typeof key.iterations === 'number' &&
       typeof key.keyLength === 'number' &&
       typeof key.algorithm === 'string' &&
-      typeof key.createdAt === 'string'
+      typeof key.createdAt === 'string' &&
+      (key.email === undefined || typeof key.email === 'string')
     );
   });
 }
@@ -65,7 +66,7 @@ export class StorageManager {
     }
   }
 
-  async addApiKey(label: string, apiKey: string, password: string): Promise<string> {
+  async addApiKey(label: string, apiKey: string, password: string, email?: string): Promise<string> {
     const { encrypted, salt, iv } = await cryptoManager.encrypt(apiKey, password);
     const config = cryptoManager.getConfig();
 
@@ -79,6 +80,7 @@ export class StorageManager {
       keyLength: config.keyLength,
       algorithm: config.algorithm,
       createdAt: new Date().toISOString(),
+      ...(email ? { email } : {}),
     };
 
     this.data.apiKeys.push(keyData);
@@ -91,7 +93,7 @@ export class StorageManager {
     return [...this.data.apiKeys];
   }
 
-  async getDecryptedApiKey(id: string, password: string): Promise<string | null> {
+  async getDecryptedApiKey(id: string, password: string): Promise<{ key: string; email?: string } | null> {
     const keyData = this.data.apiKeys.find(k => k.id === id);
     if (!keyData) return null;
 
@@ -101,12 +103,13 @@ export class StorageManager {
         keyLength: keyData.keyLength,
         algorithm: keyData.algorithm,
       });
-      return await cm.decrypt(
+      const decrypted = await cm.decrypt(
         keyData.encryptedKey,
         keyData.salt,
         keyData.iv,
         password
       );
+      return { key: decrypted, email: keyData.email };
     } catch {
       return null;
     }

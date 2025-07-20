@@ -14,11 +14,12 @@ import { RecordRow } from './RecordRow';
 
 interface DNSManagerProps {
   apiKey: string;
+  email?: string;
   onLogout: () => void;
 }
 
 
-export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
+export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>('');
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -42,7 +43,7 @@ export function DNSManager({ apiKey, onLogout }: DNSManagerProps) {
     createDNSRecord,
     updateDNSRecord,
     deleteDNSRecord,
-  } = useCloudflareAPI(apiKey);
+  } = useCloudflareAPI(apiKey, email);
 
   const loadZones = useCallback(async (signal?: AbortSignal) => {
     try {

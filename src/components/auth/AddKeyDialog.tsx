@@ -12,12 +12,14 @@ export interface AddKeyDialogProps {
   onLabelChange: (val: string) => void;
   apiKey: string;
   onApiKeyChange: (val: string) => void;
+  email: string;
+  onEmailChange: (val: string) => void;
   password: string;
   onPasswordChange: (val: string) => void;
   onAdd: () => void;
 }
 
-export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey, onApiKeyChange, password, onPasswordChange, onAdd }: AddKeyDialogProps) {
+export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey, onApiKeyChange, email, onEmailChange, password, onPasswordChange, onAdd }: AddKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
@@ -51,6 +53,16 @@ export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey,
               value={apiKey}
               onChange={(e: ChangeEvent<HTMLInputElement>) => onApiKeyChange(e.target.value)}
               placeholder="Your Cloudflare API key"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="new-email">Account Email (optional for global keys)</Label>
+            <Input
+              id="new-email"
+              type="email"
+              value={email}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => onEmailChange(e.target.value)}
+              placeholder="you@example.com"
             />
           </div>
           <div className="space-y-2">
