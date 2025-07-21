@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import type { DNSRecord, RecordType } from '@/types/dns';
+import { RECORD_TYPES } from '@/types/dns';
 import { Plus } from 'lucide-react';
 
 export interface AddRecordDialogProps {
@@ -51,7 +52,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(['A','AAAA','CNAME','MX','TXT','SRV','NS','PTR','CAA'] as RecordType[]).map(type => (
+                  {RECORD_TYPES.map((type) => (
                     <SelectItem key={type} value={type}>
                       {type}
                     </SelectItem>
