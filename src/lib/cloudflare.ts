@@ -56,6 +56,22 @@ export class CloudflareAPI {
     console.debug('CF API response:', data);
   }
 
+  private buildRecordParams(zoneId: string, record: Partial<DNSRecord>) {
+    const params: Record<string, unknown> = {
+      zone_id: zoneId,
+      type: record.type,
+      name: record.name,
+      content: record.content,
+      ttl: record.ttl,
+      priority: record.priority,
+      proxied: record.proxied,
+    };
+    for (const key of Object.keys(params)) {
+      if (params[key] === undefined) delete params[key];
+    }
+    return params;
+  }
+
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     if (DEBUG) console.debug('getZones');
     this.debugRequest('/zones');
@@ -84,18 +100,7 @@ export class CloudflareAPI {
       method: 'POST',
       body: record,
     });
-    const params: Record<string, unknown> = {
-      zone_id: zoneId,
-      type: record.type,
-      name: record.name,
-      content: record.content,
-      ttl: record.ttl,
-      priority: record.priority,
-      proxied: record.proxied,
-    };
-    for (const key of Object.keys(params)) {
-      if (params[key] === undefined) delete params[key];
-    }
+    const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.create(params as any, { signal })) as DNSRecord;
     this.debugResponse(result);
     return result;
@@ -107,18 +112,7 @@ export class CloudflareAPI {
       method: 'PUT',
       body: record,
     });
-    const params: Record<string, unknown> = {
-      zone_id: zoneId,
-      type: record.type,
-      name: record.name,
-      content: record.content,
-      ttl: record.ttl,
-      priority: record.priority,
-      proxied: record.proxied,
-    };
-    for (const key of Object.keys(params)) {
-      if (params[key] === undefined) delete params[key];
-    }
+    const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.update(recordId, params as any, { signal })) as DNSRecord;
     this.debugResponse(result);
     return result;
