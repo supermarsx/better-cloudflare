@@ -5,9 +5,9 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import type { RecordType, DNSRecord } from '@/types/dns';
+import { RECORD_TYPES } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
-const RECORD_TYPES: RecordType[] = ['A','AAAA','CNAME','MX','TXT','SRV','NS','PTR','CAA'];
 
 export interface RecordRowProps {
   record: DNSRecord;

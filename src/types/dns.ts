@@ -40,4 +40,25 @@ export interface EncryptionConfig {
   keyLength: number;
   algorithm: string;
 }
-export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS' | 'PTR' | 'CAA';
+export type RecordType =
+  | 'A'
+  | 'AAAA'
+  | 'CNAME'
+  | 'MX'
+  | 'TXT'
+  | 'SRV'
+  | 'NS'
+  | 'PTR'
+  | 'CAA';
+
+export const RECORD_TYPES: RecordType[] = [
+  'A',
+  'AAAA',
+  'CNAME',
+  'MX',
+  'TXT',
+  'SRV',
+  'NS',
+  'PTR',
+  'CAA'
+];
