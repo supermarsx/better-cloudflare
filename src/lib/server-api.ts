@@ -19,52 +19,40 @@ function createClient(req: Request): CloudflareAPI {
 }
 
 export class ServerAPI {
-  static async verifyToken(req: Request, res: Response) {
-    try {
+  static verifyToken() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.verifyToken();
       res.json({ success: true });
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 
-  static async getZones(req: Request, res: Response) {
-    try {
+  static getZones() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       const zones = await client.getZones();
       res.json(zones);
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 
-  static async getDNSRecords(req: Request, res: Response) {
-    try {
+  static getDNSRecords() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       const records = await client.getDNSRecords(req.params.zone);
       res.json(records);
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 
-  static async createDNSRecord(req: Request, res: Response) {
-    try {
+  static createDNSRecord() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       const record = await client.createDNSRecord(req.params.zone, req.body);
       res.json(record);
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 
-  static async updateDNSRecord(req: Request, res: Response) {
-    try {
+  static updateDNSRecord() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       const record = await client.updateDNSRecord(
         req.params.zone,
@@ -72,20 +60,14 @@ export class ServerAPI {
         req.body,
       );
       res.json(record);
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 
-  static async deleteDNSRecord(req: Request, res: Response) {
-    try {
+  static deleteDNSRecord() {
+    return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.deleteDNSRecord(req.params.zone, req.params.id);
       res.json({ success: true });
-    } catch (err) {
-      if (DEBUG) console.error(err);
-      res.status(400).json({ error: (err as Error).message });
-    }
+    };
   }
 }
