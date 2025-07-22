@@ -1,5 +1,5 @@
 import express from 'express';
-import { ServerAPI } from './src/lib/server-api';
+import { apiRouter } from './src/server/router';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
@@ -34,29 +34,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post('/api/verify-token', (req, res) => {
-  void ServerAPI.verifyToken(req, res);
-});
-
-app.get('/api/zones', (req, res) => {
-  void ServerAPI.getZones(req, res);
-});
-
-app.get('/api/zones/:zone/dns_records', (req, res) => {
-  void ServerAPI.getDNSRecords(req, res);
-});
-
-app.post('/api/zones/:zone/dns_records', (req, res) => {
-  void ServerAPI.createDNSRecord(req, res);
-});
-
-app.put('/api/zones/:zone/dns_records/:id', (req, res) => {
-  void ServerAPI.updateDNSRecord(req, res);
-});
-
-app.delete('/api/zones/:zone/dns_records/:id', (req, res) => {
-  void ServerAPI.deleteDNSRecord(req, res);
-});
+app.use(apiRouter);
 
 app.listen(PORT, () => {
   console.log(`API server listening on http://localhost:${PORT}`);
