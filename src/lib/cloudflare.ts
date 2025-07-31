@@ -1,30 +1,21 @@
 import 'cloudflare/shims/web';
 import Cloudflare from 'cloudflare';
 import type { DNSRecord, Zone } from '@/types/dns';
+import { getEnv } from './env';
 
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
-const DEBUG = Boolean(
-  (typeof process !== 'undefined' ? process.env.DEBUG_CF_API : undefined) ||
-    (typeof import.meta !== 'undefined'
-      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (import.meta as any).env?.VITE_DEBUG_CF_API
-      : undefined)
-);
+const DEBUG = Boolean(getEnv('DEBUG_CF_API', 'VITE_DEBUG_CF_API'));
 
 export class CloudflareAPI {
   private client: Cloudflare;
 
   constructor(
     apiKey: string,
-    baseUrl: string =
-      (typeof process !== 'undefined'
-        ? process.env.CLOUDFLARE_API_BASE
-        : undefined) ??
-      (typeof import.meta !== 'undefined'
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (import.meta as any).env?.VITE_CLOUDFLARE_API_BASE
-        : undefined) ??
+    baseUrl: string = getEnv(
+      'CLOUDFLARE_API_BASE',
+      'VITE_CLOUDFLARE_API_BASE',
       DEFAULT_CLOUDFLARE_API_BASE,
+    )!,
     email?: string,
   ) {
     this.client = new Cloudflare({
