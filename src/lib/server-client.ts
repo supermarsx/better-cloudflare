@@ -1,12 +1,8 @@
 import type { DNSRecord, Zone } from '@/types/dns';
+import { getEnv } from './env';
 
 const DEFAULT_BASE =
-  (typeof process !== 'undefined' && process.env.SERVER_API_BASE) ||
-  (typeof import.meta !== 'undefined'
-    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (import.meta as any).env?.VITE_SERVER_API_BASE
-    : undefined) ||
-  'http://localhost:8787/api';
+  getEnv('SERVER_API_BASE', 'VITE_SERVER_API_BASE', 'http://localhost:8787/api')!;
 
 function authHeaders(key: string, email?: string) {
   if (email) {
