@@ -4,18 +4,18 @@ import { getEnv } from './env';
 const DEFAULT_BASE =
   getEnv('SERVER_API_BASE', 'VITE_SERVER_API_BASE', 'http://localhost:8787/api')!;
 
-function authHeaders(key: string, email?: string) {
+function authHeaders(key: string, email?: string): HeadersInit {
   if (email) {
     return {
       'x-auth-key': key,
       'x-auth-email': email,
       'Content-Type': 'application/json',
-    } as Record<string, string>;
+    };
   }
   return {
     authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
-  } as Record<string, string>;
+  };
 }
 
 export class ServerClient {
@@ -25,7 +25,7 @@ export class ServerClient {
     private email?: string,
   ) {}
 
-  private headers() {
+  private headers(): HeadersInit {
     return authHeaders(this.apiKey, this.email);
   }
 
