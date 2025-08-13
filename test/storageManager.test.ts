@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { StorageManager, isStorageData } from '../src/lib/storage.ts';
+import { CryptoManager } from '../src/lib/crypto.ts';
 
 class LocalStorageMock {
   private store: Record<string, string> = {};
   getItem(key: string) {
-    return Object.prototype.hasOwnProperty.call(this.store, key) ? this.store[key] : null;
+    return Object.prototype.hasOwnProperty.call(this.store, key)
+      ? this.store[key]
+      : null;
   }
   setItem(key: string, value: string) {
     this.store[key] = String(value);
@@ -12,23 +16,12 @@ class LocalStorageMock {
   removeItem(key: string) {
     delete this.store[key];
   }
-  clear() {
-    this.store = {};
-  }
 }
 
-interface GlobalWithLocalStorage {
-  localStorage: LocalStorageMock;
-}
-
-function resetStorage() {
-  (globalThis as unknown as GlobalWithLocalStorage).localStorage = new LocalStorageMock();
-}
-
-test('importData accepts valid data', async () => {
-  resetStorage();
-  const { StorageManager, isStorageData } = await import('../src/lib/storage.ts');
-  const mgr = new StorageManager();
+test('importData accepts valid data', () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
   const sample = {
     apiKeys: [
       {
@@ -51,13 +44,23 @@ test('importData accepts valid data', async () => {
   assert.equal(mgr.getCurrentSession(), '1');
 });
 
-test('importData throws on invalid data without modifying existing state', async () => {
-  resetStorage();
-  const { StorageManager, isStorageData } = await import('../src/lib/storage.ts');
-  const mgr = new StorageManager();
+test('importData throws on invalid data without modifying existing state', () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
   const bad = { apiKeys: [{ id: '1', label: 'x' }] };
   assert.equal(isStorageData(bad), false);
   assert.throws(() => mgr.importData(JSON.stringify(bad)), /Invalid data format/);
   assert.equal(mgr.getApiKeys().length, 0);
   assert.equal(mgr.getCurrentSession(), undefined);
+});
+
+test('falls back to in-memory storage when localStorage is unavailable', async () => {
+  const crypto = new CryptoManager({ iterations: 1 });
+  const mgr = new StorageManager(undefined, crypto);
+  const id = await mgr.addApiKey('label', 'secret', 'pw');
+  assert.ok(id);
+  assert.equal(mgr.getApiKeys().length, 1);
+  const mgr2 = new StorageManager(undefined, crypto);
+  assert.equal(mgr2.getApiKeys().length, 0);
 });

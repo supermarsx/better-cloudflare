@@ -1,4 +1,5 @@
 import type { EncryptionConfig } from '@/types/dns';
+import { getStorage, type StorageLike } from './storage-util';
 
 const CONFIG_STORAGE_KEY = 'encryption-settings';
 
@@ -10,15 +11,20 @@ const DEFAULT_CONFIG: EncryptionConfig = {
 
 export class CryptoManager {
   private config: EncryptionConfig;
+  private storage: StorageLike;
 
-  constructor(config: Partial<EncryptionConfig> = {}) {
+  constructor(
+    config: Partial<EncryptionConfig> = {},
+    storage?: StorageLike,
+  ) {
+    this.storage = getStorage(storage);
     const stored = this.loadFromStorage();
     this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
   }
 
   private loadFromStorage(): Partial<EncryptionConfig> {
     try {
-      const stored = localStorage.getItem(CONFIG_STORAGE_KEY);
+      const stored = this.storage.getItem(CONFIG_STORAGE_KEY);
       return stored ? JSON.parse(stored) : {};
     } catch (error) {
       console.error('Failed to load encryption config:', error);
@@ -28,7 +34,7 @@ export class CryptoManager {
 
   private saveToStorage(): void {
     try {
-      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.config));
+      this.storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.config));
     } catch (error) {
       console.error('Failed to save encryption config:', error);
     }
