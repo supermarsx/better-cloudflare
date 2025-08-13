@@ -29,43 +29,42 @@ export class ServerClient {
     return authHeaders(this.apiKey, this.email);
   }
 
-  private async request<T>(
-    endpoint: string,
-    {
-      method = 'GET',
-      body,
-      signal,
-    }: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+  private async request<T = void>(
+    path: string,
+    options: RequestInit = {},
+    signal?: AbortSignal,
   ): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${endpoint}`, {
-      method,
-      headers: this.headers(),
-      body: body ? JSON.stringify(body) : undefined,
+    const headers = new Headers(this.headers());
+    if (options.headers) {
+      new Headers(options.headers).forEach((value, key) =>
+        headers.set(key, value),
+      );
+    }
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      ...options,
+      headers,
       signal,
     });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(
-        `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${text}`,
-      );
+      throw new Error(await res.text());
     }
     const contentType = res.headers.get('content-type');
     if (contentType && contentType.includes('application/json')) {
-      return res.json();
+      return res.json() as Promise<T>;
     }
     return undefined as T;
   }
 
   async verifyToken(signal?: AbortSignal): Promise<void> {
-    await this.request('/verify-token', { method: 'POST', signal });
+    await this.request('/verify-token', { method: 'POST' }, signal);
   }
 
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
-    return this.request('/zones', { signal });
+    return this.request('/zones', {}, signal);
   }
 
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
-    return this.request(`/zones/${zoneId}/dns_records`, { signal });
+    return this.request(`/zones/${zoneId}/dns_records`, {}, signal);
   }
 
   async createDNSRecord(
@@ -73,11 +72,11 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
-    return this.request(`/zones/${zoneId}/dns_records`, {
-      method: 'POST',
-      body: record,
+    return this.request(
+      `/zones/${zoneId}/dns_records`,
+      { method: 'POST', body: JSON.stringify(record) },
       signal,
-    });
+    );
   }
 
   async updateDNSRecord(
@@ -86,11 +85,11 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
-    return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: 'PUT',
-      body: record,
+    return this.request(
+      `/zones/${zoneId}/dns_records/${recordId}`,
+      { method: 'PUT', body: JSON.stringify(record) },
       signal,
-    });
+    );
   }
 
   async deleteDNSRecord(
@@ -98,9 +97,10 @@ export class ServerClient {
     recordId: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: 'DELETE',
+    await this.request(
+      `/zones/${zoneId}/dns_records/${recordId}`,
+      { method: 'DELETE' },
       signal,
-    });
+    );
   }
 }

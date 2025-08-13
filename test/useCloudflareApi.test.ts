@@ -86,7 +86,7 @@ test('verifyToken uses email headers when provided', async () => {
   const bearer = headers.get ? headers.get('authorization') : headers.authorization;
   assert.equal(key, 'key');
   assert.equal(emailHeader, 'user@example.com');
-  assert.equal(bearer, undefined);
+  assert.equal(bearer, null);
 
   delete process.env.SERVER_API_BASE;
   globalThis.fetch = originalFetch;
@@ -163,7 +163,7 @@ test('createDNSRecord posts record using email auth', async () => {
   const bearer2 = headers3.get ? headers3.get('authorization') : headers3.authorization;
   assert.equal(keyHeader, 'abc');
   assert.equal(emailHeader2, 'me@example.com');
-  assert.equal(bearer2, undefined);
+  assert.equal(bearer2, null);
 
   delete process.env.SERVER_API_BASE;
   globalThis.fetch = originalFetch;
