@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
+import { getEnvBool } from '../lib/env';
 
-const DEBUG = Boolean(process.env.DEBUG_SERVER_API);
+const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
 
 export function errorHandler(
   err: unknown,

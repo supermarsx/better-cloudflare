@@ -73,7 +73,17 @@ npm run dev:debug
 ```
 
 This sets `VITE_DEBUG_CF_API=1` for the React app. You can also export this variable manually and use `npm run dev:server`.
-Setting `DEBUG_SERVER=1` enables detailed request logs from the Express server.
+
+Set `DEBUG_SERVER=1` to enable detailed request logs from the Express server and
+`DEBUG_SERVER_API=1` to log Cloudflare API requests made by the server.
+
+Boolean flags accept `1`, `true`, `yes` or `on`.
+
+The API server listens on port `8787` by default. Override it with:
+
+```bash
+PORT=3000 npm run server
+```
 
 Create a `.env` file with your desired base URL:
 

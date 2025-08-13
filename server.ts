@@ -1,11 +1,12 @@
 import express from 'express';
 import { apiRouter } from './src/server/router';
 import { errorHandler } from './src/server/errorHandler';
+import { getEnv, getEnvBool, getEnvNumber } from './src/lib/env';
 
 const app = express();
-const PORT = Number(process.env.PORT ?? 8787);
-const DEBUG = Boolean(process.env.DEBUG_SERVER);
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
+const PORT = getEnvNumber('PORT', 'VITE_PORT', 8787);
+const DEBUG = getEnvBool('DEBUG_SERVER', 'VITE_DEBUG_SERVER');
+const ALLOWED_ORIGIN = getEnv('ALLOWED_ORIGIN', 'VITE_ALLOWED_ORIGIN', '*')!;
 
 app.use(express.json());
 if (DEBUG) {
