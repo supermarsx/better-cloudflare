@@ -45,11 +45,11 @@ export class CryptoManager {
     this.config = { ...DEFAULT_CONFIG, ...stored };
   }
 
-  async generateSalt(): Promise<Uint8Array> {
+  generateSalt(): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(16));
   }
 
-  async generateIV(): Promise<Uint8Array> {
+  generateIV(): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(12));
   }
 
@@ -83,8 +83,8 @@ export class CryptoManager {
     iv: string;
   }> {
     const encoder = new TextEncoder();
-    const salt = await this.generateSalt();
-    const iv = await this.generateIV();
+    const salt = this.generateSalt();
+    const iv = this.generateIV();
     const key = await this.deriveKey(password, salt);
 
     const encrypted = await crypto.subtle.encrypt(
