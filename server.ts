@@ -5,6 +5,7 @@ import { errorHandler } from './src/server/errorHandler';
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
 const DEBUG = Boolean(process.env.DEBUG_SERVER);
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 
 app.use(express.json());
 if (DEBUG) {
@@ -22,7 +23,7 @@ if (DEBUG) {
   });
 }
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   res.setHeader(
     'Access-Control-Allow-Headers',
     'Content-Type, Authorization, X-Auth-Key, X-Auth-Email'
