@@ -15,7 +15,11 @@ function createClient(req: Request): CloudflareAPI {
     if (DEBUG) console.debug('Using key/email for Cloudflare API');
     return new CloudflareAPI(key, undefined, email);
   }
-  throw new Error('Missing Cloudflare credentials');
+  const err = new Error('Missing Cloudflare credentials') as Error & {
+    status?: number;
+  };
+  err.status = 400;
+  throw err;
 }
 
 export class ServerAPI {
