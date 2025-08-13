@@ -88,3 +88,14 @@ test('decrypt fails with incorrect password', async () => {
   );
   Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
 });
+
+test('updateConfig persists algorithm selection', () => {
+  const storage = new LocalStorageMock();
+  const original = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', { value: new MockCrypto(), configurable: true });
+  const cryptoMgr = new CryptoManager({}, storage);
+  cryptoMgr.updateConfig({ algorithm: 'AES-CBC' });
+  const cryptoMgr2 = new CryptoManager({}, storage);
+  assert.equal(cryptoMgr2.getConfig().algorithm, 'AES-CBC');
+  Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
+});

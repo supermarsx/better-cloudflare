@@ -1,4 +1,8 @@
-import type { ApiKey } from '@/types/dns';
+import {
+  ENCRYPTION_ALGORITHMS,
+  type ApiKey,
+  type EncryptionAlgorithm,
+} from '../types/dns';
 import { CryptoManager } from './crypto';
 import { getStorage, type StorageLike } from './storage-util';
 import { generateUUID } from './utils';
@@ -32,6 +36,7 @@ export function isStorageData(value: unknown): value is StorageData {
       typeof key.iterations === 'number' &&
       typeof key.keyLength === 'number' &&
       typeof key.algorithm === 'string' &&
+      ENCRYPTION_ALGORITHMS.includes(key.algorithm as EncryptionAlgorithm) &&
       typeof key.createdAt === 'string' &&
       (key.email === undefined || typeof key.email === 'string')
     );
@@ -146,7 +151,11 @@ export class StorageManager {
   }
 
   exportData(): string {
-    return JSON.stringify(this.data, null, 2);
+    return JSON.stringify(
+      { ...this.data, encryption: this.crypto.getConfig() },
+      null,
+      2,
+    );
   }
 
   importData(jsonData: string): void {
