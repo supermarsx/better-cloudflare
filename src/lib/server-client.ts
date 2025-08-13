@@ -3,6 +3,7 @@ import { getEnv } from './env';
 
 const DEFAULT_BASE =
   getEnv('SERVER_API_BASE', 'VITE_SERVER_API_BASE', 'http://localhost:8787/api')!;
+const DEFAULT_TIMEOUT = 10_000;
 
 function authHeaders(key: string, email?: string): HeadersInit {
   if (email) {
@@ -23,6 +24,7 @@ export class ServerClient {
     private apiKey: string,
     private baseUrl: string = DEFAULT_BASE,
     private email?: string,
+    private timeoutMs: number = DEFAULT_TIMEOUT,
   ) {}
 
   private headers(): HeadersInit {
@@ -31,29 +33,40 @@ export class ServerClient {
 
   private async request<T>(
     endpoint: string,
-    {
+    { 
       method = 'GET',
       body,
       signal,
     }: { method?: string; body?: unknown; signal?: AbortSignal } = {},
   ): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${endpoint}`, {
-      method,
-      headers: this.headers(),
-      body: body ? JSON.stringify(body) : undefined,
-      signal,
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(
-        `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${text}`,
-      );
+    let controller: AbortController | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    if (!signal) {
+      controller = new AbortController();
+      timeout = setTimeout(() => controller!.abort(), this.timeoutMs);
+      signal = controller.signal;
     }
-    const contentType = res.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+        method,
+        headers: this.headers(),
+        body: body ? JSON.stringify(body) : undefined,
+        signal,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(
+          `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${text}`,
+        );
+      }
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return res.json();
+      }
+      return undefined as T;
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
-    return undefined as T;
   }
 
   async verifyToken(signal?: AbortSignal): Promise<void> {

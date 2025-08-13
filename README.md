@@ -54,6 +54,16 @@ Or launch both in one step by running the server and Vite in parallel.
 npm run dev:server
 ```
 
+### Request timeout
+
+API calls made through `ServerClient` time out after 10 seconds by default. Pass a
+custom timeout in milliseconds as the fourth constructor argument when you need
+to adjust this:
+
+```ts
+const client = new ServerClient('token', 'http://example.com', undefined, 15_000);
+```
+
 ### Debugging
 
 Enable verbose logs from the Cloudflare API wrapper by running the development server in debug mode:

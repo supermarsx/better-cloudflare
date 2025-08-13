@@ -219,3 +219,21 @@ test('deleteDNSRecord success and error', async () => {
   );
   restore();
 });
+
+test('aborts request after timeout', async () => {
+  const client = new ServerClient('key', 'http://example.com', undefined, 5);
+  let aborted = false;
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('aborted'));
+      });
+    });
+  try {
+    await assert.rejects(() => client.getZones(), /aborted/);
+    assert.equal(aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
