@@ -1,10 +1,10 @@
 import 'cloudflare/shims/web';
 import Cloudflare from 'cloudflare';
 import type { DNSRecord, Zone } from '@/types/dns';
-import { getEnv } from './env';
+import { getEnv, getEnvBool } from './env';
 
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
-const DEBUG = Boolean(getEnv('DEBUG_CF_API', 'VITE_DEBUG_CF_API'));
+const DEBUG = getEnvBool('DEBUG_CF_API', 'VITE_DEBUG_CF_API');
 
 export class CloudflareAPI {
   private client: Cloudflare;

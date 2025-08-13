@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
 import { dnsRecordSchema } from './validation';
+import { getEnvBool } from './env';
 
-const DEBUG = Boolean(process.env.DEBUG_SERVER_API);
+const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
 
 function createClient(req: Request): CloudflareAPI {
   const auth = req.header('authorization');
