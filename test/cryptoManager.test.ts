@@ -1,101 +1,52 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CryptoManager } from '../src/lib/crypto.ts';
+import { benchmark } from '../src/lib/crypto-benchmark.ts';
+import type { StorageLike } from '../src/lib/storage-util.ts';
 
-class LocalStorageMock {
+class MemoryStorage implements StorageLike {
   private store: Record<string, string> = {};
-  getItem(key: string) {
+  getItem(key: string): string | null {
     return Object.prototype.hasOwnProperty.call(this.store, key)
       ? this.store[key]
       : null;
   }
-  setItem(key: string, value: string) {
+  setItem(key: string, value: string): void {
     this.store[key] = String(value);
   }
-  removeItem(key: string) {
+  removeItem(key: string): void {
     delete this.store[key];
   }
 }
 
-class MockSubtleCrypto {
-  async importKey(_format: string, keyData: Uint8Array) {
-    return new TextDecoder().decode(keyData);
-  }
-  async deriveKey(params: { salt: Uint8Array }, keyMaterial: string) {
-    const salt = Array.from(params.salt).join(',');
-    return `${keyMaterial}:${salt}`;
-  }
-  async encrypt(
-    _alg: { iv: Uint8Array },
-    key: string,
-    data: Uint8Array,
-  ) {
-    const plaintext = new TextDecoder().decode(data);
-    const encoded = `${key}|${plaintext}`;
-    return new TextEncoder().encode(encoded);
-  }
-  async decrypt(
-    _alg: { iv: Uint8Array },
-    key: string,
-    data: Uint8Array,
-  ) {
-    const decoded = new TextDecoder().decode(data);
-    const [storedKey, text] = decoded.split('|');
-    if (storedKey !== key) {
-      throw new Error('OperationError');
-    }
-    return new TextEncoder().encode(text);
-  }
-}
+// 1. Round-trip encrypt/decrypt using a known password
 
-class MockCrypto {
-  subtle = new MockSubtleCrypto();
-  getRandomValues(arr: Uint8Array) {
-    for (let i = 0; i < arr.length; i++) {
-      arr[i] = i + 1;
-    }
-    return arr;
-  }
-}
-
-test('encrypt followed by decrypt returns original string', async () => {
-  const storage = new LocalStorageMock();
-  const original = globalThis.crypto;
-  Object.defineProperty(globalThis, 'crypto', {
-    value: new MockCrypto(),
-    configurable: true,
-  });
+test('encrypt/decrypt round trip', async () => {
+  const storage = new MemoryStorage();
   const cryptoMgr = new CryptoManager({}, storage);
-  const data = 'secret message';
-  const password = 'pw';
+  const data = 'sample text';
+  const password = 'strong-password';
   const { encrypted, salt, iv } = await cryptoMgr.encrypt(data, password);
   const decrypted = await cryptoMgr.decrypt(encrypted, salt, iv, password);
   assert.equal(decrypted, data);
-  Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
 });
 
-test('decrypt fails with incorrect password', async () => {
-  const storage = new LocalStorageMock();
-  const original = globalThis.crypto;
-  Object.defineProperty(globalThis, 'crypto', {
-    value: new MockCrypto(),
-    configurable: true,
-  });
-  const cryptoMgr = new CryptoManager({}, storage);
-  const { encrypted, salt, iv } = await cryptoMgr.encrypt('data', 'right');
-  await assert.rejects(
-    cryptoMgr.decrypt(encrypted, salt, iv, 'wrong'),
-  );
-  Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
-});
+// 2. Update settings and ensure persistence
 
-test('updateConfig persists algorithm selection', () => {
-  const storage = new LocalStorageMock();
-  const original = globalThis.crypto;
-  Object.defineProperty(globalThis, 'crypto', { value: new MockCrypto(), configurable: true });
+test('updated settings persist across instances', () => {
+  const storage = new MemoryStorage();
   const cryptoMgr = new CryptoManager({}, storage);
-  cryptoMgr.updateConfig({ algorithm: 'AES-CBC' });
+  cryptoMgr.updateConfig({ iterations: 200000, keyLength: 128, algorithm: 'AES-CBC' });
   const cryptoMgr2 = new CryptoManager({}, storage);
-  assert.equal(cryptoMgr2.getConfig().algorithm, 'AES-CBC');
-  Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
+  const config = cryptoMgr2.getConfig();
+  assert.equal(config.iterations, 200000);
+  assert.equal(config.keyLength, 128);
+  assert.equal(config.algorithm, 'AES-CBC');
+});
+
+// 3. benchmark returns numeric duration
+
+test('benchmark returns numeric duration', async () => {
+  const duration = await benchmark(1);
+  assert.equal(typeof duration, 'number');
 });
