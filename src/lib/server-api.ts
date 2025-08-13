@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
+import { dnsRecordSchema } from './validation';
 
 const DEBUG = Boolean(process.env.DEBUG_SERVER_API);
 
@@ -49,19 +50,40 @@ export class ServerAPI {
 
   static createDNSRecord() {
     return async (req: Request, res: Response) => {
+      const parsed = dnsRecordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join(', '),
+        });
+        return;
+      }
       const client = createClient(req);
-      const record = await client.createDNSRecord(req.params.zone, req.body);
+      const record = await client.createDNSRecord(
+        req.params.zone,
+        parsed.data,
+      );
       res.json(record);
     };
   }
 
   static updateDNSRecord() {
     return async (req: Request, res: Response) => {
+      const parsed = dnsRecordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join(', '),
+        });
+        return;
+      }
       const client = createClient(req);
       const record = await client.updateDNSRecord(
         req.params.zone,
         req.params.id,
-        req.body,
+        parsed.data,
       );
       res.json(record);
     };
