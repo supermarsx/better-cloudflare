@@ -4,6 +4,8 @@ import express from 'express';
 
 import { apiRouter } from '../src/server/router.ts';
 
+import type { AddressInfo } from 'node:net';
+
 // Ensure fetch exists for Node
 import 'cloudflare/shims/web';
 
@@ -13,7 +15,7 @@ test('missing credentials returns 400 error', async () => {
   app.use(apiRouter);
 
   const server = app.listen(0);
-  const { port } = server.address() as any;
+  const { port } = server.address() as AddressInfo;
   try {
     const res = await fetch(`http://localhost:${port}/api/zones`);
     assert.equal(res.status, 400);

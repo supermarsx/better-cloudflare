@@ -1,5 +1,6 @@
 import type { ApiKey } from '@/types/dns';
-import { cryptoManager, CryptoManager } from './crypto';
+import { CryptoManager } from './crypto';
+import { getStorage, type StorageLike } from './storage-util';
 import { generateUUID } from './utils';
 
 const STORAGE_KEY = 'cloudflare-dns-manager';
@@ -39,36 +40,40 @@ export function isStorageData(value: unknown): value is StorageData {
 
 export class StorageManager {
   private data: StorageData = { apiKeys: [] };
+  private storage: StorageLike;
+  private crypto: CryptoManager;
 
-  constructor() {
+  constructor(storage?: StorageLike, crypto?: CryptoManager) {
+    this.storage = getStorage(storage);
+    this.crypto = crypto ?? new CryptoManager({}, this.storage);
     this.load();
   }
 
   private load(): void {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = this.storage.getItem(STORAGE_KEY);
       if (stored) {
         this.data = JSON.parse(stored);
       }
     } catch (error) {
       console.error('Failed to load storage data:', error);
       // Remove corrupted data so subsequent loads start with a clean slate.
-      localStorage.removeItem(STORAGE_KEY);
+      this.storage.removeItem(STORAGE_KEY);
       this.data = { apiKeys: [] };
     }
   }
 
   private save(): void {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      this.storage.setItem(STORAGE_KEY, JSON.stringify(this.data));
     } catch (error) {
       console.error('Failed to save storage data:', error);
     }
   }
 
   async addApiKey(label: string, apiKey: string, password: string, email?: string): Promise<string> {
-    const { encrypted, salt, iv } = await cryptoManager.encrypt(apiKey, password);
-    const config = cryptoManager.getConfig();
+    const { encrypted, salt, iv } = await this.crypto.encrypt(apiKey, password);
+    const config = this.crypto.getConfig();
 
     const keyData: ApiKey = {
       id: generateUUID(),
@@ -98,11 +103,14 @@ export class StorageManager {
     if (!keyData) return null;
 
     try {
-      const cm = new CryptoManager({
-        iterations: keyData.iterations,
-        keyLength: keyData.keyLength,
-        algorithm: keyData.algorithm,
-      });
+      const cm = new CryptoManager(
+        {
+          iterations: keyData.iterations,
+          keyLength: keyData.keyLength,
+          algorithm: keyData.algorithm,
+        },
+        this.storage,
+      );
       const decrypted = await cm.decrypt(
         keyData.encryptedKey,
         keyData.salt,

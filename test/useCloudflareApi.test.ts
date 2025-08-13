@@ -16,6 +16,10 @@ interface FetchCall {
   options: FetchCallOptions;
 }
 
+type HeadersLike = Record<string, string> & {
+  get?: (key: string) => string | null;
+};
+
 
 
 test('verifyToken calls server endpoint', async () => {
@@ -43,7 +47,7 @@ test('verifyToken calls server endpoint', async () => {
   const result = await api.verifyToken('token123');
   assert.equal(result, undefined);
   assert.equal(calls[0].url, 'http://localhost:8787/api/verify-token');
-  const headers = calls[0].options.headers as any;
+  const headers = calls[0].options.headers as HeadersLike;
   const auth = headers.get ? headers.get('authorization') : headers.authorization;
   assert.equal(auth, 'Bearer token123');
 
@@ -76,7 +80,7 @@ test('verifyToken uses email headers when provided', async () => {
 
   const result = await api.verifyToken('key', 'user@example.com');
   assert.equal(result, undefined);
-  const headers = calls[0].options.headers as any;
+  const headers = calls[0].options.headers as HeadersLike;
   const key = headers.get ? headers.get('x-auth-key') : headers['x-auth-key'];
   const emailHeader = headers.get ? headers.get('x-auth-email') : headers['x-auth-email'];
   const bearer = headers.get ? headers.get('authorization') : headers.authorization;
@@ -117,7 +121,7 @@ test('createDNSRecord posts record for provided key', async () => {
   assert.equal(record.id, 'rec');
   assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
   assert.equal(calls[0].options.method, 'POST');
-  const headers2 = calls[0].options.headers as any;
+  const headers2 = calls[0].options.headers as HeadersLike;
   const auth2 = headers2.get ? headers2.get('authorization') : headers2.authorization;
   assert.equal(auth2, 'Bearer abc');
 
@@ -153,7 +157,7 @@ test('createDNSRecord posts record using email auth', async () => {
   const record = await api.createDNSRecord('zone', { type: 'A', name: 'a', content: '1.2.3.4' });
   assert.equal(record.id, 'r2');
   assert.equal(calls[0].url, 'http://localhost:8787/api/zones/zone/dns_records');
-  const headers3 = calls[0].options.headers as any;
+  const headers3 = calls[0].options.headers as HeadersLike;
   const keyHeader = headers3.get ? headers3.get('x-auth-key') : headers3['x-auth-key'];
   const emailHeader2 = headers3.get ? headers3.get('x-auth-email') : headers3['x-auth-email'];
   const bearer2 = headers3.get ? headers3.get('authorization') : headers3.authorization;
