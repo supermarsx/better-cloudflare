@@ -1,6 +1,6 @@
 import express from 'express';
 import { apiRouter } from './src/server/router';
-import { errorHandler } from './src/server/errorHandler';
+import { errorHandler } from './src/server/error-handler';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);

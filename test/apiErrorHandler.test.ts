@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import express from 'express';
 
 import { apiRouter } from '../src/server/router.ts';
-import { errorHandler } from '../src/server/errorHandler.ts';
+import { errorHandler } from '../src/server/error-handler.ts';
 import { asyncHandler } from '../src/lib/async-handler.ts';
 
 import type { AddressInfo } from 'node:net';
@@ -48,6 +48,30 @@ test('generic errors return 500', async () => {
     assert.equal(res.status, 500);
     const data = await res.json();
     assert.ok(/boom/.test(data.error));
+  } finally {
+    server.close();
+  }
+});
+
+test('errors with explicit status use that status', async () => {
+  const app = express();
+  app.use(
+    '/api/client-error',
+    asyncHandler(async () => {
+      const err = new Error('bad request');
+      (err as any).status = 400;
+      throw err;
+    }),
+  );
+  app.use(errorHandler);
+
+  const server = app.listen(0);
+  const { port } = server.address() as AddressInfo;
+  try {
+    const res = await fetch(`http://localhost:${port}/api/client-error`);
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(/bad request/.test(data.error));
   } finally {
     server.close();
   }
