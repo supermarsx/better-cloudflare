@@ -65,7 +65,7 @@ test('verifyToken success and error', async () => {
 
   let restore = mockFetch({ ok: true, status: 200 });
   await client.verifyToken();
-  let called = restore();
+  const called = restore();
   assert.equal(called.url, 'http://example.com/verify-token');
   assert.equal(called.init?.method, 'POST');
 
@@ -90,7 +90,7 @@ test('getZones success and error', async () => {
     body: zones,
   });
   assert.deepEqual(await client.getZones(), zones);
-  let called = restore();
+  const called = restore();
   assert.equal(called.url, 'http://example.com/zones');
 
   restore = mockFetch({
@@ -114,7 +114,7 @@ test('getDNSRecords success and error', async () => {
     body: records,
   });
   assert.deepEqual(await client.getDNSRecords('zone', undefined), records);
-  let called = restore();
+  const called = restore();
   assert.equal(called.url, 'http://example.com/zones/zone/dns_records');
 
   restore = mockFetch({
@@ -144,7 +144,7 @@ test('createDNSRecord success and error', async () => {
     await client.createDNSRecord('zone', record, undefined),
     record,
   );
-  let called = restore();
+  const called = restore();
   assert.equal(called.url, 'http://example.com/zones/zone/dns_records');
   assert.equal(called.init?.method, 'POST');
 
@@ -175,7 +175,7 @@ test('updateDNSRecord success and error', async () => {
     await client.updateDNSRecord('zone', '1', record, undefined),
     record,
   );
-  let called = restore();
+  const called = restore();
   assert.equal(
     called.url,
     'http://example.com/zones/zone/dns_records/1',
@@ -200,7 +200,7 @@ test('deleteDNSRecord success and error', async () => {
 
   let restore = mockFetch({ ok: true, status: 200 });
   await client.deleteDNSRecord('zone', '1', undefined);
-  let called = restore();
+  const called = restore();
   assert.equal(
     called.url,
     'http://example.com/zones/zone/dns_records/1',
