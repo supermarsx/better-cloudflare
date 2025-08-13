@@ -112,20 +112,6 @@ export class CryptoManager {
     return new TextDecoder().decode(decrypted);
   }
 
-  async benchmark(iterations: number = 10000): Promise<number> {
-    const start = performance.now();
-    const password = 'test-password';
-    const data = 'test-data';
-    
-    const testConfig = { ...this.config, iterations };
-    const tempCrypto = new CryptoManager(testConfig);
-    
-    await tempCrypto.encrypt(data, password);
-    
-    const end = performance.now();
-    return end - start;
-  }
-
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
     let binary = '';
