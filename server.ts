@@ -1,5 +1,6 @@
 import express from 'express';
 import { apiRouter } from './src/server/router';
+import { errorHandler } from './src/server/errorHandler';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
@@ -35,6 +36,8 @@ app.use((req, res, next) => {
 });
 
 app.use(apiRouter);
+
+app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`API server listening on http://localhost:${PORT}`);

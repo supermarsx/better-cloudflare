@@ -1,0 +1,16 @@
+import type { Request, Response, NextFunction } from 'express';
+
+const DEBUG = Boolean(process.env.DEBUG_SERVER_API);
+
+export function errorHandler(
+  err: unknown,
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  if (DEBUG) console.error(err);
+  const status = (err as { status?: number }).status ?? 500;
+  res.status(status).json({ error: (err as Error).message });
+  void next;
+}
+
