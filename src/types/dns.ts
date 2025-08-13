@@ -21,6 +21,9 @@ export interface Zone {
   development_mode: number;
 }
 
+export const ENCRYPTION_ALGORITHMS = ['AES-GCM', 'AES-CBC'] as const;
+export type EncryptionAlgorithm = typeof ENCRYPTION_ALGORITHMS[number];
+
 export interface ApiKey {
   id: string;
   label: string;
@@ -29,7 +32,7 @@ export interface ApiKey {
   iv: string;
   iterations: number;
   keyLength: number;
-  algorithm: string;
+  algorithm: EncryptionAlgorithm;
   createdAt: string;
   /** Optional email for global API key authentication */
   email?: string;
@@ -38,7 +41,7 @@ export interface ApiKey {
 export interface EncryptionConfig {
   iterations: number;
   keyLength: number;
-  algorithm: string;
+  algorithm: EncryptionAlgorithm;
 }
 export type RecordType =
   | 'A'

@@ -32,7 +32,7 @@ test('importData accepts valid data', () => {
         iv: 'iv',
         iterations: 1,
         keyLength: 1,
-        algorithm: 'AES',
+        algorithm: 'AES-GCM',
         createdAt: new Date().toISOString(),
       },
     ],

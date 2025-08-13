@@ -1,4 +1,8 @@
-import type { EncryptionConfig } from '@/types/dns';
+import {
+  ENCRYPTION_ALGORITHMS,
+  type EncryptionConfig,
+  type EncryptionAlgorithm,
+} from '../types/dns';
 import { getStorage, type StorageLike } from './storage-util';
 
 const CONFIG_STORAGE_KEY = 'encryption-settings';
@@ -8,6 +12,10 @@ const DEFAULT_CONFIG: EncryptionConfig = {
   keyLength: 256,
   algorithm: 'AES-GCM'
 };
+
+function isValidAlgorithm(alg: string): alg is EncryptionAlgorithm {
+  return ENCRYPTION_ALGORITHMS.includes(alg as EncryptionAlgorithm);
+}
 
 export class CryptoManager {
   private config: EncryptionConfig;
@@ -20,6 +28,9 @@ export class CryptoManager {
     this.storage = getStorage(storage);
     const stored = this.loadFromStorage();
     this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
+    if (!isValidAlgorithm(this.config.algorithm)) {
+      this.config.algorithm = DEFAULT_CONFIG.algorithm;
+    }
   }
 
   private loadFromStorage(): Partial<EncryptionConfig> {
@@ -43,6 +54,9 @@ export class CryptoManager {
   reloadConfig(): void {
     const stored = this.loadFromStorage();
     this.config = { ...DEFAULT_CONFIG, ...stored };
+    if (!isValidAlgorithm(this.config.algorithm)) {
+      this.config.algorithm = DEFAULT_CONFIG.algorithm;
+    }
   }
 
   generateSalt(): Uint8Array {
@@ -135,6 +149,9 @@ export class CryptoManager {
   }
 
   updateConfig(newConfig: Partial<EncryptionConfig>): void {
+    if (newConfig.algorithm && !isValidAlgorithm(newConfig.algorithm)) {
+      throw new Error('Invalid algorithm');
+    }
     this.config = { ...this.config, ...newConfig };
     this.saveToStorage();
   }

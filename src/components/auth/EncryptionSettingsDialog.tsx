@@ -4,7 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import type { EncryptionConfig } from '@/types/dns';
+import {
+  ENCRYPTION_ALGORITHMS,
+  type EncryptionConfig,
+  type EncryptionAlgorithm,
+} from '../../types/dns';
 import { Settings } from 'lucide-react';
 
 export interface EncryptionSettingsDialogProps {
@@ -59,6 +63,24 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
                 <SelectItem value="128">128</SelectItem>
                 <SelectItem value="192">192</SelectItem>
                 <SelectItem value="256">256</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="algorithm">Algorithm</Label>
+            <Select
+              value={settings.algorithm}
+              onValueChange={(value) =>
+                onSettingsChange({ ...settings, algorithm: value as EncryptionAlgorithm })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ENCRYPTION_ALGORITHMS.map((alg) => (
+                  <SelectItem key={alg} value={alg}>{alg}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
