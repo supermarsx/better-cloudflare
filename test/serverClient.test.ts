@@ -220,6 +220,21 @@ test('deleteDNSRecord success and error', async () => {
   restore();
 });
 
+test('includes Cloudflare JSON error details', async () => {
+  const client = new ServerClient('key', 'http://example.com');
+  const restore = mockFetch({
+    ok: false,
+    status: 400,
+    statusText: 'Bad Request',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      errors: [{ code: 1001, message: 'bad request' }],
+    },
+  });
+  await assert.rejects(() => client.getZones(), /1001: bad request/);
+  restore();
+});
+
 test('aborts request after timeout', async () => {
   const client = new ServerClient('key', 'http://example.com', undefined, 5);
   let aborted = false;
