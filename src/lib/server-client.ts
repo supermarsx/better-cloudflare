@@ -53,13 +53,55 @@ export class ServerClient {
         body: body ? JSON.stringify(body) : undefined,
         signal,
       });
+      const contentType = res.headers.get('content-type');
       if (!res.ok) {
-        const text = await res.text();
+        let detail = '';
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const data: unknown = await res.json();
+            if (
+              typeof data === 'object' &&
+              data !== null &&
+              Array.isArray((data as { errors?: unknown }).errors) &&
+              (data as { errors: unknown[] }).errors.length > 0
+            ) {
+              detail = (data as {
+                errors: { code?: unknown; message?: unknown }[];
+              }).errors
+                .map((e: { code?: unknown; message?: unknown }) => {
+                  const code = e.code;
+                  const message = e.message;
+                  return code && message
+                    ? `${code}: ${message}`
+                    : typeof message === 'string'
+                    ? message
+                    : code !== undefined
+                    ? String(code)
+                    : '';
+                })
+                .filter((s) => s)
+                .join(', ');
+            } else if (
+              typeof (data as { message?: unknown }).message === 'string'
+            ) {
+              detail = (data as { message: string }).message;
+            } else if (
+              typeof (data as { error?: unknown }).error === 'string'
+            ) {
+              detail = (data as { error: string }).error;
+            } else {
+              detail = JSON.stringify(data);
+            }
+          } catch {
+            detail = await res.text();
+          }
+        } else {
+          detail = await res.text();
+        }
         throw new Error(
-          `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${text}`,
+          `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${detail}`,
         );
       }
-      const contentType = res.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
         return res.json();
       }
