@@ -58,7 +58,13 @@ export class StorageManager {
     try {
       const stored = this.storage.getItem(STORAGE_KEY);
       if (stored) {
-        this.data = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (isStorageData(parsed)) {
+          this.data = parsed;
+        } else {
+          this.data = { apiKeys: [] };
+          this.storage.removeItem(STORAGE_KEY);
+        }
       }
     } catch (error) {
       console.error('Failed to load storage data:', error);
