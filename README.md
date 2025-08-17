@@ -36,10 +36,10 @@ npm run server
 ```
 
 By default the API server allows requests from any origin. Set
-`ALLOWED_ORIGIN` to restrict CORS to a specific origin:
+`ALLOWED_ORIGINS` to a comma-separated list to restrict CORS:
 
 ```bash
-ALLOWED_ORIGIN=http://localhost:5173 npm run server
+ALLOWED_ORIGINS=http://localhost:5173,http://example.com npm run server
 ```
 
 Then start the app pointing at the API server:

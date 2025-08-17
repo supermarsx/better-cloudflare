@@ -1,12 +1,12 @@
 import express from 'express';
 import { apiRouter } from './src/server/router';
 import { errorHandler } from './src/server/errorHandler';
-import { getEnv, getEnvBool, getEnvNumber } from './src/lib/env';
+import { getEnvBool, getEnvNumber } from './src/lib/env';
+import { getCorsMiddleware } from './src/server/cors';
 
 const app = express();
 const PORT = getEnvNumber('PORT', 'VITE_PORT', 8787);
 const DEBUG = getEnvBool('DEBUG_SERVER', 'VITE_DEBUG_SERVER');
-const ALLOWED_ORIGIN = getEnv('ALLOWED_ORIGIN', 'VITE_ALLOWED_ORIGIN', '*')!;
 
 app.use(express.json());
 if (DEBUG) {
@@ -23,19 +23,7 @@ if (DEBUG) {
     next();
   });
 }
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Auth-Key, X-Auth-Email'
-  );
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
-    return;
-  }
-  next();
-});
+app.use(getCorsMiddleware());
 
 app.use(apiRouter);
 
