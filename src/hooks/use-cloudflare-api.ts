@@ -14,10 +14,15 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
       keyEmail: string | undefined = email,
       signal?: AbortSignal,
     ) => {
+      if (api) {
+        await api.verifyToken(signal);
+        return;
+      }
+      if (!key) return Promise.reject(new Error('API key not provided'));
       const client = new ServerClient(key, undefined, keyEmail);
       await client.verifyToken(signal);
     },
-    [apiKey, email],
+    [api, apiKey, email],
   );
 
   const getZones = useCallback(
