@@ -12,8 +12,12 @@ export function getCorsMiddleware() {
 
   return function cors(req: Request, res: Response, next: NextFunction) {
     const origin = req.headers.origin as string | undefined;
-    if (origin && (allowed.has('*') || allowed.has(origin))) {
+    if (allowed.has('*')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Vary', 'Origin');
+    } else if (origin && allowed.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
     } else if (origin) {
       res.status(403).json({ error: 'Origin not allowed' });
       return;
