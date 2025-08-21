@@ -178,14 +178,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         break;
       }
       case 'csv': {
-        const headers = 'Type,Name,Content,TTL,Priority,Proxied\n';
+        const headers = ['Type', 'Name', 'Content', 'TTL', 'Priority', 'Proxied'];
+        const escapeCSV = (value: unknown) =>
+          `"${String(value ?? '').replace(/"/g, '""')}"`;
         const rows = records
-          .map(
-            (r: DNSRecord) =>
-              `${r.type},${r.name},${r.content},${r.ttl},${r.priority || ''},${r.proxied || false}`
+          .map((r: DNSRecord) =>
+            [
+              r.type,
+              r.name,
+              r.content,
+              r.ttl,
+              r.priority ?? '',
+              r.proxied ?? false,
+            ]
+              .map(escapeCSV)
+              .join(',')
           )
           .join('\n');
-        content = headers + rows;
+        content = headers.map(escapeCSV).join(',') + '\n' + rows;
         filename = `${selectedZone}-records.csv`;
         mimeType = 'text/csv';
         break;
