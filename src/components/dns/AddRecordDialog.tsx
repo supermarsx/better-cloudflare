@@ -65,12 +65,13 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
               <Input
                 type="number"
                 value={record.ttl}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const n = Number.parseInt(e.target.value, 10);
                   onRecordChange({
                     ...record,
-                    ttl: parseInt(e.target.value) || 300
-                  })
-                }
+                    ttl: Number.isNaN(n) ? 300 : n
+                  });
+                }}
               />
             </div>
           </div>
@@ -102,11 +103,13 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
               <Input
                 type="number"
                 value={record.priority || ''}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const n = Number.parseInt(e.target.value, 10);
                   onRecordChange({
                     ...record,
-                    priority: parseInt(e.target.value) || undefined
-                  })}
+                    priority: Number.isNaN(n) ? undefined : n
+                  });
+                }}
               />
             </div>
           )}

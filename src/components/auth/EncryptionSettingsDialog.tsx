@@ -43,9 +43,13 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
               id="iterations"
               type="number"
               value={settings.iterations}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                onSettingsChange({ ...settings, iterations: parseInt(e.target.value) || 100000 })
-              }
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const n = Number.parseInt(e.target.value, 10);
+                onSettingsChange({
+                  ...settings,
+                  iterations: Number.isNaN(n) ? 100000 : n
+                });
+              }}
             />
           </div>
           <div className="space-y-2">
