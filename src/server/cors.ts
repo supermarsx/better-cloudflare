@@ -12,15 +12,20 @@ export function getCorsMiddleware() {
 
   return function cors(req: Request, res: Response, next: NextFunction) {
     const origin = req.headers.origin as string | undefined;
+    let allowedOrigin: string | undefined;
+
     if (allowed.has('*')) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Vary', 'Origin');
+      allowedOrigin = '*';
     } else if (origin && allowed.has(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
+      allowedOrigin = origin;
     } else if (origin) {
       res.status(403).json({ error: 'Origin not allowed' });
       return;
+    }
+
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+      res.setHeader('Vary', 'Origin');
     }
 
     res.setHeader(
