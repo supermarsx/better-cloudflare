@@ -73,24 +73,26 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
             <Input
               type="number"
               value={editedRecord.ttl}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const n = Number.parseInt(e.target.value, 10);
                 setEditedRecord({
                   ...editedRecord,
-                  ttl: parseInt(e.target.value) || 300,
-                })
-              }
+                  ttl: Number.isNaN(n) ? 300 : n,
+                });
+              }}
               className="h-8"
             />
             {editedRecord.type === 'MX' && (
               <Input
                 type="number"
                 value={editedRecord.priority ?? ''}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const n = Number.parseInt(e.target.value, 10);
                   setEditedRecord({
                     ...editedRecord,
-                    priority: e.target.value ? parseInt(e.target.value) : undefined,
-                  })
-                }
+                    priority: Number.isNaN(n) ? undefined : n,
+                  });
+                }}
                 className="h-8"
               />
             )}
