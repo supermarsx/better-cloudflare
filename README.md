@@ -99,6 +99,18 @@ Run the app with the custom base applied:
 VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
 ```
 
+### Rate limiting
+
+The API server enforces a simple rate limit. Adjust the limits with:
+
+```bash
+RATE_LIMIT_WINDOW=60000 RATE_LIMIT_MAX=100 npm run server
+```
+
+`RATE_LIMIT_WINDOW` defines the window size in milliseconds and `RATE_LIMIT_MAX`
+sets the number of requests allowed per window for each IP. The defaults are
+60,000 ms and 100 requests.
+
 ## Building for production
 
 Create an optimized build and preview it locally:

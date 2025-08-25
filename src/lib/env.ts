@@ -33,3 +33,18 @@ export function getEnvNumber(
   const parsed = Number(val);
   return Number.isNaN(parsed) ? defaultValue : parsed;
 }
+
+/**
+ * Rate limiting configuration (defaults: 60s window, 100 requests)
+ */
+export const RATE_LIMIT_WINDOW = getEnvNumber(
+  'RATE_LIMIT_WINDOW',
+  'VITE_RATE_LIMIT_WINDOW',
+  60_000,
+);
+
+export const RATE_LIMIT_MAX = getEnvNumber(
+  'RATE_LIMIT_MAX',
+  'VITE_RATE_LIMIT_MAX',
+  100,
+);
