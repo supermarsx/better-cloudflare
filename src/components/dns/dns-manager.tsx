@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
-import type { DNSRecord, Zone } from '@/types/dns';
+import type { DNSRecord, Zone, RecordType } from '@/types/dns';
+import { RECORD_TYPES } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
 import { storageManager } from '@/lib/storage';
 import { LogOut } from 'lucide-react';
@@ -35,6 +37,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     proxied: false
   });
   const [importData, setImportData] = useState('');
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<RecordType | ''>('');
   
   const { toast } = useToast();
   const {
@@ -292,6 +296,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const selectedZoneData = zones.find((z: Zone) => z.id === selectedZone);
+  const filteredRecords = records.filter((record: DNSRecord) => {
+    const query = search.toLowerCase();
+    const matchesSearch =
+      record.name.toLowerCase().includes(query) ||
+      record.type.toLowerCase().includes(query);
+    const matchesType = typeFilter ? record.type === typeFilter : true;
+    return matchesSearch && matchesType;
+  });
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -364,15 +376,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               </div>
             </CardHeader>
             <CardContent>
+              <div className="flex gap-2 mb-4">
+                <Input
+                  placeholder="Search records"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="flex-1"
+                />
+                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="All types" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All types</SelectItem>
+                    {RECORD_TYPES.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {type}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               {isLoading ? (
                 <div className="text-center py-8">Loading...</div>
-              ) : records.length === 0 ? (
+              ) : filteredRecords.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   No DNS records found
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {records.map((record: DNSRecord) => (
+                  {filteredRecords.map((record: DNSRecord) => (
                     <RecordRow
                       key={record.id}
                       record={record}
