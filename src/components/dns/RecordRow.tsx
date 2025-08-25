@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import type { RecordType, DNSRecord } from '@/types/dns';
-import { RECORD_TYPES } from '@/types/dns';
+import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
 
@@ -24,6 +24,9 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
   useEffect(() => {
     setEditedRecord(record);
   }, [record]);
+
+  const ttlValue = editedRecord.ttl === 1 ? 'auto' : editedRecord.ttl;
+  const isCustomTTL = !TTL_PRESETS.includes(ttlValue as any);
 
   if (isEditing) {
     return (
@@ -70,18 +73,45 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
             />
           </div>
           <div className="col-span-1 space-y-1">
-            <Input
-              type="number"
-              value={editedRecord.ttl}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                const n = Number.parseInt(e.target.value, 10);
-                setEditedRecord({
-                  ...editedRecord,
-                  ttl: Number.isNaN(n) ? 300 : n,
-                });
+            <Select
+              value={isCustomTTL ? 'custom' : String(ttlValue)}
+              onValueChange={(value: string) => {
+                if (value === 'custom') {
+                  setEditedRecord({ ...editedRecord, ttl: 300 });
+                } else {
+                  setEditedRecord({
+                    ...editedRecord,
+                    ttl: value === 'auto' ? 'auto' : Number(value),
+                  });
+                }
               }}
-              className="h-8"
-            />
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TTL_PRESETS.map((ttl) => (
+                  <SelectItem key={ttl} value={String(ttl)}>
+                    {ttl === 'auto' ? 'Auto' : ttl}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+            {isCustomTTL && (
+              <Input
+                type="number"
+                value={typeof editedRecord.ttl === 'number' ? editedRecord.ttl : ''}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const n = Number.parseInt(e.target.value, 10);
+                  setEditedRecord({
+                    ...editedRecord,
+                    ttl: Number.isNaN(n) ? 300 : n,
+                  });
+                }}
+                className="h-8"
+              />
+            )}
             {editedRecord.type === 'MX' && (
               <Input
                 type="number"
@@ -145,7 +175,9 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
           <span className="font-mono text-sm break-all">{record.content}</span>
         </div>
         <div className="col-span-1">
-          <span className="text-sm text-muted-foreground">{record.ttl}</span>
+          <span className="text-sm text-muted-foreground">
+            {record.ttl === 1 ? 'Auto' : record.ttl}
+          </span>
         </div>
         <div className="col-span-1">
           {record.proxied && (

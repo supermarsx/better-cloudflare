@@ -3,7 +3,7 @@ export interface DNSRecord {
   type: string;
   name: string;
   content: string;
-  ttl: number;
+  ttl: number | 'auto';
   priority?: number;
   proxied?: boolean;
   zone_id: string;
@@ -65,3 +65,6 @@ export const RECORD_TYPES: RecordType[] = [
   'PTR',
   'CAA'
 ];
+
+export const TTL_PRESETS = ['auto', 300, 900, 3600, 86400] as const;
+export type TTLValue = typeof TTL_PRESETS[number];
