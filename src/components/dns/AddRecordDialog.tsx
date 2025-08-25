@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import type { DNSRecord, RecordType } from '@/types/dns';
-import { RECORD_TYPES } from '@/types/dns';
+import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
 import { Plus } from 'lucide-react';
 
 export interface AddRecordDialogProps {
@@ -19,6 +19,10 @@ export interface AddRecordDialogProps {
 }
 
 export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, onAdd, zoneName }: AddRecordDialogProps) {
+  const ttlValue = record.ttl === 1 ? 'auto' : record.ttl;
+  const isCustomTTL =
+    ttlValue !== undefined && !TTL_PRESETS.includes(ttlValue as any);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
@@ -62,17 +66,44 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
             </div>
             <div className="space-y-2">
               <Label>TTL</Label>
-              <Input
-                type="number"
-                value={record.ttl}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  onRecordChange({
-                    ...record,
-                    ttl: Number.isNaN(n) ? 300 : n
-                  });
+              <Select
+                value={isCustomTTL ? 'custom' : String(ttlValue)}
+                onValueChange={(value: string) => {
+                  if (value === 'custom') {
+                    onRecordChange({ ...record, ttl: 300 });
+                  } else {
+                    onRecordChange({
+                      ...record,
+                      ttl: value === 'auto' ? 'auto' : Number(value)
+                    });
+                  }
                 }}
-              />
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TTL_PRESETS.map((ttl) => (
+                    <SelectItem key={ttl} value={String(ttl)}>
+                      {ttl === 'auto' ? 'Auto' : ttl}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+              {isCustomTTL && (
+                <Input
+                  type="number"
+                  value={typeof record.ttl === 'number' ? record.ttl : ''}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    onRecordChange({
+                      ...record,
+                      ttl: Number.isNaN(n) ? 300 : n
+                    });
+                  }}
+                />
+              )}
             </div>
           </div>
           <div className="space-y-2">
