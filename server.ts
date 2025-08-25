@@ -1,12 +1,25 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { apiRouter } from './src/server/router';
 import { errorHandler } from './src/server/errorHandler';
-import { getEnvBool, getEnvNumber } from './src/lib/env';
+import {
+  getEnvBool,
+  getEnvNumber,
+  RATE_LIMIT_WINDOW,
+  RATE_LIMIT_MAX,
+} from './src/lib/env';
 import { getCorsMiddleware } from './src/server/cors';
 
 const app = express();
 const PORT = getEnvNumber('PORT', 'VITE_PORT', 8787);
 const DEBUG = getEnvBool('DEBUG_SERVER', 'VITE_DEBUG_SERVER');
+
+const rateLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.use(express.json());
 if (DEBUG) {
@@ -24,6 +37,8 @@ if (DEBUG) {
   });
 }
 app.use(getCorsMiddleware());
+
+app.use(rateLimiter);
 
 app.use(apiRouter);
 
