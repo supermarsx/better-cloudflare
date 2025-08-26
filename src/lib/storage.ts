@@ -12,16 +12,24 @@ const STORAGE_KEY = 'cloudflare-dns-manager';
 interface StorageData {
   apiKeys: ApiKey[];
   currentSession?: string;
+  lastZone?: string;
 }
 
 export function isStorageData(value: unknown): value is StorageData {
   if (!value || typeof value !== 'object') return false;
-  const obj = value as { apiKeys?: unknown; currentSession?: unknown };
+  const obj = value as {
+    apiKeys?: unknown;
+    currentSession?: unknown;
+    lastZone?: unknown;
+  };
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
     obj.currentSession !== undefined &&
     typeof obj.currentSession !== 'string'
   ) {
+    return false;
+  }
+  if (obj.lastZone !== undefined && typeof obj.lastZone !== 'string') {
     return false;
   }
   return obj.apiKeys.every(k => {
@@ -153,7 +161,17 @@ export class StorageManager {
 
   clearSession(): void {
     this.data.currentSession = undefined;
+    this.data.lastZone = undefined;
     this.save();
+  }
+
+  setLastZone(zoneId: string): void {
+    this.data.lastZone = zoneId;
+    this.save();
+  }
+
+  getLastZone(): string | undefined {
+    return this.data.lastZone;
   }
 
   exportData(): string {

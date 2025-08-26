@@ -92,12 +92,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [loadZones]);
 
   useEffect(() => {
+    const last = storageManager.getLastZone();
+    if (last) {
+      setSelectedZone(last);
+    }
+  }, []);
+
+  useEffect(() => {
     if (selectedZone) {
       const controller = new AbortController();
       loadRecords(controller.signal);
       return () => controller.abort();
     }
   }, [selectedZone, loadRecords]);
+
+  useEffect(() => {
+    if (selectedZone) {
+      storageManager.setLastZone(selectedZone);
+    }
+  }, [selectedZone]);
 
   const handleAddRecord = async () => {
     if (!selectedZone || !newRecord.type || !newRecord.name || !newRecord.content) {
