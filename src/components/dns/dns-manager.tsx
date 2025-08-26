@@ -13,6 +13,7 @@ import { LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
 import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './RecordRow';
+import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
 
 interface DNSManagerProps {
   apiKey: string;
@@ -37,6 +38,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     proxied: false
   });
   const [importData, setImportData] = useState('');
+  const [importFormat, setImportFormat] = useState<'json' | 'csv' | 'bind'>('json');
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<RecordType | ''>('');
   
@@ -234,12 +236,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleImport = () => {
     try {
-      const imported = JSON.parse(importData);
-      const items = Array.isArray(imported)
-        ? imported
-        : Array.isArray(imported.records)
-          ? imported.records
-          : null;
+      let items: Partial<DNSRecord>[] | null = null;
+      switch (importFormat) {
+        case 'json': {
+          const imported = JSON.parse(importData);
+          items = Array.isArray(imported)
+            ? imported
+            : Array.isArray(imported.records)
+              ? imported.records
+              : null;
+          break;
+        }
+        case 'csv':
+          items = parseCSVRecords(importData);
+          break;
+        case 'bind':
+          items = parseBINDZone(importData);
+          break;
+      }
 
       if (!items) {
         throw new Error('Invalid format');
@@ -368,7 +382,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     open={showImport}
                     onOpenChange={setShowImport}
                     importData={importData}
+                    importFormat={importFormat}
                     onImportDataChange={setImportData}
+                    onImportFormatChange={setImportFormat}
                     onImport={handleImport}
                     onExport={handleExport}
                   />

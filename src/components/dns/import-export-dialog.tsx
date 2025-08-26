@@ -9,7 +9,9 @@ interface ImportExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   importData: string;
+  importFormat: 'json' | 'csv' | 'bind';
   onImportDataChange: (data: string) => void;
+  onImportFormatChange: (format: 'json' | 'csv' | 'bind') => void;
   onImport: () => void;
   onExport: (format: 'json' | 'csv' | 'bind') => void;
 }
@@ -18,7 +20,9 @@ export function ImportExportDialog({
   open,
   onOpenChange,
   importData,
+  importFormat,
   onImportDataChange,
+  onImportFormatChange,
   onImport,
   onExport
 }: ImportExportDialogProps) {
@@ -35,17 +39,30 @@ export function ImportExportDialog({
           <DialogHeader>
             <DialogTitle>Import DNS Records</DialogTitle>
             <DialogDescription>
-              Import DNS records from JSON format
+              Import DNS records from JSON, CSV, or BIND zone formats
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>JSON Data</Label>
+              <Label>Format</Label>
+              <Select value={importFormat} onValueChange={onImportFormatChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select format" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="json">JSON</SelectItem>
+                  <SelectItem value="csv">CSV</SelectItem>
+                  <SelectItem value="bind">BIND</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{importFormat.toUpperCase()} Data</Label>
               <textarea
                 className="w-full h-32 p-2 border rounded-md bg-background"
                 value={importData}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onImportDataChange(e.target.value)}
-                placeholder="Paste your JSON data here..."
+                placeholder={`Paste your ${importFormat.toUpperCase()} data here...`}
               />
             </div>
             <Button onClick={onImport} className="w-full">
