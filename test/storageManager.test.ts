@@ -101,3 +101,13 @@ test('falls back to in-memory storage when localStorage is unavailable', async (
   const mgr2 = new StorageManager(undefined, crypto);
   assert.equal(mgr2.getApiKeys().length, 0);
 });
+
+test('stores and clears last selected zone', () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  mgr.setLastZone('zone-1');
+  assert.equal(mgr.getLastZone(), 'zone-1');
+  mgr.clearSession();
+  assert.equal(mgr.getLastZone(), undefined);
+});
