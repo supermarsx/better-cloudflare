@@ -111,3 +111,20 @@ test('stores and clears last selected zone', () => {
   mgr.clearSession();
   assert.equal(mgr.getLastZone(), undefined);
 });
+
+test('updateApiKey modifies metadata and re-encrypts with new password', async () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({ iterations: 1 }, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const id = await mgr.addApiKey('label', 'secret', 'pw', 'old@example.com');
+  await mgr.updateApiKey(id, { label: 'new', email: 'new@example.com' });
+  const key = mgr.getApiKeys()[0];
+  assert.equal(key.label, 'new');
+  assert.equal(key.email, 'new@example.com');
+
+  await mgr.updateApiKey(id, { currentPassword: 'pw', newPassword: 'pw2' });
+  const decrypted = await mgr.getDecryptedApiKey(id, 'pw2');
+  assert.equal(decrypted?.key, 'secret');
+  const old = await mgr.getDecryptedApiKey(id, 'pw');
+  assert.equal(old, null);
+});

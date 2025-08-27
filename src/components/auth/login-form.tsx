@@ -8,10 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { storageManager } from '@/lib/storage';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import { useToast } from '@/hooks/use-toast';
-import { Key, Trash2 } from 'lucide-react';
+import { Key, Trash2, Pencil } from 'lucide-react';
 import { cryptoManager } from '@/lib/crypto';
 import { AddKeyDialog } from './AddKeyDialog';
 import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
+import { EditKeyDialog } from './EditKeyDialog';
+import type { ApiKey } from '@/types/dns';
 
 interface LoginFormProps {
   onLogin: (apiKey: string) => void;
@@ -27,6 +29,12 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [newApiKey, setNewApiKey] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [showEditKey, setShowEditKey] = useState(false);
+  const [editingKeyId, setEditingKeyId] = useState('');
+  const [editLabel, setEditLabel] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [editPassword, setEditPassword] = useState('');
   const [encryptionSettings, setEncryptionSettings] = useState(cryptoManager.getConfig());
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
   
@@ -137,6 +145,39 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     }
   };
 
+  const handleEditKeyInit = (key: ApiKey) => {
+    setEditingKeyId(key.id);
+    setEditLabel(key.label);
+    setEditEmail(key.email || '');
+    setCurrentPassword('');
+    setEditPassword('');
+    setShowEditKey(true);
+  };
+
+  const handleUpdateKey = async () => {
+    if (!editingKeyId) return;
+    try {
+      await storageManager.updateApiKey(editingKeyId, {
+        label: editLabel,
+        email: editEmail || undefined,
+        currentPassword: currentPassword || undefined,
+        newPassword: editPassword || undefined,
+      });
+      setApiKeys(storageManager.getApiKeys());
+      setShowEditKey(false);
+      toast({
+        title: 'Success',
+        description: 'API key updated successfully',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update API key: ' + (error as Error).message,
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleDeleteKey = (keyId: string) => {
     storageManager.removeApiKey(keyId);
     setApiKeys(storageManager.getApiKeys());
@@ -202,17 +243,30 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                   <SelectItem key={key.id} value={key.id}>
                     <div className="flex items-center justify-between w-full">
                       <span>{key.label}</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteKey(key.id);
-                        }}
-                        className="h-6 w-6 p-0 ml-2"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                      <div className="flex">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditKeyInit(key);
+                          }}
+                          className="h-6 w-6 p-0 ml-2"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteKey(key.id);
+                          }}
+                          className="h-6 w-6 p-0 ml-2"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
                   </SelectItem>
                 ))}
@@ -265,6 +319,19 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               benchmarkResult={benchmarkResult}
             />
           </div>
+          <EditKeyDialog
+            open={showEditKey}
+            onOpenChange={setShowEditKey}
+            label={editLabel}
+            onLabelChange={setEditLabel}
+            email={editEmail}
+            onEmailChange={setEditEmail}
+            currentPassword={currentPassword}
+            onCurrentPasswordChange={setCurrentPassword}
+            newPassword={editPassword}
+            onNewPasswordChange={setEditPassword}
+            onSave={handleUpdateKey}
+          />
         </CardContent>
       </Card>
     </div>

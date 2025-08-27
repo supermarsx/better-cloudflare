@@ -142,6 +142,65 @@ export class StorageManager {
     }
   }
 
+  async updateApiKey(
+    id: string,
+    updates: {
+      label?: string;
+      email?: string;
+      currentPassword?: string;
+      newPassword?: string;
+    },
+  ): Promise<void> {
+    const keyData = this.data.apiKeys.find(k => k.id === id);
+    if (!keyData) {
+      throw new Error('API key not found');
+    }
+
+    if (updates.label !== undefined) {
+      keyData.label = updates.label;
+    }
+
+    if (updates.email !== undefined) {
+      keyData.email = updates.email || undefined;
+    }
+
+    if (updates.newPassword) {
+      if (!updates.currentPassword) {
+        throw new Error('Current password required');
+      }
+
+      const cm = new CryptoManager(
+        {
+          iterations: keyData.iterations,
+          keyLength: keyData.keyLength,
+          algorithm: keyData.algorithm,
+        },
+        this.storage,
+      );
+
+      const decrypted = await cm.decrypt(
+        keyData.encryptedKey,
+        keyData.salt,
+        keyData.iv,
+        updates.currentPassword,
+      );
+
+      const { encrypted, salt, iv } = await this.crypto.encrypt(
+        decrypted,
+        updates.newPassword,
+      );
+      const config = this.crypto.getConfig();
+      keyData.encryptedKey = encrypted;
+      keyData.salt = salt;
+      keyData.iv = iv;
+      keyData.iterations = config.iterations;
+      keyData.keyLength = config.keyLength;
+      keyData.algorithm = config.algorithm;
+    }
+
+    this.save();
+  }
+
   removeApiKey(id: string): void {
     this.data.apiKeys = this.data.apiKeys.filter(k => k.id !== id);
     if (this.data.currentSession === id) {
