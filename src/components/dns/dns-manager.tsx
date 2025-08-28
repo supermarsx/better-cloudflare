@@ -13,6 +13,7 @@ import { LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
 import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './RecordRow';
+import { filterRecords } from './filter-records';
 import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
 
 interface DNSManagerProps {
@@ -39,7 +40,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   });
   const [importData, setImportData] = useState('');
   const [importFormat, setImportFormat] = useState<'json' | 'csv' | 'bind'>('json');
-  const [search, setSearch] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<RecordType | ''>('');
   
   const { toast } = useToast();
@@ -323,14 +324,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const selectedZoneData = zones.find((z: Zone) => z.id === selectedZone);
-  const filteredRecords = records.filter((record: DNSRecord) => {
-    const query = search.toLowerCase();
-    const matchesSearch =
-      record.name.toLowerCase().includes(query) ||
-      record.type.toLowerCase().includes(query);
-    const matchesType = typeFilter ? record.type === typeFilter : true;
-    return matchesSearch && matchesType;
-  });
+  const filteredRecords = filterRecords(records, searchTerm).filter(
+    (record: DNSRecord) => (typeFilter ? record.type === typeFilter : true)
+  );
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -390,7 +386,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>DNS Records</CardTitle>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
+                  <Input
+                    placeholder="Search records"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-[200px]"
+                  />
                   <ImportExportDialog
                     open={showImport}
                     onOpenChange={setShowImport}
@@ -405,13 +407,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="flex gap-2 mb-4">
-                <Input
-                  placeholder="Search records"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="flex-1"
-                />
+              <div className="flex justify-end mb-4">
                 <Select value={typeFilter} onValueChange={setTypeFilter}>
                   <SelectTrigger className="w-[180px]">
                     <SelectValue placeholder="All types" />
