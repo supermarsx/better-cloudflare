@@ -7,6 +7,17 @@ import { asyncHandler } from '../lib/async-handler';
  * The endpoints are implemented in `ServerAPI` and wrapped in `asyncHandler`
  * to forward errors to the global error middleware.
  */
+/**
+ * Router containing API endpoints for the express server.
+ *
+ * Endpoints:
+ * - POST /api/verify-token
+ * - GET /api/zones
+ * - GET /api/zones/:zone/dns_records
+ * - POST /api/zones/:zone/dns_records
+ * - PUT /api/zones/:zone/dns_records/:id
+ * - DELETE /api/zones/:zone/dns_records/:id
+ */
 export const apiRouter = Router();
 
 apiRouter.post('/api/verify-token', asyncHandler(ServerAPI.verifyToken()));

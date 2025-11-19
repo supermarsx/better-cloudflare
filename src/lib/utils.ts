@@ -1,3 +1,9 @@
+/**
+ * UI helper utilities
+ *
+ * Small helpers used by the application for class name merging and generating
+ * UUIDs used across the client.
+ */
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 

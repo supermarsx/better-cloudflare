@@ -1,3 +1,7 @@
+/**
+ * Small input component used across the application to provide a
+ * consistent look-and-feel for native input elements.
+ */
 import * as React from "react"
 
 import { cn } from "@/lib/utils"

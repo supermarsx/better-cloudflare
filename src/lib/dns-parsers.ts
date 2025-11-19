@@ -1,8 +1,18 @@
+/**
+ * Parsers for importing DNS records from common text formats.
+ *
+ * Exported helpers parse CSV lines, CSV tables, and simplified BIND zone
+ * snippets into arrays of `Partial<DNSRecord>` that can be consumed by the
+ * UI import workflow.
+ */
 import type { DNSRecord } from '@/types/dns';
 
 /**
  * Parse a single CSV line into its values while handling quoted
  * values and escaped quotes.
+ *
+ * @param line - CSV input line to parse
+ * @returns array of values parsed from the line
  */
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];

@@ -1,3 +1,8 @@
+/**
+ * Toast notification primitives built on top of Radix Toast and exposed by
+ * the `useToast` hook. Use `ToastProvider` and `ToastViewport` in the app
+ * root together with the provided `Toast` components.
+ */
 import * as React from "react"
 import * as ToastPrimitives from "@radix-ui/react-toast"
 import { cva, type VariantProps } from "class-variance-authority"

@@ -26,6 +26,10 @@ interface StorageData {
  * assigning into the in-memory representation.
  */
 export function isStorageData(value: unknown): value is StorageData {
+/**
+ * @param value - value to validate against the StorageData shape
+ * @returns true when the value conforms to StorageData, false otherwise
+ */
   if (!value || typeof value !== 'object') return false;
   const obj = value as {
     apiKeys?: unknown;
@@ -148,6 +152,8 @@ export class StorageManager {
   /**
    * Return a copy of all stored API keys (metadata only, encrypted key
    * content is still encrypted in the returned data).
+   *
+   * @returns copy of the ApiKey metadata array
    */
   getApiKeys(): ApiKey[] {
     return [...this.data.apiKeys];
@@ -158,6 +164,10 @@ export class StorageManager {
    *
    * If decryption fails (wrong password or id not found) this returns
    * `null` instead of throwing to simplify UI handling.
+    *
+    * @param id - the locally generated api key id
+    * @param password - the password to decrypt the key with
+    * @returns an object with `key` and optional `email` or null on failure
    */
   async getDecryptedApiKey(id: string, password: string): Promise<{ key: string; email?: string } | null> {
     const keyData = this.data.apiKeys.find(k => k.id === id);
@@ -188,6 +198,10 @@ export class StorageManager {
    * Update an API key record. Supports renaming, changing the associated
    * email, and rotating the stored password (re-encrypts the key using the
    * new password - `currentPassword` is required for rotation).
+    *
+    * @param id - api key id to update
+    * @param updates - partial update object; supported fields: label, email,
+    *  currentPassword, newPassword
    */
   async updateApiKey(
     id: string,
@@ -251,6 +265,8 @@ export class StorageManager {
   /**
    * Remove an API key by id and clear the current session if it referenced
    * the removed key.
+    *
+    * @param id - id of the key to remove
    */
   removeApiKey(id: string): void {
     this.data.apiKeys = this.data.apiKeys.filter(k => k.id !== id);
@@ -270,6 +286,8 @@ export class StorageManager {
 
   /**
    * Read the currently active session id.
+   *
+   * @returns the active session id or `undefined` when not set
    */
   getCurrentSession(): string | undefined {
     return this.data.currentSession;
@@ -294,6 +312,8 @@ export class StorageManager {
 
   /**
    * Get the last selected zone id if present.
+   *
+   * @returns the last selected zone id or `undefined` when not set
    */
   getLastZone(): string | undefined {
     return this.data.lastZone;
@@ -304,6 +324,9 @@ export class StorageManager {
    * encryption configuration.
    */
   exportData(): string {
+    /**
+     * @returns JSON string representation of the storage payload including encryption metadata
+     */
     return JSON.stringify(
       { ...this.data, encryption: this.crypto.getConfig() },
       null,
@@ -334,4 +357,8 @@ export class StorageManager {
     this.save();
   }
 }
+/**
+ * Shared singleton storage manager instance used by the UI to persist API
+ * keys and session metadata. Tests may create their own manager instance.
+ */
 export const storageManager = new StorageManager();

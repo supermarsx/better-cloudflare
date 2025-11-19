@@ -1,3 +1,7 @@
+/**
+ * Top-level DNS Manager UI which composes the zone selector, the record
+ * list and dialogs for creating/importing records.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,8 +24,11 @@ import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
  * Props for the `DNSManager` top-level component.
  */
 interface DNSManagerProps {
+  /** API key to be used for server requests (token or key) */
   apiKey: string;
+  /** Optional email used when authenticating with a key+email pair */
   email?: string;
+  /** Callback invoked when the user logs out */
   onLogout: () => void;
 }
 

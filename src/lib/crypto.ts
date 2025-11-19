@@ -38,6 +38,14 @@ export class CryptoManager {
   private config: EncryptionConfig;
   private storage: StorageLike;
 
+  /**
+   * Construct a CryptoManager using the provided partial `config` and an
+   * optional storage backend. The manager will persist its configuration
+   * into storage under `CONFIG_STORAGE_KEY`.
+   *
+   * @param config - partial configuration to override defaults
+   * @param storage - optional `StorageLike` instance (defaults to global localStorage)
+   */
   constructor(
     config: Partial<EncryptionConfig> = {},
     storage?: StorageLike,
@@ -243,4 +251,9 @@ export class CryptoManager {
     this.saveToStorage();
   }
 }
+/**
+ * A shared singleton instance of `CryptoManager` used by the app. Tests or
+ * other consumers may create their own instance to customize configuration
+ * or storage.
+ */
 export const cryptoManager = new CryptoManager();

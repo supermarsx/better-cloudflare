@@ -1,3 +1,7 @@
+/**
+ * Login / Key selection UI used to open a session by decrypting a stored
+ * API key and verifying it with the server.
+ */
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,6 +24,7 @@ import type { ApiKey } from '@/types/dns';
  * an API key and authenticate the user.
  */
 interface LoginFormProps {
+  /** Callback invoked on successful login with the decrypted apiKey */
   onLogin: (apiKey: string) => void;
 }
 

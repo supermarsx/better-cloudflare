@@ -1,3 +1,8 @@
+/**
+ * Styled dialog primitives built on top of Radix Dialog. Use these
+ * components to assemble accessible modals (Dialog, Content, Overlay, etc.)
+ * across the app.
+ */
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"

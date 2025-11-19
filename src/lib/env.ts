@@ -7,6 +7,16 @@
  * @param browserKey - key name available via `import.meta.env` in the browser
  * @param defaultValue - fallback value if not set
  */
+/**
+ * Retrieve environment variable. First checks Node `process.env`, then
+ * falls back to Vite's `import.meta.env` values if available. A
+ * `defaultValue` can be provided in case the value is not set.
+ *
+ * @param name - environment variable name in Node `process.env`
+ * @param browserKey - name when available in `import.meta.env`
+ * @param defaultValue - fallback value if the variable is missing
+ * @returns the environment value if present; otherwise the default or undefined
+ */
 export function getEnv(
   name: string,
   browserKey: string,
@@ -27,6 +37,16 @@ export function getEnv(
  * environment. Accepts values: `1`, `true`, `yes`, `on` (case-insensitive)
  * and falls back to the provided default value if unset.
  */
+/**
+ * Convenience helper to read boolean-like environment flags from the
+ * environment. Accepts values: `1`, `true`, `yes`, `on` (case-insensitive)
+ * and falls back to the provided default value if unset.
+ *
+ * @param name - `process.env` name
+ * @param browserKey - `import.meta.env` name
+ * @param defaultValue - fallback boolean
+ * @returns boolean value representing the env flag
+ */
 export function getEnvBool(
   name: string,
   browserKey: string,
@@ -40,6 +60,15 @@ export function getEnvBool(
 /**
  * Helper to read numeric environment variables. Returns `defaultValue` if
  * parsing fails or if the value is not present.
+ */
+/**
+ * Helper to read numeric environment variables. Returns `defaultValue` if
+ * parsing fails or if the value is not present.
+ *
+ * @param name - `process.env` name
+ * @param browserKey - `import.meta.env` name
+ * @param defaultValue - fallback number if not provided
+ * @returns numeric value
  */
 export function getEnvNumber(
   name: string,

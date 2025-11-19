@@ -4,16 +4,27 @@
  * API shape.
  */
 export interface DNSRecord {
+  /** Unique identifier for the DNS record */
   id: string;
+  /** Record type, e.g., A, AAAA, CNAME */
   type: string;
+  /** Record name (hostname or '@' for root) */
   name: string;
+  /** Record content (IP, host, text, etc.) */
   content: string;
+  /** Time-to-live in seconds or 'auto' */
   ttl: number | 'auto';
+  /** Optional priority (used for MX records) */
   priority?: number;
+  /** Whether Cloudflare proxy is enabled for the record (A/AAAA/CNAME) */
   proxied?: boolean;
+  /** Cloudflare zone id associated with this record */
   zone_id: string;
+  /** Zone name associated with this record */
   zone_name: string;
+  /** ISO timestamp for when the record was created */
   created_on: string;
+  /** ISO timestamp for the last modification */
   modified_on: string;
 }
 
@@ -22,11 +33,17 @@ export interface DNSRecord {
  * flags such as `paused` and `development_mode`.
  */
 export interface Zone {
+  /** Cloudflare zone id */
   id: string;
+  /** Zone name, typically the domain */
   name: string;
+  /** Zone status (active, pending, etc.) */
   status: string;
+  /** Whether the zone is paused on Cloudflare */
   paused: boolean;
+  /** Zone type (e.g., 'full') */
   type: string;
+  /** Development mode flag (in seconds or 0) */
   development_mode: number;
 }
 
@@ -43,14 +60,23 @@ export type EncryptionAlgorithm = typeof ENCRYPTION_ALGORITHMS[number];
  * the algorithm/iterations/keyLength describe the key derivation config.
  */
 export interface ApiKey {
+  /** Locally generated id for the stored API key */
   id: string;
+  /** A friendly label for the api key */
   label: string;
+  /** Base64-encoded ciphertext of the API key */
   encryptedKey: string;
+  /** Base64-encoded PBKDF2 salt used for this key */
   salt: string;
+  /** Base64-encoded IV used for encryption */
   iv: string;
+  /** Number of PBKDF2 iterations used when the key was created */
   iterations: number;
+  /** Key length in bits */
   keyLength: number;
+  /** Encryption algorithm used for this key */
   algorithm: EncryptionAlgorithm;
+  /** ISO timestamp when the key was created */
   createdAt: string;
   /** Optional email for global API key authentication */
   email?: string;
@@ -76,6 +102,9 @@ export type RecordType =
   | 'PTR'
   | 'CAA';
 
+/**
+ * Supported record types used across the UI and validation schema.
+ */
 export const RECORD_TYPES: RecordType[] = [
   'A',
   'AAAA',
@@ -88,5 +117,8 @@ export const RECORD_TYPES: RecordType[] = [
   'CAA'
 ];
 
+/**
+ * TTL presets used in the UI for quick selection (seconds or 'auto')
+ */
 export const TTL_PRESETS = ['auto', 300, 900, 3600, 86400] as const;
 export type TTLValue = typeof TTL_PRESETS[number];

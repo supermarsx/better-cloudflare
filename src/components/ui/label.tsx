@@ -1,3 +1,7 @@
+/**
+ * Styled label element and helper used for consistent text labels next to
+ * form fields.
+ */
 import * as React from "react"
 import * as LabelPrimitive from "@radix-ui/react-label"
 import { cva, type VariantProps } from "class-variance-authority"

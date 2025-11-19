@@ -10,6 +10,15 @@ const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
  * middleware in the pipeline to convert exceptions into HTTP responses.
  */
 export function errorHandler(
+  /**
+   * Error handler middleware for express.
+   *
+   * @param err - error object thrown by route handlers/middleware
+   * @param _req - express request
+   * @param res - express response
+   * @param _next - express next function (currently unused)
+   * @returns void
+   */
   err: unknown,
   _req: Request,
   res: Response,

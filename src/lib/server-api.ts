@@ -49,6 +49,9 @@ export class ServerAPI {
    * Returns 200 if verification succeeded.
    */
   static verifyToken() {
+    /**
+     * @returns express RequestHandler that verifies the provided credentials
+     */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.verifyToken();
@@ -60,6 +63,9 @@ export class ServerAPI {
    * Handler to list the zones reachable by the provided credentials.
    */
   static getZones() {
+    /**
+     * @returns express RequestHandler that lists zones for the credentials
+     */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       const zones = await client.getZones();
@@ -71,6 +77,10 @@ export class ServerAPI {
    * Handler to return DNS records for the requested zone.
    */
   static getDNSRecords() {
+    /**
+     * @returns express RequestHandler that returns DNS records for a zone
+     * @param req.params.zone - zone id used to select the records
+     */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       const records = await client.getDNSRecords(req.params.zone);
@@ -83,6 +93,9 @@ export class ServerAPI {
    * `dnsRecordSchema` and returns the newly created DNS record.
    */
   static createDNSRecord() {
+    /**
+     * @returns express RequestHandler that validates and creates a DNS record
+     */
     return async (req: Request, res: Response) => {
       const parsed = dnsRecordSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -107,6 +120,9 @@ export class ServerAPI {
    * `dnsRecordSchema` and returns the updated record.
    */
   static updateDNSRecord() {
+    /**
+     * @returns express RequestHandler that validates and updates a DNS record
+     */
     return async (req: Request, res: Response) => {
       const parsed = dnsRecordSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -131,6 +147,9 @@ export class ServerAPI {
    * Handler to delete a DNS record and respond with { success: true }
    */
   static deleteDNSRecord() {
+    /**
+     * @returns express RequestHandler that deletes a DNS record
+     */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.deleteDNSRecord(req.params.zone, req.params.id);

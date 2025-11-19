@@ -1,3 +1,8 @@
+/**
+ * Simple import dialog to paste JSON payloads and import DNS records into the
+ * current zone. This component is a light overlay that validates JSON
+ * client-side and forwards the payload to the parent for processing.
+ */
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -10,10 +15,15 @@ import { Upload } from 'lucide-react';
  * text.
  */
 export interface ImportRecordsDialogProps {
+  /** Whether the dialog is open */
   open: boolean;
+  /** Callback invoked when the dialog open state changes */
   onOpenChange: (open: boolean) => void;
+  /** The JSON data being imported */
   data: string;
+  /** Callback when the import data field changes */
   onDataChange: (val: string) => void;
+  /** Callback to trigger the import */
   onImport: () => void;
 }
 

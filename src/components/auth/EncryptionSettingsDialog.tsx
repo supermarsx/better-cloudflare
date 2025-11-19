@@ -1,3 +1,8 @@
+/**
+ * UI dialog allowing the user to configure encryption parameters used by the
+ * `CryptoManager` and to run a performance benchmark of the configured
+ * PBKDF2 iteration count.
+ */
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,12 +21,19 @@ import { Settings } from 'lucide-react';
  * PBKDF2 iterations, key length and algorithm for encrypting API keys.
  */
 export interface EncryptionSettingsDialogProps {
+  /** Whether the dialog is open */
   open: boolean;
+  /** Callback invoked when the open state changes */
   onOpenChange: (open: boolean) => void;
+  /** Current encryption settings */
   settings: EncryptionConfig;
+  /** Update callback to modify the settings object */
   onSettingsChange: (settings: EncryptionConfig) => void;
+  /** Run a CPU benchmark with the settings */
   onBenchmark: () => void;
+  /** Apply the updated settings */
   onUpdate: () => void;
+  /** Latest benchmark result in ms, or null when none has been run */
   benchmarkResult: number | null;
 }
 

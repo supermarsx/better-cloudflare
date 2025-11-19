@@ -75,6 +75,18 @@ const addToRemoveQueue = (toastId: string) => {
  * - DISMISS_TOAST: schedule a toast for removal and mark its open state
  * - REMOVE_TOAST: remove toast from state
  */
+/**
+ * Reducer implementing the core toast state transitions for the in-memory
+ * toast manager. The reducer supports the following actions:
+ * - ADD_TOAST: add a new toast to the list
+ * - UPDATE_TOAST: patch an existing toast
+ * - DISMISS_TOAST: schedule a toast for removal and mark its open state
+ * - REMOVE_TOAST: remove toast from state
+ *
+ * @param state - current toast state
+ * @param action - action to apply
+ * @returns new state after applying the action
+ */
 export const reducer = (state: State, action: Action): State => {
   switch (action.type) {
     case "ADD_TOAST":
@@ -201,6 +213,9 @@ function useToast() {
     // run only once on mount/unmount
   }, [])
 
+  /**
+   * @returns {object} an object containing `toasts`, `toast` and `dismiss` helpers
+   */
   return {
     ...state,
     toast,

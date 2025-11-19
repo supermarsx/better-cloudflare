@@ -1,3 +1,10 @@
+/**
+ * Client-side server API wrapper
+ *
+ * This module implements a small helper `ServerClient` that communicates with
+ * the local API proxy server and handles timeouts, request headers and
+ * JSON parsing with reasonable defaults.
+ */
 import type { DNSRecord, Zone } from '@/types/dns';
 import { getEnv } from './env';
 
@@ -10,6 +17,10 @@ const DEFAULT_TIMEOUT = 10_000;
  *
  * If an email is passed we use `x-auth-key` and `x-auth-email` custom headers
  * otherwise we use the `Authorization: Bearer <token>` pattern.
+ *
+ * @param key - API key or token
+ * @param email - optional email in case of key+email authentication
+ * @returns HeadersInit object ready to be used in fetch requests
  */
 function authHeaders(key: string, email?: string): HeadersInit {
   if (email) {
@@ -25,10 +36,16 @@ function authHeaders(key: string, email?: string): HeadersInit {
   };
 }
 
+ 
 /**
  * Client for communicating with the local server API that proxies requests
  * to Cloudflare. The client handles authorization headers and JSON parsing
  * of responses and provides higher-level convenience methods.
+ *
+ * @param apiKey - API key or token to be used for requests
+ * @param baseUrl - Base URL for the server API (includes `/api` path)
+ * @param email - optional email to be used in key+email auth
+ * @param timeoutMs - request timeout in milliseconds
  */
 export class ServerClient {
   constructor(
@@ -52,8 +69,12 @@ export class ServerClient {
    * - Parses JSON responses, otherwise returns undefined
    * - On error attempts to parse response body for additional details
    *
-   * @param endpoint - API endpoint path (prefixed by baseUrl)
-   * @param options - optional fetch options: method, body, signal
+   * @param endpoint - API endpoint path (prefixed by baseUrl). Example: `/zones`
+   * @param options - optional fetch options: method, body and signal
+   * @param options.method - HTTP method (GET/POST/PUT/DELETE)
+   * @param options.body - request body which will be JSON encoded
+   * @param options.signal - optional AbortSignal to cancel the request
+   * @returns parsed JSON payload as type T, or undefined for non-JSON responses
    */
   private async request<T>(
     endpoint: string,
@@ -137,6 +158,9 @@ export class ServerClient {
 
   /**
    * Verify credentials by calling the /verify-token endpoint.
+    *
+    * @param signal - optional AbortSignal to cancel the request
+    * @returns Promise that resolves when verification succeeded
    */
   async verifyToken(signal?: AbortSignal): Promise<void> {
     await this.request('/verify-token', { method: 'POST', signal });
@@ -144,6 +168,9 @@ export class ServerClient {
 
   /**
    * Get all zones associated with the account/token.
+    *
+    * @param signal - optional AbortSignal to cancel the request
+    * @returns an array of Zone objects
    */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     return this.request('/zones', { signal });
@@ -151,6 +178,10 @@ export class ServerClient {
 
   /**
    * Retrieve DNS records for the provided zone id.
+    *
+    * @param zoneId - the id of the zone to fetch records for
+    * @param signal - optional AbortSignal
+    * @returns a list of DNSRecord objects
    */
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
     return this.request(`/zones/${zoneId}/dns_records`, { signal });
@@ -158,6 +189,11 @@ export class ServerClient {
 
   /**
    * Create a new DNS record via the server API.
+    *
+    * @param zoneId - id of the zone to create the record in
+    * @param record - partial DNS record data to submit
+    * @param signal - optional AbortSignal
+    * @returns the created DNSRecord as returned by the API
    */
   async createDNSRecord(
     zoneId: string,
@@ -173,6 +209,12 @@ export class ServerClient {
 
   /**
    * Update an existing DNS record via the server API.
+    *
+    * @param zoneId - id of the zone containing the record
+    * @param recordId - id of the record to update
+    * @param record - partial record fields to update
+    * @param signal - optional AbortSignal
+    * @returns the updated DNSRecord
    */
   async updateDNSRecord(
     zoneId: string,
@@ -189,6 +231,11 @@ export class ServerClient {
 
   /**
    * Delete a DNS record via the server API.
+    *
+    * @param zoneId - id of the zone containing the record
+    * @param recordId - id of the record to delete
+    * @param signal - optional AbortSignal
+    * @returns void
    */
   async deleteDNSRecord(
     zoneId: string,

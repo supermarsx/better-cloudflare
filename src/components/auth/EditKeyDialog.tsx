@@ -1,3 +1,7 @@
+/**
+ * Modal dialog to edit metadata for an existing encrypted API key and to
+ * optionally rotate its encryption password.
+ */
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,16 +13,27 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
  * rotations for an API key.
  */
 export interface EditKeyDialogProps {
+  /** Whether dialog is open */
   open: boolean;
+  /** Callback for open state changes */
   onOpenChange: (open: boolean) => void;
+  /** Key label */
   label: string;
+  /** Label change callback */
   onLabelChange: (val: string) => void;
+  /** Optional account email */
   email: string;
+  /** Email change callback */
   onEmailChange: (val: string) => void;
+  /** Current password required to rotate encryption */
   currentPassword: string;
+  /** Current password change callback */
   onCurrentPasswordChange: (val: string) => void;
+  /** New password for rotation (optional) */
   newPassword: string;
+  /** New password change callback */
   onNewPasswordChange: (val: string) => void;
+  /** Callback invoked to save updates */
   onSave: () => void;
 }
 

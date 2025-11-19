@@ -1,3 +1,7 @@
+/**
+ * UI component rendering a single DNS record row and optional inline
+ * editor allowing update and deletion of the record.
+ */
 import { useState, useEffect } from 'react';
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
@@ -14,11 +18,17 @@ import { Edit2, Trash2, Save, X } from 'lucide-react';
  * edits a DNS record.
  */
 export interface RecordRowProps {
+  /** The DNS record to display or edit */
   record: DNSRecord;
+  /** Whether the row is currently in edit mode */
   isEditing: boolean;
+  /** Callback invoked to transition into edit mode */
   onEdit: () => void;
+  /** Save callback after editing; receives the updated record */
   onSave: (record: DNSRecord) => void;
+  /** Cancel editing and revert changes */
   onCancel: () => void;
+  /** Remove the record */
   onDelete: () => void;
 }
 

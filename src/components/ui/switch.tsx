@@ -1,3 +1,6 @@
+/**
+ * Toggle switch primitive used for boolean settings in the UI.
+ */
 import * as React from "react"
 import * as SwitchPrimitives from "@radix-ui/react-switch"
 

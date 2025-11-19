@@ -1,3 +1,7 @@
+/**
+ * Dialog used to collect DNS record properties required to create a new
+ * record via the API.
+ */
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,11 +18,17 @@ import { Plus } from 'lucide-react';
  * new DNS record (type, name, content, ttl, etc.).
  */
 export interface AddRecordDialogProps {
+  /** Whether the dialog is currently open */
   open: boolean;
+  /** Callback invoked when open state changes (open/close) */
   onOpenChange: (open: boolean) => void;
+  /** Working DNS record object for the form */
   record: Partial<DNSRecord>;
+  /** Called when fields in the form change with the updated record */
   onRecordChange: (record: Partial<DNSRecord>) => void;
+  /** Called to create the new record */
   onAdd: () => void;
+  /** Optional name of the zone to display in the dialog */
   zoneName?: string;
 }
 

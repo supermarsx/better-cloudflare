@@ -27,6 +27,13 @@ const DEBUG = getEnvBool('DEBUG_CF_API', 'VITE_DEBUG_CF_API');
 export class CloudflareAPI {
   private client: Cloudflare;
 
+  /**
+   * Create a Cloudflare API client for the given credentials.
+   *
+   * @param apiKey - API token or global API key
+   * @param baseUrl - Optional Cloudflare API base (defaults to CLOUDFLARE_API_BASE)
+   * @param email - Optional email for API key authentication (used with apiKey)
+   */
   constructor(
     apiKey: string,
     baseUrl: string = getEnv(
@@ -50,6 +57,8 @@ export class CloudflareAPI {
       });
     }
   }
+
+
 
   /**
    * Log the outgoing request when DEBUG is enabled.

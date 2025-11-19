@@ -1,3 +1,8 @@
+/**
+ * UI controls to import and export DNS records for the selected zone.
+ * This component exposes actions and a modal allowing the user to import
+ * JSON/CSV/BIND data.
+ */
 import type { ChangeEvent } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -10,13 +15,21 @@ import { Upload, Download } from 'lucide-react';
  * the current zone or export the records in a selected format.
  */
 interface ImportExportDialogProps {
+  /** Whether the dialog is open */
   open: boolean;
+  /** Callback invoked when the dialog open state changes */
   onOpenChange: (open: boolean) => void;
+  /** The raw data being imported */
   importData: string;
+  /** Expected import format */
   importFormat: 'json' | 'csv' | 'bind';
+  /** Callback invoked when user edits the import data */
   onImportDataChange: (data: string) => void;
+  /** Callback invoked when user selects a different import format */
   onImportFormatChange: (format: 'json' | 'csv' | 'bind') => void;
+  /** Callback invoked to perform the import */
   onImport: () => void;
+  /** Callback to export current records using the selected format */
   onExport: (format: 'json' | 'csv' | 'bind') => void;
 }
 

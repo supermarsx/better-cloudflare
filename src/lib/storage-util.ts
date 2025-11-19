@@ -41,6 +41,12 @@ class MemoryStorage implements StorageLike {
  * for other modules.
  */
 export function getStorage(storage?: StorageLike): StorageLike {
+  /**
+   * Select the storage to use.
+   *
+   * @param storage - optional custom StorageLike
+   * @returns the chosen StorageLike implementation
+   */
   if (storage) return storage;
   try {
     if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {

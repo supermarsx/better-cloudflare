@@ -1,3 +1,6 @@
+/**
+ * Select UI primitive based on Radix.Select and decorated with app styles.
+ */
 import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import { Check, ChevronDown, ChevronUp } from "lucide-react"
