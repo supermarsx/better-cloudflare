@@ -1,6 +1,14 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 
+/**
+ * Combine class names in a way that's compatible with Tailwind CSS
+ * - Uses `clsx` to concatenate class names
+ * - Uses `tailwind-merge` to collapse duplicate/conflicting classes
+ *
+ * @param inputs - one or more values supported by `clsx`
+ * @returns a merged class name string
+ */
 export function cn(
   ...inputs: ClassValue[]
 ) {
@@ -9,6 +17,14 @@ export function cn(
   );
 }
 
+/**
+ * Generate a v4 UUID.
+ *
+ * If crypto.randomUUID is available use it, otherwise construct a UUID from
+ * secure random bytes.
+ *
+ * @returns RFC4122-compliant v4 UUID string
+ */
 export function generateUUID(): string {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()

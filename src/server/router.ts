@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { ServerAPI } from '../lib/server-api';
 import { asyncHandler } from '../lib/async-handler';
 
+/**
+ * Express router wiring the API endpoints used by the client and server.
+ * The endpoints are implemented in `ServerAPI` and wrapped in `asyncHandler`
+ * to forward errors to the global error middleware.
+ */
 export const apiRouter = Router();
 
 apiRouter.post('/api/verify-token', asyncHandler(ServerAPI.verifyToken()));

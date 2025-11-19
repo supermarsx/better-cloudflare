@@ -9,6 +9,10 @@ import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
 
+/**
+ * Properties for the `RecordRow` UI component which renders and optionally
+ * edits a DNS record.
+ */
 export interface RecordRowProps {
   record: DNSRecord;
   isEditing: boolean;
@@ -18,6 +22,11 @@ export interface RecordRowProps {
   onDelete: () => void;
 }
 
+/**
+ * Render a single DNS record row. When `isEditing` is true the row
+ * renders in edit mode with inputs for each editable field; otherwise it
+ * displays the record details.
+ */
 export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelete }: RecordRowProps) {
   const [editedRecord, setEditedRecord] = useState(record);
 

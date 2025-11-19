@@ -4,6 +4,11 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Upload } from 'lucide-react';
 
+/**
+ * Props for a dialog to import JSON-formatted DNS records into the
+ * application. This is a simplified dialog used in the UI to paste JSON
+ * text.
+ */
 export interface ImportRecordsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -12,6 +17,10 @@ export interface ImportRecordsDialogProps {
   onImport: () => void;
 }
 
+/**
+ * Component rendering an Import dialog that accepts JSON payload for DNS
+ * records and invokes `onImport` when the user accepts.
+ */
 export function ImportRecordsDialog({ open, onOpenChange, data, onDataChange, onImport }: ImportRecordsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

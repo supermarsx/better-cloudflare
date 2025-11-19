@@ -1,3 +1,8 @@
+/**
+ * Client-side storage manager used for storing encrypted API keys and
+ * session metadata. This provides convenience methods to add, remove,
+ * update, and export/import encrypted data.
+ */
 import {
   ENCRYPTION_ALGORITHMS,
   type ApiKey,
@@ -15,6 +20,11 @@ interface StorageData {
   lastZone?: string;
 }
 
+/**
+ * Type guard to assert a value conforms to the StorageData interface.
+ * Useful when parsing JSON from storage and verifying shape before
+ * assigning into the in-memory representation.
+ */
 export function isStorageData(value: unknown): value is StorageData {
   if (!value || typeof value !== 'object') return false;
   const obj = value as {
@@ -51,6 +61,12 @@ export function isStorageData(value: unknown): value is StorageData {
   });
 }
 
+/**
+ * Manage API keys persisted in storage. Keys are stored encrypted with a
+ * password passphrase; the encryption metadata (salt, iv, algorithm)
+ * is stored alongside encrypted blobs. This manager provides helpers to
+ * add keys, retrieve decrypted keys, and manipulate the local session.
+ */
 export class StorageManager {
   private data: StorageData = { apiKeys: [] };
   private storage: StorageLike;
@@ -62,6 +78,9 @@ export class StorageManager {
     this.load();
   }
 
+  /**
+   * Load persisted storage data from the configured StorageLike instance.
+   */
   private load(): void {
     try {
       const stored = this.storage.getItem(STORAGE_KEY);
@@ -82,6 +101,9 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Persist the in-memory data to storage as JSON.
+   */
   private save(): void {
     try {
       this.storage.setItem(STORAGE_KEY, JSON.stringify(this.data));
@@ -90,6 +112,16 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Add a new API key: encrypts the provided apiKey using `password` and
+   * stores the resulting metadata. Returns the locally generated id.
+   *
+   * @param label - a friendly label for the API key
+   * @param apiKey - the raw API key/token to encrypt and store
+   * @param password - passphrase used to encrypt the key
+   * @param email - optional email (when using key+email auth)
+   * @returns generated API key id
+   */
   async addApiKey(label: string, apiKey: string, password: string, email?: string): Promise<string> {
     const { encrypted, salt, iv } = await this.crypto.encrypt(apiKey, password);
     const config = this.crypto.getConfig();
@@ -113,10 +145,20 @@ export class StorageManager {
     return keyData.id;
   }
 
+  /**
+   * Return a copy of all stored API keys (metadata only, encrypted key
+   * content is still encrypted in the returned data).
+   */
   getApiKeys(): ApiKey[] {
     return [...this.data.apiKeys];
   }
 
+  /**
+   * Attempt to decrypt an API key by id using `password`.
+   *
+   * If decryption fails (wrong password or id not found) this returns
+   * `null` instead of throwing to simplify UI handling.
+   */
   async getDecryptedApiKey(id: string, password: string): Promise<{ key: string; email?: string } | null> {
     const keyData = this.data.apiKeys.find(k => k.id === id);
     if (!keyData) return null;
@@ -142,6 +184,11 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Update an API key record. Supports renaming, changing the associated
+   * email, and rotating the stored password (re-encrypts the key using the
+   * new password - `currentPassword` is required for rotation).
+   */
   async updateApiKey(
     id: string,
     updates: {
@@ -201,6 +248,10 @@ export class StorageManager {
     this.save();
   }
 
+  /**
+   * Remove an API key by id and clear the current session if it referenced
+   * the removed key.
+   */
   removeApiKey(id: string): void {
     this.data.apiKeys = this.data.apiKeys.filter(k => k.id !== id);
     if (this.data.currentSession === id) {
@@ -209,30 +260,49 @@ export class StorageManager {
     this.save();
   }
 
+  /**
+   * Set the active session to the provided API key id.
+   */
   setCurrentSession(id: string): void {
     this.data.currentSession = id;
     this.save();
   }
 
+  /**
+   * Read the currently active session id.
+   */
   getCurrentSession(): string | undefined {
     return this.data.currentSession;
   }
 
+  /**
+   * Clear the active session and last zone stored for the session.
+   */
   clearSession(): void {
     this.data.currentSession = undefined;
     this.data.lastZone = undefined;
     this.save();
   }
 
+  /**
+   * Keep track of the last selected zone for UX convenience.
+   */
   setLastZone(zoneId: string): void {
     this.data.lastZone = zoneId;
     this.save();
   }
 
+  /**
+   * Get the last selected zone id if present.
+   */
   getLastZone(): string | undefined {
     return this.data.lastZone;
   }
 
+  /**
+   * Export the storage contents as a JSON string including the current
+   * encryption configuration.
+   */
   exportData(): string {
     return JSON.stringify(
       { ...this.data, encryption: this.crypto.getConfig() },
@@ -241,6 +311,13 @@ export class StorageManager {
     );
   }
 
+  /**
+   * Import previously exported JSON data into storage after validating
+   * the expected shape. This will replace the in-memory storage contents
+   * and persist them.
+   *
+   * @param jsonData - exported JSON string produced by `exportData()`
+   */
   importData(jsonData: string): void {
     let imported: unknown;
     try {

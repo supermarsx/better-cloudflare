@@ -2,8 +2,17 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Props for the Input component, which are identical to native
+ * `input` attributes. The component adds consistent styling used across
+ * the design system.
+ */
 export type InputProps = React.InputHTMLAttributes<HTMLInputElement>
 
+/**
+ * Input component applying consistent styling and forwarding refs/props to
+ * a native `input` element.
+ */
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ className, type, ...props }, ref) => {
     return (

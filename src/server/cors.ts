@@ -1,6 +1,14 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getEnv } from '../lib/env.ts';
 
+/**
+ * Build a CORS middleware suitable for the server. The function reads
+ * `ALLOWED_ORIGINS` from environment (supporting Vite-style `VITE_ALLOWED_ORIGINS`)
+ * and allows either a wildcard `*` or a whitelist of origins separated by
+ * commas.
+ *
+ * @returns express middleware handling CORS headers and preflight requests
+ */
 export function getCorsMiddleware() {
   const env = getEnv('ALLOWED_ORIGINS', 'VITE_ALLOWED_ORIGINS', '*')!;
   const allowed = new Set(

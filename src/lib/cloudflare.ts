@@ -1,3 +1,14 @@
+/**
+ * Cloudflare API wrapper
+ *
+ * This module provides a minimal wrapper around the Cloudflare SDK that
+ * exposes the operations required by the application: listing zones and DNS
+ * records, and creating/updating/deleting DNS records.
+ *
+ * It consolidates debug logging and request/response inspection behind a
+ * DEBUG flag and re-exports a typed `CloudflareAPI` class with convenience
+ * helper methods.
+ */
 import 'cloudflare/shims/web';
 import Cloudflare from 'cloudflare';
 import type { DNSRecord, Zone } from '@/types/dns';
@@ -6,6 +17,13 @@ import { getEnv, getEnvBool } from './env';
 const DEFAULT_CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 const DEBUG = getEnvBool('DEBUG_CF_API', 'VITE_DEBUG_CF_API');
 
+/**
+ * Client to interact with the Cloudflare REST API.
+ *
+ * The class wraps the official `cloudflare` library instance and exposes a
+ * small, typed surface used by the app. Each method returns typed records or
+ * throws on error.
+ */
 export class CloudflareAPI {
   private client: Cloudflare;
 
@@ -33,6 +51,12 @@ export class CloudflareAPI {
     }
   }
 
+  /**
+   * Log the outgoing request when DEBUG is enabled.
+   *
+   * @param path - relative path of the request
+   * @param options - optional request metadata such as method and body
+   */
   private debugRequest(path: string, options?: { method?: string; body?: unknown }) {
     if (!DEBUG) return;
     console.debug('CF API request:', {
@@ -42,11 +66,24 @@ export class CloudflareAPI {
     });
   }
 
+  /**
+   * Log the response payload when DEBUG is enabled.
+   *
+   * @param data - the response data to log
+   */
   private debugResponse(data: unknown) {
     if (!DEBUG) return;
     console.debug('CF API response:', data);
   }
 
+  /**
+   * Build a Cloudflare-compatible parameter object for record creation and
+   * update endpoints. Fields with `undefined` values are omitted.
+   *
+   * @param zoneId - Cloudflare zone identifier
+   * @param record - partial DNSRecord with fields to send
+   * @returns the params object suitable for the Cloudflare SDK
+   */
   private buildRecordParams(zoneId: string, record: Partial<DNSRecord>) {
     const params: Record<string, unknown> = {
       zone_id: zoneId,
@@ -63,6 +100,12 @@ export class CloudflareAPI {
     return params;
   }
 
+  /**
+   * List all zones available to the configured account/token.
+   *
+   * @param signal - optional AbortSignal to cancel the request
+   * @returns an array of Zone objects
+   */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     if (DEBUG) console.debug('getZones');
     this.debugRequest('/zones');
@@ -74,6 +117,13 @@ export class CloudflareAPI {
     return zones;
   }
 
+  /**
+   * List DNS records for a specific zone.
+   *
+   * @param zoneId - the id of the zone to list records for
+   * @param signal - optional AbortSignal to cancel the request
+   * @returns a list of DNSRecord objects
+   */
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
     if (DEBUG) console.debug('getDNSRecords', { zoneId });
     this.debugRequest(`/zones/${zoneId}/dns_records`);
@@ -85,6 +135,14 @@ export class CloudflareAPI {
     return records;
   }
 
+  /**
+   * Create a new DNS record in the specified zone.
+   *
+   * @param zoneId - the Cloudflare zone id
+   * @param record - partial DNS record object with required fields
+   * @param signal - optional AbortSignal to cancel the request
+   * @returns the created DNSRecord
+   */
   async createDNSRecord(zoneId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
     if (DEBUG) console.debug('createDNSRecord', { zoneId, record });
     this.debugRequest(`/zones/${zoneId}/dns_records`, {
@@ -97,6 +155,15 @@ export class CloudflareAPI {
     return result;
   }
 
+  /**
+   * Update an existing DNS record.
+   *
+   * @param zoneId - zone containing the record
+   * @param recordId - the id of the DNS record to update
+   * @param record - fields to update
+   * @param signal - optional AbortSignal
+   * @returns the updated DNSRecord
+   */
   async updateDNSRecord(zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> {
     if (DEBUG) console.debug('updateDNSRecord', { zoneId, recordId, record });
     this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, {
@@ -109,6 +176,13 @@ export class CloudflareAPI {
     return result;
   }
 
+  /**
+   * Delete a DNS record.
+   *
+   * @param zoneId - zone containing the record
+   * @param recordId - the id of the DNS record to delete
+   * @param signal - optional AbortSignal
+   */
   async deleteDNSRecord(zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> {
     if (DEBUG) console.debug('deleteDNSRecord', { zoneId, recordId });
     this.debugRequest(`/zones/${zoneId}/dns_records/${recordId}`, { method: 'DELETE' });
@@ -116,6 +190,14 @@ export class CloudflareAPI {
     this.debugResponse({ deleted: recordId });
   }
 
+  /**
+   * Verify a provided token or key by calling the token verification endpoint.
+   *
+   * This method can be used to check whether the provided credentials are
+   * valid for subsequent requests.
+   *
+   * @param signal - optional AbortSignal
+   */
   async verifyToken(signal?: AbortSignal): Promise<void> {
     if (DEBUG) console.debug('verifyToken');
     this.debugRequest('/user/tokens/verify');

@@ -5,6 +5,12 @@ const DEFAULT_BASE =
   getEnv('SERVER_API_BASE', 'VITE_SERVER_API_BASE', 'http://localhost:8787/api')!;
 const DEFAULT_TIMEOUT = 10_000;
 
+/**
+ * Build headers used for authorization toward our server API.
+ *
+ * If an email is passed we use `x-auth-key` and `x-auth-email` custom headers
+ * otherwise we use the `Authorization: Bearer <token>` pattern.
+ */
 function authHeaders(key: string, email?: string): HeadersInit {
   if (email) {
     return {
@@ -19,6 +25,11 @@ function authHeaders(key: string, email?: string): HeadersInit {
   };
 }
 
+/**
+ * Client for communicating with the local server API that proxies requests
+ * to Cloudflare. The client handles authorization headers and JSON parsing
+ * of responses and provides higher-level convenience methods.
+ */
 export class ServerClient {
   constructor(
     private apiKey: string,
@@ -27,10 +38,23 @@ export class ServerClient {
     private timeoutMs: number = DEFAULT_TIMEOUT,
   ) {}
 
+  /**
+   * Build headers for requests using the instance apiKey/email.
+   */
   private headers(): HeadersInit {
     return authHeaders(this.apiKey, this.email);
   }
 
+  /**
+   * Internal helper for performing HTTP requests.
+   *
+   * - Handles timeout via AbortController when a `signal` is not provided
+   * - Parses JSON responses, otherwise returns undefined
+   * - On error attempts to parse response body for additional details
+   *
+   * @param endpoint - API endpoint path (prefixed by baseUrl)
+   * @param options - optional fetch options: method, body, signal
+   */
   private async request<T>(
     endpoint: string,
     { 
@@ -111,18 +135,30 @@ export class ServerClient {
     }
   }
 
+  /**
+   * Verify credentials by calling the /verify-token endpoint.
+   */
   async verifyToken(signal?: AbortSignal): Promise<void> {
     await this.request('/verify-token', { method: 'POST', signal });
   }
 
+  /**
+   * Get all zones associated with the account/token.
+   */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     return this.request('/zones', { signal });
   }
 
+  /**
+   * Retrieve DNS records for the provided zone id.
+   */
   async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
     return this.request(`/zones/${zoneId}/dns_records`, { signal });
   }
 
+  /**
+   * Create a new DNS record via the server API.
+   */
   async createDNSRecord(
     zoneId: string,
     record: Partial<DNSRecord>,
@@ -135,6 +171,9 @@ export class ServerClient {
     });
   }
 
+  /**
+   * Update an existing DNS record via the server API.
+   */
   async updateDNSRecord(
     zoneId: string,
     recordId: string,
@@ -148,6 +187,9 @@ export class ServerClient {
     });
   }
 
+  /**
+   * Delete a DNS record via the server API.
+   */
   async deleteDNSRecord(
     zoneId: string,
     recordId: string,

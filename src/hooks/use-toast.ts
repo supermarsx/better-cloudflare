@@ -5,6 +5,11 @@ import type {
   ToastProps,
 } from "@/components/ui/toast"
 
+/**
+ * Small in-memory toast manager used by the UI. It supports adding,
+ * updating, dismissing and removing toasts and provides a `useToast` hook
+ * so components can subscribe to updates.
+ */
 const TOAST_LIMIT = 1
 const TOAST_REMOVE_DELAY = 5000
 
@@ -62,6 +67,14 @@ const addToRemoveQueue = (toastId: string) => {
   toastTimeouts.set(toastId, timeout)
 }
 
+/**
+ * Reducer implementing the core toast state transitions for the in-memory
+ * toast manager. The reducer supports the following actions:
+ * - ADD_TOAST: add a new toast to the list
+ * - UPDATE_TOAST: patch an existing toast
+ * - DISMISS_TOAST: schedule a toast for removal and mark its open state
+ * - REMOVE_TOAST: remove toast from state
+ */
 export const reducer = (state: State, action: Action): State => {
   switch (action.type) {
     case "ADD_TOAST":
@@ -130,6 +143,12 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, "id">
 
+/**
+ * Create and dispatch a new toast.
+ *
+ * @param props - toast props such as title, description, and optional action
+ * @returns an object allowing callers to dismiss or update the toast
+ */
 function toast({ ...props }: Toast) {
   const id = genId()
 
@@ -159,6 +178,15 @@ function toast({ ...props }: Toast) {
   }
 }
 
+/**
+ * Hook for subscribing to the global toast manager.
+ *
+ * Usage:
+ * const { toasts, toast, dismiss } = useToast()
+ *
+ * This hook returns the current list of toasts and helper functions to add
+ * or dismiss toasts programmatically.
+ */
 function useToast() {
   const [state, setState] = React.useState<State>(memoryState)
 

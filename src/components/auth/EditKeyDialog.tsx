@@ -4,6 +4,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
+/**
+ * Props for the EditKeyDialog allowing label/email changes and password
+ * rotations for an API key.
+ */
 export interface EditKeyDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -18,6 +22,10 @@ export interface EditKeyDialogProps {
   onSave: () => void;
 }
 
+/**
+ * Dialog used to update key metadata and optionally rotate its encryption
+ * password (requires current password to perform rotation).
+ */
 export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email, onEmailChange, currentPassword, onCurrentPasswordChange, newPassword, onNewPasswordChange, onSave }: EditKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

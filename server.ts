@@ -1,3 +1,9 @@
+/**
+ * Server entry point. This Express app exposes the application's API for
+ * interacting with Cloudflare via a proxy and performs minimal security and
+ * rate limiting. The server is intended to be started using `node server.ts`
+ * or during development via Vite proxy-enabled setup.
+ */
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { apiRouter } from './src/server/router';

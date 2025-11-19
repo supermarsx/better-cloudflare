@@ -15,10 +15,19 @@ import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
 import { EditKeyDialog } from './EditKeyDialog';
 import type { ApiKey } from '@/types/dns';
 
+/**
+ * Props for the login form used on the main page to select and decrypt
+ * an API key and authenticate the user.
+ */
 interface LoginFormProps {
   onLogin: (apiKey: string) => void;
 }
 
+/**
+ * Login form component responsible for decrypting stored API keys and
+ * verifying them with the server. On success the decrypted key is passed
+ * via `onLogin` for the parent to use.
+ */
 export function LoginForm({ onLogin }: LoginFormProps) {
   const [selectedKeyId, setSelectedKeyId] = useState('');
   const [password, setPassword] = useState('');

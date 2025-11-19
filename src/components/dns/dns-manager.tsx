@@ -16,6 +16,9 @@ import { RecordRow } from './RecordRow';
 import { filterRecords } from './filter-records';
 import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
 
+/**
+ * Props for the `DNSManager` top-level component.
+ */
 interface DNSManagerProps {
   apiKey: string;
   email?: string;
@@ -23,6 +26,14 @@ interface DNSManagerProps {
 }
 
 
+/**
+ * DNS Manager component responsible for listing zones and DNS records and
+ * providing UI for add/import/export/update/delete operations.
+ *
+ * @param apiKey - API key used to authenticate server requests
+ * @param email - optional email when using key+email authentication
+ * @param onLogout - callback invoked when the user logs out
+ */
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>('');

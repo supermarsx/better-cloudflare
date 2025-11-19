@@ -5,6 +5,11 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Styled toast primitives used for in-app notifications. This file provides
+ * typed exports for provider, viewport and toast elements used by the
+ * global `useToast` hook.
+ */
 const ToastProvider = ToastPrimitives.Provider
 
 const ToastViewport = React.forwardRef<

@@ -122,6 +122,20 @@ npm run preview
 
 The build output is placed in the `dist` directory.
 
+## Developer Documentation (JSDoc / TypeDoc)
+
+This codebase includes TypeScript JSDoc comments and can generate developer
+documentation using TypeDoc. To generate a static site containing the API
+reference and module docs run:
+
+```bash
+npm run docs
+```
+
+This will output generated docs to the `docs/` directory. Keep JSDoc comments
+focused on describing public APIs, expected parameter types, and return
+values. For React components prefer documenting props and any callbacks.
+
 ## License
 
 This project is released under the MIT License. See [license.md](license.md) for details.

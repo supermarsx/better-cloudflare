@@ -4,6 +4,11 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Dialog primitives exposing a styled Radix dialog. The exported set of
+ * components should be used together to provide consistent styling and
+ * accessible markup for modal dialogs in the app.
+ */
 const Dialog = DialogPrimitive.Root
 
 const DialogTrigger = DialogPrimitive.Trigger

@@ -1,5 +1,9 @@
 import type { DNSRecord } from '@/types/dns';
 
+/**
+ * Parse a single CSV line into its values while handling quoted
+ * values and escaped quotes.
+ */
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -24,6 +28,13 @@ function parseCSVLine(line: string): string[] {
   return result.map((v) => v.trim());
 }
 
+/**
+ * Parse CSV text into a list of DNS records.
+ *
+ * Expected header columns (case-insensitive): Type, Name, Content, TTL,
+ * Priority, Proxied. Missing TTL/priority/proxied fields will be omitted
+ * from the returned partial record.
+ */
 export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length === 0) return [];
@@ -63,6 +74,12 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
   return records;
 }
 
+/**
+ * Parse a BIND zone file snippet into a list of DNS records. This parser is a
+ * lightweight convenience parser that expects simplified zone lines with the
+ * format: <name> <ttl> IN <type> <content>. Lines beginning with `;` or the
+ * empty line are ignored.
+ */
 export function parseBINDZone(text: string): Partial<DNSRecord>[] {
   const lines = text.trim().split(/\r?\n/);
   const records: Partial<DNSRecord>[] = [];

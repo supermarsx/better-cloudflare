@@ -11,6 +11,10 @@ import {
 } from '../../types/dns';
 import { Settings } from 'lucide-react';
 
+/**
+ * Props for the EncryptionSettingsDialog, which allows users to configure
+ * PBKDF2 iterations, key length and algorithm for encrypting API keys.
+ */
 export interface EncryptionSettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -21,6 +25,10 @@ export interface EncryptionSettingsDialogProps {
   benchmarkResult: number | null;
 }
 
+/**
+ * Dialog to configure encryption settings and run a benchmark to estimate
+ * the PBKDF2 cost for the currently selected iteration count.
+ */
 export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSettingsChange, onBenchmark, onUpdate, benchmarkResult }: EncryptionSettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -2,6 +2,19 @@ import { useCallback, useMemo } from 'react';
 import { ServerClient } from '../lib/server-client';
 import type { DNSRecord, Zone } from '../types/dns';
 
+/**
+ * React hook exposing a higher-level API for interacting with the
+ * server-proxied Cloudflare endpoints.
+ *
+ * When `apiKey` is provided the hook returns functions bound to a
+ * `ServerClient` instance. If not provided the functions will reject when
+ * called, which the UI may use to surface an error.
+ *
+ * @param apiKey - API key or token used for server-authenticated requests
+ * @param email - optional email associated with the API key
+ * @returns an object containing asynchronous helper functions for zones and
+ * DNS record operations.
+ */
 export function useCloudflareAPI(apiKey?: string, email?: string) {
   const api = useMemo(
     () => (apiKey ? new ServerClient(apiKey, undefined, email) : undefined),

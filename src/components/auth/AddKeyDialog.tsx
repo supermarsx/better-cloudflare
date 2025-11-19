@@ -5,6 +5,10 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Plus } from 'lucide-react';
 
+/**
+ * Props for the AddKeyDialog which collects an API key and encryption
+ * password to store an encrypted key in local storage.
+ */
 export interface AddKeyDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -19,6 +23,10 @@ export interface AddKeyDialogProps {
   onAdd: () => void;
 }
 
+/**
+ * Render a dialog to add a new API key. The dialog collects a label, the
+ * API key, (optionally) an associated email and an encryption password.
+ */
 export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey, onApiKeyChange, email, onEmailChange, password, onPasswordChange, onAdd }: AddKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -9,6 +9,10 @@ import type { DNSRecord, RecordType } from '@/types/dns';
 import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
 import { Plus } from 'lucide-react';
 
+/**
+ * Props for the AddRecordDialog component which collects fields to create a
+ * new DNS record (type, name, content, ttl, etc.).
+ */
 export interface AddRecordDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -18,6 +22,10 @@ export interface AddRecordDialogProps {
   zoneName?: string;
 }
 
+/**
+ * Dialog that collects fields to create a DNS record and forwards the
+ * create action via `onAdd`.
+ */
 export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, onAdd, zoneName }: AddRecordDialogProps) {
   const ttlValue = record.ttl === 1 ? 'auto' : record.ttl;
   const isCustomTTL =

@@ -8,6 +8,11 @@ import {
 } from "@/components/ui/toast"
 import { useToast } from "@/hooks/use-toast"
 
+/**
+ * Toaster component that renders the current list of toasts from the
+ * `useToast` hook. This component should be mounted once at the root of
+ * the application to ensure toast notifications appear.
+ */
 export function Toaster() {
   const { toasts } = useToast()
 

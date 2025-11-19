@@ -5,6 +5,16 @@ import { getEnvBool } from './env';
 
 const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
 
+/**
+ * Build a CloudflareAPI client from the request's authentication headers.
+ *
+ * Supports either a `Bearer <token>` authorization header or a pair of
+ * `x-auth-key` and `x-auth-email` headers. Throws a 400 error if neither
+ * method is supplied.
+ *
+ * @param req - express request object
+ * @returns an instance of CloudflareAPI configured with the appropriate creds
+ */
 function createClient(req: Request): CloudflareAPI {
   const auth = req.header('authorization');
   if (auth?.startsWith('Bearer ')) {
@@ -24,7 +34,20 @@ function createClient(req: Request): CloudflareAPI {
   throw err;
 }
 
+/**
+ * HTTP handlers used by the server API.
+ *
+ * All functions are declared as static factory methods returning an
+ * express-compatible request handler (req, res) => Promise. The returned
+ * handler is used by `src/server/router` and wrapped with `asyncHandler` in
+ * order to forward exceptions to the global error middleware.
+ */
 export class ServerAPI {
+  /**
+   * Handler to verify that the provided credentials are valid with Cloudflare.
+   *
+   * Returns 200 if verification succeeded.
+   */
   static verifyToken() {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
@@ -33,6 +56,9 @@ export class ServerAPI {
     };
   }
 
+  /**
+   * Handler to list the zones reachable by the provided credentials.
+   */
   static getZones() {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
@@ -41,6 +67,9 @@ export class ServerAPI {
     };
   }
 
+  /**
+   * Handler to return DNS records for the requested zone.
+   */
   static getDNSRecords() {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
@@ -49,6 +78,10 @@ export class ServerAPI {
     };
   }
 
+  /**
+   * Handler to create a DNS record. It validates the request body with
+   * `dnsRecordSchema` and returns the newly created DNS record.
+   */
   static createDNSRecord() {
     return async (req: Request, res: Response) => {
       const parsed = dnsRecordSchema.safeParse(req.body);
@@ -69,6 +102,10 @@ export class ServerAPI {
     };
   }
 
+  /**
+   * Handler to update an existing DNS record. Validates the body with
+   * `dnsRecordSchema` and returns the updated record.
+   */
   static updateDNSRecord() {
     return async (req: Request, res: Response) => {
       const parsed = dnsRecordSchema.safeParse(req.body);
@@ -90,6 +127,9 @@ export class ServerAPI {
     };
   }
 
+  /**
+   * Handler to delete a DNS record and respond with { success: true }
+   */
   static deleteDNSRecord() {
     return async (req: Request, res: Response) => {
       const client = createClient(req);

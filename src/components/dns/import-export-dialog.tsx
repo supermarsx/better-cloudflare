@@ -5,6 +5,10 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, Download } from 'lucide-react';
 
+/**
+ * Props for the import/export dialog used to import DNS records into
+ * the current zone or export the records in a selected format.
+ */
 interface ImportExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -16,6 +20,10 @@ interface ImportExportDialogProps {
   onExport: (format: 'json' | 'csv' | 'bind') => void;
 }
 
+/**
+ * Render an Import/Export control used by the DNS Manager for importing
+ * JSON/CSV/BIND formats or exporting the current records.
+ */
 export function ImportExportDialog({
   open,
   onOpenChange,
