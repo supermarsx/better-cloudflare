@@ -4,6 +4,7 @@
  * PBKDF2 iteration count.
  */
 import type { ChangeEvent } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,6 +16,7 @@ import {
   type EncryptionAlgorithm,
 } from '../../types/dns';
 import { Settings } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 
 /**
  * Props for the EncryptionSettingsDialog, which allows users to configure
@@ -35,13 +37,18 @@ export interface EncryptionSettingsDialogProps {
   onUpdate: () => void;
   /** Latest benchmark result in ms, or null when none has been run */
   benchmarkResult: number | null;
+  /** If OS Vault is enabled */
+  vaultEnabled: boolean;
+  /** Toggle OS Vault enable state */
+  onVaultEnabledChange: (enabled: boolean) => void;
 }
 
 /**
  * Dialog to configure encryption settings and run a benchmark to estimate
  * the PBKDF2 cost for the currently selected iteration count.
  */
-export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSettingsChange, onBenchmark, onUpdate, benchmarkResult }: EncryptionSettingsDialogProps) {
+export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSettingsChange, onBenchmark, onUpdate, benchmarkResult, vaultEnabled, onVaultEnabledChange }: EncryptionSettingsDialogProps) {
+  const [useVault, setUseVault] = useState(vaultEnabled);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
@@ -115,6 +122,10 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
             <Button onClick={onUpdate} className="flex-1">
               Update
             </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label>Enable OS Vault</Label>
+            <Switch checked={useVault} onCheckedChange={(v: boolean) => { setUseVault(v); onVaultEnabledChange(v); }} />
           </div>
           {benchmarkResult !== null && (
             <p className="text-sm text-muted-foreground">

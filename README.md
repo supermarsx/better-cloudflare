@@ -122,6 +122,13 @@ npm run preview
 
 The build output is placed in the `dist` directory.
 
+## Optional OS Vault & Passkeys
+
+When running the optional local server (`npm run server`) you can enable an OS-backed vault for in-memory secret storage. Install `keytar` and set `KEYTAR_ENABLED=1` to enable storing secrets in the OS keychain (macOS Keychain, Windows Credential Manager, or Linux Secret Service) instead of the in-memory fallback.
+
+The server also exposes simple passkey (WebAuthn) registration and authentication endpoints. These allow you to register a platform passkey for a stored key and authenticate using the passkey instead of a password. The implementation is a scaffold for local usage and demonstrates the UI flow; production readiness requires a full WebAuthn verification implementation on the server.
+
+
 ## Developer Documentation (JSDoc / TypeDoc)
 
 This codebase includes TypeScript JSDoc comments and can generate developer

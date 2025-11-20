@@ -183,8 +183,12 @@ export class ServerClient {
     * @param signal - optional AbortSignal
     * @returns a list of DNSRecord objects
    */
-  async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
-    return this.request(`/zones/${zoneId}/dns_records`, { signal });
+  async getDNSRecords(zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> {
+    const qsParts = [] as string[];
+    if (page) qsParts.push(`page=${page}`);
+    if (perPage) qsParts.push(`per_page=${perPage}`);
+    const query = qsParts.length ? `?${qsParts.join('&')}` : '';
+    return this.request(`/zones/${zoneId}/dns_records${query}`, { signal });
   }
 
   /**
@@ -203,6 +207,24 @@ export class ServerClient {
     return this.request(`/zones/${zoneId}/dns_records`, {
       method: 'POST',
       body: record,
+      signal,
+    });
+  }
+
+  /**
+   * Create multiple DNS records in a single request when available.
+   * @param zoneId - id of the zone
+   * @param records - records to create
+   */
+  async bulkCreateDNSRecords(zoneId: string, records: Partial<DNSRecord>[], dryrun?: boolean, signal?: AbortSignal): Promise<{ created: DNSRecord[]; skipped: unknown[] }> {
+    /**
+     * Create multiple DNS records in a single request when supported by the
+     * server. Optionally performs a dry-run by setting `dryrun` to true.
+     */
+    const q = dryrun ? '?dryrun=1' : '';
+    return this.request(`/zones/${zoneId}/dns_records/bulk${q}`, {
+      method: 'POST',
+      body: records,
       signal,
     });
   }
@@ -246,5 +268,72 @@ export class ServerClient {
       method: 'DELETE',
       signal,
     });
+  }
+
+  async storeVaultSecret(id: string, secret: string): Promise<void> {
+    /**
+     * Store a secret in the server-side vault. The server requires
+     * valid credentials in the request headers to protect this endpoint.
+     */
+    await this.request(`/vault/${id}`, { method: 'POST', body: { secret } });
+  }
+
+  async getVaultSecret(id: string): Promise<string | undefined> {
+    const data = await this.request(`/vault/${id}`, { method: 'GET' });
+    if (!data) return undefined;
+    return (data as { secret?: string }).secret;
+  }
+
+  async deleteVaultSecret(id: string): Promise<void> {
+    /** Delete a vault secret on the server */
+    await this.request(`/vault/${id}`, { method: 'DELETE' });
+  }
+
+  async getPasskeyRegistrationOptions(id: string): Promise<{ challenge: string }> {
+    /**
+     * Request passkey registration options (a challenge) from the server.
+     */
+    return this.request(`/passkeys/register/options/${id}`, { method: 'GET' });
+  }
+
+  async registerPasskey(id: string, attestation: unknown): Promise<void> {
+    /**
+     * Register a passkey attestation blob at the server. The server may
+     * store and/or verify the attestation. In this project the server
+     * currently stores the provided attestation and should be extended to
+     * verify it against a FIDO2 library in production deployments.
+     */
+    await this.request(`/passkeys/register/${id}`, { method: 'POST', body: attestation });
+  }
+
+  async getPasskeyAuthOptions(id: string): Promise<{ challenge: string }> {
+    /**
+     * Request passkey authentication options (a challenge) from the server.
+     */
+    return this.request(`/passkeys/authenticate/options/${id}`, { method: 'GET' });
+  }
+
+  async authenticatePasskey(id: string, assertion: unknown): Promise<{ success: boolean }> {
+    /**
+     * Submit a passkey assertion (authentication) to the server. The server
+     * should verify the assertion and respond with success. This project
+     * includes a stubbed verification; extend with proper use of FIDO2
+     * verification before production use.
+     */
+    return this.request(`/passkeys/authenticate/${id}`, { method: 'POST', body: assertion });
+  }
+
+  async exportDNSRecords(zoneId: string, format: 'json' | 'csv' | 'bind' = 'json', page?: number, perPage?: number): Promise<string> {
+    /**
+     * Export DNS records for a zone in a specific format. Supported formats
+     * are 'json', 'csv' and 'bind'. Optional pagination parameters are
+     * forwarded to the server.
+     */
+    const q: string[] = [];
+    q.push(`format=${format}`);
+    if (page) q.push(`page=${page}`);
+    if (perPage) q.push(`per_page=${perPage}`);
+    const query = q.length ? `?${q.join('&')}` : '';
+    return this.request(`/zones/${zoneId}/dns_records/export${query}`);
   }
 }

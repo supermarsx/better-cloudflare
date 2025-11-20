@@ -34,6 +34,23 @@ apiRouter.post(
   asyncHandler(ServerAPI.createDNSRecord()),
 );
 
+apiRouter.post(
+  '/api/zones/:zone/dns_records/bulk',
+  asyncHandler(ServerAPI.createBulkDNSRecords()),
+);
+apiRouter.get('/api/zones/:zone/dns_records/export', asyncHandler(ServerAPI.exportDNSRecords()));
+// Optional OS vault endpoints for storing/retrieving secrets when running a
+// local server configured to use OS keychain (via `keytar`). These endpoints
+// are intentionally minimal and require the server to be local/trusted.
+apiRouter.post('/api/vault/:id', asyncHandler(ServerAPI.storeVaultSecret()));
+apiRouter.get('/api/vault/:id', asyncHandler(ServerAPI.getVaultSecret()));
+apiRouter.delete('/api/vault/:id', asyncHandler(ServerAPI.deleteVaultSecret()));
+
+apiRouter.get('/api/passkeys/register/options/:id', asyncHandler(ServerAPI.createPasskeyRegistrationOptions()));
+apiRouter.post('/api/passkeys/register/:id', asyncHandler(ServerAPI.registerPasskey()));
+apiRouter.get('/api/passkeys/authenticate/options/:id', asyncHandler(ServerAPI.createPasskeyAuthOptions()));
+apiRouter.post('/api/passkeys/authenticate/:id', asyncHandler(ServerAPI.authenticatePasskey()));
+
 apiRouter.put(
   '/api/zones/:zone/dns_records/:id',
   asyncHandler(ServerAPI.updateDNSRecord()),

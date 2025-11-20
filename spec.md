@@ -24,6 +24,9 @@ The application stores Cloudflare credentials locally in encrypted form, and the
 13. Performance & benchmarks
 14. Testing & QA
 15. Accessibility & UX considerations
+ - Optional OS vault: The server can optionally store secrets in the OS keychain when `KEYTAR_ENABLED=1` and `keytar` is available. This provides alternative secure storage for decrypted API keys and passkey credential storage in local server environments.
+ - Passkeys (WebAuthn): The app integrates an optional passkey flow to register and authenticate using platform passkeys as an alternative to password-based decryption. The passkey flow relies on the server to save credentials and validate authentication. Password fallback remains supported.
+
 16. Internationalization & configuration
 17. Extensibility & integration points
 18. Known limitations & future work

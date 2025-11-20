@@ -21,6 +21,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [apiKey, email],
   );
 
+  // No-op placeholder to trigger build of use-cloudflare-api changes if needed.
   const verifyToken = useCallback(
     async (
       key: string = apiKey ?? '',
@@ -47,9 +48,10 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   );
 
   const getDNSRecords = useCallback(
-    (zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> => {
+    (zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> => {
       if (!api) return Promise.reject(new Error('API key not provided'));
-      return api.getDNSRecords(zoneId, signal);
+      // @ts-ignore
+      return (api as any).getDNSRecords(zoneId, page, perPage, signal);
     },
     [api],
   );
@@ -78,6 +80,63 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  const bulkCreateDNSRecords = useCallback(
+    (zoneId: string, records: Partial<DNSRecord>[], dryrun?: boolean, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error('API key not provided'));
+      // @ts-ignore - method available on ServerClient when server supports it
+      return (api as any).bulkCreateDNSRecords(zoneId, records, dryrun, signal);
+    },
+    [api],
+  );
+
+  const storeVaultSecret = useCallback((id: string, secret: string) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).storeVaultSecret(id, secret);
+  }, [api]);
+
+  const getVaultSecret = useCallback((id: string) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).getVaultSecret(id);
+  }, [api]);
+
+  const deleteVaultSecret = useCallback((id: string) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).deleteVaultSecret(id);
+  }, [api]);
+
+  const getPasskeyRegistrationOptions = useCallback((id: string) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).getPasskeyRegistrationOptions(id);
+  }, [api]);
+
+  const registerPasskey = useCallback((id: string, attestation: unknown) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).registerPasskey(id, attestation);
+  }, [api]);
+
+  const getPasskeyAuthOptions = useCallback((id: string) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).getPasskeyAuthOptions(id);
+  }, [api]);
+
+  const authenticatePasskey = useCallback((id: string, assertion: unknown) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).authenticatePasskey(id, assertion);
+  }, [api]);
+
+  const exportDNSRecords = useCallback((zoneId: string, format: 'json'|'csv'|'bind' = 'json', page?: number, perPage?: number) => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).exportDNSRecords(zoneId, format, page, perPage);
+  }, [api]);
+
   return {
     verifyToken,
     getZones,
@@ -85,5 +144,14 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     createDNSRecord,
     updateDNSRecord,
     deleteDNSRecord,
+    bulkCreateDNSRecords,
+    storeVaultSecret,
+    getVaultSecret,
+    deleteVaultSecret,
+    getPasskeyRegistrationOptions,
+    registerPasskey,
+    getPasskeyAuthOptions,
+    authenticatePasskey,
+    exportDNSRecords,
   };
 }

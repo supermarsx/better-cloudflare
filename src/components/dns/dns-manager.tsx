@@ -17,6 +17,7 @@ import { LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
 import { ImportExportDialog } from './import-export-dialog';
 import { RecordRow } from './RecordRow';
+import { FixedSizeList as List } from 'react-window';
 import { filterRecords } from './filter-records';
 import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
 
@@ -60,6 +61,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [importFormat, setImportFormat] = useState<'json' | 'csv' | 'bind'>('json');
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<RecordType | ''>('');
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(50);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(storageManager.getAutoRefreshInterval());
   
   const { toast } = useToast();
   const {
@@ -67,7 +71,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     getDNSRecords,
     createDNSRecord,
     updateDNSRecord,
+    bulkCreateDNSRecords,
     deleteDNSRecord,
+    exportDNSRecords,
   } = useCloudflareAPI(apiKey, email);
 
   const loadZones = useCallback(async (signal?: AbortSignal) => {
@@ -91,7 +97,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     try {
       setIsLoading(true);
-      const recordsData = await getDNSRecords(selectedZone, signal);
+      const recordsData = await getDNSRecords(selectedZone, page, perPage, signal);
       setRecords(recordsData);
     } catch (error) {
       toast({
@@ -103,6 +109,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setIsLoading(false);
     }
   }, [getDNSRecords, selectedZone, toast]);
+  }, [getDNSRecords, selectedZone, page, perPage, toast]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -130,6 +137,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.setLastZone(selectedZone);
     }
   }, [selectedZone]);
+
+  // Auto refresh: refresh records at the selected interval unless the user is
+  // currently editing or has modal dialogs open to avoid disrupting work.
+  useEffect(() => {
+    storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
+    if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
+    const id = setInterval(async () => {
+      if (editingRecord || showAddRecord || showImport) return;
+      const controller = new AbortController();
+      await loadRecords(controller.signal);
+    }, autoRefreshInterval);
+    return () => clearInterval(id);
+  }, [autoRefreshInterval, editingRecord, showAddRecord, showImport, loadRecords]);
 
   const handleAddRecord = async () => {
     if (!selectedZone || !newRecord.type || !newRecord.name || !newRecord.content) {
@@ -266,9 +286,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
   };
 
-  const handleImport = () => {
+  const handleImport = (providedItems?: Partial<DNSRecord>[], dryRun?: boolean) => {
     try {
       let items: Partial<DNSRecord>[] | null = null;
+      if (providedItems) items = providedItems as Partial<DNSRecord>[];
+      else {
       switch (importFormat) {
         case 'json': {
           const imported = JSON.parse(importData);
@@ -285,6 +307,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         case 'bind':
           items = parseBINDZone(importData);
           break;
+      }
       }
 
       if (!items) {
@@ -310,7 +333,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
 
       if (valid.length) {
-        setRecords([...valid, ...records]);
+        if (bulkCreateDNSRecords) {
+          try {
+            const result = await bulkCreateDNSRecords(selectedZone, valid, dryRun);
+            // Handle created and skipped results returned by server
+            const created = Array.isArray((result as any).created) ? (result as any).created : valid;
+            setRecords([...created, ...records]);
+          } catch (err) {
+            toast({
+              title: 'Error',
+              description: 'Failed to import records: ' + (err as Error).message,
+              variant: 'destructive',
+            });
+            return;
+          }
+        } else {
+          // Fall back to local creation using per-record API or local state
+          const createdRecords: DNSRecord[] = [];
+          for (const v of valid) {
+            try {
+              const r = await createDNSRecord(selectedZone, v);
+              createdRecords.push(r);
+            } catch (err) {
+              skipped++;
+            }
+          }
+          setRecords([...createdRecords, ...records]);
+        }
         setImportData('');
         setShowImport(false);
 
@@ -419,8 +468,37 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     onImportDataChange={setImportData}
                     onImportFormatChange={setImportFormat}
                     onImport={handleImport}
+                    serverExport={async (format) => {
+                      if (!selectedZone) return;
+                      try {
+                        const res = await exportDNSRecords(selectedZone, format, page, perPage);
+                        // create a blob and download
+                        const blob = new Blob([res], { type: format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${selectedZone}-records.${format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'zone'}`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        toast({ title: 'Success', description: `Server export ${format.toUpperCase()} completed` });
+                      } catch (err) {
+                        toast({ title: 'Error', description: 'Server export failed: ' + (err as Error).message, variant: 'destructive' });
+                      }
+                    }}
                     onExport={handleExport}
                   />
+                  <Select value={String(autoRefreshInterval ?? 0)} onValueChange={(v) => setAutoRefreshInterval(v ? Number(v) : null)}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Auto-refresh" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">Off</SelectItem>
+                      <SelectItem value="60000">1 min</SelectItem>
+                      <SelectItem value="300000">5 min</SelectItem>
+                      <SelectItem value="600000">10 min</SelectItem>
+                      <SelectItem value="1800000">30 min</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardHeader>
@@ -439,6 +517,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     ))}
                   </SelectContent>
                 </Select>
+                <div className="ml-4 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>Prev</Button>
+                  <div className="text-sm">Page {page}</div>
+                  <Button size="sm" variant="outline" onClick={() => setPage((p) => p + 1)}>Next</Button>
+                  <Select value={String(perPage)} onValueChange={(v) => setPerPage(Number(v) )}>
+                    <SelectTrigger className="w-28 ml-2">
+                      <SelectValue placeholder="Per page" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="25">25</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                      <SelectItem value="100">100</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               {isLoading ? (
                 <div className="text-center py-8">Loading...</div>
@@ -448,17 +541,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {filteredRecords.map((record: DNSRecord) => (
-                    <RecordRow
-                      key={record.id}
-                      record={record}
-                      isEditing={editingRecord === record.id}
-                      onEdit={() => setEditingRecord(record.id)}
-                      onSave={(updatedRecord: DNSRecord) => handleUpdateRecord(updatedRecord)}
-                      onCancel={() => setEditingRecord(null)}
-                      onDelete={() => handleDeleteRecord(record.id)}
-                    />
-                  ))}
+                  <List
+                    height={Math.min(600, filteredRecords.length * 72)}
+                    itemCount={filteredRecords.length}
+                    itemSize={72}
+                    width={'100%'}
+                  >{({ index, style }) => {
+                    const record = filteredRecords[index];
+                    return (
+                      <div style={style} key={record.id}>
+                        <RecordRow
+                          record={record}
+                          isEditing={editingRecord === record.id}
+                          onEdit={() => setEditingRecord(record.id)}
+                          onSave={(updatedRecord: DNSRecord) => handleUpdateRecord(updatedRecord)}
+                          onCancel={() => setEditingRecord(null)}
+                          onDelete={() => handleDeleteRecord(record.id)}
+                        />
+                      </div>
+                    );
+                  }}</List>
                 </div>
               )}
             </CardContent>

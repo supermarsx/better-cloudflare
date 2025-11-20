@@ -4,11 +4,15 @@
  * JSON/CSV/BIND data.
  */
 import type { ChangeEvent } from 'react';
+import { useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, Download } from 'lucide-react';
+import { parseCSVRecords, parseBINDZone } from '@/lib/dns-parsers';
+import { ImportPreviewDialog } from './ImportPreviewDialog';
+import type { DNSRecord } from '@/types/dns';
 
 /**
  * Props for the import/export dialog used to import DNS records into
@@ -28,9 +32,10 @@ interface ImportExportDialogProps {
   /** Callback invoked when user selects a different import format */
   onImportFormatChange: (format: 'json' | 'csv' | 'bind') => void;
   /** Callback invoked to perform the import */
-  onImport: () => void;
+  onImport: (items?: Partial<DNSRecord>[], dryRun?: boolean) => void;
   /** Callback to export current records using the selected format */
   onExport: (format: 'json' | 'csv' | 'bind') => void;
+  serverExport?: (format: 'json' | 'csv' | 'bind') => Promise<void>;
 }
 
 /**
@@ -45,8 +50,11 @@ export function ImportExportDialog({
   onImportDataChange,
   onImportFormatChange,
   onImport,
-  onExport
+  onExport,
+  serverExport
 }: ImportExportDialogProps) {
+  const [previewItems, setPreviewItems] = useState<Partial<DNSRecord>[]>([]);
+  const [showPreview, setShowPreview] = useState(false);
   return (
     <div className="flex gap-2">
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -86,7 +94,38 @@ export function ImportExportDialog({
                 placeholder={`Paste your ${importFormat.toUpperCase()} data here...`}
               />
             </div>
-            <Button onClick={onImport} className="w-full">
+            <Button onClick={() => {
+              // Parse and show preview based on selected import format
+              let items: Partial<Record<string, unknown>>[] | null = null;
+              try {
+                switch (importFormat) {
+                  case 'json': {
+                    const parsed = JSON.parse(importData);
+                    items = Array.isArray(parsed)
+                      ? parsed
+                      : Array.isArray(parsed.records)
+                        ? parsed.records
+                        : null;
+                    break;
+                  }
+                  case 'csv':
+                    items = parseCSVRecords ? parseCSVRecords(importData) : null;
+                    break;
+                  case 'bind':
+                    items = parseBINDZone ? parseBINDZone(importData) : null;
+                    break;
+                }
+              } catch (e) {
+                items = null;
+              }
+
+              if (!items) {
+                onImport();
+                return;
+              }
+              setPreviewItems(items as Partial<DNSRecord>[]);
+              setShowPreview(true);
+            }} className="w-full">
               Import Records
             </Button>
           </div>
@@ -103,7 +142,38 @@ export function ImportExportDialog({
           <SelectItem value="csv">CSV</SelectItem>
           <SelectItem value="bind">BIND</SelectItem>
         </SelectContent>
+      
+      <Select onValueChange={async (format: 'json' | 'csv' | 'bind') => {
+        if (serverExport) {
+          try {
+            await serverExport(format);
+          } catch (err) {
+            console.error('Server export failed', err);
+          }
+        }
+      }}>
+        <SelectTrigger className="w-28 ml-2">
+          <SelectValue placeholder="Server Export" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="json">JSON (server)</SelectItem>
+          <SelectItem value="csv">CSV (server)</SelectItem>
+          <SelectItem value="bind">BIND (server)</SelectItem>
+        </SelectContent>
       </Select>
-    </div>
+        {showPreview && (
+          <ImportPreviewDialog
+            open={showPreview}
+            onOpenChange={setShowPreview}
+            items={previewItems}
+            onConfirm={(items: Partial<DNSRecord>[], dryRun?: boolean) => {
+              // Forward parsed items and optionally run as dry-run to the caller
+              onImport(items as Partial<DNSRecord>[], dryRun);
+              setShowPreview(false);
+            }}
+            onCancel={() => setShowPreview(false)}
+          />
+        )}
+      </div>
   );
 }

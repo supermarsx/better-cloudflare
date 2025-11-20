@@ -133,11 +133,14 @@ export class CloudflareAPI {
    * @param signal - optional AbortSignal to cancel the request
    * @returns a list of DNSRecord objects
    */
-  async getDNSRecords(zoneId: string, signal?: AbortSignal): Promise<DNSRecord[]> {
+  async getDNSRecords(zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> {
     if (DEBUG) console.debug('getDNSRecords', { zoneId });
     this.debugRequest(`/zones/${zoneId}/dns_records`);
     const records: DNSRecord[] = [];
-    for await (const record of this.client.dns.records.list({ zone_id: zoneId }, { signal })) {
+    const listParams: Record<string, unknown> = { zone_id: zoneId };
+    if (page) listParams.page = page;
+    if (perPage) listParams.per_page = perPage;
+    for await (const record of this.client.dns.records.list(listParams, { signal })) {
       records.push(record as DNSRecord);
     }
     this.debugResponse(records);
@@ -210,7 +213,16 @@ export class CloudflareAPI {
   async verifyToken(signal?: AbortSignal): Promise<void> {
     if (DEBUG) console.debug('verifyToken');
     this.debugRequest('/user/tokens/verify');
-    await this.client.user.tokens.verify({ signal });
+    try {
+      // Try token verification endpoint; if it fails (e.g. using a global
+      // key with email) fall back to a lightweight call that validates
+      // credentials such as listing zones.
+      await this.client.user.tokens.verify({ signal });
+    } catch (err) {
+      this.debugResponse({ verified: false, error: (err as Error).message });
+      // fallback: try to list zones with a single page to validate creds
+      await this.client.zones.list({ page: 1, per_page: 1 }, { signal });
+    }
     this.debugResponse({ verified: true });
   }
 }

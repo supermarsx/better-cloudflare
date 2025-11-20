@@ -3,6 +3,7 @@ import { LoginForm } from '@/components/auth/login-form';
 import { DNSManager } from '@/components/dns/dns-manager';
 import { Toaster } from '@/components/ui/toaster';
 import { storageManager } from '@/lib/storage';
+import { LanguageSelector } from '@/components/ui/LanguageSelector';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -31,6 +32,9 @@ function App() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <div className="absolute top-3 right-3 z-20">
+        <LanguageSelector />
+      </div>
       {isAuthenticated ? (
         <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
       ) : (

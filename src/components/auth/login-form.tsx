@@ -12,9 +12,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { storageManager } from '@/lib/storage';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import { useToast } from '@/hooks/use-toast';
+import { storageBackend } from '@/lib/storage-util';
+import { useTranslation } from 'react-i18next';
 import { Key, Trash2, Pencil } from 'lucide-react';
 import { cryptoManager } from '@/lib/crypto';
 import { AddKeyDialog } from './AddKeyDialog';
+import { ServerClient } from '@/lib/server-client';
 import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
 import { EditKeyDialog } from './EditKeyDialog';
 import type { ApiKey } from '@/types/dns';
@@ -51,10 +54,22 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [editPassword, setEditPassword] = useState('');
   const [encryptionSettings, setEncryptionSettings] = useState(cryptoManager.getConfig());
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
+  const [passkeyRegisterLoading, setPasskeyRegisterLoading] = useState(false);
+  const [passkeyAuthLoading, setPasskeyAuthLoading] = useState(false);
   
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
   const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
+  const backend = storageBackend();
+  const { t } = useTranslation();
+  useEffect(() => {
+    if (backend !== 'indexeddb') {
+      toast({
+        title: t('Note'),
+        description: `Using ${backend} storage. IndexedDB not available or in use. Some features may be limited.`,
+      });
+    }
+  }, [backend, toast]);
 
   useEffect(() => {
     cryptoManager.reloadConfig();
@@ -159,6 +174,109 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     }
   };
 
+  const handleRegisterPasskey = async () => {
+    if (!selectedKeyId) {
+      toast({ title: 'Error', description: 'Select a key before registering a passkey', variant: 'destructive' });
+      return;
+    }
+
+    if (!password) {
+      toast({ title: 'Error', description: 'Enter your password to decrypt the key for registration', variant: 'destructive' });
+      return;
+    }
+
+    setPasskeyRegisterLoading(true);
+    try {
+      const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      if (!decrypted?.key) {
+        toast({ title: 'Error', description: 'Invalid password or corrupted key', variant: 'destructive' });
+        return;
+      }
+
+      try {
+        const sc = new ServerClient(decrypted.key, undefined, decrypted.email);
+        await sc.storeVaultSecret(selectedKeyId, decrypted.key);
+      } catch (err) {
+        toast({ title: 'Warning', description: 'Failed to store key to OS vault: ' + (err as Error).message });
+      }
+      const sc2 = new ServerClient(decrypted.key, undefined, decrypted.email);
+      const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
+      const challenge = Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0));
+      const publicKey = {
+        challenge,
+        rp: { name: 'Better Cloudflare' },
+        user: { id: Uint8Array.from(new TextEncoder().encode(selectedKeyId)), name: selectedKeyId, displayName: selectedKeyId },
+        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+      } as any;
+      const credential = await navigator.credentials.create({ publicKey });
+      if (credential) {
+        const att = credential as PublicKeyCredential;
+        const attObj = {
+          id: att.id,
+          rawId: Array.from(new Uint8Array(att.rawId)),
+          response: {
+            clientDataJSON: Array.from(new Uint8Array(att.response.clientDataJSON)),
+            attestationObject: Array.from(new Uint8Array((att.response as any).attestationObject || new ArrayBuffer(0))),
+          },
+        };
+        await sc2.registerPasskey(selectedKeyId, attObj);
+        toast({ title: 'Success', description: 'Passkey registered to this key' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Passkey registration failed: ' + (error as Error).message, variant: 'destructive' });
+    } finally {
+      setPasskeyRegisterLoading(false);
+    }
+  };
+
+  const handleUsePasskey = async () => {
+    if (!selectedKeyId) {
+      toast({ title: 'Error', description: 'Select a key to authenticate', variant: 'destructive' });
+      return;
+    }
+    setPasskeyAuthLoading(true);
+    try {
+      const scx = new ServerClient('', undefined);
+      const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
+      const challenge = Uint8Array.from(atob(opts.challenge), c => c.charCodeAt(0));
+      const publicKey = {
+        challenge,
+        allowCredentials: [],
+      } as any;
+      const assertion = await navigator.credentials.get({ publicKey });
+      if (assertion) {
+        const a = assertion as PublicKeyCredential;
+        const auth = {
+          id: a.id,
+          rawId: Array.from(new Uint8Array(a.rawId)),
+          response: {
+            clientDataJSON: Array.from(new Uint8Array(a.response.clientDataJSON)),
+            authenticatorData: Array.from(new Uint8Array((a.response as any).authenticatorData || new ArrayBuffer(0))),
+            signature: Array.from(new Uint8Array((a.response as any).signature || new ArrayBuffer(0))),
+            userHandle: (a.response as any).userHandle ? Array.from(new Uint8Array((a.response as any).userHandle)) : null,
+          },
+        };
+        const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
+        if ((serverResp as any).success) {
+          const secret = await scx.getVaultSecret(selectedKeyId);
+          if (secret) {
+            storageManager.setCurrentSession(selectedKeyId);
+            onLogin(secret);
+            toast({ title: 'Success', description: 'Logged in using passkey' });
+          } else {
+            toast({ title: 'Error', description: 'No secret in vault for this key', variant: 'destructive' });
+          }
+        } else {
+          toast({ title: 'Error', description: 'Passkey authentication failed', variant: 'destructive' });
+        }
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Passkey auth failed: ' + (error as Error).message, variant: 'destructive' });
+    } finally {
+      setPasskeyAuthLoading(false);
+    }
+  };
+
   const handleEditKeyInit = (key: ApiKey) => {
     setEditingKeyId(key.id);
     setEditLabel(key.label);
@@ -231,6 +349,8 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     setShowSettings(false);
   };
 
+  const [vaultEnabled, setVaultEnabled] = useState(storageManager.getVaultEnabled());
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
@@ -240,17 +360,17 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               <Key className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl">Cloudflare DNS Manager</CardTitle>
+          <CardTitle className="text-2xl">{t('Cloudflare DNS Manager')}</CardTitle>
           <CardDescription>
-            Select your API key and enter your password to continue
+            {t('Select your API key and enter your password to continue')}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="api-key">API Key</Label>
+            <Label htmlFor="api-key">{t('API Key')}</Label>
             <Select value={selectedKeyId} onValueChange={setSelectedKeyId}>
               <SelectTrigger>
-                <SelectValue placeholder="Select an API key" />
+              <SelectValue placeholder={t('Select an API key')} />
               </SelectTrigger>
               <SelectContent>
                 {apiKeys.map((key) => (
@@ -289,13 +409,13 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t('Password')}</Label>
             <Input
               id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
+                  placeholder={t('Enter your password')}
               onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
             />
           </div>
@@ -305,7 +425,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             className="w-full" 
             disabled={isLoading || !selectedKeyId || !password}
           >
-            {isLoading ? 'Logging in...' : 'Login'}
+            {isLoading ? t('Logging in...') : t('Login')}
           </Button>
 
           <div className="flex gap-2">
@@ -331,7 +451,54 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               onBenchmark={handleBenchmark}
               onUpdate={handleUpdateSettings}
               benchmarkResult={benchmarkResult}
+              vaultEnabled={vaultEnabled}
+              onVaultEnabledChange={(enabled: boolean) => {
+                setVaultEnabled(enabled);
+                storageManager.setVaultEnabled(enabled);
+              }}
             />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRegisterPasskey}
+              disabled={!selectedKeyId || !password || passkeyRegisterLoading}
+            >
+              {passkeyRegisterLoading ? 'Registering...' : 'Register Passkey'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleUsePasskey}
+              disabled={!selectedKeyId || passkeyAuthLoading}
+            >
+              {passkeyAuthLoading ? 'Authenticating...' : 'Use Passkey'}
+            </Button>
+            {vaultEnabled && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={async () => {
+                  if (!selectedKeyId || !password) {
+                    toast({ title: t('Error'), description: t('Select key and enter password to delete vault secret'), variant: 'destructive' });
+                    return;
+                  }
+                  try {
+                    const dec = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+                    if (!dec?.key) {
+                      toast({ title: t('Error'), description: t('Invalid password'), variant: 'destructive' });
+                      return;
+                    }
+                    const sc = new ServerClient(dec.key, undefined, dec.email);
+                    await sc.deleteVaultSecret(selectedKeyId);
+                    toast({ title: t('Success'), description: t('Vault secret removed') });
+                  } catch (err) {
+                    toast({ title: t('Error'), description: t('Failed to remove vault secret: ') + (err as Error).message, variant: 'destructive' });
+                  }
+                }}
+              >
+                Remove Vault Secret
+              </Button>
+            )}
           </div>
           <EditKeyDialog
             open={showEditKey}

@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "5173:5173"
+      - "8787:8787"
+    environment:
+      - VITE_SERVER_API_BASE=http://localhost:8787/api
+      - ALLOWED_ORIGINS=http://localhost:5173
+      - KEYTAR_ENABLED=0
+    volumes:
+      - ./:/app
+    command: npm run dev:server

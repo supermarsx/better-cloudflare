@@ -18,6 +18,8 @@ interface StorageData {
   apiKeys: ApiKey[];
   currentSession?: string;
   lastZone?: string;
+  vaultEnabled?: boolean;
+  autoRefreshInterval?: number;
 }
 
 /**
@@ -317,6 +319,24 @@ export class StorageManager {
    */
   getLastZone(): string | undefined {
     return this.data.lastZone;
+  }
+
+  setVaultEnabled(enabled: boolean): void {
+    this.data.vaultEnabled = enabled;
+    this.save();
+  }
+
+  getVaultEnabled(): boolean {
+    return !!this.data.vaultEnabled;
+  }
+
+  setAutoRefreshInterval(interval: number | null): void {
+    this.data.autoRefreshInterval = interval ?? undefined;
+    this.save();
+  }
+
+  getAutoRefreshInterval(): number | null {
+    return this.data.autoRefreshInterval ?? null;
   }
 
   /**
