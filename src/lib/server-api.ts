@@ -1,9 +1,9 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
 import { vaultManager } from '../server/vault';
+import * as swauth from '@simplewebauthn/server';
 import { dnsRecordSchema } from './validation';
-import { getEnvBool } from './env';
-import { randomBytes } from 'crypto';
+import { getEnv, getEnvBool } from './env';
 
 const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
 
@@ -335,9 +335,18 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id' });
         return;
       }
-      const challenge = randomBytes(16).toString('base64');
-      ServerAPI.passkeyChallenges.set(id, challenge);
-      res.json({ challenge });
+      // Derive RP info from env or incoming host
+      const origin = getEnv('SERVER_ORIGIN', 'VITE_SERVER_ORIGIN', 'http://localhost:8787')!;
+      const rpID = new URL(origin).hostname;
+      const opts = swauth.generateRegistrationOptions({
+        rpName: 'Better Cloudflare',
+        rpID,
+        userID: id,
+        userName: id,
+      });
+      // Store the base64 challenge to validate later
+      ServerAPI.passkeyChallenges.set(id, opts.challenge);
+      res.json({ challenge: opts.challenge, options: opts });
     };
   }
 
@@ -351,17 +360,43 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       const id = req.params.id;
       const body = req.body;
-      // In a full implementation we'd verify attestation using a FIDO2
-      // verification library; here we store the credential for future
-      // authentication and mark success.
       if (!id || !body) {
         res.status(400).json({ error: 'Missing id or body' });
         return;
       }
-      // persist attestation blob as-is
-      await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(body));
-      ServerAPI.passkeyCredentials.set(id, body);
-      res.json({ success: true });
+      // Verify attestation using simplewebauthn server utilities
+      try {
+        const origin = getEnv('SERVER_ORIGIN', 'VITE_SERVER_ORIGIN', 'http://localhost:8787')!;
+        const rpID = new URL(origin).hostname;
+        const expectedChallenge = ServerAPI.passkeyChallenges.get(id);
+        if (!expectedChallenge) {
+          res.status(400).json({ error: 'No challenge found' });
+          return;
+        }
+        const verification = await swauth.verifyRegistrationResponse({
+          response: body,
+          expectedChallenge,
+          expectedOrigin: origin,
+          expectedRPID: rpID,
+        } as any);
+
+        if (!verification.verified) {
+          res.status(400).json({ error: 'Attestation verification failed' });
+          return;
+        }
+        const { registrationInfo } = verification;
+        // Persist the credential(s) for future authentication checks. Store as
+        // an array to support multiple credentials registered per id.
+        const stored = await vaultManager.getSecret(`passkey:${id}`);
+        const existing = stored ? JSON.parse(stored) : [];
+        existing.push(registrationInfo);
+        await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(existing));
+        ServerAPI.passkeyCredentials.set(id, existing);
+        ServerAPI.passkeyChallenges.delete(id);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+      }
     };
   }
 
@@ -375,9 +410,67 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id' });
         return;
       }
-      const challenge = randomBytes(16).toString('base64');
-      ServerAPI.passkeyChallenges.set(id, challenge);
-      res.json({ challenge });
+      const origin = getEnv('SERVER_ORIGIN', 'VITE_SERVER_ORIGIN', 'http://localhost:8787')!;
+      const rpID = new URL(origin).hostname;
+      const stored = await vaultManager.getSecret(`passkey:${id}`);
+      const creds = stored ? JSON.parse(stored) : [];
+      const allowList = Array.isArray(creds) && creds.length
+        ? creds.map((c: any) => ({ id: c.credentialID, type: 'public-key' }))
+        : [];
+      const opts = swauth.generateAuthenticationOptions({ allowCredentials: allowList, rpID });
+      ServerAPI.passkeyChallenges.set(id, opts.challenge);
+      res.json({ challenge: opts.challenge, options: opts });
+    };
+  }
+  static listPasskeys() {
+    return async (req: Request, res: Response) => {
+      const id = req.params.id;
+      if (!id) {
+        res.status(400).json({ error: 'Missing id' });
+        return;
+      }
+      // require valid credentials on request
+      createClient(req);
+      const stored = await vaultManager.getSecret(`passkey:${id}`);
+      const creds = stored ? JSON.parse(stored) : [];
+      // Return credential metadata only (no private key material)
+      const metadata = creds.map((c: any) => ({ id: c.credentialID || c.id, counter: c.counter ?? 0 }));
+      res.json(metadata);
+    };
+  }
+
+  static deletePasskey() {
+    return async (req: Request, res: Response) => {
+      const id = req.params.id;
+      const cid = req.params.cid;
+      if (!id || !cid) {
+        res.status(400).json({ error: 'Missing id or credential id' });
+        return;
+      }
+      // require valid credentials on request
+      createClient(req);
+      const stored = await vaultManager.getSecret(`passkey:${id}`);
+      if (!stored) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      const creds = JSON.parse(stored) as any[];
+      const filtered = creds.filter((c) => {
+        const key = c.credentialID || c.id;
+        const keyStr = typeof key === 'string' ? key : Buffer.from(key).toString('base64');
+        // direct match on id string
+        if (keyStr === cid || key === cid) return false;
+        // if cid is base64 encoded representation, try to decode and compare
+        try {
+          const cidDecoded = Buffer.from(cid, 'base64').toString('utf-8');
+          if (keyStr === cidDecoded || key === cidDecoded) return false;
+        } catch (_e) {
+          // ignore decode errors
+        }
+        return true;
+      });
+      await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(filtered));
+      res.json({ success: true });
     };
   }
 
@@ -397,16 +490,70 @@ export class ServerAPI {
       }
       // In a proper implementation we'd verify the assertion using stored
       // public key; here we accept the assertion if challenge matches.
-      const challenge = ServerAPI.passkeyChallenges.get(id);
-      if (!challenge) {
-        res.status(400).json({ error: 'No challenge found' });
-        return;
+      try {
+        const origin = getEnv('SERVER_ORIGIN', 'VITE_SERVER_ORIGIN', 'http://localhost:8787')!;
+        const rpID = new URL(origin).hostname;
+        const expectedChallenge = ServerAPI.passkeyChallenges.get(id);
+        if (!expectedChallenge) {
+          res.status(400).json({ error: 'No challenge found' });
+          return;
+        }
+        const stored = await vaultManager.getSecret(`passkey:${id}`);
+        if (!stored) {
+          res.status(400).json({ error: 'No credential registered' });
+          return;
+        }
+        const credentials = JSON.parse(stored) as any[];
+        // Try to find matching credential from assertion rawId or fallback to first
+        let credential: any = credentials[0];
+        try {
+          const rawId = body.rawId || body.id || (body.response && body.response.rawId);
+          if (rawId) {
+            const rawToBase64 = (r: unknown) => {
+              if (typeof r === 'string') return r;
+              if (r instanceof Uint8Array) return Buffer.from(r).toString('base64');
+              if (ArrayBuffer.isView(r as any)) return Buffer.from(new Uint8Array((r as ArrayBufferLike))).toString('base64');
+              if (r instanceof ArrayBuffer) return Buffer.from(new Uint8Array(r)).toString('base64');
+              return Buffer.from(String(r)).toString('base64');
+            };
+            const rawBase64 = rawToBase64(rawId);
+            const found = credentials.find((c) => {
+              const cid = c.credentialID || c.id;
+              if (!cid) return false;
+              const cidStr = rawToBase64(cid);
+              return cidStr === rawBase64;
+            });
+            if (found) credential = found;
+          }
+        } catch (e) {
+          // ignore and fallback to first
+        }
+        // create expected credential representation
+        const expected = {
+          id: credential.credentialID || credential.id,
+          publicKey: credential.credentialPublicKey || credential.publicKey,
+          currentCounter: credential.counter ?? 0,
+        };
+        const verification = await swauth.verifyAuthenticationResponse({
+          response: body,
+          expectedChallenge,
+          expectedOrigin: origin,
+          expectedRPID: rpID,
+          authenticator: expected,
+        } as any);
+        if (!verification.verified) {
+          res.status(400).json({ error: 'Assertion verification failed' });
+          return;
+        }
+        // Update stored counter
+        const newCounter = verification.authenticationInfo?.newCounter ?? (expected.currentCounter || 0);
+        const newCredential = { ...credential, counter: newCounter };
+        await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(newCredential));
+        ServerAPI.passkeyChallenges.delete(id);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
       }
-      // This stub accepts any client assertion that was submitted, assuming
-      // containing the same challenge returned earlier.
-      // In future, implement verification using @simplewebauthn/server.
-      ServerAPI.passkeyChallenges.delete(id);
-      res.json({ success: true });
     };
   }
 }

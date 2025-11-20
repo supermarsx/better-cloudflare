@@ -1,5 +1,10 @@
 {
   "Import Records": "Import Records",
+  "DNS Manager": "DNS Manager",
+  "Manage your Cloudflare DNS records": "Manage your Cloudflare DNS records",
+  "Search records": "Search records",
+  "All types": "All types",
+  "No DNS records found": "No DNS records found",
   "Export": "Export",
   "Login": "Login",
   "Logging in...": "Logging in...",

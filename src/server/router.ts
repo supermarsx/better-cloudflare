@@ -50,6 +50,8 @@ apiRouter.get('/api/passkeys/register/options/:id', asyncHandler(ServerAPI.creat
 apiRouter.post('/api/passkeys/register/:id', asyncHandler(ServerAPI.registerPasskey()));
 apiRouter.get('/api/passkeys/authenticate/options/:id', asyncHandler(ServerAPI.createPasskeyAuthOptions()));
 apiRouter.post('/api/passkeys/authenticate/:id', asyncHandler(ServerAPI.authenticatePasskey()));
+apiRouter.get('/api/passkeys/:id', asyncHandler(ServerAPI.listPasskeys()));
+apiRouter.delete('/api/passkeys/:id/:cid', asyncHandler(ServerAPI.deletePasskey()));
 
 apiRouter.put(
   '/api/zones/:zone/dns_records/:id',

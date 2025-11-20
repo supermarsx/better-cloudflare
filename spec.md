@@ -25,7 +25,11 @@ The application stores Cloudflare credentials locally in encrypted form, and the
 14. Testing & QA
 15. Accessibility & UX considerations
  - Optional OS vault: The server can optionally store secrets in the OS keychain when `KEYTAR_ENABLED=1` and `keytar` is available. This provides alternative secure storage for decrypted API keys and passkey credential storage in local server environments.
- - Passkeys (WebAuthn): The app integrates an optional passkey flow to register and authenticate using platform passkeys as an alternative to password-based decryption. The passkey flow relies on the server to save credentials and validate authentication. Password fallback remains supported.
+ - Passkeys (WebAuthn): The app integrates an optional passkey flow to register and authenticate using platform passkeys as an alternative to password-based decryption. The passkey flow uses `@simplewebauthn/server` to validate attestation and assertions, and the server stores registered credentials in the vault. Password fallback remains supported.
+   - Multiple credentials: The server supports multiple passkey credentials per `id` (user/key) and stores an array of credential objects under `passkey:{id}` in the vault. `createPasskeyAuthOptions` aggregates all known credentials as `allowCredentials`.
+   - Server origin & rpID: The server uses `SERVER_ORIGIN` (or `VITE_SERVER_ORIGIN`) to compute the expected origin and `rpID` for verification — set this variable when deploying beyond local development.
+   - Registration verification: `registerPasskey` verifies the attestation blob (`verifyRegistrationResponse`) and persists credential metadata securely in the vault.
+   - Assertion verification: `authenticatePasskey` verifies assertions (`verifyAuthenticationResponse`) and updates counters; mismatches return 400 errors. The UI uses server-provided options to call platform WebAuthn APIs.
 
 16. Internationalization & configuration
 17. Extensibility & integration points
@@ -89,6 +93,7 @@ Important environment variables:
 - For server (`server.ts`):
   - `PORT` / `VITE_PORT` — port for server (default 8787)
   - `ALLOWED_ORIGINS` — comma-separated allowed origins for CORS (`*` allows all)
+  - `SERVER_ORIGIN` / `VITE_SERVER_ORIGIN` — base origin used to validate WebAuthn/assertion origin (defaults to `http://localhost:8787`)
   - `RATE_LIMIT_WINDOW` (ms default: 60000) & `RATE_LIMIT_MAX` (e.g., default: 100)
   - `CLOUDFLARE_API_BASE` — optional Cloudflare base to proxy
   - `DEBUG_SERVER`, `DEBUG_SERVER_API`, `DEBUG_CF_API`, `VITE_DEBUG_CF_API` — debug flags
@@ -239,6 +244,45 @@ Endpoints:
   - Purpose: Delete an existing DNS record.
   - Response: { success: true }
 
+- POST /api/vault/:id
+  - Purpose: Store a secret in the server-side vault (OS keychain when available). Requires valid credentials.
+  - Request: { secret: string }
+  - Response: { success: true }
+
+- GET /api/vault/:id
+  - Purpose: Retrieve a secret from the server vault.
+  - Response: { secret: string }
+
+- DELETE /api/vault/:id
+  - Purpose: Remove a secret from the server vault.
+  - Response: { success: true }
+
+- GET /api/passkeys/register/options/:id
+  - Purpose: Get registration options (challenge) for passkey registration.
+  - Response: { challenge: string, options: object }
+
+- POST /api/passkeys/register/:id
+  - Purpose: Register a new passkey credential for an id. Verifies attestation and stores credential(s).
+  - Request: attestation blob (per WebAuthn)
+  - Response: { success: true }
+
+- GET /api/passkeys/authenticate/options/:id
+  - Purpose: Get authentication options (challenge) for passkey assertion.
+  - Response: { challenge: string, options: object }
+
+- POST /api/passkeys/authenticate/:id
+  - Purpose: Verify a passkey assertion; updates credential counters and returns success.
+  - Request: assertion blob (per WebAuthn)
+  - Response: { success: true }
+
+- GET /api/passkeys/:id
+  - Purpose: List registered passkey credentials for the given id.
+  - Response: Array of credential metadata objects containing ids and counters.
+
+- DELETE /api/passkeys/:id/:cid
+  - Purpose: Remove a registered passkey credential by id (revoke) for the given id.
+  - Response: { success: true }
+
 Common Response behavior:
 - HTTP non-2xx returns a JSON payload with `error` or a Cloudflare `errors` array.
 - Rate-limiting returns standard headers and status code per `express-rate-limit`.
@@ -324,6 +368,10 @@ End-to-end flows tested by unit tests:
 - Verifying token via server
 - Create/update/delete record flows
 
+Automated testing coverage recommendations:
+- Add Playwright/Cypress E2E tests for full user flows (add key, login, CRUD records, import/export, passkeys, vault integration).
+- Integrate accessibility checks with `axe-core` into CI.
+
 Developer testing commands:
 - Run all tests: `npm test` (or `npm run test` as configured)
 - Generate docs: `npm run docs`
@@ -352,6 +400,17 @@ Suggested extensions:
 - Support for bulk operations on the server to import large zone files server-side.
 - Paginated zone records and offline editing with background sync.
 - A role-based access control (RBAC) server that stores keys securely.
+
+### Suggested new features (proactive roadmap)
+- Multi-device passkey management: Add UI to list, revoke, and label registered passkeys per stored key. Add server routes to delete specific passkey credentials.
+- Passkey revocation and management: Allow users to list registered credentials per id and remove a credential or all credentials when needed.
+- Server-side credential store with access control: Add optional server-side persistent storage (encrypted DB) for credentials with multi-user support and RBAC.
+- E2E test suite and CI pipelines: Add Playwright or Cypress tests to validate critical flows (add key, login, CRUD records, import/export, passkeys, vault).
+- Accessibility automated testing: Integrate axe-core accessibility checks into testing pipeline.
+- Pagination and virtualized lists + offline-first UX: Enhance performance and offline support for large zones.
+- Background.sync or PWA support for offline editing and later synchronization (requires server-side conflict resolution).
+- Audit logs: Track sensitive events (key addition, rotation, delete, passkey registration, passkey auth) in server logs or a secure audit store.
+- Trusted attestation and attestation policies: Add configurable attestation verification rules (e.g., require certain attestation formats or authenticators).
 
 
 ## 18. Known limitations & future work

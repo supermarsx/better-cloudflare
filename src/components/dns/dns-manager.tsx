@@ -12,6 +12,7 @@ import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import type { DNSRecord, Zone, RecordType } from '@/types/dns';
 import { RECORD_TYPES } from '@/types/dns';
 import { useToast } from '@/hooks/use-toast';
+import { useTranslation } from 'react-i18next';
 import { storageManager } from '@/lib/storage';
 import { LogOut } from 'lucide-react';
 import { AddRecordDialog } from './AddRecordDialog';
@@ -43,6 +44,7 @@ interface DNSManagerProps {
  * @param onLogout - callback invoked when the user logs out
  */
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
+  const { t } = useTranslation();
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>('');
   const [records, setRecords] = useState<DNSRecord[]>([]);
@@ -403,10 +405,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-2xl">DNS Manager</CardTitle>
-                <p className="text-muted-foreground">
-                  Manage your Cloudflare DNS records
-                </p>
+                <CardTitle className="text-2xl">{t('DNS Manager', 'DNS Manager')}</CardTitle>
+                <p className="text-muted-foreground">{t('Manage your Cloudflare DNS records', 'Manage your Cloudflare DNS records')}</p>
               </div>
               <Button onClick={handleLogout} variant="outline">
                 <LogOut className="h-4 w-4 mr-2" />
@@ -455,7 +455,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <CardTitle>DNS Records</CardTitle>
                 <div className="flex gap-2 items-center">
                   <Input
-                    placeholder="Search records"
+                    placeholder={t('Search records', 'Search records')}
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="w-[200px]"
@@ -504,12 +504,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </CardHeader>
             <CardContent>
               <div className="flex justify-end mb-4">
-                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                    <Select value={typeFilter} onValueChange={setTypeFilter}>
                   <SelectTrigger className="w-[180px]">
                     <SelectValue placeholder="All types" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All types</SelectItem>
+                    <SelectItem value="">{t('All types', 'All types')}</SelectItem>
                     {RECORD_TYPES.map((type) => (
                       <SelectItem key={type} value={type}>
                         {type}
@@ -533,11 +533,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </Select>
                 </div>
               </div>
-              {isLoading ? (
+                {isLoading ? (
                 <div className="text-center py-8">Loading...</div>
               ) : filteredRecords.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
-                  No DNS records found
+                  {t('No DNS records found', 'No DNS records found')}
                 </div>
               ) : (
                 <div className="space-y-2">
