@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseSPF, composeSPF, validateSPF, SPFRecord } from '../src/lib/spf';
+import { parseSPF, composeSPF, validateSPF, SPFRecord, setDnsResolverForTest, ipMatchesCIDR } from '../src/lib/spf';
 import { buildSPFGraphFromContent, validateSPFContentAsync, simulateSPF } from '../src/lib/spf';
-import { promises as dnsPromises } from 'node:dns';
 
 test('parseSPF should parse mechanisms', () => {
   const input = 'v=spf1 ip4:1.2.3.0/24 include:example.com -all';
@@ -38,50 +37,128 @@ test('validateSPF should accept valid spf', () => {
 
 test('simulateSPF should detect ip4 pass', async () => {
   const domain = 'example.local';
-  // stub DNS to avoid network calls
-  const originalResolveTxt = dnsPromises.resolveTxt;
-  const originalResolve4 = dnsPromises.resolve4;
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (_d: string) => ([['v=spf1 ip4:1.2.3.0/24 -all']]),
+    resolve4: async (_d: string) => ['1.2.3.5'],
+    resolve6: async (_d: string) => [],
+    resolveMx: async (_d: string) => [],
+    reverse: async (_ip: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
   try {
-    // SPF record for domain contains an ip4 mechanism
-    dnsPromises.resolveTxt = async (d: string) => ([['v=spf1 ip4:1.2.3.0/24 -all']]);
-    // No A/AAAA records needed
-    dnsPromises.resolve4 = async (d: string) => ['1.2.3.5'];
     const res = await simulateSPF({ domain, ip: '1.2.3.5' });
     assert.equal(res.result, 'pass');
   } finally {
-    dnsPromises.resolveTxt = originalResolveTxt;
-    dnsPromises.resolve4 = originalResolve4;
+    setDnsResolverForTest(undefined);
+  }
+});
+
+test('ipMatchesCIDR should support IPv6 CIDR matching', () => {
+  assert.ok(ipMatchesCIDR('2001:db8::1', '2001:db8::/32'));
+  assert.ok(!ipMatchesCIDR('2001:db9::1', '2001:db8::/32'));
+});
+
+test('composeSPF and parseSPF support add/edit/remove operations', () => {
+  const base = 'v=spf1 ip4:1.2.3.0/24 -all';
+  const parsed = parseSPF(base);
+  assert.ok(parsed);
+  // add an include
+  const mechs = [...(parsed?.mechanisms ?? [])];
+  mechs.push({ mechanism: 'include', value: 'inc.example' as any });
+  const composed = composeSPF({ version: parsed?.version ?? 'v=spf1', mechanisms: mechs as any });
+  
+  const parsed2 = parseSPF(composed);
+  
+  assert.equal(parsed2?.mechanisms.some((m) => m.mechanism === 'include' && m.value === 'inc.example'), true);
+  // edit the include to ip6 value
+  const idx = parsed2?.mechanisms.findIndex((m) => m.mechanism === 'include') ?? -1;
+  if (idx >= 0 && parsed2) {
+    const mechs2 = [...parsed2.mechanisms];
+    mechs2[idx] = { mechanism: 'ip6', value: '::1/128' } as any;
+    const composed2 = composeSPF({ version: parsed2.version, mechanisms: mechs2 as any });
+    const parsed3 = parseSPF(composed2);
+    assert.equal(parsed3?.mechanisms.some((m) => m.mechanism === 'ip6' && m.value === '::1/128'), true);
+    // remove the ip6
+    const mechs3 = mechs2.filter((_, i) => i !== idx);
+    const composed3 = composeSPF({ version: parsed3.version, mechanisms: mechs3 as any });
+    const parsed4 = parseSPF(composed3);
+    assert.equal(parsed4?.mechanisms.some((m) => m.mechanism === 'ip6' && m.value === '::1/128'), false);
   }
 });
 
 test('buildSPFGraphFromContent should build include nodes', async () => {
   const domain = 'example.org';
   const content = 'v=spf1 include:inc.example -all';
-  const originalResolveTxt = dnsPromises.resolveTxt;
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (d: string) => (d === 'inc.example' ? [['v=spf1 ip4:1.2.3.0/24 -all']] : []),
+    resolve4: async (_d: string) => [],
+    resolve6: async (_d: string) => [],
+    resolveMx: async (_d: string) => [],
+    reverse: async (_ip: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
   try {
-    dnsPromises.resolveTxt = async (d: string) => {
-      if (d === 'inc.example') return [['v=spf1 ip4:1.2.3.0/24 -all']];
-      return [];
-    };
     const graph = await buildSPFGraphFromContent(domain, content);
     assert.equal(graph.nodes.length >= 1, true);
     const includes = graph.edges.filter((e: any) => e.type === 'include');
     assert.equal(includes.length, 1);
   } finally {
-    dnsPromises.resolveTxt = originalResolveTxt;
+    setDnsResolverForTest(undefined);
   }
 });
 
 test('validateSPFContentAsync should reject lookup limit', async () => {
   const domain = 'example.org';
   const content = 'v=spf1 include:one include:two include:three include:four include:five include:six include:seven include:eight include:nine include:ten include:eleven -all';
-  const originalResolveTxt = dnsPromises.resolveTxt;
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (_d: string) => [['v=spf1 -all']],
+    resolve4: async (_d: string) => [],
+    resolve6: async (_d: string) => [],
+    resolveMx: async (_d: string) => [],
+    reverse: async (_ip: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
   try {
-    dnsPromises.resolveTxt = async (d: string) => [['v=spf1 -all']];
     const res = await validateSPFContentAsync(content, domain, { maxLookups: 10 });
     assert.equal(res.ok, false);
     assert.ok(res.problems.some((p: string) => p.indexOf('requires') !== -1 || p.indexOf('exceeds') !== -1 || p.indexOf('DNS lookups') !== -1));
   } finally {
-    dnsPromises.resolveTxt = originalResolveTxt;
+    setDnsResolverForTest(undefined);
+  }
+});
+
+test('simulateSPF should honor ptr with forward-confirmation', async () => {
+  const domain = 'ptr.example';
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (_d: string) => ([['v=spf1 ptr:example.com -all']]),
+    reverse: async (_ip: string) => ['example.com'],
+    resolve4: async (d: string) => (d === 'example.com' ? ['1.2.3.4'] : []),
+    resolve6: async (_d: string) => ([]),
+    resolveMx: async (_d: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
+  try {
+    const res = await simulateSPF({ domain, ip: '1.2.3.4' });
+    assert.equal(res.result, 'pass');
+  } finally {
+    setDnsResolverForTest(undefined);
+  }
+});
+
+test('simulateSPF should not match ptr without forward-confirmation', async () => {
+  const domain = 'ptr.example';
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (_d: string) => ([['v=spf1 ptr:example.com -all']]),
+    reverse: async (_ip: string) => ['example.com'],
+    resolve4: async (_d: string) => ([]),
+    resolve6: async (_d: string) => ([]),
+    resolveMx: async (_d: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
+  try {
+    const res = await simulateSPF({ domain, ip: '1.2.3.4' });
+    assert.equal(res.result, 'fail');
+  } finally {
+    setDnsResolverForTest(undefined);
   }
 });

@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import type { DNSRecord, RecordType, TTLValue } from '@/types/dns';
 import { parseSPF, composeSPF, validateSPF } from '@/lib/spf';
-import type { SPFGraph } from '@/lib/spf';
+import type { SPFGraph, SPFMechanism } from '@/lib/spf';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from '@/types/dns';
 import { Plus } from 'lucide-react';
@@ -167,17 +167,46 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
   const [newSPFQualifier, setNewSPFQualifier] = useState<string>('');
   const [newSPFMechanism, setNewSPFMechanism] = useState<string>('ip4');
   const [newSPFValue, setNewSPFValue] = useState<string>('');
+  const [editingSPFIndex, setEditingSPFIndex] = useState<number | null>(null);
   const [spfSimIp, setSpfSimIp] = useState<string>('');
   const [spfSimResult, setSpfSimResult] = useState<{ result: string; reasons: string[]; lookups: number } | null>(null);
   const [spfGraph, setSpfGraph] = useState<SPFGraph | null>(null);
   const [spfGraphError, setSpfGraphError] = useState<string | null>(null);
 
   const addSPFMechanism = () => {
-    const mech = `${newSPFQualifier}${newSPFMechanism}${newSPFValue ? `:${newSPFValue}` : ''}`;
-    const updated = record.content && record.content.trim().length ? `${record.content} ${mech}` : `v=spf1 ${mech}`;
+    const mechVal = newSPFValue?.trim();
+    const newMech: SPFMechanism = { qualifier: newSPFQualifier || undefined, mechanism: newSPFMechanism as unknown as string, value: mechVal || undefined } as SPFMechanism;
+    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const mechs = [...parsed.mechanisms];
+    if (editingSPFIndex !== null && editingSPFIndex >= 0 && editingSPFIndex < mechs.length) {
+      mechs[editingSPFIndex] = newMech;
+      setEditingSPFIndex(null);
+    } else {
+      mechs.push(newMech);
+    }
+    const updated = composeSPF({ version: parsed.version, mechanisms: mechs as SPFMechanism[] });
     onRecordChange({ ...record, content: updated });
-    // reset value
+    // reset form
     setNewSPFValue('');
+    setNewSPFQualifier('');
+    setNewSPFMechanism('ip4');
+  };
+
+  const removeSPFMechanism = (index: number) => {
+    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const mechs = [...parsed.mechanisms];
+    mechs.splice(index, 1);
+    const updated = composeSPF({ version: parsed.version, mechanisms: mechs as SPFMechanism[] });
+    onRecordChange({ ...record, content: updated });
+  };
+
+  const editSPFMechanism = (index: number) => {
+    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const m = parsed.mechanisms[index];
+    setNewSPFQualifier(m.qualifier || '');
+    setNewSPFMechanism(m.mechanism || 'ip4');
+    setNewSPFValue(m.value || '');
+    setEditingSPFIndex(index);
   };
 
   return (
@@ -488,9 +517,21 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                           <option value="all">all</option>
                         </select>
                         <Input placeholder="value (optional)" value={newSPFValue} onChange={(e: ChangeEvent<HTMLInputElement>) => setNewSPFValue(e.target.value)} />
-                        <Button onClick={addSPFMechanism}>Add</Button>
+                        <Button onClick={addSPFMechanism}>{editingSPFIndex !== null ? 'Update' : 'Add'}</Button>
                       </div>
                       <div className="text-sm text-muted">
+                        {parsedSPF?.mechanisms && parsedSPF.mechanisms.length > 0 && (
+                          <div className="space-y-1 mb-2">
+                            <div className="text-xs font-semibold">Mechanisms:</div>
+                            {parsedSPF.mechanisms.map((m, i) => (
+                              <div key={`${m.mechanism}:${i}`} className="flex items-center space-x-2">
+                                <div className="text-xs">{`${m.qualifier ?? ''}${m.mechanism}${m.value ? `:${m.value}` : ''}`}{editingSPFIndex===i ? ' (editing)' : ''}</div>
+                                <Button size="sm" onClick={() => editSPFMechanism(i)}>Edit</Button>
+                                <Button size="sm" variant="destructive" onClick={() => removeSPFMechanism(i)}>Remove</Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div>Preview:</div>
                         <pre className="whitespace-pre-wrap">{composeSPF(parsedSPF ?? { version: 'v=spf1', mechanisms: [] })}</pre>
                         {!validateSPF(record.content).ok && (

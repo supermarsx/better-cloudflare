@@ -30,7 +30,8 @@ export function parseSPF(content?: string): SPFRecord | null {
     }
     const qualifier = p[0] && ['+', '-', '~', '?'].includes(p[0]) ? p[0] : undefined;
     const core = qualifier ? p.substring(1) : p;
-    const [mechanism, val] = core.split(':');
+    const [mechanism, ...valParts] = core.split(':');
+    const val = valParts.length ? valParts.join(':') : undefined;
     return {
       qualifier,
       mechanism: mechanism.toLowerCase(),
@@ -40,6 +41,23 @@ export function parseSPF(content?: string): SPFRecord | null {
   const modifiers = mechanisms.filter((m) => m.mechanism && m.mechanism.startsWith('modifier:')).map((m) => ({ key: (m.mechanism || '').split(':')[1], value: m.value || '' }));
   const realMechanisms = mechanisms.filter((m) => !(m.mechanism && m.mechanism.startsWith('modifier:')));
   return { version: 'v=spf1', mechanisms: realMechanisms, modifiers: modifiers.length ? modifiers : undefined };
+}
+
+// DNS resolver indirection so tests can swap in a mock resolver
+export type DNSResolver = {
+  resolveTxt(domain: string): Promise<string[][]>;
+  resolve4(domain: string): Promise<string[]>;
+  resolve6(domain: string): Promise<string[]>;
+  resolveMx(domain: string): Promise<{ exchange: string; priority: number }[]>;
+  reverse(ip: string): Promise<string[]>;
+};
+
+let dnsResolver: DNSResolver = dnsPromises as unknown as DNSResolver;
+export function setDnsResolverForTest(resolver: DNSResolver | undefined) {
+  dnsResolver = resolver ?? (dnsPromises as unknown as DNSResolver);
+}
+export function resetDnsResolver() {
+  dnsResolver = dnsPromises as unknown as DNSResolver;
 }
 
 export function composeSPF(record: SPFRecord): string {
@@ -77,7 +95,7 @@ export function validateSPF(content?: string): { ok: boolean; problems: string[]
 
 export async function getSPFRecordForDomain(domain: string): Promise<string | null> {
   try {
-    const records = await dnsPromises.resolveTxt(domain);
+    const records = await dnsResolver.resolveTxt(domain);
     for (const rec of records) {
       const txt = rec.join('');
       if (txt.toLowerCase().startsWith('v=spf1')) return txt;
@@ -101,13 +119,14 @@ export type SPFGraph = {
   cyclic?: boolean;
 };
 
-const dnsCache = new Map<string, any>();
+type DNSCacheValue = string[][] | string[] | { exchange: string; priority: number }[] | Error;
+const dnsCache = new Map<string, DNSCacheValue>();
 
-async function resolveTxtCached(domain: string) {
+async function resolveTxtCached(domain: string): Promise<string[][]> {
   const key = `TXT:${domain}`;
-  if (dnsCache.has(key)) return dnsCache.get(key);
+  if (dnsCache.has(key)) return dnsCache.get(key) as string[][];
   try {
-    const val = await dnsPromises.resolveTxt(domain);
+    const val = await dnsResolver.resolveTxt(domain);
     dnsCache.set(key, val);
     return val;
   } catch (err) {
@@ -230,10 +249,10 @@ export async function validateSPFAsync(domain: string, options?: { maxLookups?: 
   if (graph.cyclic) problems.push('SPF include/redirect graph contains a cycle');
   // check for multiple SPF TXT records
   try {
-    const records = await dnsPromises.resolveTxt(domain);
+    const records = await dnsResolver.resolveTxt(domain);
     const spfCount = records.filter((r) => r.join('').toLowerCase().startsWith('v=spf1')).length;
     if (spfCount > 1) problems.push('Multiple SPF TXT records found for domain; only one is allowed');
-  } catch (err) {
+  } catch {
     // ignore DNS errors; they will be surfaced as lookup issues below
   }
   return { ok: problems.length === 0, problems, graph };
@@ -241,7 +260,7 @@ export async function validateSPFAsync(domain: string, options?: { maxLookups?: 
 
 export type SPFResult = { result: 'pass' | 'fail' | 'softfail' | 'neutral' | 'permerror' | 'temperror'; reasons: string[]; lookups: number };
 
-function ipMatchesCIDR(ip: string, cidr: string) {
+export function ipMatchesCIDR(ip: string, cidr: string) {
   try {
     // naive implementation: exact match for IPs without netmask or prefix check
     if (!cidr.includes('/')) return ip === cidr;
@@ -260,18 +279,59 @@ function ipMatchesCIDR(ip: string, cidr: string) {
       const mask = bitCount === 0 ? 0 : (~0 << (32 - bitCount)) >>> 0;
       return (ipVal & mask) === (baseVal & mask);
     }
-    // IPv6 not implemented precisely here
-    return ip === base;
+    // IPv6: implement prefix comparison across 128-bit values
+    const expandIPv6 = (addr: string) => {
+      // Expand shorthand :: and return array of 8 hextets
+      const parts = addr.split('::');
+      if (parts.length === 1) {
+        return addr.split(':').map((h) => h.padStart(4, '0'));
+      }
+      const left = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+      const right = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+      const missing = 8 - (left.length + right.length);
+      const zeros = new Array(missing).fill('0000');
+      const full = [...left, ...zeros, ...right].map((h) => h.padStart(4, '0'));
+      return full;
+    };
+    const toBytes = (hextets: string[]) => {
+      const out: number[] = [];
+      for (const h of hextets) {
+        const val = parseInt(h, 16) & 0xffff;
+        out.push((val >> 8) & 0xff);
+        out.push(val & 0xff);
+      }
+      return out;
+    };
+    try {
+      const baseParts = expandIPv6(base);
+      const ipParts = expandIPv6(ip);
+      if (baseParts.length !== 8 || ipParts.length !== 8) return false;
+      const baseBytes = toBytes(baseParts);
+      const ipBytes = toBytes(ipParts);
+      const maskBits = Number(prefix);
+      let bitsRemaining = maskBits;
+      for (let i = 0; i < baseBytes.length; i++) {
+        if (bitsRemaining <= 0) break;
+        const bitsToCheck = Math.min(8, bitsRemaining);
+        const shift = 8 - bitsToCheck;
+        const mask = ((0xff << shift) & 0xff) >>> 0;
+        if ((baseBytes[i] & mask) !== (ipBytes[i] & mask)) return false;
+        bitsRemaining -= bitsToCheck;
+      }
+      return true;
+    } catch {
+      return false;
+    }
   } catch {
     return false;
   }
 }
 
-async function resolveA(domain: string) {
+async function resolveA(domain: string): Promise<string[]> {
   const key = `A:${domain}`;
-  if (dnsCache.has(key)) return dnsCache.get(key);
+  if (dnsCache.has(key)) return dnsCache.get(key) as string[];
   try {
-    const v4 = await dnsPromises.resolve4(domain);
+    const v4 = await dnsResolver.resolve4(domain);
     dnsCache.set(key, v4);
     return v4;
   } catch {
@@ -280,11 +340,11 @@ async function resolveA(domain: string) {
   }
 }
 
-async function resolveAAAA(domain: string) {
+async function resolveAAAA(domain: string): Promise<string[]> {
   const key = `AAAA:${domain}`;
-  if (dnsCache.has(key)) return dnsCache.get(key);
+  if (dnsCache.has(key)) return dnsCache.get(key) as string[];
   try {
-    const v6 = await dnsPromises.resolve6(domain);
+    const v6 = await dnsResolver.resolve6(domain);
     dnsCache.set(key, v6);
     return v6;
   } catch {
@@ -293,11 +353,11 @@ async function resolveAAAA(domain: string) {
   }
 }
 
-async function resolveMX(domain: string) {
+async function resolveMX(domain: string): Promise<{ exchange: string; priority: number }[]> {
   const key = `MX:${domain}`;
-  if (dnsCache.has(key)) return dnsCache.get(key);
+  if (dnsCache.has(key)) return dnsCache.get(key) as { exchange: string; priority: number }[];
   try {
-    const v = await dnsPromises.resolveMx(domain);
+    const v = await dnsResolver.resolveMx(domain);
     dnsCache.set(key, v);
     return v;
   } catch {
@@ -306,11 +366,11 @@ async function resolveMX(domain: string) {
   }
 }
 
-async function resolvePTR(ip: string) {
+async function resolvePTR(ip: string): Promise<string[]> {
   const key = `PTR:${ip}`;
-  if (dnsCache.has(key)) return dnsCache.get(key);
+  if (dnsCache.has(key)) return dnsCache.get(key) as string[];
   try {
-    const v = await dnsPromises.reverse(ip);
+    const v = await dnsResolver.reverse(ip);
     dnsCache.set(key, v);
     return v;
   } catch {
@@ -362,7 +422,13 @@ export async function simulateSPF({ domain, ip, sender, maxLookups = 10 }: { dom
       const ptrs = await resolvePTR(ip);
       const value = m.value ?? domain;
       for (const p of ptrs) {
-        if (p.toLowerCase().endsWith(value.toLowerCase())) return 'match';
+        // match if PTR ends with value
+        if (p.toLowerCase().endsWith(value.toLowerCase())) {
+          // forward-confirmed PTR: resolve A/AAAA of p and check if ip exists
+          const a = await resolveA(p);
+          const aaaa = await resolveAAAA(p);
+          if ((a && a.includes(ip)) || (aaaa && aaaa.includes(ip))) return 'match';
+        }
       }
       return 'no';
     }
