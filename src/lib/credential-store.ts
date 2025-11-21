@@ -78,6 +78,22 @@ class VaultCredentialStore implements CredentialStore {
     await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(filtered));
   }
 }
+/** Very small in-memory credential store used for testing and lightweight runs */
+class MemoryCredentialStore implements CredentialStore {
+  private map: Map<string, PasskeyCredential[]> = new Map();
+  async getCredentials(id: string) {
+    return (this.map.get(id) ?? []).slice();
+  }
+  async addCredential(id: string, cred: PasskeyCredential) {
+    const arr = this.map.get(id) ?? [];
+    arr.push({ ...cred, createdAt: new Date().toISOString() });
+    this.map.set(id, arr);
+  }
+  async deleteCredential(id: string, cid: string) {
+    const arr = this.map.get(id) ?? [];
+    this.map.set(id, arr.filter((c) => c.credentialID !== cid));
+  }
+}
   export class SqliteCredentialStore implements CredentialStore {
     private db!: SqliteWrapper;
     private initPromise: Promise<any> | null = null;
@@ -138,7 +154,25 @@ class VaultCredentialStore implements CredentialStore {
 export const createCredentialStore = () => {
   const storeType = getEnv('CREDENTIAL_STORE', 'VITE_CREDENTIAL_STORE', 'vault');
   if (storeType === 'file') return new FileCredentialStore();
-    if (storeType === 'sqlite') return new SqliteCredentialStore();
+  if (storeType === 'memory') return new MemoryCredentialStore();
+    if (storeType === 'sqlite') {
+      try {
+        return new SqliteCredentialStore();
+      } catch (err) {
+        // If opening the sqlite driver fails (native dependency missing),
+        // try creating a sqlite-backed store that uses the in-memory wrapper
+        // implemented in openSqlite (so it behaves like a sqlite DB to the
+        // higher-level code). This keeps APIs (db.run/get/all) available.
+        console.warn('Sqlite not available; attempting in-memory sqlite fallback:', err?.message ?? err);
+        try {
+          const inMem = openSqlite(undefined);
+          return new SqliteCredentialStore(undefined, inMem);
+        } catch (_e) {
+          console.warn('In-memory sqlite fallback failed, using memory-only store');
+          return new MemoryCredentialStore();
+        }
+      }
+    }
   // defaults to vault
   return new VaultCredentialStore();
 };
