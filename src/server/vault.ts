@@ -3,7 +3,7 @@
  * an in-memory map when not. This keeps the server from persisting secrets
  * to disk unless `keytar` is available and configured.
  */
-import os from 'os';
+// OS import removed; not used in this file
 
 type Secret = string;
 

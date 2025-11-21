@@ -80,8 +80,8 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
     });
   };
   const close = function () {
-    return new Promise((resolve, reject) => {
-      db.close((err: any) => (err ? reject(err) : resolve(undefined)));
+    return new Promise<void>((resolve, reject) => {
+      db.close((err: any) => (err ? reject(err) : resolve()));
     });
   };
   return {
