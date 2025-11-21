@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import type { RecordType, DNSRecord } from '@/types/dns';
-import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
+import { RECORD_TYPES, getTTLPresets } from '@/types/dns';
 import { Edit2, Trash2, Save, X } from 'lucide-react';
 
 
@@ -45,7 +45,7 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
   }, [record]);
 
   const ttlValue = editedRecord.ttl === 1 ? 'auto' : editedRecord.ttl;
-  const isCustomTTL = !TTL_PRESETS.includes(ttlValue as any);
+  const isCustomTTL = !getTTLPresets().includes(ttlValue as any);
 
   if (isEditing) {
     return (
@@ -109,7 +109,7 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {TTL_PRESETS.map((ttl) => (
+                {getTTLPresets().map((ttl) => (
                   <SelectItem key={ttl} value={String(ttl)}>
                     {ttl === 'auto' ? 'Auto' : ttl}
                   </SelectItem>

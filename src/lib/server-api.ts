@@ -39,6 +39,10 @@ function createClient(req: Request): CloudflareAPI {
   throw err;
 }
 
+function actorFromReq(req: Request) {
+  return req.header('x-auth-email') || req.header('authorization') || req.header('x-admin-token') || 'unknown';
+}
+
 /**
  * HTTP handlers used by the server API.
  *
@@ -60,6 +64,7 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.verifyToken();
+      logAudit({ operation: 'auth:verify', actor: actorFromReq(req), resource: 'auth:token' });
       res.json({ success: true });
     };
   }
@@ -74,6 +79,7 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       const zones = await client.getZones();
+      logAudit({ operation: 'zones:list', actor: actorFromReq(req), resource: 'zones' });
       res.json(zones);
     };
   }
@@ -91,6 +97,7 @@ export class ServerAPI {
       const page = req.query.page ? Number.parseInt(String(req.query.page), 10) : undefined;
       const perPage = req.query.per_page ? Number.parseInt(String(req.query.per_page), 10) : undefined;
       const records = await client.getDNSRecords(req.params.zone, page, perPage);
+      logAudit({ operation: 'dns:list', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { page, perPage } });
       res.json(records);
     };
   }
@@ -118,6 +125,7 @@ export class ServerAPI {
         req.params.zone,
         parsed.data,
       );
+      logAudit({ operation: 'dns:create', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { record } });
       res.json(record);
     };
   }
@@ -181,6 +189,7 @@ export class ServerAPI {
       }
 
       res.json({ created, skipped });
+      logAudit({ operation: 'dns:create_bulk', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { createdCount: created.length, skipped } });
     };
   }
 
@@ -204,14 +213,17 @@ export class ServerAPI {
         case 'json':
           res.setHeader('Content-Type', 'application/json');
           res.send(JSON.stringify(records, null, 2));
+          logAudit({ operation: 'dns:export', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { format } });
           return;
         case 'csv':
           res.setHeader('Content-Type', 'text/csv');
           res.send((await import('./export-api')).recordsToCSV(records));
+          logAudit({ operation: 'dns:export', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { format } });
           return;
         case 'bind':
           res.setHeader('Content-Type', 'text/plain');
           res.send((await import('./export-api')).recordsToBIND(records));
+          logAudit({ operation: 'dns:export', actor: actorFromReq(req), resource: `zone:${req.params.zone}`, details: { format } });
           return;
         default:
           res.status(400).json({ error: 'Unknown format' });
@@ -234,7 +246,7 @@ export class ServerAPI {
         return;
       }
       await vaultManager.setSecret(String(id), String(secret));
-      logAudit({ operation: 'vault:store', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
+      logAudit({ operation: 'vault:store', actor: actorFromReq(req), resource: `vault:${id}` });
       res.json({ success: true });
     };
   }
@@ -256,7 +268,7 @@ export class ServerAPI {
         res.status(404).json({ error: 'Secret not found' });
         return;
       }
-      logAudit({ operation: 'vault:retrieve', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
+      logAudit({ operation: 'vault:retrieve', actor: actorFromReq(req), resource: `vault:${id}` });
       res.json({ secret });
     };
   }
@@ -274,7 +286,7 @@ export class ServerAPI {
         return;
       }
       await vaultManager.deleteSecret(String(id));
-      logAudit({ operation: 'vault:delete', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
+      logAudit({ operation: 'vault:delete', actor: actorFromReq(req), resource: `vault:${id}` });
       res.json({ success: true });
     };
   }
@@ -303,6 +315,7 @@ export class ServerAPI {
         req.params.id,
         parsed.data,
       );
+      logAudit({ operation: 'dns:update', actor: actorFromReq(req), resource: `zone:${req.params.zone}/record:${req.params.id}`, details: { record } });
       res.json(record);
     };
   }
@@ -317,6 +330,7 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       const client = createClient(req);
       await client.deleteDNSRecord(req.params.zone, req.params.id);
+      logAudit({ operation: 'dns:delete', actor: actorFromReq(req), resource: `zone:${req.params.zone}/record:${req.params.id}` });
       res.json({ success: true });
     };
   }
@@ -357,6 +371,7 @@ export class ServerAPI {
       // Store the base64 challenge to validate later
       ServerAPI.passkeyChallenges.set(id, opts.challenge);
       res.json({ challenge: opts.challenge, options: opts });
+      logAudit({ operation: 'passkey:request_registration', actor: actorFromReq(req), resource: `passkey:${id}` });
     };
   }
 
@@ -410,7 +425,7 @@ export class ServerAPI {
         ServerAPI.passkeyCredentials.set(id, updated);
         ServerAPI.passkeyChallenges.delete(id);
         // Audit registration success
-        logAudit({ operation: 'passkey:register', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `passkey:${id}`, details: { attestationType } });
+        logAudit({ operation: 'passkey:register', actor: actorFromReq(req), resource: `passkey:${id}`, details: { attestationType } });
         res.json({ success: true });
       } catch (err) {
         res.status(400).json({ error: (err as Error).message });
@@ -437,6 +452,7 @@ export class ServerAPI {
       const opts = swauth.generateAuthenticationOptions({ allowCredentials: allowList, rpID });
       ServerAPI.passkeyChallenges.set(id, opts.challenge);
       res.json({ challenge: opts.challenge, options: opts });
+      logAudit({ operation: 'passkey:request_auth', actor: actorFromReq(req), resource: `passkey:${id}` });
     };
   }
   static listPasskeys() {
@@ -453,6 +469,7 @@ export class ServerAPI {
       // Return credential metadata only (no private key material)
       const metadata = creds.map((c: any) => ({ id: c.credentialID || c.id, counter: c.counter ?? 0 }));
       res.json(metadata);
+      logAudit({ operation: 'passkey:list', actor: actorFromReq(req), resource: `passkey:${id}` });
     };
   }
 
@@ -496,7 +513,7 @@ export class ServerAPI {
         for (const c of filtered) {
           await ServerAPI.credentialStore.addCredential(id, { credentialID: c.credentialID ?? c.id, credentialPublicKey: c.credentialPublicKey ?? c.publicKey, counter: c.counter ?? 0 });
         }
-      logAudit({ operation: 'passkey:delete', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `passkey:${id}`, details: { deletedCredential: cid } });
+      logAudit({ operation: 'passkey:delete', actor: actorFromReq(req), resource: `passkey:${id}`, details: { deletedCredential: cid } });
       res.json({ success: true });
     };
   }
@@ -512,7 +529,8 @@ export class ServerAPI {
         // fallback to Cloudflare credentials check
         createClient(req);
       }
-      const entries = getAuditEntries();
+      const entries = await getAuditEntries();
+      logAudit({ operation: 'audit:view', actor: actorFromReq(req), resource: 'audit:index' });
       res.json(entries);
     };
   }
@@ -533,11 +551,13 @@ export class ServerAPI {
       }
       // store user record in sqlite via credential store's db if available
       const store = ServerAPI.credentialStore as any;
-      if (store && typeof store.db !== 'undefined') {
+      if (store && typeof (store as any).db !== 'undefined') {
         const db = (store as any).db as any;
-        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
-        db.prepare('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)').run(body.id, body.email ?? null, JSON.stringify(body.roles ?? []));
+        // db is a SqliteWrapper that provides async `run`/`all`/`get` for both better-sqlite3 and sqlite3 drivers
+        await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+        await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [body.id, body.email ?? null, JSON.stringify(body.roles ?? [])]);
         res.json({ success: true });
+        logAudit({ operation: 'user:create', actor: actorFromReq(req), resource: `user:${body.id}`, details: { email: body.email, roles: body.roles } });
         return;
       }
       res.status(501).json({ error: 'User management not implemented for current credential store' });
@@ -552,15 +572,16 @@ export class ServerAPI {
         return;
       }
       const store = ServerAPI.credentialStore as any;
-      if (store && typeof store.db !== 'undefined') {
+      if (store && typeof (store as any).db !== 'undefined') {
         const db = (store as any).db as any;
-        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
-        const row = db.prepare('SELECT id, email, roles FROM users WHERE id = ?').get(id);
+        await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+        const row = await db.get('SELECT id, email, roles FROM users WHERE id = ?', [id]);
         if (!row) {
           res.status(404).json({ error: 'Not found' });
           return;
         }
         res.json({ id: row.id, email: row.email, roles: JSON.parse(row.roles || '[]') });
+        logAudit({ operation: 'user:get', actor: actorFromReq(req), resource: `user:${id}` });
         return;
       }
       res.status(501).json({ error: 'User management not implemented for current credential store' });
@@ -582,11 +603,12 @@ export class ServerAPI {
         return;
       }
       const store = ServerAPI.credentialStore as any;
-      if (store && typeof store.db !== 'undefined') {
+      if (store && typeof (store as any).db !== 'undefined') {
         const db = (store as any).db as any;
-        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
-        db.prepare('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)').run(id, null, JSON.stringify(roles));
+        await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+        await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [id, null, JSON.stringify(roles)]);
         res.json({ success: true });
+        logAudit({ operation: 'user:update_roles', actor: actorFromReq(req), resource: `user:${id}`, details: { roles } });
         return;
       }
       res.status(501).json({ error: 'User management not implemented for current credential store' });

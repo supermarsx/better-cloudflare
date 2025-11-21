@@ -70,7 +70,7 @@ test('registerPasskey verifies and stores credential', async () => {
 
   const secret = await vaultManager.getSecret('passkey:key2');
   assert.ok(secret);
-  const entries = getAuditEntries();
+  const entries = await getAuditEntries();
   assert.ok(entries.some((e) => e.operation === 'passkey:register'));
 
   // restore
@@ -140,7 +140,7 @@ test('listPasskeys returns stored credentials and deletePasskey removes one', as
   const listRes2 = createRes();
   await listH(createReq({}, { id }), listRes2.res);
   assert.ok(listRes2.data.length === listRes.data.length - 1);
-  const entries2 = getAuditEntries();
+  const entries2 = await getAuditEntries();
   // ensure passkey:delete logged at least once
   assert.ok(entries2.some((e) => (e.operation === 'passkey:delete')));
   // ensure audit endpoint exposes entries when asked

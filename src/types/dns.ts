@@ -120,5 +120,39 @@ export const RECORD_TYPES: RecordType[] = [
 /**
  * TTL presets used in the UI for quick selection (seconds or 'auto')
  */
-export const TTL_PRESETS = ['auto', 300, 900, 3600, 86400] as const;
-export type TTLValue = typeof TTL_PRESETS[number];
+// Default TTL presets (seconds), `auto` preserved for Cloudflare's automatic setting.
+export const TTL_PRESETS = ['auto', 60, 120, 300, 900, 1800, 3600, 14400, 43200, 86400, 604800] as const;
+export type TTLValue = number | 'auto';
+
+function parsePresets(presetsStr: string): (number | 'auto')[] {
+  // Accept JSON array or comma-separated list
+  try {
+    const parsed = JSON.parse(presetsStr);
+    if (Array.isArray(parsed)) return parsed.map((p) => (p === 'auto' ? 'auto' : Number(p)));
+  } catch (_) {
+    // not a JSON array; try comma-separated
+  }
+  return presetsStr.split(',').map((p) => {
+    const v = p.trim();
+    if (v.toLowerCase() === 'auto') return 'auto';
+    const n = Number(v);
+    return Number.isNaN(n) ? 300 : n;
+  });
+}
+
+export function getTTLPresets(): TTLValue[] {
+  // Client build environment (Vite) has `import.meta.env`; server has process.env
+  let envVal: string | undefined;
+  // @ts-ignore - import.meta available in project bundling context
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+    // Vite environment variable can be VITE_TTL_PRESETS
+    envVal = (import.meta as any).env.VITE_TTL_PRESETS;
+  }
+  if (!envVal) envVal = process.env.TTL_PRESETS || process.env.VITE_TTL_PRESETS;
+  if (!envVal) return TTL_PRESETS as any;
+  try {
+    return parsePresets(envVal);
+  } catch (_) {
+    return TTL_PRESETS as any;
+  }
+}

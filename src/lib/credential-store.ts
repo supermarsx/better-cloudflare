@@ -2,7 +2,7 @@ import { promises as fs, mkdirSync } from 'fs';
 import path from 'path';
 import { vaultManager } from '../server/vault';
 import { getEnv } from './env';
-import Database from 'better-sqlite3';
+import openSqlite, { SqliteWrapper } from './sqlite-driver';
 
 export type PasskeyCredential = {
   credentialID: string;
@@ -78,7 +78,8 @@ class VaultCredentialStore implements CredentialStore {
   }
 }
   class SqliteCredentialStore implements CredentialStore {
-    private db: Database.Database;
+    private db: SqliteWrapper;
+    private initPromise: Promise<any> | null = null;
     constructor(dbFile?: string) {
       const f = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
       // Ensure directory exists before opening the database
@@ -87,9 +88,10 @@ class VaultCredentialStore implements CredentialStore {
       } catch (e) {
         // ignore
       }
-      this.db = new Database(f);
-      // Initialize schema
-      this.db.prepare(`CREATE TABLE IF NOT EXISTS credentials (
+      this.db = openSqlite(f);
+      // Initialize schema (use promise API of wrapper)
+      this.initPromise = (async () => {
+        await this.db.run(`CREATE TABLE IF NOT EXISTS credentials (
         id TEXT NOT NULL,
         credential_id TEXT NOT NULL,
         public_key TEXT,
@@ -97,32 +99,38 @@ class VaultCredentialStore implements CredentialStore {
         created_at TEXT,
         label TEXT,
         PRIMARY KEY(id, credential_id)
-      )`).run();
-      this.db.prepare(`CREATE TABLE IF NOT EXISTS audit_log (
+        )`);
+        await this.db.run(`CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         actor TEXT,
         operation TEXT,
         resource TEXT,
         details TEXT,
         timestamp TEXT
-      )`).run();
+        )`);
+      })();
     }
     async getCredentials(id: string): Promise<PasskeyCredential[]> {
-      const rows = this.db.prepare('SELECT credential_id, public_key as credentialPublicKey, counter, created_at as createdAt, label FROM credentials WHERE id = ?').all(id);
-      return rows.map((r: any) => ({ credentialID: r.credential_id, credentialPublicKey: r.credentialPublicKey, counter: r.counter, createdAt: r.createdAt, label: r.label }));
+        await this.initPromise;
+        const rows = await this.db.all('SELECT credential_id, public_key as credentialPublicKey, counter, created_at as createdAt, label FROM credentials WHERE id = ?', [id]);
+        return rows.map((r: any) => ({ credentialID: r.credential_id, credentialPublicKey: r.credentialPublicKey, counter: r.counter, createdAt: r.createdAt, label: r.label }));
     }
     async addCredential(id: string, cred: PasskeyCredential) {
-      this.db.prepare('INSERT OR REPLACE INTO credentials(id, credential_id, public_key, counter, created_at, label) VALUES(?, ?, ?, ?, ?, ?)').run(id, cred.credentialID, cred.credentialPublicKey, cred.counter ?? 0, cred.createdAt ?? new Date().toISOString(), cred.label ?? null);
+      await this.initPromise;
+      await this.db.run('INSERT OR REPLACE INTO credentials(id, credential_id, public_key, counter, created_at, label) VALUES(?, ?, ?, ?, ?, ?)', [id, cred.credentialID, cred.credentialPublicKey, cred.counter ?? 0, cred.createdAt ?? new Date().toISOString(), cred.label ?? null]);
     }
     async deleteCredential(id: string, cid: string) {
-      this.db.prepare('DELETE FROM credentials WHERE id = ? AND credential_id = ?').run(id, cid);
+      await this.initPromise;
+      await this.db.run('DELETE FROM credentials WHERE id = ? AND credential_id = ?', [id, cid]);
     }
     // Simple audit log insertion (we'll use for audit write from audit module)
-    writeAudit(a: any) {
-      this.db.prepare('INSERT INTO audit_log(actor, operation, resource, details, timestamp) VALUES(?, ?, ?, ?, ?)').run(a.actor ?? null, a.operation, a.resource ?? null, JSON.stringify(a.details ?? {}), a.timestamp ?? new Date().toISOString());
+    async writeAudit(a: any) {
+      await this.initPromise;
+      await this.db.run('INSERT INTO audit_log(actor, operation, resource, details, timestamp) VALUES(?, ?, ?, ?, ?)', [a.actor ?? null, a.operation, a.resource ?? null, JSON.stringify(a.details ?? {}), a.timestamp ?? new Date().toISOString()]);
     }
-    getAuditEntries() {
-      return this.db.prepare('SELECT id, actor, operation, resource, details, timestamp FROM audit_log ORDER BY id DESC').all();
+    async getAuditEntries() {
+      await this.initPromise;
+      return await this.db.all('SELECT id, actor, operation, resource, details, timestamp FROM audit_log ORDER BY id DESC');
     }
   }
 

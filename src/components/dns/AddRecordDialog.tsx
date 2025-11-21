@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import type { DNSRecord, RecordType } from '@/types/dns';
-import { RECORD_TYPES, TTL_PRESETS } from '@/types/dns';
+import { RECORD_TYPES, getTTLPresets } from '@/types/dns';
 import { Plus } from 'lucide-react';
 
 /**
@@ -38,8 +38,7 @@ export interface AddRecordDialogProps {
  */
 export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, onAdd, zoneName }: AddRecordDialogProps) {
   const ttlValue = record.ttl === 1 ? 'auto' : record.ttl;
-  const isCustomTTL =
-    ttlValue !== undefined && !TTL_PRESETS.includes(ttlValue as any);
+  const isCustomTTL = ttlValue !== undefined && !getTTLPresets().includes(ttlValue as any);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -101,7 +100,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TTL_PRESETS.map((ttl) => (
+                  {getTTLPresets().map((ttl) => (
                     <SelectItem key={ttl} value={String(ttl)}>
                       {ttl === 'auto' ? 'Auto' : ttl}
                     </SelectItem>

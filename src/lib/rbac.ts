@@ -24,8 +24,8 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
   if (store && (store as any).db) {
     try {
       const db: any = (store as any).db;
-      db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
-      const row = db.prepare('SELECT roles FROM users WHERE email = ?').get(email);
+      await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+      const row = await db.get('SELECT roles FROM users WHERE email = ?', [email]);
       if (!row) {
         res.status(403).json({ error: 'Admin credentials required' });
         return;

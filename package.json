@@ -7,12 +7,15 @@
     "dev": "vite",
     "dev:server": "npm-run-all -p server dev",
     "dev:debug": "cross-env VITE_DEBUG_CF_API=1 npm-run-all -p server dev",
-    "build": "tsc -b && vite build",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build": "npm run build:ts && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "tsx --test test/*.test.ts",
     "test:e2e": "playwright test",
-    "migrate:vault-to-sqlite": "node ./scripts/migrate-vault-to-sqlite.js",
+    "migrate:vault-to-sqlite": "tsx ./scripts/migrate-vault-to-sqlite.ts",
+    "clean": "rm -rf ./dist && find ./src -name '*.js' -delete",
+    "clean:src": "tsx ./scripts/cleanup-src-js.ts",
     "docs": "typedoc --out docs src --excludePrivate --excludeExternals",
     "server": "tsx server.ts"
   },
@@ -39,7 +42,8 @@
     "tailwind-merge": "^3.3.1",
     "zod": "^3.25.76",
     "@simplewebauthn/server": "^6.0.0",
-    "better-sqlite3": "^8.2.0"
+    "better-sqlite3": "^8.2.0",
+    "sqlite3": "^5.1.6"
   },
   "devDependencies": {
     
