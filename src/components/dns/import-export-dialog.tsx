@@ -142,6 +142,7 @@ export function ImportExportDialog({
           <SelectItem value="csv">CSV</SelectItem>
           <SelectItem value="bind">BIND</SelectItem>
         </SelectContent>
+      </Select>
       
       <Select onValueChange={async (format: 'json' | 'csv' | 'bind') => {
         if (serverExport) {

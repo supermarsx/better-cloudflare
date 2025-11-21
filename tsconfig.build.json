@@ -2,6 +2,10 @@
   "extends": "./tsconfig.app.json",
   "compilerOptions": {
     "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "erasableSyntaxOnly": false,
     "outDir": "./dist",
     "module": "ESNext",
     "moduleResolution": "node",

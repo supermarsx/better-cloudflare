@@ -110,7 +110,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [getDNSRecords, selectedZone, toast]);
   }, [getDNSRecords, selectedZone, page, perPage, toast]);
 
   useEffect(() => {
@@ -288,7 +287,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
   };
 
-  const handleImport = (providedItems?: Partial<DNSRecord>[], dryRun?: boolean) => {
+  const handleImport = async (providedItems?: Partial<DNSRecord>[], dryRun?: boolean) => {
     try {
       let items: Partial<DNSRecord>[] | null = null;
       if (providedItems) items = providedItems as Partial<DNSRecord>[];
@@ -504,7 +503,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </CardHeader>
             <CardContent>
               <div className="flex justify-end mb-4">
-                    <Select value={typeFilter} onValueChange={setTypeFilter}>
+                    <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as RecordType | '')}>
                   <SelectTrigger className="w-[180px]">
                     <SelectValue placeholder="All types" />
                   </SelectTrigger>
@@ -546,7 +545,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     itemCount={filteredRecords.length}
                     itemSize={72}
                     width={'100%'}
-                  >{({ index, style }) => {
+                    >{({ index, style }: { index: number; style: React.CSSProperties }) => {
                     const record = filteredRecords[index];
                     return (
                       <div style={style} key={record.id}>

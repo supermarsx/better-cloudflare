@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { ServerClient } from '@/lib/server-client';
-import type { ApiKey } from '@/types/dns';
 
 interface PasskeyManagerDialogProps {
   open: boolean;

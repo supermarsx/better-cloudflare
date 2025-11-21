@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { getEnv } from '../lib/env.ts';
+import { getEnv } from '../lib/env';
 
 /**
  * Build a CORS middleware suitable for the server. The function reads

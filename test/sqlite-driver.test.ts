@@ -26,7 +26,11 @@ test('openSqlite should return a sqlite wrapper and support basic calls', async 
 test('SqliteCredentialStore can add/get/delete credentials', async () => {
   const tmpDB = path.resolve(process.cwd(), 'data', 'test-credentials-2.db');
   try { fs.unlinkSync(tmpDB); } catch (_) {}
-  const store = new (await import('../src/lib/credential-store.ts')).SqliteCredentialStore(tmpDB);
+  process.env.CREDENTIAL_STORE = 'sqlite';
+  const createCredentialStore = (await import('../src/lib/credential-store.ts')).default as any;
+  const store = createCredentialStore() as any;
+  // ensure the store's init completes
+  await (store as any).initPromise;
   await (store as any).initPromise;
   const id = 'u-test';
   await store.addCredential(id, { credentialID: 'cid1', credentialPublicKey: 'pk', counter: 0 });

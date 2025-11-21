@@ -1,5 +1,6 @@
 import path from 'path';
-import { promisify } from 'util';
+import { createRequire } from 'module';
+// promisify unused; intentionally omitted
 
 type DriverType = 'better-sqlite3' | 'sqlite3';
 
@@ -53,16 +54,16 @@ function mkSyncWrapper(db: any): SqliteWrapper {
 
 function mkSqlite3Wrapper(db: any): SqliteWrapper {
   // sqlite3 callback API -> promisify
-  const run = function (sql: string, params: any[] = []) {
+  const run = function <T = any>(sql: string, params: any[] = []): Promise<T> {
     return new Promise((resolve, reject) => {
-      db.run(sql, params, function (err: any) {
+      db.run(sql, params, function (this: any, err: any) {
         if (err) return reject(err);
         // mimic better-sqlite3 return with lastInsertRowid & changes
-        return resolve({ lastInsertRowid: this.lastID, changes: this.changes });
+        return resolve({ lastInsertRowid: this.lastID, changes: this.changes } as unknown as T);
       });
     });
   };
-  const all = function (sql: string, params: any[] = []) {
+  const all = function <T = any>(sql: string, params: any[] = []): Promise<T[]> {
     return new Promise((resolve, reject) => {
       db.all(sql, params, (err: any, rows: any[]) => {
         if (err) return reject(err);
@@ -70,7 +71,7 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
       });
     });
   };
-  const get = function (sql: string, params: any[] = []) {
+  const get = function <T = any>(sql: string, params: any[] = []): Promise<T | undefined> {
     return new Promise((resolve, reject) => {
       db.get(sql, params, (err: any, row: any) => {
         if (err) return reject(err);
@@ -80,7 +81,7 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
   };
   const close = function () {
     return new Promise((resolve, reject) => {
-      db.close((err: any) => (err ? reject(err) : resolve()));
+      db.close((err: any) => (err ? reject(err) : resolve(undefined)));
     });
   };
   return {
@@ -96,9 +97,9 @@ export function openSqlite(dbFile?: string): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
   // Try better-sqlite3 first (synchronous, faster).
   try {
-    // Use require to allow not failing bundles that don't build native modules.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const better = require('better-sqlite3');
+    // Use createRequire to allow loading CJS modules even in ESM runtime
+    const requireFn = (typeof (globalThis as any).require === 'function') ? (globalThis as any).require : createRequire(import.meta.url);
+    const better = requireFn('better-sqlite3');
     const db = new better(file);
     console.info('openSqlite: using better-sqlite3 driver');
     return mkSyncWrapper(db);

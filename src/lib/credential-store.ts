@@ -2,7 +2,8 @@ import { promises as fs, mkdirSync } from 'fs';
 import path from 'path';
 import { vaultManager } from '../server/vault';
 import { getEnv } from './env';
-import openSqlite, { SqliteWrapper } from './sqlite-driver';
+import openSqlite from './sqlite-driver';
+import type { SqliteWrapper } from './sqlite-driver';
 
 export type PasskeyCredential = {
   credentialID: string;
@@ -78,7 +79,7 @@ class VaultCredentialStore implements CredentialStore {
   }
 }
   class SqliteCredentialStore implements CredentialStore {
-    private db: SqliteWrapper;
+    private db!: SqliteWrapper;
     private initPromise: Promise<any> | null = null;
     constructor(dbFile?: string) {
       const f = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');

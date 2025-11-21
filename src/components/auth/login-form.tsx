@@ -328,7 +328,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
   const handleBenchmark = async () => {
     try {
-      const { benchmark } = await import('@/lib/crypto-benchmark.ts');
+      const { benchmark } = await import('@/lib/crypto-benchmark');
       const result = await benchmark(encryptionSettings.iterations);
       setBenchmarkResult(result);
       toast({

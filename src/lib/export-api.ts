@@ -1,5 +1,5 @@
 import type { DNSRecord } from '@/types/dns';
-import { format as formatDate } from 'date-fns';
+// date-fns not required for now; avoid dependency in build
 
 /**
  * Convert a list of DNS records to CSV text

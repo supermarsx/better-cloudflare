@@ -91,21 +91,7 @@ export interface EncryptionConfig {
   keyLength: number;
   algorithm: EncryptionAlgorithm;
 }
-export type RecordType =
-  | 'A'
-  | 'AAAA'
-  | 'CNAME'
-  | 'MX'
-  | 'TXT'
-  | 'SRV'
-  | 'NS'
-  | 'PTR'
-  | 'CAA';
-
-/**
- * Supported record types used across the UI and validation schema.
- */
-export const RECORD_TYPES: RecordType[] = [
+export const RECORD_TYPES = [
   'A',
   'AAAA',
   'CNAME',
@@ -115,7 +101,14 @@ export const RECORD_TYPES: RecordType[] = [
   'NS',
   'PTR',
   'CAA'
-];
+] as const;
+
+export type RecordType = typeof RECORD_TYPES[number];
+
+/**
+ * Supported record types used across the UI and validation schema.
+ */
+ 
 
 /**
  * TTL presets used in the UI for quick selection (seconds or 'auto')

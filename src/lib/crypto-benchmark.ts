@@ -1,4 +1,4 @@
-import { CryptoManager, cryptoManager } from './crypto.ts';
+import { CryptoManager, cryptoManager } from './crypto';
 
 /**
  * Upper limit for iterations used by the benchmark to avoid excessive CPU
