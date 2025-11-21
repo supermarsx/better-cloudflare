@@ -93,13 +93,13 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
   };
 }
 
-export function openSqlite(dbFile?: string): SqliteWrapper {
+export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
+  const req = requireFn ? requireFn : ((typeof (globalThis as any).require === 'function') ? (globalThis as any).require : createRequire(import.meta.url));
   // Try better-sqlite3 first (synchronous, faster).
   try {
-    // Use createRequire to allow loading CJS modules even in ESM runtime
-    const requireFn = (typeof (globalThis as any).require === 'function') ? (globalThis as any).require : createRequire(import.meta.url);
-    const better = requireFn('better-sqlite3');
+    // allow injection for tests (e.g., throw on better-sqlite3)
+    const better = req('better-sqlite3');
     const db = new better(file);
     console.info('openSqlite: using better-sqlite3 driver');
     return mkSyncWrapper(db);
@@ -109,8 +109,7 @@ export function openSqlite(dbFile?: string): SqliteWrapper {
   }
   // Fallback to sqlite3 (async wrappers). This should be a valid Node driver
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const sqlite3 = require('sqlite3');
+    const sqlite3 = req('sqlite3');
     const sqlite3verbose = sqlite3.verbose ? sqlite3.verbose() : sqlite3;
     const db = new sqlite3verbose.Database(file);
     console.info('openSqlite: using sqlite3 driver fallback');

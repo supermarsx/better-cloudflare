@@ -16,6 +16,7 @@
     "migrate:vault-to-sqlite": "tsx ./scripts/migrate-vault-to-sqlite.ts",
     "clean": "rm -rf ./dist && find ./src -name '*.js' -delete",
     "clean:src": "tsx ./scripts/cleanup-src-js.ts",
+    "check-spf": "tsx ./scripts/check-spf.ts",
     "docs": "typedoc --out docs src --excludePrivate --excludeExternals",
     "server": "tsx server.ts"
   },

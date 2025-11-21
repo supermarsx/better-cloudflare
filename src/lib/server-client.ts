@@ -313,6 +313,14 @@ export class ServerClient {
     return this.request(`/passkeys/authenticate/options/${id}`, { method: 'GET' });
   }
 
+  async simulateSPF(domain: string, ip: string): Promise<{ result: string; reasons: string[]; lookups: number }> {
+    return this.request(`/spf/simulate?domain=${encodeURIComponent(domain)}&ip=${encodeURIComponent(ip)}`, { method: 'GET' });
+  }
+
+  async getSPFGraph(domain: string): Promise<unknown> {
+    return this.request(`/spf/graph?domain=${encodeURIComponent(domain)}`, { method: 'GET' });
+  }
+
   async authenticatePasskey(id: string, assertion: unknown): Promise<{ success: boolean }> {
     /**
      * Submit a passkey assertion (authentication) to the server. The server

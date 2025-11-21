@@ -439,6 +439,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     onRecordChange={setNewRecord}
                     onAdd={handleAddRecord}
                     zoneName={selectedZoneData?.name}
+                    apiKey={apiKey}
+                    email={email}
                   />
                 </div>
                 )}

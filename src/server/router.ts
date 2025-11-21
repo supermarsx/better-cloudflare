@@ -55,6 +55,10 @@ apiRouter.get('/api/passkeys/:id', asyncHandler(ServerAPI.listPasskeys()));
 apiRouter.delete('/api/passkeys/:id/:cid', isAdmin, asyncHandler(ServerAPI.deletePasskey()));
 apiRouter.get('/api/audit', isAdmin, asyncHandler(ServerAPI.getAuditEntries()));
 
+// SPF simulation & graph endpoints
+apiRouter.get('/api/spf/simulate', asyncHandler(ServerAPI.simulateSPF()));
+apiRouter.get('/api/spf/graph', asyncHandler(ServerAPI.getSPFGraph()));
+
 // Admin endpoints
 apiRouter.post('/api/users', isAdmin, asyncHandler(ServerAPI.createUser()));
 apiRouter.get('/api/users/:id', asyncHandler(ServerAPI.getUser()));

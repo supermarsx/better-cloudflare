@@ -100,10 +100,77 @@ export const RECORD_TYPES = [
   'SRV',
   'NS',
   'PTR',
-  'CAA'
+  'CAA',
+  'DS',
+  'DNSKEY',
+  'NAPTR',
+  'SSHFP',
+  'TLSA',
+  'HINFO',
+  'LOC',
+  'SPF',
+  'RP',
+  'DNAME',
+  'CERT',
+  'CDNSKEY',
+  'AFSDB',
+  'APL',
+  'DCHID',
+  'HIP',
+  'IPSECKEY',
+  'NSEC',
+  'RRSIG',
+  'SOA',
+  'SVCB',
+  'HTTPS',
+  'URI',
+  'ALIAS',
+  'ANAME'
 ] as const;
 
 export type RecordType = typeof RECORD_TYPES[number];
+
+/** Human-friendly labels for record types used in UI dropdowns */
+export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
+  A: 'A (IPv4 address)',
+  AAAA: 'AAAA (IPv6 address)',
+  CNAME: 'CNAME (alias)',
+  MX: 'MX (mail exchange)',
+  TXT: 'TXT (text)',
+  SRV: 'SRV (service record)',
+  NS: 'NS (name server)',
+  PTR: 'PTR (pointer)',
+  CAA: 'CAA (cert authority allowed)',
+  DS: 'DS (delegation signer)',
+  DNSKEY: 'DNSKEY (DNS public key)',
+  NAPTR: 'NAPTR (naming authority pointer)',
+  SSHFP: 'SSHFP (SSH fingerprint)',
+  TLSA: 'TLSA (TLS authentication)',
+  HINFO: 'HINFO (host info)',
+  LOC: 'LOC (location)',
+  SPF: 'SPF (SPF text)',
+  RP: 'RP (responsible person)',
+  DNAME: 'DNAME (delegation name)',
+  CERT: 'CERT (certificates)',
+  CDNSKEY: 'CDNSKEY (child DNSKEY)',
+  AFSDB: 'AFSDB (Andrew File System DB)',
+  APL: 'APL (address prefix list)',
+  DCHID: 'DCHID (DHCP identifier)',
+  HIP: 'HIP (Host Identity Protocol)',
+  IPSECKEY: 'IPSECKEY (IPsec key)',
+  NSEC: 'NSEC (next secure record)',
+  RRSIG: 'RRSIG (DNSSEC signature)',
+  SOA: 'SOA (start of authority)',
+  SVCB: 'SVCB (service binding)',
+  HTTPS: 'HTTPS (http service binding)',
+  URI: 'URI (URI record)',
+  ALIAS: 'ALIAS (alias)',
+  ANAME: 'ANAME (apex alias)'
+};
+
+export function getRecordTypeLabel(type: RecordType) {
+  return RECORD_TYPE_LABELS[type] ?? (String(type) as string);
+}
 
 /**
  * Supported record types used across the UI and validation schema.

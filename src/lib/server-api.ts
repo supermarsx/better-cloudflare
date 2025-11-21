@@ -6,7 +6,10 @@ import { logAudit } from './audit';
 import { getAuditEntries } from './audit';
 import swauth from './simplewebauthn-wrapper';
 import { dnsRecordSchema } from './validation';
+import type { Zone } from '@/types/dns';
+import { validateSPFContentAsync } from './spf';
 import { getEnv, getEnvBool } from './env';
+import { simulateSPF, buildSPFGraph } from './spf';
 
 const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
 
@@ -121,6 +124,24 @@ export class ServerAPI {
         return;
       }
       const client = createClient(req);
+      if (parsed.data.type === 'SPF') {
+        // compute the fqdn from the zone name + record name
+        let fqdn = parsed.data.name;
+        try {
+          const zones: Zone[] = await client.getZones();
+          const zone = zones.find((z) => z.id === req.params.zone);
+          const zoneName = zone ? zone.name : req.params.zone;
+          fqdn = (parsed.data.name === '@' || parsed.data.name === '') ? zoneName : `${parsed.data.name}.${zoneName}`;
+        } catch {
+          // fallback to using raw name
+          if (!fqdn || fqdn === '@') fqdn = parsed.data.name || req.params.zone;
+        }
+        const v = await validateSPFContentAsync(parsed.data.content ?? '', fqdn);
+        if (!v.ok) {
+          res.status(400).json({ error: `SPF validation failed: ${v.problems.join(', ')}` });
+          return;
+        }
+      }
       const record = await client.createDNSRecord(
         req.params.zone,
         parsed.data,
@@ -173,6 +194,23 @@ export class ServerAPI {
         if (!parsed.success) {
           skipped.push({ index: i, error: parsed.error.message });
           continue;
+        }
+        if (parsed.data.type === 'SPF') {
+          // determine fqdn using zone name from Cloudflare
+          let fqdn = parsed.data.name;
+          try {
+            const zones: Zone[] = await client.getZones();
+            const zone = zones.find((z) => z.id === req.params.zone);
+            const zoneName = zone ? zone.name : req.params.zone;
+            fqdn = (parsed.data.name === '@' || parsed.data.name === '') ? zoneName : `${parsed.data.name}.${zoneName}`;
+          } catch {
+            if (!fqdn || fqdn === '@') fqdn = parsed.data.name || req.params.zone;
+          }
+          const v = await validateSPFContentAsync(parsed.data.content ?? '', fqdn);
+          if (!v.ok) {
+            skipped.push({ index: i, error: `SPF validation failed: ${v.problems.join(', ')}` });
+            continue;
+          }
         }
         if (req.query.dryrun) {
           // dry run: record as created but do not push to Cloudflare
@@ -228,6 +266,31 @@ export class ServerAPI {
         default:
           res.status(400).json({ error: 'Unknown format' });
       }
+    };
+  }
+
+  static simulateSPF() {
+    return async (req: Request, res: Response) => {
+      const domain = String(req.query.domain || req.body?.domain || '');
+      const ip = String(req.query.ip || req.body?.ip || '');
+      if (!domain || !ip) {
+        res.status(400).json({ error: 'Missing domain or ip' });
+        return;
+      }
+      const result = await simulateSPF({ domain, ip });
+      res.json(result);
+    };
+  }
+
+  static getSPFGraph() {
+    return async (req: Request, res: Response) => {
+      const domain = String(req.query.domain || req.body?.domain || '');
+      if (!domain) {
+        res.status(400).json({ error: 'Missing domain' });
+        return;
+      }
+      const graph = await buildSPFGraph(domain);
+      res.json(graph);
     };
   }
 

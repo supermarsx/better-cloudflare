@@ -78,10 +78,10 @@ class VaultCredentialStore implements CredentialStore {
     await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(filtered));
   }
 }
-  class SqliteCredentialStore implements CredentialStore {
+  export class SqliteCredentialStore implements CredentialStore {
     private db!: SqliteWrapper;
     private initPromise: Promise<any> | null = null;
-    constructor(dbFile?: string) {
+    constructor(dbFile?: string, dbWrapper?: SqliteWrapper) {
       const f = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
       // Ensure directory exists before opening the database
       try {
@@ -89,7 +89,7 @@ class VaultCredentialStore implements CredentialStore {
       } catch (e) {
         // ignore
       }
-      this.db = openSqlite(f);
+      this.db = dbWrapper ?? openSqlite(f);
       // Initialize schema (use promise API of wrapper)
       this.initPromise = (async () => {
         await this.db.run(`CREATE TABLE IF NOT EXISTS credentials (

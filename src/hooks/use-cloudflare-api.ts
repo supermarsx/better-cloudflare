@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { ServerClient } from '../lib/server-client';
+import type { SPFGraph } from '@/lib/spf';
 import type { DNSRecord, Zone } from '../types/dns';
 
 /**
@@ -137,7 +138,21 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     return (api as any).exportDNSRecords(zoneId, format, page, perPage);
   }, [api]);
 
+  const simulateSPF = useCallback((domain: string, ip: string): Promise<{ result: string; reasons: string[]; lookups: number }> => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore - method available on ServerClient when server supports it
+    return (api as any).simulateSPF(domain, ip);
+  }, [api]);
+
+  const getSPFGraph = useCallback((domain: string): Promise<SPFGraph> => {
+    if (!api) return Promise.reject(new Error('API key not provided'));
+    // @ts-ignore
+    return (api as any).getSPFGraph(domain);
+  }, [api]);
+
   return {
+      simulateSPF,
+      getSPFGraph,
     verifyToken,
     getZones,
     getDNSRecords,
