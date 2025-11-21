@@ -252,3 +252,19 @@ test('aborts request after timeout', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('listPasskeys and deletePasskey', async () => {
+  const client = new ServerClient('key', 'http://example.com');
+  const passkeys = [{ id: 'cid1', counter: 0 }, { id: 'cid2', counter: 2 }];
+
+  let restore = mockFetch({ ok: true, status: 200, headers: { 'content-type': 'application/json' }, body: passkeys });
+  assert.deepEqual(await client.listPasskeys('keyid'), passkeys);
+  const called = restore();
+  assert.equal(called.url, 'http://example.com/passkeys/keyid');
+
+  restore = mockFetch({ ok: true, status: 200 });
+  await client.deletePasskey('keyid', 'cid1');
+  const called2 = restore();
+  assert.equal(called2.url, 'http://example.com/passkeys/keyid/cid1');
+  assert.equal(called2.init?.method, 'DELETE');
+});

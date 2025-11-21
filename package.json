@@ -11,6 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "tsx --test test/*.test.ts",
+    "test:e2e": "playwright test",
+    "migrate:vault-to-sqlite": "node ./scripts/migrate-vault-to-sqlite.js",
     "docs": "typedoc --out docs src --excludePrivate --excludeExternals",
     "server": "tsx server.ts"
   },
@@ -36,7 +38,8 @@
     "react-dom": "^19.1.0",
     "tailwind-merge": "^3.3.1",
     "zod": "^3.25.76",
-    "@simplewebauthn/server": "^6.0.0"
+    "@simplewebauthn/server": "^6.0.0",
+    "better-sqlite3": "^8.2.0"
   },
   "devDependencies": {
     
@@ -55,6 +58,7 @@
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^16.3.0",
     "jsdom": "^26.1.0",
+    "@testing-library/dom": "^8.16.0",
     "npm-run-all": "^4.1.5",
     "postcss": "^8.5.6",
     "react-test-renderer": "^19.1.0",
@@ -62,9 +66,10 @@
     "tailwindcss-animate": "^1.0.7",
     "tsx": "^4.20.3",
     "typescript": "~5.8.3",
-    "typedoc": "^0.24.13",
-    "typedoc-plugin-markdown": "^4.1.3",
     "typescript-eslint": "^8.35.1",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "@playwright/test": "^1.44.0"
+    ,
+    "axe-core": "^4.7.0"
   }
 }

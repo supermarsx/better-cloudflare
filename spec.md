@@ -93,9 +93,12 @@ Important environment variables:
 - For server (`server.ts`):
   - `PORT` / `VITE_PORT` — port for server (default 8787)
   - `ALLOWED_ORIGINS` — comma-separated allowed origins for CORS (`*` allows all)
+  - `CREDENTIAL_STORE` — `vault` (default), `sqlite`, or `memory` (configure DB connection when set).
   - `SERVER_ORIGIN` / `VITE_SERVER_ORIGIN` — base origin used to validate WebAuthn/assertion origin (defaults to `http://localhost:8787`)
   - `RATE_LIMIT_WINDOW` (ms default: 60000) & `RATE_LIMIT_MAX` (e.g., default: 100)
   - `CLOUDFLARE_API_BASE` — optional Cloudflare base to proxy
+  - `ATTESTATION_POLICY` — attestation policy for WebAuthn registration: `none` | `direct` | `indirect` | `enterprise` (default: `none`).
+  - `ADMIN_TOKEN` — admin token string that allows access to administrative endpoints (e.g., `/api/audit`) when present; fallback to Cloudflare credentials remains supported.
   - `DEBUG_SERVER`, `DEBUG_SERVER_API`, `DEBUG_CF_API`, `VITE_DEBUG_CF_API` — debug flags
 
 Usage examples:
@@ -117,6 +120,7 @@ The application is a single-page UI with two primary screens:
   - Add API key dialog (label, key/token, optional email, password for encryption)
   - Edit key modal (rename or rotate encryption password)
   - Encryption settings & benchmark
+    - Passkey management: Register passkeys, manage (list/revoke) registered passkeys per stored key.
 
 2. DNS Manager (visible after unlocking a stored key)
   - Header with current session information and Logout button

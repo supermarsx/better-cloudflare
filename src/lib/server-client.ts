@@ -323,6 +323,14 @@ export class ServerClient {
     return this.request(`/passkeys/authenticate/${id}`, { method: 'POST', body: assertion });
   }
 
+  async listPasskeys(id: string): Promise<{ id: string; counter?: number }[]> {
+    return this.request(`/passkeys/${id}`, { method: 'GET' });
+  }
+
+  async deletePasskey(id: string, cid: string): Promise<void> {
+    await this.request(`/passkeys/${id}/${cid}`, { method: 'DELETE' });
+  }
+
   async exportDNSRecords(zoneId: string, format: 'json' | 'csv' | 'bind' = 'json', page?: number, perPage?: number): Promise<string> {
     /**
      * Export DNS records for a zone in a specific format. Supported formats

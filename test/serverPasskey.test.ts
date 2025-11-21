@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Request, Response } from 'express';
 import { ServerAPI } from '../src/lib/server-api.ts';
+import { getAuditEntries, clearAuditEntries } from '../src/lib/audit.ts';
 import { vaultManager } from '../src/server/vault.ts';
 
 // Monkey-patch simplewebauthn server verification functions to avoid
 // needing a real WebAuthn attestation/assertion for unit tests.
-import * as swauth from '@simplewebauthn/server';
+import swauth from '../src/lib/simplewebauthn-wrapper';
 
 // Store original functions to restore
 const origVerifyReg = (swauth as any).verifyRegistrationResponse;
@@ -69,6 +70,8 @@ test('registerPasskey verifies and stores credential', async () => {
 
   const secret = await vaultManager.getSecret('passkey:key2');
   assert.ok(secret);
+  const entries = getAuditEntries();
+  assert.ok(entries.some((e) => e.operation === 'passkey:register'));
 
   // restore
   (swauth as any).verifyRegistrationResponse = origVerifyReg;
@@ -89,6 +92,8 @@ test('registerPasskey supports multiple credentials', async () => {
 
   // Register two credentials
   await handler(createReq({ id, response: {} }, { id }), createRes().res);
+  // Need a new challenge for the second credential
+  await start(reqStart, resStart.res);
   await handler(createReq({ id, response: {} }, { id }), createRes().res);
 
   const stored = await vaultManager.getSecret(`passkey:${id}`);
@@ -105,6 +110,7 @@ test('registerPasskey supports multiple credentials', async () => {
   assert.ok(options.allowCredentials && options.allowCredentials.length >= 2);
 
   (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  clearAuditEntries();
 });
 
 test('listPasskeys returns stored credentials and deletePasskey removes one', async () => {
@@ -134,6 +140,14 @@ test('listPasskeys returns stored credentials and deletePasskey removes one', as
   const listRes2 = createRes();
   await listH(createReq({}, { id }), listRes2.res);
   assert.ok(listRes2.data.length === listRes.data.length - 1);
+  const entries2 = getAuditEntries();
+  // ensure passkey:delete logged at least once
+  assert.ok(entries2.some((e) => (e.operation === 'passkey:delete')));
+  // ensure audit endpoint exposes entries when asked
+  const auditH = ServerAPI.getAuditEntries();
+  const ar = createRes();
+  await auditH(createReq({}, { }), ar.res);
+  assert.ok(Array.isArray(ar.data));
 
   (swauth as any).verifyRegistrationResponse = origVerifyReg;
 });
@@ -149,6 +163,19 @@ test('registerPasskey rejects invalid attestation', async () => {
   const res = createRes();
   await handler(createReq({ id, response: {} }, { id }), res.res);
   assert.equal(res.status, 400);
+  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+});
+
+test('registerPasskey enforces attestation policy', async () => {
+  (swauth as any).verifyRegistrationResponse = async () => ({ verified: true, registrationInfo: { credentialID: 'cid', credentialPublicKey: 'pk' }, attestationType: 'direct' });
+  process.env.ATTESTATION_POLICY = 'indirect';
+  const handler = ServerAPI.registerPasskey();
+  const id = 'policyKey';
+  await ServerAPI.createPasskeyRegistrationOptions()(createReq({}, { id }), createRes().res);
+  const res = createRes();
+  await handler(createReq({ id, response: {} }, { id }), res.res);
+  assert.equal(res.status, 400);
+  delete process.env.ATTESTATION_POLICY;
   (swauth as any).verifyRegistrationResponse = origVerifyReg;
 });
 

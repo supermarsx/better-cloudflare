@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { Key, Trash2, Pencil } from 'lucide-react';
 import { cryptoManager } from '@/lib/crypto';
 import { AddKeyDialog } from './AddKeyDialog';
+import PasskeyManagerDialog from './PasskeyManagerDialog';
 import { ServerClient } from '@/lib/server-client';
 import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
 import { EditKeyDialog } from './EditKeyDialog';
@@ -56,6 +57,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
   const [passkeyRegisterLoading, setPasskeyRegisterLoading] = useState(false);
   const [passkeyAuthLoading, setPasskeyAuthLoading] = useState(false);
+  const [showManagePasskeys, setShowManagePasskeys] = useState(false);
+  const [passkeyViewKey, setPasskeyViewKey] = useState('');
+  const [passkeyViewEmail, setPasskeyViewEmail] = useState<string | undefined>(undefined);
   
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
@@ -464,6 +468,43 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               disabled={!selectedKeyId || !password || passkeyRegisterLoading}
             >
               {passkeyRegisterLoading ? 'Registering...' : 'Register Passkey'}
+            </Button>
+            <PasskeyManagerDialog
+              open={showManagePasskeys}
+              onOpenChange={(open: boolean) => {
+                if (!open) {
+                  setShowManagePasskeys(false);
+                  setPasskeyViewKey('');
+                  setPasskeyViewEmail(undefined);
+                } else {
+                  setShowManagePasskeys(true);
+                }
+              }}
+              id={selectedKeyId}
+              apiKey={passkeyViewKey}
+              email={passkeyViewEmail}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                if (!selectedKeyId || !password) return;
+                try {
+                  const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+                  if (!decrypted?.key) {
+                    toast({ title: 'Error', description: 'Invalid password', variant: 'destructive' });
+                    return;
+                  }
+                  setPasskeyViewKey(decrypted.key);
+                  setPasskeyViewEmail(decrypted.email);
+                  setShowManagePasskeys(true);
+                } catch (err) {
+                  toast({ title: 'Error', description: 'Failed to decrypt key: ' + (err as Error).message, variant: 'destructive' });
+                }
+              }}
+              disabled={!selectedKeyId || !password}
+            >
+              Manage Passkeys
             </Button>
             <Button
               variant="outline"

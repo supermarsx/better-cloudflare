@@ -1,7 +1,10 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
 import { vaultManager } from '../server/vault';
-import * as swauth from '@simplewebauthn/server';
+import createCredentialStore from './credential-store';
+import { logAudit } from './audit';
+import { getAuditEntries } from './audit';
+import swauth from './simplewebauthn-wrapper';
 import { dnsRecordSchema } from './validation';
 import { getEnv, getEnvBool } from './env';
 
@@ -231,6 +234,7 @@ export class ServerAPI {
         return;
       }
       await vaultManager.setSecret(String(id), String(secret));
+      logAudit({ operation: 'vault:store', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
       res.json({ success: true });
     };
   }
@@ -252,6 +256,7 @@ export class ServerAPI {
         res.status(404).json({ error: 'Secret not found' });
         return;
       }
+      logAudit({ operation: 'vault:retrieve', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
       res.json({ secret });
     };
   }
@@ -269,6 +274,7 @@ export class ServerAPI {
         return;
       }
       await vaultManager.deleteSecret(String(id));
+      logAudit({ operation: 'vault:delete', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `vault:${id}` });
       res.json({ success: true });
     };
   }
@@ -320,6 +326,10 @@ export class ServerAPI {
   // mechanism for production use.
   private static passkeyChallenges: Map<string, string> = new Map();
   private static passkeyCredentials: Map<string, unknown> = new Map();
+  private static credentialStore = createCredentialStore();
+  static setCredentialStore(store: any) {
+    ServerAPI.credentialStore = store;
+  }
 
   static createPasskeyRegistrationOptions() {
     /**
@@ -384,15 +394,23 @@ export class ServerAPI {
           res.status(400).json({ error: 'Attestation verification failed' });
           return;
         }
-        const { registrationInfo } = verification;
+        const { registrationInfo, attestationType } = verification as any;
+        // Enforce attestation policy if configured
+        const policy = getEnv('ATTESTATION_POLICY', 'VITE_ATTESTATION_POLICY', 'none');
+        if (policy && policy !== 'none' && attestationType !== policy) {
+          res.status(400).json({ error: `Attestation type ${attestationType} does not satisfy policy ${policy}` });
+          return;
+        }
         // Persist the credential(s) for future authentication checks. Store as
         // an array to support multiple credentials registered per id.
-        const stored = await vaultManager.getSecret(`passkey:${id}`);
-        const existing = stored ? JSON.parse(stored) : [];
-        existing.push(registrationInfo);
-        await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(existing));
-        ServerAPI.passkeyCredentials.set(id, existing);
+        // store returned from credential store; we will add the new credential
+        const toAdd = { credentialID: registrationInfo.credentialID ?? registrationInfo.id, credentialPublicKey: registrationInfo.credentialPublicKey ?? registrationInfo.publicKey, counter: registrationInfo.counter ?? 0 } as any;
+        await ServerAPI.credentialStore.addCredential(id, toAdd);
+        const updated = await ServerAPI.credentialStore.getCredentials(id);
+        ServerAPI.passkeyCredentials.set(id, updated);
         ServerAPI.passkeyChallenges.delete(id);
+        // Audit registration success
+        logAudit({ operation: 'passkey:register', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `passkey:${id}`, details: { attestationType } });
         res.json({ success: true });
       } catch (err) {
         res.status(400).json({ error: (err as Error).message });
@@ -412,8 +430,7 @@ export class ServerAPI {
       }
       const origin = getEnv('SERVER_ORIGIN', 'VITE_SERVER_ORIGIN', 'http://localhost:8787')!;
       const rpID = new URL(origin).hostname;
-      const stored = await vaultManager.getSecret(`passkey:${id}`);
-      const creds = stored ? JSON.parse(stored) : [];
+      const creds = await ServerAPI.credentialStore.getCredentials(id);
       const allowList = Array.isArray(creds) && creds.length
         ? creds.map((c: any) => ({ id: c.credentialID, type: 'public-key' }))
         : [];
@@ -449,12 +466,12 @@ export class ServerAPI {
       }
       // require valid credentials on request
       createClient(req);
-      const stored = await vaultManager.getSecret(`passkey:${id}`);
-      if (!stored) {
+      const stored = await ServerAPI.credentialStore.getCredentials(id);
+      if (!stored || stored.length === 0) {
         res.status(404).json({ error: 'Not found' });
         return;
       }
-      const creds = JSON.parse(stored) as any[];
+      const creds = stored as any[];
       const filtered = creds.filter((c) => {
         const key = c.credentialID || c.id;
         const keyStr = typeof key === 'string' ? key : Buffer.from(key).toString('base64');
@@ -469,8 +486,110 @@ export class ServerAPI {
         }
         return true;
       });
-      await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(filtered));
+        // Save back the filtered list
+        // For stores that support direct set: prefer that if available, otherwise delete and re-add via store API
+        // We will rely on the store's deleteCredential function for simplicity and then re-add remaining.
+        // Clear by deleting all and re-adding for now
+        for (const c of creds) {
+          await ServerAPI.credentialStore.deleteCredential(id, c.credentialID || c.id);
+        }
+        for (const c of filtered) {
+          await ServerAPI.credentialStore.addCredential(id, { credentialID: c.credentialID ?? c.id, credentialPublicKey: c.credentialPublicKey ?? c.publicKey, counter: c.counter ?? 0 });
+        }
+      logAudit({ operation: 'passkey:delete', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `passkey:${id}`, details: { deletedCredential: cid } });
       res.json({ success: true });
+    };
+  }
+
+  static getAuditEntries() {
+    return async (req: Request, res: Response) => {
+      // Allow either valid Cloudflare credentials OR the ADMIN_TOKEN header for admin access
+      const adminToken = getEnv('ADMIN_TOKEN', 'VITE_ADMIN_TOKEN', undefined);
+      const reqAdminToken = req.header('x-admin-token');
+      // DEBUG: log values during tests
+      if (getEnv('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API', undefined)) console.debug('DEBUG getAuditEntries adminToken=', adminToken, 'reqAdminToken=', reqAdminToken);
+      if (!reqAdminToken || reqAdminToken !== adminToken) {
+        // fallback to Cloudflare credentials check
+        createClient(req);
+      }
+      const entries = getAuditEntries();
+      res.json(entries);
+    };
+  }
+
+  static createUser() {
+    return async (req: Request, res: Response) => {
+      // require admin via ADMIN_TOKEN or Cloudflare (admin only path)
+      const adminToken = getEnv('ADMIN_TOKEN', 'VITE_ADMIN_TOKEN', undefined);
+      const reqAdmin = req.header('x-admin-token');
+      if (!reqAdmin || reqAdmin !== adminToken) {
+        res.status(403).json({ error: 'Admin token required' });
+        return;
+      }
+      const body = req.body;
+      if (!body || !body.id) {
+        res.status(400).json({ error: 'Missing body or id' });
+        return;
+      }
+      // store user record in sqlite via credential store's db if available
+      const store = ServerAPI.credentialStore as any;
+      if (store && typeof store.db !== 'undefined') {
+        const db = (store as any).db as any;
+        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
+        db.prepare('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)').run(body.id, body.email ?? null, JSON.stringify(body.roles ?? []));
+        res.json({ success: true });
+        return;
+      }
+      res.status(501).json({ error: 'User management not implemented for current credential store' });
+    };
+  }
+
+  static getUser() {
+    return async (req: Request, res: Response) => {
+      const id = req.params.id;
+      if (!id) {
+        res.status(400).json({ error: 'Missing id' });
+        return;
+      }
+      const store = ServerAPI.credentialStore as any;
+      if (store && typeof store.db !== 'undefined') {
+        const db = (store as any).db as any;
+        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
+        const row = db.prepare('SELECT id, email, roles FROM users WHERE id = ?').get(id);
+        if (!row) {
+          res.status(404).json({ error: 'Not found' });
+          return;
+        }
+        res.json({ id: row.id, email: row.email, roles: JSON.parse(row.roles || '[]') });
+        return;
+      }
+      res.status(501).json({ error: 'User management not implemented for current credential store' });
+    };
+  }
+
+  static updateUserRoles() {
+    return async (req: Request, res: Response) => {
+      const adminToken = getEnv('ADMIN_TOKEN', 'VITE_ADMIN_TOKEN', undefined);
+      const reqAdmin = req.header('x-admin-token');
+      if (!reqAdmin || reqAdmin !== adminToken) {
+        res.status(403).json({ error: 'Admin token required' });
+        return;
+      }
+      const id = req.params.id;
+      const { roles } = req.body;
+      if (!id || !Array.isArray(roles)) {
+        res.status(400).json({ error: 'Missing id or roles' });
+        return;
+      }
+      const store = ServerAPI.credentialStore as any;
+      if (store && typeof store.db !== 'undefined') {
+        const db = (store as any).db as any;
+        db.prepare('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)').run();
+        db.prepare('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)').run(id, null, JSON.stringify(roles));
+        res.json({ success: true });
+        return;
+      }
+      res.status(501).json({ error: 'User management not implemented for current credential store' });
     };
   }
 
@@ -498,12 +617,12 @@ export class ServerAPI {
           res.status(400).json({ error: 'No challenge found' });
           return;
         }
-        const stored = await vaultManager.getSecret(`passkey:${id}`);
-        if (!stored) {
+        const stored = await ServerAPI.credentialStore.getCredentials(id);
+        if (!stored || stored.length === 0) {
           res.status(400).json({ error: 'No credential registered' });
           return;
         }
-        const credentials = JSON.parse(stored) as any[];
+        const credentials = stored as any[];
         // Try to find matching credential from assertion rawId or fallback to first
         let credential: any = credentials[0];
         try {
@@ -547,8 +666,12 @@ export class ServerAPI {
         }
         // Update stored counter
         const newCounter = verification.authenticationInfo?.newCounter ?? (expected.currentCounter || 0);
-        const newCredential = { ...credential, counter: newCounter };
-        await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(newCredential));
+        const credentialId = expected.id as string;
+        // Update the credential in store by deleting the old and adding the updated
+        await ServerAPI.credentialStore.deleteCredential(id, credentialId);
+        await ServerAPI.credentialStore.addCredential(id, { credentialID: credentialId, credentialPublicKey: expected.publicKey, counter: newCounter });
+        // Audit successful assertion
+        logAudit({ operation: 'passkey:authenticate', actor: req.header('x-auth-email') || req.header('authorization') || 'unknown', resource: `passkey:${id}` });
         ServerAPI.passkeyChallenges.delete(id);
         res.json({ success: true });
       } catch (err) {
