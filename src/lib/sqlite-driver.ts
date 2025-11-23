@@ -120,11 +120,12 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
     const db = new sqlite3verbose.Database(file);
     console.info('openSqlite: using sqlite3 driver fallback');
     return mkSqlite3Wrapper(db);
-  } catch {
+  } catch (err) {
     // If both drivers are unavailable, and a custom requireFn was provided
     // (tests expect an explicit throw for this case), propagate the error.
     if (requireFn) {
-      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${err?.message ?? err}`);
+      // include the original error message when available
+      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${(err as any)?.message ?? String(err)}`);
     }
 
     // Otherwise create or reuse a simple in-memory sqlite-like wrapper for lightweight

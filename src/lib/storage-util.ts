@@ -66,31 +66,45 @@ export function getStorage(storage?: StorageLike): StorageLike {
     // Prefer IndexedDB storage when available
     if (typeof indexedDB !== 'undefined') {
       // lazily load idb and create a simple wrapper
-      // We intentionally require idb dynamically to avoid importing when not needed
-       
-      const { openDB } = require('idb');
+      // We intentionally load idb dynamically inside init() so this module
+      // remains synchronous to callers while still enabling an async
+      // initialization path when IndexedDB is available.
+      type IDBRuntime = {
+        createObjectStore?: (name: string) => void;
+        getAllKeys?: (store: string) => Promise<string[]>;
+        get?: (store: string, key: string) => Promise<unknown>;
+        put?: (store: string, value: unknown, key: string) => Promise<void>;
+        delete?: (store: string, key: string) => Promise<void>;
+      };
+
       class IndexedDBStorage implements StorageLike {
-        private db: any;
+        private db: unknown;
         private store: Record<string, string> = {};
         private initialized = false;
         async init() {
+          // load the idb module lazily so we don't import it at package init
+          const idb = await import('idb').catch(() => null);
+          if (!idb) return;
+          const { openDB } = idb;
           this.db = await openDB('better-cloudflare', 1, {
-            upgrade(db: any) {
+            upgrade(db: { createObjectStore: (name: string) => void }) {
               db.createObjectStore('kv');
             },
           });
           try {
-            const keys = await this.db.getAllKeys('kv');
+            // @ts-expect-error - idb runtime methods accessed via dynamic import
+            const keys = await (this.db as IDBRuntime).getAllKeys?.('kv');
             for (const k of keys) {
               try {
-                const v = await this.db.get('kv', k);
+                // @ts-expect-error runtime access
+                const v = await (this.db as IDBRuntime).get?.('kv', k);
                 this.store[k] = String(v);
-              } catch (_) {
-                // ignore
+              } catch {
+                // ignore - best-effort cache population
               }
             }
-          } catch (_) {
-            // ignore
+          } catch {
+            // ignore cache population failures
           }
           this.initialized = true;
         }
@@ -102,22 +116,24 @@ export function getStorage(storage?: StorageLike): StorageLike {
         setItem(key: string, value: string) {
           this.store[key] = String(value);
           if (this.initialized) {
-            this.db.put('kv', value, key).catch(() => {});
+            // @ts-expect-error runtime call to idb. We don't block on errors.
+            (this.db as IDBRuntime).put?.('kv', value, key).catch(() => {});
           }
         }
         removeItem(key: string) {
           delete this.store[key];
           if (this.initialized) {
-            this.db.delete('kv', key).catch(() => {});
+            // @ts-expect-error runtime call
+            (this.db as IDBRuntime).delete?.('kv', key).catch(() => {});
           }
         }
       }
 
       const IDS = new IndexedDBStorage();
       // Note: not awaiting init here since module may run server side; try to init
-      try { IDS.init(); } catch (e) { /* ignore */ }
+      try { IDS.init(); } catch { /* ignore */ }
       // attach a helper to detect whether we've selected an IndexedDB backend
-      (IDS as any).__selected = 'indexeddb';
+      (IDS as unknown as Record<string, unknown>).__selected = 'indexeddb';
       return IDS as StorageLike;
     }
     if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {
@@ -141,6 +157,8 @@ export function storageBackend(): 'indexeddb' | 'localstorage' | 'memory' {
   try {
     if (typeof indexedDB !== 'undefined') return 'indexeddb';
     if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) return 'localstorage';
-  } catch (_) {}
+  } catch {
+    // ignore
+  }
   return 'memory';
 }

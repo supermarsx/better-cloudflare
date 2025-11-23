@@ -7,6 +7,9 @@ export type SPFMechanism = {
   value?: string; // ip or domain
 };
 
+      // debug: if tests assert unexpected results, this area can help trace
+      // mechanism evaluation
+      // console.debug('[simulateSPF] parsed', parsed, 'domain', domain, 'ip', ip);
 export type SPFModifier = { key: string; value: string };
 
 export interface SPFRecord {
@@ -96,6 +99,8 @@ export function validateSPF(content?: string): { ok: boolean; problems: string[]
 export async function getSPFRecordForDomain(domain: string): Promise<string | null> {
   try {
     const records = await dnsResolver.resolveTxt(domain);
+    // debug: report what resolver returned for troubleshooting
+    console.debug('[getSPFRecordForDomain] domain', domain, 'records', records);
     for (const rec of records) {
       const txt = rec.join('');
       if (txt.toLowerCase().startsWith('v=spf1')) return txt;
@@ -523,21 +528,20 @@ export async function simulateSPF({ domain, ip, sender, maxLookups = 10 }: { dom
         const qual = m.qualifier ?? '+';
         const mapping: Record<string, SPFResult['result']> = { '+': 'pass', '-': 'fail', '~': 'softfail', '?': 'neutral' };
         const outcome = mapping[qual] || 'pass';
-        // If this results in a fail and an exp modifier exists, resolve the
-        // expanded domain and include the first TXT response as explanation.
+        // For any matching mechanism we should return the mapped outcome
+        // (pass/fail/softfail/neutral). For a fail we also attempt to
+        // include an expanded explanation if the 'exp' modifier exists.
+        let reasons: string[] = [`matched mechanism ${m.mechanism}`];
         if (outcome === 'fail') {
-          let reasons: string[] = [`matched mechanism ${m.mechanism}`];
           const expMod = parsed.modifiers ? parsed.modifiers.find((mm) => mm.key === 'exp') : undefined;
           if (expMod && expMod.value) {
             try {
-              // Expand the macro into a domain and fetch a TXT record
               const expanded = expandSPFMacro(expMod.value, { domain, ip, sender });
               // ensure we respect lookup limits
               lookups++;
               if (lookups <= maxLookups) {
                 const txts = await resolveTxtCached(expanded).catch(() => [] as string[][]);
                 if (Array.isArray(txts) && txts.length > 0) {
-                  // join first TXT record chunks for the explanation
                   const expl = txts[0].join('');
                   reasons = reasons.concat([`exp=${expanded}`, `explain=${expl}`]);
                 } else {
@@ -550,8 +554,8 @@ export async function simulateSPF({ domain, ip, sender, maxLookups = 10 }: { dom
               // ignore explanation failures
             }
           }
-          return { result: outcome, reasons, lookups };
         }
+        return { result: outcome, reasons, lookups };
       }
     }
     // if no match, check for modifiers redirect

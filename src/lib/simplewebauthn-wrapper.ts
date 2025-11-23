@@ -2,16 +2,23 @@
 // have the optional dependency won't throw at import time.
 import { createRequire } from 'module';
 
-let swauth: unknown | null = null;
+type SwauthMod = {
+  verifyRegistrationResponse?: (...args: unknown[]) => Promise<unknown>;
+  verifyAuthenticationResponse?: (...args: unknown[]) => Promise<unknown>;
+  generateRegistrationOptions?: (opts?: Record<string, unknown>) => Record<string, unknown>;
+  generateAuthenticationOptions?: (opts?: Record<string, unknown>) => Record<string, unknown>;
+};
 
-function loadSwauthSync() {
+let swauth: SwauthMod | null = null;
+
+function loadSwauthSync(): SwauthMod | null {
   if (swauth) return swauth;
   try {
     // attempt to synchronously require the module if it exists; keep the
     // dependency optional so tests and environments without the package
     // don't blow up at import time.
     const req = createRequire(import.meta.url);
-    swauth = req('@simplewebauthn/server');
+    swauth = req('@simplewebauthn/server') as SwauthMod;
     return swauth;
   } catch {
     swauth = null;
@@ -22,19 +29,14 @@ function loadSwauthSync() {
 export const verifyRegistrationResponse = async (...args: unknown[]): Promise<unknown> => {
   const mod = loadSwauthSync();
   // runtime check: if the module or method isn't available throw
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (!mod || !(mod as any).verifyRegistrationResponse) throw new Error('@simplewebauthn/server not available');
-  // call via any cast to avoid type issues when optional module not installed
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (mod as any).verifyRegistrationResponse(...(args as unknown as any[]));
+  if (!mod || !mod.verifyRegistrationResponse) throw new Error('@simplewebauthn/server not available');
+  return mod.verifyRegistrationResponse(...args);
 };
 
 export const verifyAuthenticationResponse = async (...args: unknown[]): Promise<unknown> => {
   const mod = loadSwauthSync();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (!mod || !(mod as any).verifyAuthenticationResponse) throw new Error('@simplewebauthn/server not available');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (mod as any).verifyAuthenticationResponse(...(args as unknown as any[]));
+  if (!mod || !mod.verifyAuthenticationResponse) throw new Error('@simplewebauthn/server not available');
+  return mod.verifyAuthenticationResponse(...args);
 };
 
 // Provide synchronous fallbacks for registration/auth option generation so the
@@ -42,25 +44,28 @@ export const verifyAuthenticationResponse = async (...args: unknown[]): Promise<
 // upstream package installed (e.g. unit tests).
 export const generateRegistrationOptions = (opts: Record<string, unknown> = {}): Record<string, unknown> => {
   const mod = loadSwauthSync();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (mod && (mod as any).generateRegistrationOptions) return (mod as any).generateRegistrationOptions(opts as any);
+  if (mod && mod.generateRegistrationOptions) return mod.generateRegistrationOptions(opts);
 
   // Minimal fallback: include a generated base64 challenge and echo back
   // other inputs. This mirrors the shape expected by our tests.
-  const challenge = typeof crypto !== 'undefined' && (crypto as any).randomUUID
-    ? Buffer.from((crypto as any).randomUUID()).toString('base64')
+  const globalCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+  const challenge = globalCrypto.crypto?.randomUUID
+    ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
-  return { challenge, ...opts, rp: { name: opts.rpName ?? 'Better Cloudflare' } };
+  const rpName = (opts as Record<string, unknown>)['rpName'] as string | undefined;
+  return { challenge, ...opts, rp: { name: rpName ?? 'Better Cloudflare' } };
 };
 
 export const generateAuthenticationOptions = (opts: Record<string, unknown> = {}): Record<string, unknown> => {
   const mod = loadSwauthSync();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (mod && (mod as any).generateAuthenticationOptions) return (mod as any).generateAuthenticationOptions(opts as any);
-  const challenge = typeof crypto !== 'undefined' && (crypto as any).randomUUID
-    ? Buffer.from((crypto as any).randomUUID()).toString('base64')
+  if (mod && mod.generateAuthenticationOptions) return mod.generateAuthenticationOptions(opts);
+  const globalCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+  const challenge = globalCrypto.crypto?.randomUUID
+    ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
-  return { challenge, allowCredentials: opts.allowCredentials ?? [], rpId: opts.rpID ?? opts.rpId };
+  const allowCredentials = (opts as Record<string, unknown>)['allowCredentials'] ?? [];
+  const rpId = (opts as Record<string, unknown>)['rpID'] ?? (opts as Record<string, unknown>)['rpId'];
+  return { challenge, allowCredentials, rpId };
 };
 
 export default {
