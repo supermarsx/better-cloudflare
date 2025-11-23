@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseSPF, composeSPF, validateSPF, SPFRecord, setDnsResolverForTest, ipMatchesCIDR } from '../src/lib/spf';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { buildSPFGraphFromContent, validateSPFContentAsync, simulateSPF, expandSPFMacro } from '../src/lib/spf';
 
 test('parseSPF should parse mechanisms', () => {
@@ -38,11 +39,11 @@ test('validateSPF should accept valid spf', () => {
 test('simulateSPF should detect ip4 pass', async () => {
   const domain = 'example.local';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
-    resolveTxt: async (_d: string) => ([['v=spf1 ip4:1.2.3.0/24 -all']]),
-    resolve4: async (_d: string) => ['1.2.3.5'],
-    resolve6: async (_d: string) => [],
-    resolveMx: async (_d: string) => [],
-    reverse: async (_ip: string) => [],
+    resolveTxt: async (_d: string) => { void _d; return [['v=spf1 ip4:1.2.3.0/24 -all']]; },
+    resolve4: async (_d: string) => { void _d; return ['1.2.3.5']; },
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
+    reverse: async (_ip: string) => { void _ip; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
@@ -90,11 +91,11 @@ test('buildSPFGraphFromContent should build include nodes', async () => {
   const domain = 'example.org';
   const content = 'v=spf1 include:inc.example -all';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
-    resolveTxt: async (d: string) => (d === 'inc.example' ? [['v=spf1 ip4:1.2.3.0/24 -all']] : []),
-    resolve4: async (_d: string) => [],
-    resolve6: async (_d: string) => [],
-    resolveMx: async (_d: string) => [],
-    reverse: async (_ip: string) => [],
+    resolveTxt: async (d: string) => { void d; return d === 'inc.example' ? [['v=spf1 ip4:1.2.3.0/24 -all']] : []; },
+    resolve4: async (_d: string) => { void _d; return []; },
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
+    reverse: async (_ip: string) => { void _ip; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
@@ -111,11 +112,11 @@ test('validateSPFContentAsync should reject lookup limit', async () => {
   const domain = 'example.org';
   const content = 'v=spf1 include:one include:two include:three include:four include:five include:six include:seven include:eight include:nine include:ten include:eleven -all';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
-    resolveTxt: async (_d: string) => [['v=spf1 -all']],
-    resolve4: async (_d: string) => [],
-    resolve6: async (_d: string) => [],
-    resolveMx: async (_d: string) => [],
-    reverse: async (_ip: string) => [],
+    resolveTxt: async (_d: string) => { void _d; return [['v=spf1 -all']]; },
+    resolve4: async (_d: string) => { void _d; return []; },
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
+    reverse: async (_ip: string) => { void _ip; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
@@ -130,11 +131,11 @@ test('validateSPFContentAsync should reject lookup limit', async () => {
 test('simulateSPF should honor ptr with forward-confirmation', async () => {
   const domain = 'ptr.example';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
-    resolveTxt: async (_d: string) => ([['v=spf1 ptr:example.com -all']]),
+    resolveTxt: async (_d: string) => { void _d; return [['v=spf1 ptr:example.com -all']]; },
     reverse: async (_ip: string) => ['example.com'],
     resolve4: async (d: string) => (d === 'example.com' ? ['1.2.3.4'] : []),
-    resolve6: async (_d: string) => ([]),
-    resolveMx: async (_d: string) => [],
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
@@ -148,11 +149,11 @@ test('simulateSPF should honor ptr with forward-confirmation', async () => {
 test('simulateSPF should not match ptr without forward-confirmation', async () => {
   const domain = 'ptr.example';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
-    resolveTxt: async (_d: string) => ([['v=spf1 ptr:example.com -all']]),
+    resolveTxt: async (_d: string) => { void _d; return [['v=spf1 ptr:example.com -all']]; },
     reverse: async (_ip: string) => ['example.com'],
-    resolve4: async (_d: string) => ([]),
-    resolve6: async (_d: string) => ([]),
-    resolveMx: async (_d: string) => [],
+    resolve4: async (_d: string) => { void _d; return []; },
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
@@ -180,10 +181,10 @@ test('simulateSPF should include exp TXT explanation on fail', async () => {
       if (d === domain) return [['v=spf1 -all exp=explain.%{d}']];
       return [];
     },
-    resolve4: async (_d: string) => [],
-    resolve6: async (_d: string) => [],
-    resolveMx: async (_d: string) => [],
-    reverse: async (_ip: string) => [],
+    resolve4: async (_d: string) => { void _d; return []; },
+    resolve6: async (_d: string) => { void _d; return []; },
+    resolveMx: async (_d: string) => { void _d; return []; },
+    reverse: async (_ip: string) => { void _ip; return []; },
   } as any;
   setDnsResolverForTest(mockResolver);
   try {
