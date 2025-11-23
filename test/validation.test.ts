@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// Prefer unknown over any in tests
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RECORD_TYPES } from '../src/types/dns';
@@ -26,7 +26,7 @@ test('dnsRecordSchema accepts all known record types', () => {
     if (t === 'SRV') {
       base.content = '10 5 8080 host.example.com';
     }
-    const res = dnsRecordSchema.safeParse(base as any);
+    const res = dnsRecordSchema.safeParse(base as unknown);
     assert.ok(res.success, `type ${t} should be valid`);
   }
 });

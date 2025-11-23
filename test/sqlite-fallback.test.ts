@@ -2,16 +2,21 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'path';
 import fs from 'fs';
-/* eslint-disable @typescript-eslint/no-explicit-any */
+
+// Small local types to avoid explicit `any` in this test file while keeping the
+// mock sqlite3 implementation readable and straightforward for unit tests.
+type DBRow = Record<string, unknown>;
+type DBTables = Record<string, DBRow[]>;
+interface FakeDBState { credentials: DBRow[]; audit_log: DBRow[]; lastID: number; tables?: DBTables }
 import { openSqlite } from '../src/lib/sqlite-driver.ts';
 import { createRequire } from 'module';
 const requireCJS = createRequire(import.meta.url);
   const fakeSqlite3 = {
     verbose() { return fakeSqlite3; },
-    Database: function(this: any, file?: string) {
+    Database: function(file?: string) {
       void file;
-      const dbState = { credentials: [], audit_log: [], lastID: 0 } as any;
-      this.run = (sql: string, params?: any[] | any, cb?: any) => {
+      const dbState: FakeDBState = { credentials: [], audit_log: [], lastID: 0 };
+      this.run = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
         const s = String(sql).trim().toUpperCase();
         const p = Array.isArray(params) ? params : typeof params !== 'function' ? [params] : [];
         // CREATE TABLE -> no-op
@@ -22,7 +27,7 @@ const requireCJS = createRequire(import.meta.url);
         // robust detection for INSERT INTO CREDENTIALS (including OR REPLACE and quoting)
         if (s.includes('INSERT') && s.includes('INTO') && s.includes('CREDENTIALS')) {
           // params: [id, credential_id, public_key, counter, created_at, label]
-          const [id, cid, pk, counter, createdAt, label] = p;
+          const [id, cid, pk, counter, createdAt, label] = p as unknown[];
           dbState.credentials.push({ id, credential_id: cid, credentialPublicKey: pk, counter, createdAt, label });
           dbState.lastID += 1;
           if (cb) cb.call({ lastID: dbState.lastID, changes: 1 }, null);
@@ -31,13 +36,13 @@ const requireCJS = createRequire(import.meta.url);
         if (/DELETE\s+FROM\s+CREDENTIALS/i.test(sql)) {
           const [id, cid] = p;
           const before = dbState.credentials.length;
-          dbState.credentials = dbState.credentials.filter((r: any) => !(r.id === id && r.credential_id === cid));
+          dbState.credentials = dbState.credentials.filter((r: DBRow) => !(r.id === id && r.credential_id === cid));
           dbState.lastID += 1;
           if (cb) cb.call({ lastID: dbState.lastID, changes: before - dbState.credentials.length }, null);
           return;
         }
         if (s.startsWith('INSERT INTO AUDIT_LOG')) {
-          const [actor, operation, resource, details, timestamp] = p;
+          const [actor, operation, resource, details, timestamp] = p as unknown[];
           dbState.audit_log.unshift({ id: ++dbState.lastID, actor, operation, resource, details, timestamp });
           if (cb) cb.call({ lastID: dbState.lastID, changes: 1 }, null);
           return;
@@ -47,10 +52,10 @@ const requireCJS = createRequire(import.meta.url);
           // naive parse: INSERT INTO table(columns...) VALUES(...)
           const m = sql.match(/INSERT INTO\s+([\w.]+)\s*\(([^)]+)\)/i);
           const tbl = m ? m[1] : 'unknown';
-          const cols = m ? m[2].split(',').map((c: any) => c.trim().replace(/["'`]/g, '')) : [];
+          const cols = m ? m[2].split(',').map((c: string) => c.trim().replace(/["'`]/g, '')) : [];
           dbState.tables = dbState.tables ?? {};
           dbState.tables[tbl] = dbState.tables[tbl] ?? [];
-          const obj: any = { id: ++dbState.lastID };
+          const obj: DBRow = { id: ++dbState.lastID } as DBRow;
           for (let i = 0; i < cols.length; i++) obj[cols[i]] = p[i];
           dbState.tables[tbl].push(obj);
           if (cb) cb.call({ lastID: dbState.lastID, changes: 1 }, null);
@@ -60,7 +65,7 @@ const requireCJS = createRequire(import.meta.url);
         // default fallback
         if (cb) cb.call({ lastID: dbState.lastID, changes: 0 }, null);
       };
-        this.get = (sql: string, params?: any[] | any, cb?: any) => {
+        this.get = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
           const s = String(sql).trim().toUpperCase();
           const p = Array.isArray(params) ? params : [params];
           // generic SELECT id... FROM table WHERE id = ?
@@ -69,13 +74,13 @@ const requireCJS = createRequire(import.meta.url);
             const tbl = m[1];
             const id = p[0];
             dbState.tables = dbState.tables ?? {};
-            const row = (dbState.tables[tbl] || []).find((r: any) => r.id === id);
+            const row = (dbState.tables?.[tbl] || []).find((r: DBRow) => r.id === id);
             if (cb) cb(null, row);
             return;
           }
           if (s.startsWith('SELECT CREDENTIAL_ID') || s.includes('FROM CREDENTIALS')) {
             const id = p[0];
-            const row = id ? dbState.credentials.find((r: any) => r.id === id) : dbState.credentials[0];
+            const row = id ? dbState.credentials.find((r: DBRow) => r.id === id) : dbState.credentials[0];
             if (cb) cb(null, row);
             return;
           }
@@ -86,26 +91,26 @@ const requireCJS = createRequire(import.meta.url);
         }
         if (cb) cb(null, null);
       };
-        this.all = (sql: string, params?: any[] | any, cb?: any) => {
+        this.all = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
           const s = String(sql).trim().toUpperCase();
           // generic SELECT id... FROM table WHERE id = ?
           const m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
           if (m) {
             const tbl = m[1];
-            const id = Array.isArray(params) ? params[0] : params;
+            const id = Array.isArray(params) ? (params as unknown[])[0] : params;
             dbState.tables = dbState.tables ?? {};
-            let rows: any[] = [];
+            let rows: DBRow[] = [];
             if (String(tbl).toLowerCase() === 'credentials') {
-              rows = (dbState.credentials || []).filter((r: any) => r.id === id);
+              rows = (dbState.credentials || []).filter((r: DBRow) => r.id === id);
             } else {
-              rows = (dbState.tables[tbl] || []).filter((r: any) => r.id === id);
+              rows = (dbState.tables[tbl] || []).filter((r: DBRow) => r.id === id);
             }
             if (cb) cb(null, rows);
             return;
           }
           if (s.startsWith('SELECT CREDENTIAL_ID') || s.includes('FROM CREDENTIALS')) {
-            const id = Array.isArray(params) && params.length ? params[0] : undefined;
-            const rows = id ? dbState.credentials.filter((r: any) => r.id === id) : dbState.credentials;
+            const id = Array.isArray(params) && (params as unknown[]).length ? (params as unknown[])[0] : undefined;
+            const rows = id ? dbState.credentials.filter((r: DBRow) => r.id === id) : dbState.credentials;
             if (cb) cb(null, rows);
             return;
           }
@@ -115,9 +120,9 @@ const requireCJS = createRequire(import.meta.url);
         }
         if (cb) cb(null, []);
       };
-      this.close = (cb: any) => cb?.(null);
+      this.close = (cb?: (err?: unknown) => void) => cb?.(null);
     }
-  } as any;
+  } as unknown as { verbose: () => unknown; Database: new (file?: string) => Record<string, unknown> };
 import { SqliteCredentialStore } from '../src/lib/credential-store.ts';
 
 test('openSqlite falls back to sqlite3 when better-sqlite3 is not available', async () => {
@@ -128,7 +133,7 @@ test('openSqlite falls back to sqlite3 when better-sqlite3 is not available', as
      if (name === 'sqlite3') return fakeSqlite3; 
     return requireCJS(name);
   };
-  const wrapper = openSqlite(tmp, requireFn as any);
+  const wrapper = openSqlite(tmp, requireFn as unknown as (name: string) => unknown);
   assert.equal(wrapper.type, 'sqlite3');
   await wrapper.run('CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, name TEXT)');
   await wrapper.run('INSERT INTO t(name) VALUES(?)', ['x']);
@@ -141,10 +146,10 @@ test('openSqlite falls back to sqlite3 when better-sqlite3 is not available', as
 test('openSqlite throws when no sqlite driver available', async () => {
   const requireFn = () => { throw new Error('missing'); };
   try {
-    openSqlite(undefined, requireFn as any);
+     openSqlite(undefined, requireFn as unknown as (name: string) => unknown);
     assert.fail('openSqlite should throw when both drivers unavailable');
-  } catch (err: any) {
-    assert.ok(err.message.includes('No sqlite driver available'));
+    } catch (err: unknown) {
+      assert.ok(String(err).includes('No sqlite driver available'));
   }
 });
 
@@ -156,14 +161,14 @@ test('SqliteCredentialStore works with injected sqlite3 wrapper', async () => {
      if (name === 'sqlite3') return fakeSqlite3;
     return createRequire(import.meta.url)(name);
   };
-  const wrapper = openSqlite(tmp, requireFn as any);
-  const store = new SqliteCredentialStore(tmp, wrapper as any);
+  const wrapper = openSqlite(tmp, requireFn as unknown as (name: string) => unknown);
+  const store = new SqliteCredentialStore(tmp, wrapper as unknown as { all: (...a: unknown[]) => Promise<unknown[]>; close?: () => Promise<void>; run: (...a: unknown[]) => Promise<unknown> | unknown; get: (...a: unknown[]) => Promise<unknown> | unknown });
   await store.initPromise;
   const id = 'u-test-fb';
   await store.addCredential(id, { credentialID: 'c1', credentialPublicKey: 'pk1' });
   const list = await store.getCredentials(id);
   // debug: also check raw DB wrapper for inserted rows
-  const raw = await (wrapper as any).all('SELECT * FROM credentials');
+  const raw = await (wrapper as unknown as { all: (sql: string, params?: unknown[]) => Promise<unknown[]> }).all('SELECT * FROM credentials');
   console.debug('raw rows', raw);
   assert.equal(list.length, 1);
   await store.writeAudit({ actor: 'test', operation: 'test-op', resource: 'r1', details: {} });
@@ -172,6 +177,6 @@ test('SqliteCredentialStore works with injected sqlite3 wrapper', async () => {
   await store.deleteCredential(id, 'c1');
   const after = await store.getCredentials(id);
   assert.equal(after.length, 0);
-  if ((wrapper as any).close) await (wrapper as any).close();
+    if ((wrapper as unknown as { close?: () => Promise<void> }).close) await (wrapper as unknown as { close?: () => Promise<void> }).close?.();
   try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
 });

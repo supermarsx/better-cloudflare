@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// prefer unknown in tests
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Request, Response } from 'express';
 import { ServerAPI } from '../src/lib/server-api.ts';
 import { CloudflareAPI } from '../src/lib/cloudflare.ts';
 
-function createReq(body: any, params: Record<string, string>): Request {
+function createReq(body: unknown, params: Record<string, string>): Request {
   return {
     body,
     params,
@@ -17,13 +17,13 @@ function createReq(body: any, params: Record<string, string>): Request {
 
 function createRes() {
   let statusCode: number | undefined;
-  let jsonData: any;
+  let jsonData: unknown;
   const res: Partial<Response> = {
     status(code: number) {
       statusCode = code;
       return this as Response;
     },
-    json(data: any) {
+    json(data: unknown) {
       jsonData = data;
     },
   };
@@ -34,10 +34,11 @@ test('createDNSRecord validation', async () => {
   const handler = ServerAPI.createDNSRecord();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = false;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: any) => {
+  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
     called = true;
-    return { id: '1', ...record } as any;
-  };
+    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
+    return { id: '1', ...rec } as unknown;
+  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(
@@ -74,11 +75,12 @@ test('updateDNSRecord validation', async () => {
   CloudflareAPI.prototype.updateDNSRecord = async (
     _zone: string,
     _id: string,
-    record: any,
+    record: unknown,
   ) => {
     called = true;
-    return { id: '1', ...record } as any;
-  };
+    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
+    return { id: '1', ...rec } as unknown;
+  } as unknown as (zone: string, id: string, record: unknown) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(

@@ -44,7 +44,7 @@ test('simulateSPF should detect ip4 pass', async () => {
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
     reverse: async (_ip: string) => { void _ip; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const res = await simulateSPF({ domain, ip: '1.2.3.5' });
@@ -63,10 +63,10 @@ test('composeSPF and parseSPF support add/edit/remove operations', () => {
   const base = 'v=spf1 ip4:1.2.3.0/24 -all';
   const parsed = parseSPF(base);
   assert.ok(parsed);
-  // add an include
-  const mechs = [...(parsed?.mechanisms ?? [])];
-  mechs.push({ mechanism: 'include', value: 'inc.example' as any });
-  const composed = composeSPF({ version: parsed?.version ?? 'v=spf1', mechanisms: mechs as any });
+    // add an include
+    const mechs = [...(parsed?.mechanisms ?? [])];
+    mechs.push({ mechanism: 'include', value: 'inc.example' });
+  const composed = composeSPF({ version: parsed?.version ?? 'v=spf1', mechanisms: mechs as SPFRecord['mechanisms'] });
   
   const parsed2 = parseSPF(composed);
   
@@ -75,13 +75,13 @@ test('composeSPF and parseSPF support add/edit/remove operations', () => {
   const idx = parsed2?.mechanisms.findIndex((m) => m.mechanism === 'include') ?? -1;
   if (idx >= 0 && parsed2) {
     const mechs2 = [...parsed2.mechanisms];
-    mechs2[idx] = { mechanism: 'ip6', value: '::1/128' } as any;
-    const composed2 = composeSPF({ version: parsed2.version, mechanisms: mechs2 as any });
+    mechs2[idx] = { mechanism: 'ip6', value: '::1/128' };
+    const composed2 = composeSPF({ version: parsed2.version, mechanisms: mechs2 as SPFRecord['mechanisms'] });
     const parsed3 = parseSPF(composed2);
     assert.equal(parsed3?.mechanisms.some((m) => m.mechanism === 'ip6' && m.value === '::1/128'), true);
     // remove the ip6
     const mechs3 = mechs2.filter((_, i) => i !== idx);
-    const composed3 = composeSPF({ version: parsed3.version, mechanisms: mechs3 as any });
+    const composed3 = composeSPF({ version: parsed3.version, mechanisms: mechs3 as SPFRecord['mechanisms'] });
     const parsed4 = parseSPF(composed3);
     assert.equal(parsed4?.mechanisms.some((m) => m.mechanism === 'ip6' && m.value === '::1/128'), false);
   }
@@ -96,7 +96,7 @@ test('buildSPFGraphFromContent should build include nodes', async () => {
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
     reverse: async (_ip: string) => { void _ip; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const graph = await buildSPFGraphFromContent(domain, content);
@@ -117,7 +117,7 @@ test('validateSPFContentAsync should reject lookup limit', async () => {
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
     reverse: async (_ip: string) => { void _ip; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const res = await validateSPFContentAsync(content, domain, { maxLookups: 10 });
@@ -136,7 +136,7 @@ test('simulateSPF should honor ptr with forward-confirmation', async () => {
     resolve4: async (d: string) => (d === 'example.com' ? ['1.2.3.4'] : []),
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const res = await simulateSPF({ domain, ip: '1.2.3.4' });
@@ -154,7 +154,7 @@ test('simulateSPF should not match ptr without forward-confirmation', async () =
     resolve4: async (_d: string) => { void _d; return []; },
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const res = await simulateSPF({ domain, ip: '1.2.3.4' });
@@ -185,7 +185,7 @@ test('simulateSPF should include exp TXT explanation on fail', async () => {
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
     reverse: async (_ip: string) => { void _ip; return []; },
-  } as any;
+  };
   setDnsResolverForTest(mockResolver);
   try {
     const res = await simulateSPF({ domain, ip: '1.2.3.4' });

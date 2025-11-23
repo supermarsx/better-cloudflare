@@ -24,7 +24,7 @@ function createRes() {
       statusCode = code;
       return this as Response;
     },
-    json(data: any) {
+    json(data: unknown) {
       jsonData = data;
     },
   };

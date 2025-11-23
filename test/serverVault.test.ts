@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// Avoid using `any` in tests: use unknown where appropriate and cast only at the boundary
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ServerAPI } from '../src/lib/server-api.ts';
 import { vaultManager } from '../src/server/vault.ts';
 import type { Request, Response } from 'express';
 
-function createReq(body: any, params: Record<string, string>) {
+function createReq(body: unknown, params: Record<string, string>) {
   return {
     body,
     params,
@@ -17,13 +17,13 @@ function createReq(body: any, params: Record<string, string>) {
 
 function createRes() {
   let statusCode: number | undefined;
-  let jsonData: any;
+  let jsonData: unknown;
   const res: Partial<Response> = {
     status(code: number) {
       statusCode = code;
       return this as Response;
     },
-    json(data: any) {
+    json(data: unknown) {
       jsonData = data;
     },
   };
