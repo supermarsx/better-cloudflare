@@ -1,7 +1,19 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
 import { vaultManager } from '../server/vault';
-import createCredentialStore from './credential-store';
+import createCredentialStore, { type CredentialStore, type PasskeyCredential } from './credential-store';
+
+// Local types for optional simplewebauthn responses (module scope)
+type SwauthRegistrationVerification = {
+  verified?: boolean;
+  registrationInfo?: { credentialID?: string; id?: string; credentialPublicKey?: string; publicKey?: string; counter?: number } | null;
+  attestationType?: string | null;
+};
+
+type SwauthAuthenticationVerification = {
+  verified?: boolean;
+  authenticationInfo?: { newCounter?: number } | null;
+};
 import { logAudit } from './audit';
 import { getAuditEntries } from './audit';
 import swauth from './simplewebauthn-wrapper';
@@ -118,7 +130,7 @@ export class ServerAPI {
       if (!parsed.success) {
         res.status(400).json({
           error: parsed.error.issues
-            .map((issue: any) => `${issue.path.join('.')}: ${issue.message}`)
+            .map((issue: { path: Array<string | number>; message: string }) => `${issue.path.join('.')}: ${issue.message}`)
             .join(', '),
         });
         return;
@@ -222,7 +234,8 @@ export class ServerAPI {
           const rec = await client.createDNSRecord(req.params.zone, parsed.data);
           created.push(rec);
         } catch (err) {
-          skipped.push({ index: i, error: (err as Error).message });
+          const msg = err instanceof Error ? err.message : String(err);
+          skipped.push({ index: i, error: msg });
         }
       }
 
@@ -367,7 +380,7 @@ export class ServerAPI {
       if (!parsed.success) {
         res.status(400).json({
           error: parsed.error.issues
-            .map((issue: any) => `${issue.path.join('.')}: ${issue.message}`)
+            .map((issue: { path: Array<string | number>; message: string }) => `${issue.path.join('.')}: ${issue.message}`)
             .join(', '),
         });
         return;
@@ -403,10 +416,11 @@ export class ServerAPI {
   // mechanism for production use.
   private static passkeyChallenges: Map<string, string> = new Map();
   private static passkeyCredentials: Map<string, unknown> = new Map();
-  private static credentialStore = createCredentialStore();
-  static setCredentialStore(store: any) {
+  private static credentialStore: CredentialStore = createCredentialStore();
+  static setCredentialStore(store: CredentialStore) {
     ServerAPI.credentialStore = store;
   }
+
 
   static createPasskeyRegistrationOptions() {
     /**
@@ -466,13 +480,13 @@ export class ServerAPI {
           expectedChallenge,
           expectedOrigin: origin,
           expectedRPID: rpID,
-        } as any);
+        }) as unknown as SwauthRegistrationVerification;
 
         if (!verification.verified) {
           res.status(400).json({ error: 'Attestation verification failed' });
           return;
         }
-        const { registrationInfo, attestationType } = verification as any;
+        const { registrationInfo, attestationType } = verification;
         // Enforce attestation policy if configured
         const policy = getEnv('ATTESTATION_POLICY', 'VITE_ATTESTATION_POLICY', 'none');
         if (policy && policy !== 'none' && attestationType !== policy) {
@@ -482,7 +496,12 @@ export class ServerAPI {
         // Persist the credential(s) for future authentication checks. Store as
         // an array to support multiple credentials registered per id.
         // store returned from credential store; we will add the new credential
-        const toAdd = { credentialID: registrationInfo.credentialID ?? registrationInfo.id, credentialPublicKey: registrationInfo.credentialPublicKey ?? registrationInfo.publicKey, counter: registrationInfo.counter ?? 0 } as any;
+        const info = registrationInfo ?? ({} as Record<string, unknown>);
+        const toAdd: PasskeyCredential = {
+          credentialID: (info.credentialID ?? info.id) as string,
+          credentialPublicKey: (info.credentialPublicKey ?? info.publicKey) as string,
+          counter: (info.counter ?? 0) as number,
+        };
         await ServerAPI.credentialStore.addCredential(id, toAdd);
         const updated = await ServerAPI.credentialStore.getCredentials(id);
         ServerAPI.passkeyCredentials.set(id, updated);
@@ -510,7 +529,10 @@ export class ServerAPI {
       const rpID = new URL(origin).hostname;
       const creds = await ServerAPI.credentialStore.getCredentials(id);
       const allowList = Array.isArray(creds) && creds.length
-        ? creds.map((c: any) => ({ id: c.credentialID, type: 'public-key' }))
+        ? creds.map((c: unknown) => {
+          const obj = c as { credentialID?: string; id?: string };
+          return { id: obj.credentialID ?? obj.id, type: 'public-key' };
+        })
         : [];
       const opts = swauth.generateAuthenticationOptions({ allowCredentials: allowList, rpID });
       ServerAPI.passkeyChallenges.set(id, opts.challenge);
@@ -530,7 +552,10 @@ export class ServerAPI {
       const stored = await vaultManager.getSecret(`passkey:${id}`);
       const creds = stored ? JSON.parse(stored) : [];
       // Return credential metadata only (no private key material)
-      const metadata = creds.map((c: any) => ({ id: c.credentialID || c.id, counter: c.counter ?? 0 }));
+      const metadata = (Array.isArray(creds) ? creds : []).map((c: unknown) => {
+        const obj = c as { credentialID?: string; id?: string; counter?: number };
+        return { id: obj.credentialID ?? obj.id, counter: obj.counter ?? 0 };
+      });
       res.json(metadata);
       logAudit({ operation: 'passkey:list', actor: actorFromReq(req), resource: `passkey:${id}` });
     };
@@ -551,7 +576,7 @@ export class ServerAPI {
         res.status(404).json({ error: 'Not found' });
         return;
       }
-      const creds = stored as any[];
+      const creds = Array.isArray(stored) ? (stored as unknown[]) : [];
       const filtered = creds.filter((c) => {
         const key = c.credentialID || c.id;
         const keyStr = typeof key === 'string' ? key : Buffer.from(key).toString('base64');
@@ -561,7 +586,7 @@ export class ServerAPI {
         try {
           const cidDecoded = Buffer.from(cid, 'base64').toString('utf-8');
           if (keyStr === cidDecoded || key === cidDecoded) return false;
-        } catch (_e) {
+        } catch {
           // ignore decode errors
         }
         return true;
@@ -613,9 +638,9 @@ export class ServerAPI {
         return;
       }
       // store user record in sqlite via credential store's db if available
-      const store = ServerAPI.credentialStore as any;
-      if (store && typeof (store as any).db !== 'undefined') {
-        const db = (store as any).db as any;
+      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
+      if (store && typeof store.db !== 'undefined') {
+        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
         // db is a SqliteWrapper that provides async `run`/`all`/`get` for both better-sqlite3 and sqlite3 drivers
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [body.id, body.email ?? null, JSON.stringify(body.roles ?? [])]);
@@ -634,9 +659,9 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id' });
         return;
       }
-      const store = ServerAPI.credentialStore as any;
-      if (store && typeof (store as any).db !== 'undefined') {
-        const db = (store as any).db as any;
+      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
+      if (store && typeof store.db !== 'undefined') {
+        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         const row = await db.get('SELECT id, email, roles FROM users WHERE id = ?', [id]);
         if (!row) {
@@ -665,9 +690,9 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id or roles' });
         return;
       }
-      const store = ServerAPI.credentialStore as any;
-      if (store && typeof (store as any).db !== 'undefined') {
-        const db = (store as any).db as any;
+      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
+      if (store && typeof store.db !== 'undefined') {
+        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [id, null, JSON.stringify(roles)]);
         res.json({ success: true });
@@ -707,16 +732,16 @@ export class ServerAPI {
           res.status(400).json({ error: 'No credential registered' });
           return;
         }
-        const credentials = stored as any[];
+        const credentials = Array.isArray(stored) ? (stored as unknown[]) : [];
         // Try to find matching credential from assertion rawId or fallback to first
-        let credential: any = credentials[0];
+        let credential: unknown = credentials[0];
         try {
           const rawId = body.rawId || body.id || (body.response && body.response.rawId);
           if (rawId) {
             const rawToBase64 = (r: unknown) => {
               if (typeof r === 'string') return r;
               if (r instanceof Uint8Array) return Buffer.from(r).toString('base64');
-              if (ArrayBuffer.isView(r as any)) return Buffer.from(new Uint8Array((r as ArrayBufferLike))).toString('base64');
+              if (ArrayBuffer.isView(r as unknown as ArrayBufferView)) return Buffer.from(new Uint8Array((r as ArrayBufferLike))).toString('base64');
               if (r instanceof ArrayBuffer) return Buffer.from(new Uint8Array(r)).toString('base64');
               return Buffer.from(String(r)).toString('base64');
             };
@@ -729,14 +754,15 @@ export class ServerAPI {
             });
             if (found) credential = found;
           }
-        } catch (e) {
+        } catch {
           // ignore and fallback to first
         }
         // create expected credential representation
+        const credObj = credential as { credentialID?: string; id?: string; credentialPublicKey?: string; publicKey?: string; counter?: number };
         const expected = {
-          id: credential.credentialID || credential.id,
-          publicKey: credential.credentialPublicKey || credential.publicKey,
-          currentCounter: credential.counter ?? 0,
+          id: credObj.credentialID ?? credObj.id,
+          publicKey: credObj.credentialPublicKey ?? credObj.publicKey,
+          currentCounter: credObj.counter ?? 0,
         };
         const verification = await swauth.verifyAuthenticationResponse({
           response: body,
@@ -744,7 +770,7 @@ export class ServerAPI {
           expectedOrigin: origin,
           expectedRPID: rpID,
           authenticator: expected,
-        } as any);
+        } as unknown as SwauthAuthenticationVerification);
         if (!verification.verified) {
           res.status(400).json({ error: 'Assertion verification failed' });
           return;

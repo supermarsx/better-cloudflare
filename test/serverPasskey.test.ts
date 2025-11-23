@@ -78,7 +78,7 @@ test('registerPasskey verifies and stores credential', async () => {
 });
 
 test('registerPasskey supports multiple credentials', async () => {
-  (swauth as any).verifyRegistrationResponse = async (opts?: any) => ({
+  (swauth as any).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: { credentialID: `cid-${Date.now()}`, credentialPublicKey: 'pk', counter: 0 },
   });
@@ -114,7 +114,7 @@ test('registerPasskey supports multiple credentials', async () => {
 });
 
 test('listPasskeys returns stored credentials and deletePasskey removes one', async () => {
-  (swauth as any).verifyRegistrationResponse = async (opts?: any) => ({
+  (swauth as any).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: { credentialID: `cid-${Date.now()}`, credentialPublicKey: 'pk', counter: 0 },
   });

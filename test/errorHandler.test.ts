@@ -20,6 +20,7 @@ test('default 500 status and no stack trace when debug disabled', async () => {
   app.get(
     '/api/error',
     asyncHandler(async (_req, _res) => {
+      void _req; void _res;
       throw new Error('boom');
     }),
   );
@@ -51,6 +52,7 @@ test('uses custom status and logs stack trace when debug enabled', async () => {
   app.get(
     '/api/error',
     asyncHandler(async (_req, _res) => {
+      void _req; void _res;
       const err = new Error('teapot') as Error & { status: number };
       err.status = 418;
       throw err;
