@@ -101,7 +101,8 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
 
 export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
-  const req = requireFn ? requireFn : ((typeof (globalThis as any).require === 'function') ? (globalThis as any).require : createRequire(import.meta.url));
+  const globalRequire = (globalThis as unknown as { require?: unknown }).require;
+  const req = requireFn ? requireFn : (typeof globalRequire === 'function' ? (globalRequire as (name: string) => unknown) : createRequire(import.meta.url));
   // Try better-sqlite3 first (synchronous, faster).
   try {
     // allow injection for tests (e.g., throw on better-sqlite3)
@@ -125,7 +126,7 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
     // (tests expect an explicit throw for this case), propagate the error.
     if (requireFn) {
       // include the original error message when available
-      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${(err as any)?.message ?? String(err)}`);
+      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${(err as unknown as { message?: string })?.message ?? String(err)}`);
     }
 
     // Otherwise create or reuse a simple in-memory sqlite-like wrapper for lightweight

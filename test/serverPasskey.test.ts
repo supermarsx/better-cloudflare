@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// Prefer narrower types in tests — avoid `any` where possible.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Request, Response } from 'express';
@@ -10,11 +10,24 @@ import { vaultManager } from '../src/server/vault.ts';
 // needing a real WebAuthn attestation/assertion for unit tests.
 import swauth from '../src/lib/simplewebauthn-wrapper';
 
-// Store original functions to restore
-const origVerifyReg = (swauth as any).verifyRegistrationResponse;
-const origVerifyAuth = (swauth as any).verifyAuthenticationResponse;
+// Typed shapes for the test stubs
+type VerifyRegistrationResult = {
+  verified: boolean;
+  registrationInfo?: { credentialID?: string; credentialPublicKey?: string; counter?: number } | null;
+  attestationType?: string;
+};
 
-function createReq(body: any, params: Record<string, string>) {
+type VerifyAuthenticationResult = {
+  verified: boolean;
+  authenticationInfo?: { newCounter?: number } | null;
+};
+
+// Store original functions to restore (use narrow unknown casts)
+const origVerifyReg = (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse;
+const origVerifyAuth = (swauth as unknown as { verifyAuthenticationResponse?: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse;
+
+function createReq(body: unknown, params: Record<string, string>) {
+  // minimal Request-like object (satisfies handlers used in tests)
   return {
     body,
     params,
@@ -26,13 +39,13 @@ function createReq(body: any, params: Record<string, string>) {
 
 function createRes() {
   let statusCode: number | undefined;
-  let jsonData: any;
+  let jsonData: unknown;
   const res: Partial<Response> = {
     status(code: number) {
       statusCode = code;
       return this as Response;
     },
-    json(data: any) {
+    json(data: unknown) {
       jsonData = data;
     },
   };
@@ -51,7 +64,7 @@ test('createPasskeyRegistrationOptions returns options', async () => {
 
 test('registerPasskey verifies and stores credential', async () => {
   // Stub verification to return a successful registration result
-  (swauth as any).verifyRegistrationResponse = async () => ({
+  (swauth as unknown as { verifyRegistrationResponse: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: { credentialID: 'cid', credentialPublicKey: 'pk', counter: 0 },
   });
@@ -74,11 +87,11 @@ test('registerPasskey verifies and stores credential', async () => {
   assert.ok(entries.some((e) => e.operation === 'passkey:register'));
 
   // restore
-  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = origVerifyReg;
 });
 
 test('registerPasskey supports multiple credentials', async () => {
-  (swauth as any).verifyRegistrationResponse = async () => ({
+  (swauth as unknown as { verifyRegistrationResponse: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: { credentialID: `cid-${Date.now()}`, credentialPublicKey: 'pk', counter: 0 },
   });
@@ -109,12 +122,12 @@ test('registerPasskey supports multiple credentials', async () => {
   assert.ok(options);
   assert.ok(options.allowCredentials && options.allowCredentials.length >= 2);
 
-  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = origVerifyReg;
   clearAuditEntries();
 });
 
 test('listPasskeys returns stored credentials and deletePasskey removes one', async () => {
-  (swauth as any).verifyRegistrationResponse = async () => ({
+  (swauth as unknown as { verifyRegistrationResponse: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: { credentialID: `cid-${Date.now()}`, credentialPublicKey: 'pk', counter: 0 },
   });
@@ -149,11 +162,11 @@ test('listPasskeys returns stored credentials and deletePasskey removes one', as
   await auditH(createReq({}, { }), ar.res);
   assert.ok(Array.isArray(ar.data));
 
-  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = origVerifyReg;
 });
 
 test('registerPasskey rejects invalid attestation', async () => {
-  (swauth as any).verifyRegistrationResponse = async () => ({ verified: false, registrationInfo: null });
+  (swauth as unknown as { verifyRegistrationResponse: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = async () => ({ verified: false, registrationInfo: null });
   const handler = ServerAPI.registerPasskey();
   const id = 'badKey';
   const start = ServerAPI.createPasskeyRegistrationOptions();
@@ -163,11 +176,11 @@ test('registerPasskey rejects invalid attestation', async () => {
   const res = createRes();
   await handler(createReq({ id, response: {} }, { id }), res.res);
   assert.equal(res.status, 400);
-  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = origVerifyReg;
 });
 
 test('registerPasskey enforces attestation policy', async () => {
-  (swauth as any).verifyRegistrationResponse = async () => ({ verified: true, registrationInfo: { credentialID: 'cid', credentialPublicKey: 'pk' }, attestationType: 'direct' });
+  (swauth as unknown as { verifyRegistrationResponse: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = async () => ({ verified: true, registrationInfo: { credentialID: 'cid', credentialPublicKey: 'pk' }, attestationType: 'direct' });
   process.env.ATTESTATION_POLICY = 'indirect';
   const handler = ServerAPI.registerPasskey();
   const id = 'policyKey';
@@ -181,7 +194,7 @@ test('registerPasskey enforces attestation policy', async () => {
 
 test('authenticatePasskey verifies assertion', async () => {
   // Stub verification to return successful authentication result
-  (swauth as any).verifyAuthenticationResponse = async () => ({
+  (swauth as unknown as { verifyAuthenticationResponse: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse = async () => ({
     verified: true,
     authenticationInfo: { newCounter: 1 },
   });
@@ -204,11 +217,11 @@ test('authenticatePasskey verifies assertion', async () => {
   assert.ok(secretNew);
 
   // restore
-  (swauth as any).verifyAuthenticationResponse = origVerifyAuth;
+  (swauth as unknown as { verifyAuthenticationResponse?: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse = origVerifyAuth;
 });
 
 test('authenticatePasskey rejects failed assertion', async () => {
-  (swauth as any).verifyAuthenticationResponse = async () => ({ verified: false, authenticationInfo: null });
+  (swauth as unknown as { verifyAuthenticationResponse: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse = async () => ({ verified: false, authenticationInfo: null });
   const handler = ServerAPI.authenticatePasskey();
   await vaultManager.setSecret('passkey:badAuth', JSON.stringify({ credentialID: 'cid', credentialPublicKey: 'pk', counter: 0 }));
   const start = ServerAPI.createPasskeyAuthOptions();
@@ -217,5 +230,5 @@ test('authenticatePasskey rejects failed assertion', async () => {
   const res = createRes();
   await handler(createReq({ id: 'badAuth', response: {} }, { id: 'badAuth' }), res.res);
   assert.equal(res.status, 400);
-  (swauth as any).verifyAuthenticationResponse = origVerifyAuth;
+  (swauth as unknown as { verifyAuthenticationResponse?: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse = origVerifyAuth;
 });
