@@ -203,16 +203,20 @@ function parsePresets(presetsStr: string): (number | 'auto')[] {
 export function getTTLPresets(): TTLValue[] {
   // Client build environment (Vite) has `import.meta.env`; server has process.env
   let envVal: string | undefined;
-  // @ts-ignore - import.meta available in project bundling context
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
-    // Vite environment variable can be VITE_TTL_PRESETS
-    envVal = (import.meta as any).env.VITE_TTL_PRESETS;
+  // import.meta may be available when the code is bundled by Vite. Use a
+  // safe typed access to avoid linting and TS errors in environments where
+  // import.meta is undefined.
+  if (typeof import.meta !== 'undefined') {
+    const meta = import.meta as unknown as { env?: Record<string, string> };
+    if (meta.env) {
+      envVal = meta.env.VITE_TTL_PRESETS;
+    }
   }
   if (!envVal) envVal = process.env.TTL_PRESETS || process.env.VITE_TTL_PRESETS;
-  if (!envVal) return TTL_PRESETS as any;
+  if (!envVal) return TTL_PRESETS as unknown as TTLValue[];
   try {
     return parsePresets(envVal);
-  } catch (_) {
-    return TTL_PRESETS as any;
+  } catch {
+    return TTL_PRESETS as unknown as TTLValue[];
   }
 }

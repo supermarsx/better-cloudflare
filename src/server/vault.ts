@@ -26,30 +26,39 @@ class MemoryVault implements VaultProvider {
   }
 }
 
-let vault: VaultProvider;
+let vault: VaultProvider = new MemoryVault();
 
-try {
-  // Dynamically require to avoid issues when keytar is missing in some dev
-  // environments. Use keytar when available for OS-provided keychain.
-   
-  const keytar = process.env.KEYTAR_ENABLED ? require('keytar') : null;
-  if (keytar && typeof keytar.setPassword === 'function') {
-    vault = {
-      async setSecret(key: string, secret: Secret) {
-        await keytar.setPassword('better-cloudflare', String(key), secret);
-      },
-      async getSecret(key: string) {
-        return (await keytar.getPassword('better-cloudflare', String(key))) ?? null;
-      },
-      async deleteSecret(key: string) {
-        await keytar.deletePassword('better-cloudflare', String(key));
-      },
-    };
-  } else {
-    vault = new MemoryVault();
-  }
-} catch (err) {
-  vault = new MemoryVault();
+// If keytar is enabled we attempt to load it asynchronously and replace
+// the in-memory vault with an OS-backed implementation. This keeps the
+// module synchronous for consumers while still enabling runtime feature
+// detection on platforms where `keytar` is present.
+if (process.env.KEYTAR_ENABLED) {
+  (async () => {
+    try {
+      const kt = await import('keytar').catch(() => null);
+      const keytar = (kt as unknown) as {
+        setPassword?: (service: string, account: string, password: string) => Promise<void>;
+        getPassword?: (service: string, account: string) => Promise<string | null>;
+        deletePassword?: (service: string, account: string) => Promise<boolean>;
+      } | null;
+      if (keytar && typeof keytar.setPassword === 'function') {
+        vault = {
+          async setSecret(key: string, secret: Secret) {
+            if (keytar.setPassword) await keytar.setPassword('better-cloudflare', String(key), secret);
+          },
+          async getSecret(key: string) {
+            if (!keytar.getPassword) return null;
+            return (await keytar.getPassword('better-cloudflare', String(key))) ?? null;
+          },
+          async deleteSecret(key: string) {
+            if (keytar.deletePassword) await keytar.deletePassword('better-cloudflare', String(key));
+          },
+        };
+      }
+    } catch {
+      // ignore failures and keep the default in-memory vault
+    }
+  })();
 }
 
 /**
