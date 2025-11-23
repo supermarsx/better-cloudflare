@@ -62,7 +62,7 @@ const requireCJS = createRequire(import.meta.url);
           const s = String(sql).trim().toUpperCase();
           const p = Array.isArray(params) ? params : [params];
           // generic SELECT id... FROM table WHERE id = ?
-          let m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
+          const m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
           if (m) {
             const tbl = m[1];
             const id = p[0];
@@ -87,7 +87,7 @@ const requireCJS = createRequire(import.meta.url);
         this.all = (sql: string, params?: any[] | any, cb?: any) => {
           const s = String(sql).trim().toUpperCase();
           // generic SELECT id... FROM table WHERE id = ?
-          let m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
+          const m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
           if (m) {
             const tbl = m[1];
             const id = Array.isArray(params) ? params[0] : params;

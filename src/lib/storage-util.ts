@@ -67,7 +67,7 @@ export function getStorage(storage?: StorageLike): StorageLike {
     if (typeof indexedDB !== 'undefined') {
       // lazily load idb and create a simple wrapper
       // We intentionally require idb dynamically to avoid importing when not needed
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+       
       const { openDB } = require('idb');
       class IndexedDBStorage implements StorageLike {
         private db: any;

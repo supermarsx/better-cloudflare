@@ -266,8 +266,25 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
     if (!cidr.includes('/')) return ip === cidr;
     const [base, prefix] = cidr.split('/');
     // Use net.isIP and compare network prefix via buffer
-    const ipType = net.isIP(ip);
-    const baseType = net.isIP(base);
+    let ipType = net.isIP(ip);
+    let baseType = net.isIP(base);
+    // Support IPv4-mapped IPv6 addresses (e.g. ::ffff:1.2.3.4) by treating
+    // them as IPv4 for the purpose of IPv4 CIDR comparisons.
+    const isIPv4Mapped = (addr: string) => /::ffff:(\d+\.\d+\.\d+\.\d+)$/i.test(addr);
+    if (ipType === 6 && isIPv4Mapped(ip)) {
+      const m = ip.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+      if (m) {
+        ip = m[1];
+        ipType = 4;
+      }
+    }
+    if (baseType === 6 && isIPv4Mapped(base)) {
+      const m = base.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+      if (m) {
+        base = m[1];
+        baseType = 4;
+      }
+    }
     if (ipType === 0 || baseType === 0 || ipType !== baseType) return false;
     // for simplicity use string prefix matching for IPv4
     if (ipType === 4) {
@@ -291,6 +308,18 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
       const missing = 8 - (left.length + right.length);
       const zeros = new Array(missing).fill('0000');
       const full = [...left, ...zeros, ...right].map((h) => h.padStart(4, '0'));
+      // Support IPv4-mapped IPv6 addresses like ::ffff:192.0.2.1
+      const last = full[full.length - 1] ?? '';
+      if (last.includes('.')) {
+        // convert dotted IPv4 at the end into two hextets
+        const ipv4 = last;
+        const octets = ipv4.split('.').map(Number);
+        if (octets.length === 4 && octets.every((o) => !Number.isNaN(o))) {
+          const hex1 = ((octets[0] << 8) | octets[1]).toString(16).padStart(4, '0');
+          const hex2 = ((octets[2] << 8) | octets[3]).toString(16).padStart(4, '0');
+          full.splice(full.length - 1, 1, hex1, hex2);
+        }
+      }
       return full;
     };
     const toBytes = (hextets: string[]) => {
@@ -325,6 +354,32 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
   } catch {
     return false;
   }
+}
+
+/** Expand a small subset of SPF macros. This handles common cases used by
+ * the 'exp' modifier: %{s}, %{l}, %{d}, %{i} and the escaped forms %% %_ %-.
+ * For robustness this function implements just enough of the RFC macro
+ * expansion rules for the simulator and tests; it is not a full RFC
+ * compliant macro evaluator.
+ */
+export function expandSPFMacro(template: string, ctx: { domain: string; ip: string; sender?: string }) {
+  // simple escape sequences
+  return template.replace(/%{([^}]+)}|%%|%_ |%-/g, (m, g1) => {
+    if (m === '%%') return '%';
+    if (m === '%_') return ' ';
+    if (m === '%-') return '%20';
+    if (!g1) return m;
+    const token = g1;
+    // handle simple macros with optional transformers (not implementing full spec)
+    // e.g. s, l, d, i
+    switch (token[0]) {
+      case 's': return ctx.sender ?? '';
+      case 'l': return (ctx.sender ?? '').split('@')[0] ?? '';
+      case 'd': return ctx.domain ?? '';
+      case 'i': return ctx.ip ?? '';
+      default: return '';
+    }
+  });
 }
 
 async function resolveA(domain: string): Promise<string[]> {
@@ -468,7 +523,35 @@ export async function simulateSPF({ domain, ip, sender, maxLookups = 10 }: { dom
         const qual = m.qualifier ?? '+';
         const mapping: Record<string, SPFResult['result']> = { '+': 'pass', '-': 'fail', '~': 'softfail', '?': 'neutral' };
         const outcome = mapping[qual] || 'pass';
-        return { result: outcome, reasons: [`matched mechanism ${m.mechanism}`], lookups };
+        // If this results in a fail and an exp modifier exists, resolve the
+        // expanded domain and include the first TXT response as explanation.
+        if (outcome === 'fail') {
+          let reasons: string[] = [`matched mechanism ${m.mechanism}`];
+          const expMod = parsed.modifiers ? parsed.modifiers.find((mm) => mm.key === 'exp') : undefined;
+          if (expMod && expMod.value) {
+            try {
+              // Expand the macro into a domain and fetch a TXT record
+              const expanded = expandSPFMacro(expMod.value, { domain, ip, sender });
+              // ensure we respect lookup limits
+              lookups++;
+              if (lookups <= maxLookups) {
+                const txts = await resolveTxtCached(expanded).catch(() => [] as string[][]);
+                if (Array.isArray(txts) && txts.length > 0) {
+                  // join first TXT record chunks for the explanation
+                  const expl = txts[0].join('');
+                  reasons = reasons.concat([`exp=${expanded}`, `explain=${expl}`]);
+                } else {
+                  reasons = reasons.concat([`exp=${expanded}`, 'explain=none']);
+                }
+              } else {
+                reasons = reasons.concat(['exp=skipped (lookup limit)']);
+              }
+            } catch {
+              // ignore explanation failures
+            }
+          }
+          return { result: outcome, reasons, lookups };
+        }
       }
     }
     // if no match, check for modifiers redirect

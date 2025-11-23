@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseSPF, composeSPF, validateSPF, SPFRecord, setDnsResolverForTest, ipMatchesCIDR } from '../src/lib/spf';
-import { buildSPFGraphFromContent, validateSPFContentAsync, simulateSPF } from '../src/lib/spf';
+import { buildSPFGraphFromContent, validateSPFContentAsync, simulateSPF, expandSPFMacro } from '../src/lib/spf';
 
 test('parseSPF should parse mechanisms', () => {
   const input = 'v=spf1 ip4:1.2.3.0/24 include:example.com -all';
@@ -161,4 +161,41 @@ test('simulateSPF should not match ptr without forward-confirmation', async () =
   } finally {
     setDnsResolverForTest(undefined);
   }
+});
+
+test('expandSPFMacro basic tokens', () => {
+  const out = expandSPFMacro('%{s} hello %{l} %{d} %{i} %% %_', { domain: 'example.com', ip: '1.2.3.4', sender: 'user@example.com' });
+  assert.ok(out.includes('user@example.com'));
+  assert.ok(out.includes('user'));
+  assert.ok(out.includes('example.com'));
+  assert.ok(out.includes('1.2.3.4'));
+  assert.ok(out.includes('%'));
+});
+
+test('simulateSPF should include exp TXT explanation on fail', async () => {
+  const domain = 'exp.example';
+  const mockResolver: import('../src/lib/spf').DNSResolver = {
+    resolveTxt: async (d: string) => {
+      if (d === 'explain.exp.example') return [['Explanation text']];
+      if (d === domain) return [['v=spf1 -all exp=explain.%{d}']];
+      return [];
+    },
+    resolve4: async (_d: string) => [],
+    resolve6: async (_d: string) => [],
+    resolveMx: async (_d: string) => [],
+    reverse: async (_ip: string) => [],
+  } as any;
+  setDnsResolverForTest(mockResolver);
+  try {
+    const res = await simulateSPF({ domain, ip: '1.2.3.4' });
+    assert.equal(res.result, 'fail');
+    assert.ok(res.reasons.some((r) => String(r).includes('explain=Explanation')));
+  } finally {
+    setDnsResolverForTest(undefined);
+  }
+});
+
+test('ipMatchesCIDR should treat IPv4-mapped IPv6 as IPv4 for IPv4 CIDRs', () => {
+  assert.ok(ipMatchesCIDR('::ffff:1.2.3.5', '1.2.3.0/24'));
+  assert.ok(!ipMatchesCIDR('::ffff:2.2.3.5', '1.2.3.0/24'));
 });

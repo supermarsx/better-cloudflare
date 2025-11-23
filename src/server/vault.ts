@@ -31,7 +31,7 @@ let vault: VaultProvider;
 try {
   // Dynamically require to avoid issues when keytar is missing in some dev
   // environments. Use keytar when available for OS-provided keychain.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const keytar = process.env.KEYTAR_ENABLED ? require('keytar') : null;
   if (keytar && typeof keytar.setPassword === 'function') {
     vault = {

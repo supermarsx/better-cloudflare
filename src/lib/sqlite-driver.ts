@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import path from 'path';
 import { createRequire } from 'module';
 // promisify unused; intentionally omitted
@@ -13,6 +14,11 @@ export type SqliteWrapper = {
   // used by some callers to persist/inspect DB
   close?(): Promise<void>;
 };
+
+// Cache in-memory fallback wrappers by absolute file so multiple callers
+// (createCredentialStore, isAdmin, tests, etc.) share the same state when
+// native sqlite drivers are not available.
+const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
 
 function mkSyncWrapper(db: any): SqliteWrapper {
   return {
@@ -103,7 +109,7 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
     const db = new better(file);
     console.info('openSqlite: using better-sqlite3 driver');
     return mkSyncWrapper(db);
-  } catch (e: any) {
+  } catch {
     // ignore; fall through to sqlite3 fallback
     // console.warn('better-sqlite3 failed to load:', e?.message || e);
   }
@@ -114,17 +120,21 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
     const db = new sqlite3verbose.Database(file);
     console.info('openSqlite: using sqlite3 driver fallback');
     return mkSqlite3Wrapper(db);
-  } catch (err: any) {
+  } catch {
     // If both drivers are unavailable, and a custom requireFn was provided
     // (tests expect an explicit throw for this case), propagate the error.
     if (requireFn) {
       throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${err?.message ?? err}`);
     }
 
-    // Otherwise create a simple in-memory sqlite-like wrapper for lightweight
+    // Otherwise create or reuse a simple in-memory sqlite-like wrapper for lightweight
     // test usage so the rest of the code doesn't hard-fail when native
     // drivers are not present (e.g., CI or Windows without build tools).
     console.info('openSqlite: no native sqlite drivers found, using in-memory fallback');
+    // Cache by the resolved file path so multiple openSqlite() calls for the
+    // same DB path will share state (mimicking a real file-backed DB).
+    if (inMemoryWrapperCache.has(file)) return inMemoryWrapperCache.get(file)!;
+
     // Minimal in-memory state
     const dbState: any = { credentials: [], audit_log: [], tables: {}, lastID: 0 };
 
@@ -165,8 +175,8 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
           return Promise.resolve({ lastInsertRowid: dbState.lastID, changes: 1 });
         }
         // generic INSERT into arbitrary tables
-        if (up.startsWith('INSERT INTO') && !up.includes('CREDENTIALS') && !up.includes('AUDIT_LOG')) {
-          const m = s.match(/INSERT INTO\s+([\w.]+)\s*\(([^)]+)\)/i);
+        if (/INSERT\s+(?:OR\s+REPLACE\s+)?INTO/i.test(up) && !up.includes('CREDENTIALS') && !up.includes('AUDIT_LOG')) {
+          const m = s.match(/INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+([\w.]+)\s*\(([^)]+)\)/i);
           const tbl = m ? m[1] : 'unknown';
           const cols = m ? m[2].split(',').map((c: any) => c.trim().replace(/"|'|`/g, '')) : [];
           dbState.tables = dbState.tables ?? {};
@@ -184,17 +194,24 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
         const up = s.toUpperCase();
         const p = Array.isArray(params) ? params : [params];
         // SELECT ... FROM <table> WHERE id = ?
-        const m = s.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
+        const m = s.match(/FROM\s+([\w.]+)\s+WHERE\s+([\w.]+)\s*=\s*\?/i);
         if (m) {
           const tbl = m[1];
-          const id = p[0];
-          const rows = mkAllFromTable(tbl, id);
-          return Promise.resolve(rows[0] ?? undefined);
+          const field = m[2];
+          const val = p[0];
+          const allRows = mkAllFromTable(tbl);
+          const found = allRows.find((r: any) => {
+            if (r == null) return false;
+            if (field in r) return String(r[field]) === String(val);
+            const key = Object.keys(r).find((k) => k.toLowerCase() === field.toLowerCase());
+            return key ? String(r[key]) === String(val) : false;
+          });
+          return Promise.resolve(found ?? undefined);
         }
         if (up.startsWith('SELECT CREDENTIAL_ID') || up.includes('FROM CREDENTIALS')) {
-          const id = p[0];
-          const row = id ? dbState.credentials.find((r: any) => r.id === id) : dbState.credentials[0];
-          return Promise.resolve(row ?? undefined);
+          const id = Array.isArray(params) ? params[0] : params;
+          const rows = mkAllFromTable('credentials', id);
+          return Promise.resolve(rows[0] ?? undefined);
         }
         if (up.startsWith('SELECT ID, ACTOR') || up.includes('FROM AUDIT_LOG')) {
           return Promise.resolve(dbState.audit_log[0] ?? undefined);
@@ -204,11 +221,19 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
       all(sql: string, params: any[] = []) {
         const s = String(sql).trim();
         const up = s.toUpperCase();
-        const m = s.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
+        const m = s.match(/FROM\s+([\w.]+)\s+WHERE\s+([\w.]+)\s*=\s*\?/i);
         if (m) {
           const tbl = m[1];
+          const field = m[2];
           const id = Array.isArray(params) ? params[0] : params;
-          return Promise.resolve(mkAllFromTable(tbl, id));
+          const allRows = mkAllFromTable(tbl);
+          const rows = allRows.filter((r: any) => {
+            if (r == null) return false;
+            if (field in r) return String(r[field]) === String(id);
+            const key = Object.keys(r).find((k) => k.toLowerCase() === field.toLowerCase());
+            return key ? String(r[key]) === String(id) : false;
+          });
+          return Promise.resolve(rows);
         }
         if (up.startsWith('SELECT CREDENTIAL_ID') || up.includes('FROM CREDENTIALS')) {
           const id = Array.isArray(params) && params.length ? params[0] : undefined;
@@ -224,6 +249,7 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
         return Promise.resolve();
       }
     };
+    inMemoryWrapperCache.set(file, inMemory);
     return inMemory;
   }
 }

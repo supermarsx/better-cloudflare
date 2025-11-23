@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { storageManager } from '../src/lib/storage.ts';

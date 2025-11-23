@@ -2,7 +2,7 @@
 // have the optional dependency won't throw at import time.
 import { createRequire } from 'module';
 
-let swauth: any | null = null;
+let swauth: unknown | null = null;
 
 function loadSwauthSync() {
   if (swauth) return swauth;
@@ -13,30 +13,37 @@ function loadSwauthSync() {
     const req = createRequire(import.meta.url);
     swauth = req('@simplewebauthn/server');
     return swauth;
-  } catch (err) {
+  } catch {
     swauth = null;
     return null;
   }
 }
 
-export let verifyRegistrationResponse = async (...args: any[]) => {
+export const verifyRegistrationResponse = async (...args: unknown[]): Promise<unknown> => {
   const mod = loadSwauthSync();
-  if (!mod || !mod.verifyRegistrationResponse) throw new Error('@simplewebauthn/server not available');
-  return (mod as any).verifyRegistrationResponse(...args);
+  // runtime check: if the module or method isn't available throw
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (!mod || !(mod as any).verifyRegistrationResponse) throw new Error('@simplewebauthn/server not available');
+  // call via any cast to avoid type issues when optional module not installed
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (mod as any).verifyRegistrationResponse(...(args as unknown as any[]));
 };
 
-export let verifyAuthenticationResponse = async (...args: any[]) => {
+export const verifyAuthenticationResponse = async (...args: unknown[]): Promise<unknown> => {
   const mod = loadSwauthSync();
-  if (!mod || !mod.verifyAuthenticationResponse) throw new Error('@simplewebauthn/server not available');
-  return (mod as any).verifyAuthenticationResponse(...args);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (!mod || !(mod as any).verifyAuthenticationResponse) throw new Error('@simplewebauthn/server not available');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (mod as any).verifyAuthenticationResponse(...(args as unknown as any[]));
 };
 
 // Provide synchronous fallbacks for registration/auth option generation so the
 // server code can generate options in environments that do not have the
 // upstream package installed (e.g. unit tests).
-export let generateRegistrationOptions = (opts: any = {}) => {
+export const generateRegistrationOptions = (opts: Record<string, unknown> = {}): Record<string, unknown> => {
   const mod = loadSwauthSync();
-  if (mod && mod.generateRegistrationOptions) return (mod as any).generateRegistrationOptions(opts);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (mod && (mod as any).generateRegistrationOptions) return (mod as any).generateRegistrationOptions(opts as any);
 
   // Minimal fallback: include a generated base64 challenge and echo back
   // other inputs. This mirrors the shape expected by our tests.
@@ -46,9 +53,10 @@ export let generateRegistrationOptions = (opts: any = {}) => {
   return { challenge, ...opts, rp: { name: opts.rpName ?? 'Better Cloudflare' } };
 };
 
-export let generateAuthenticationOptions = (opts: any = {}) => {
+export const generateAuthenticationOptions = (opts: Record<string, unknown> = {}): Record<string, unknown> => {
   const mod = loadSwauthSync();
-  if (mod && mod.generateAuthenticationOptions) return (mod as any).generateAuthenticationOptions(opts);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (mod && (mod as any).generateAuthenticationOptions) return (mod as any).generateAuthenticationOptions(opts as any);
   const challenge = typeof crypto !== 'undefined' && (crypto as any).randomUUID
     ? Buffer.from((crypto as any).randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
