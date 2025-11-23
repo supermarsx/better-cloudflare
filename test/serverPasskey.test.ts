@@ -189,7 +189,7 @@ test('registerPasskey enforces attestation policy', async () => {
   await handler(createReq({ id, response: {} }, { id }), res.res);
   assert.equal(res.status, 400);
   delete process.env.ATTESTATION_POLICY;
-  (swauth as any).verifyRegistrationResponse = origVerifyReg;
+  (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse = origVerifyReg;
 });
 
 test('authenticatePasskey verifies assertion', async () => {
