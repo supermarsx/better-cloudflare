@@ -35,11 +35,11 @@ test('createBulkDNSRecords dry run', async () => {
   const handler = ServerAPI.createBulkDNSRecords();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = 0;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
+  CloudflareAPI.prototype.createDNSRecord = (async (_zone: string, record: unknown) => {
     called++;
     const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
     return { id: `${called}`, ...rec } as unknown;
-  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
+  }) as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   const payload = [
     { type: 'A', name: 'test1', content: '1.2.3.4' },
@@ -60,11 +60,11 @@ test('createBulkDNSRecords creates records', async () => {
   const handler = ServerAPI.createBulkDNSRecords();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = 0;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
+  CloudflareAPI.prototype.createDNSRecord = (async (_zone: string, record: unknown) => {
     called++;
     const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
     return { id: `${called}`, ...rec } as unknown;
-  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
+  }) as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   const payload = [
     { type: 'A', name: 'test1', content: '1.2.3.4' },

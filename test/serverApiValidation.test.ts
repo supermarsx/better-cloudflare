@@ -34,11 +34,11 @@ test('createDNSRecord validation', async () => {
   const handler = ServerAPI.createDNSRecord();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = false;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
+  CloudflareAPI.prototype.createDNSRecord = (async (_zone: string, record: unknown) => {
     called = true;
     const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
     return { id: '1', ...rec } as unknown;
-  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
+  }) as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(
@@ -72,7 +72,7 @@ test('updateDNSRecord validation', async () => {
   const handler = ServerAPI.updateDNSRecord();
   const orig = CloudflareAPI.prototype.updateDNSRecord;
   let called = false;
-  CloudflareAPI.prototype.updateDNSRecord = async (
+  CloudflareAPI.prototype.updateDNSRecord = (async (
     _zone: string,
     _id: string,
     record: unknown,
@@ -80,7 +80,7 @@ test('updateDNSRecord validation', async () => {
     called = true;
     const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
     return { id: '1', ...rec } as unknown;
-  } as unknown as (zone: string, id: string, record: unknown) => Promise<unknown>;
+  }) as unknown as (zone: string, id: string, record: unknown) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(
