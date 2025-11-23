@@ -73,7 +73,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         description: `Using ${backend} storage. IndexedDB not available or in use. Some features may be limited.`,
       });
     }
-  }, [backend, toast]);
+  }, [backend, toast, t]);
 
   useEffect(() => {
     cryptoManager.reloadConfig();
@@ -211,7 +211,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         rp: { name: 'Better Cloudflare' },
         user: { id: Uint8Array.from(new TextEncoder().encode(selectedKeyId)), name: selectedKeyId, displayName: selectedKeyId },
         pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      } as any;
+      } as PublicKeyCredentialCreationOptions;
       const credential = await navigator.credentials.create({ publicKey });
       if (credential) {
         const att = credential as PublicKeyCredential;
@@ -220,7 +220,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           rawId: Array.from(new Uint8Array(att.rawId)),
           response: {
             clientDataJSON: Array.from(new Uint8Array(att.response.clientDataJSON)),
-            attestationObject: Array.from(new Uint8Array((att.response as any).attestationObject || new ArrayBuffer(0))),
+            attestationObject: Array.from(new Uint8Array((att.response as AuthenticatorAttestationResponse).attestationObject || new ArrayBuffer(0))),
           },
         };
         await sc2.registerPasskey(selectedKeyId, attObj);
@@ -246,7 +246,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       const publicKey = {
         challenge,
         allowCredentials: [],
-      } as any;
+      } as PublicKeyCredentialRequestOptions;
       const assertion = await navigator.credentials.get({ publicKey });
       if (assertion) {
         const a = assertion as PublicKeyCredential;
@@ -255,13 +255,13 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           rawId: Array.from(new Uint8Array(a.rawId)),
           response: {
             clientDataJSON: Array.from(new Uint8Array(a.response.clientDataJSON)),
-            authenticatorData: Array.from(new Uint8Array((a.response as any).authenticatorData || new ArrayBuffer(0))),
-            signature: Array.from(new Uint8Array((a.response as any).signature || new ArrayBuffer(0))),
-            userHandle: (a.response as any).userHandle ? Array.from(new Uint8Array((a.response as any).userHandle)) : null,
+            authenticatorData: Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).authenticatorData || new ArrayBuffer(0))),
+            signature: Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).signature || new ArrayBuffer(0))),
+            userHandle: (a.response as AuthenticatorAssertionResponse).userHandle ? Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).userHandle)) : null,
           },
         };
         const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
-        if ((serverResp as any).success) {
+        if ((serverResp as unknown as { success?: boolean }).success) {
           const secret = await scx.getVaultSecret(selectedKeyId);
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);

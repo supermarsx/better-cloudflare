@@ -132,7 +132,7 @@ test('simulateSPF should honor ptr with forward-confirmation', async () => {
   const domain = 'ptr.example';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
     resolveTxt: async (_d: string) => { void _d; return [['v=spf1 ptr:example.com -all']]; },
-    reverse: async (_ip: string) => ['example.com'],
+    reverse: async (_ip: string) => { void _ip; return ['example.com']; },
     resolve4: async (d: string) => (d === 'example.com' ? ['1.2.3.4'] : []),
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },
@@ -150,7 +150,7 @@ test('simulateSPF should not match ptr without forward-confirmation', async () =
   const domain = 'ptr.example';
   const mockResolver: import('../src/lib/spf').DNSResolver = {
     resolveTxt: async (_d: string) => { void _d; return [['v=spf1 ptr:example.com -all']]; },
-    reverse: async (_ip: string) => ['example.com'],
+    reverse: async (_ip: string) => { void _ip; return ['example.com']; },
     resolve4: async (_d: string) => { void _d; return []; },
     resolve6: async (_d: string) => { void _d; return []; },
     resolveMx: async (_d: string) => { void _d; return []; },

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ServerAPI } from '../src/lib/server-api.ts';
@@ -22,7 +23,7 @@ test('admin user creation and roles update (sqlite)', async () => {
   assert.equal(resGet.data.id, 'u1');
 
   const handlerUpdate = ServerAPI.updateUserRoles();
-  const reqUpdate = { params: { id: 'u1' }, body: { roles: ['admin'] }, header(name: string) { return 'admin-token'; } } as any;
+  const reqUpdate = { params: { id: 'u1' }, body: { roles: ['admin'] }, header() { return 'admin-token'; } } as any;
   const resUpdate = { json(data: any) { (resUpdate as any).data = data; }, status(code: number) { (resUpdate as any).status = code; return resUpdate as any; } } as any;
   await handlerUpdate(reqUpdate, resUpdate);
   assert.equal(resUpdate.data.success, true);

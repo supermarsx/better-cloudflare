@@ -160,7 +160,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
       setNaptrReplacement(parsed.replacement ?? '');
     }
     // SSHFP state managed similarly below
-  }, [record.type, record.content]);
+  }, [record.type, record.content, parseNAPTR, parseSSHFP, parseTLSA]);
 
   // SPF state and builder
   const parsedSPF = parseSPF(record.content);

@@ -26,7 +26,17 @@ async function ensureSchema() {
   )`);
 }
 
-function insert(id: string, cred: any) {
+interface StoredCredential {
+  credentialID?: string;
+  id?: string;
+  credentialPublicKey?: string;
+  publicKey?: string;
+  counter?: number;
+  createdAt?: string;
+  label?: string | null;
+}
+
+function insert(id: string, cred: StoredCredential) {
   return db.run('INSERT OR REPLACE INTO credentials (id, credential_id, public_key, counter, created_at, label) VALUES (?, ?, ?, ?, ?, ?)', [
     id,
     cred.credentialID || cred.id,

@@ -51,8 +51,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   const getDNSRecords = useCallback(
     (zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> => {
       if (!api) return Promise.reject(new Error('API key not provided'));
-      // @ts-ignore
-      return (api as any).getDNSRecords(zoneId, page, perPage, signal);
+      return api.getDNSRecords(zoneId, page, perPage, signal);
     },
     [api],
   );
@@ -84,70 +83,59 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   const bulkCreateDNSRecords = useCallback(
     (zoneId: string, records: Partial<DNSRecord>[], dryrun?: boolean, signal?: AbortSignal) => {
       if (!api) return Promise.reject(new Error('API key not provided'));
-      // @ts-ignore - method available on ServerClient when server supports it
-      return (api as any).bulkCreateDNSRecords(zoneId, records, dryrun, signal);
+      return api.bulkCreateDNSRecords(zoneId, records, dryrun, signal);
     },
     [api],
   );
 
   const storeVaultSecret = useCallback((id: string, secret: string) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).storeVaultSecret(id, secret);
+    return api.storeVaultSecret(id, secret);
   }, [api]);
 
   const getVaultSecret = useCallback((id: string) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).getVaultSecret(id);
+    return api.getVaultSecret(id);
   }, [api]);
 
   const deleteVaultSecret = useCallback((id: string) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).deleteVaultSecret(id);
+    return api.deleteVaultSecret(id);
   }, [api]);
 
   const getPasskeyRegistrationOptions = useCallback((id: string) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).getPasskeyRegistrationOptions(id);
+    return api.getPasskeyRegistrationOptions(id);
   }, [api]);
 
   const registerPasskey = useCallback((id: string, attestation: unknown) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).registerPasskey(id, attestation);
+    return api.registerPasskey(id, attestation);
   }, [api]);
 
   const getPasskeyAuthOptions = useCallback((id: string) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).getPasskeyAuthOptions(id);
+    return api.getPasskeyAuthOptions(id);
   }, [api]);
 
   const authenticatePasskey = useCallback((id: string, assertion: unknown) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).authenticatePasskey(id, assertion);
+    return api.authenticatePasskey(id, assertion);
   }, [api]);
 
   const exportDNSRecords = useCallback((zoneId: string, format: 'json'|'csv'|'bind' = 'json', page?: number, perPage?: number) => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).exportDNSRecords(zoneId, format, page, perPage);
+    return api.exportDNSRecords(zoneId, format, page, perPage);
   }, [api]);
 
   const simulateSPF = useCallback((domain: string, ip: string): Promise<{ result: string; reasons: string[]; lookups: number }> => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore - method available on ServerClient when server supports it
-    return (api as any).simulateSPF(domain, ip);
+    return api.simulateSPF(domain, ip);
   }, [api]);
 
   const getSPFGraph = useCallback((domain: string): Promise<SPFGraph> => {
     if (!api) return Promise.reject(new Error('API key not provided'));
-    // @ts-ignore
-    return (api as any).getSPFGraph(domain);
+    return api.getSPFGraph(domain);
   }, [api]);
 
   return {

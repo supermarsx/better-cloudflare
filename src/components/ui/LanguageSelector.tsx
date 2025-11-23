@@ -13,7 +13,10 @@ export function LanguageSelector() {
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const lng = e.target.value;
     i18n.changeLanguage(lng);
-    try { (globalThis as any).localStorage?.setItem('locale', lng); } catch (_) { /* ignore */ }
+    try {
+      const storage = (globalThis as unknown as { localStorage?: { setItem(key: string, value: string): void } }).localStorage;
+      storage?.setItem('locale', lng);
+    } catch { /* ignore */ }
   };
 
   return (

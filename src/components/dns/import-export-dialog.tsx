@@ -115,7 +115,8 @@ export function ImportExportDialog({
                     items = parseBINDZone ? parseBINDZone(importData) : null;
                     break;
                 }
-              } catch (e) {
+              } catch {
+                // Parsing failed — treat as invalid input and fallback to calling onImport()
                 items = null;
               }
 

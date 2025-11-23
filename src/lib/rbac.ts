@@ -8,6 +8,11 @@ import createCredentialStore from './credential-store';
  * user row with role "admin" in the sqlite user table. This is intentionally
  * lightweight - for production consider using a robust identity system.
  */
+interface DBLike {
+  run: (sql: string, params?: unknown[]) => Promise<unknown>;
+  get: (sql: string, params?: unknown[]) => Promise<{ roles?: string } | undefined>;
+}
+
 export async function isAdmin(req: Request, res: Response, next: NextFunction) {
   const adminToken = getEnv('ADMIN_TOKEN', 'VITE_ADMIN_TOKEN', undefined);
   const reqAdmin = req.header('x-admin-token');
@@ -19,13 +24,13 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
     res.status(403).json({ error: 'Admin credentials required' });
     return;
   }
-  const store: any = createCredentialStore();
+  const store = createCredentialStore();
   // if store exposes a db (sqlite store), check users table
-  if (store && (store as any).db) {
+  const maybeDb = (store as unknown as { db?: DBLike }).db;
+  if (maybeDb) {
     try {
-      const db: any = (store as any).db;
-      await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
-      const row = await db.get('SELECT roles FROM users WHERE email = ?', [email]);
+      await maybeDb.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+      const row = await maybeDb.get('SELECT roles FROM users WHERE email = ?', [email]);
       if (!row) {
         res.status(403).json({ error: 'Admin credentials required' });
         return;
@@ -34,7 +39,7 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
       if (Array.isArray(roles) && roles.includes('admin')) {
         return next();
       }
-    } catch (e) {
+    } catch {
       // fallback to deny
       res.status(403).json({ error: 'Admin credentials required' });
       return;

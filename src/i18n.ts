@@ -9,8 +9,8 @@ const loadResources = async () => {
   const en = await import('./locales/en-US.json');
   const pt = await import('./locales/pt-PT.json');
   return {
-    'en-US': { translation: (en as any).default || en },
-    'pt-PT': { translation: (pt as any).default || pt },
+    'en-US': { translation: (((en as unknown) as { default?: unknown }).default ?? en) },
+    'pt-PT': { translation: (((pt as unknown) as { default?: unknown }).default ?? pt) },
   };
 };
 
@@ -23,11 +23,11 @@ const loadResources = async () => {
     interpolation: { escapeValue: false },
   });
   try {
-    const saved = (globalThis as any).localStorage?.getItem('locale');
+  const saved = (globalThis as unknown as { localStorage?: { getItem(key: string): string | null } }).localStorage?.getItem('locale');
     if (typeof saved === 'string' && Object.prototype.hasOwnProperty.call(resources, saved)) {
       void i18n.changeLanguage(saved);
     }
-  } catch (_) {
+  } catch {
     // Ignore storage access errors in test or SSR environments
   }
 })();

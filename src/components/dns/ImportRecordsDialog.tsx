@@ -9,7 +9,7 @@ import { ImportExportDialog } from './import-export-dialog';
  * Deprecated wrapper that forwards to ImportExportDialog with JSON format.
  * Kept for compatibility with older imports.
  */
-export function ImportRecordsDialog({ open, onOpenChange, data, onDataChange, onImport }: any) {
+export function ImportRecordsDialog({ open, onOpenChange, data, onDataChange, onImport }: ImportRecordsDialogProps) {
   return (
     <ImportExportDialog
       open={open}

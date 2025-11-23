@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import openSqlite from '../src/lib/sqlite-driver.ts';
-import { SqliteCredentialStore } from '../src/lib/credential-store.ts';
 import path from 'path';
 import fs from 'fs';
 
 test('openSqlite should return a sqlite wrapper and support basic calls', async () => {
   const tmp = path.resolve(process.cwd(), 'data', 'test-credentials.db');
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
   const wrapper = openSqlite(tmp);
   assert.ok(wrapper, 'openSqlite returned a wrapper');
   assert.ok(['better-sqlite3', 'sqlite3'].includes((wrapper as any).type), 'driver type should be known');
@@ -20,12 +20,12 @@ test('openSqlite should return a sqlite wrapper and support basic calls', async 
   const rows = await wrapper.all('SELECT id, v FROM tmp');
   assert.ok(Array.isArray(rows));
   if (wrapper.close) await wrapper.close();
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
 });
 
 test('SqliteCredentialStore can add/get/delete credentials', async () => {
   const tmpDB = path.resolve(process.cwd(), 'data', 'test-credentials-2.db');
-  try { fs.unlinkSync(tmpDB); } catch (_) {}
+  try { fs.unlinkSync(tmpDB); } catch { /* ignore cleanup errors */ }
   process.env.CREDENTIAL_STORE = 'sqlite';
   const createCredentialStore = (await import('../src/lib/credential-store.ts')).default as any;
   const store = createCredentialStore() as any;
@@ -41,5 +41,5 @@ test('SqliteCredentialStore can add/get/delete credentials', async () => {
   const after = await store.getCredentials(id);
   assert.equal(after.length, 0);
   if ((store as any).db?.close) await (store as any).db.close();
-  try { fs.unlinkSync(tmpDB); } catch (_) {}
+  try { fs.unlinkSync(tmpDB); } catch { /* ignore cleanup errors */ }
 });

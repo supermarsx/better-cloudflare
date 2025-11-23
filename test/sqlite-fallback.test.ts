@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'path';
 import fs from 'fs';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { openSqlite } from '../src/lib/sqlite-driver.ts';
 import { createRequire } from 'module';
 const requireCJS = createRequire(import.meta.url);
   const fakeSqlite3 = {
     verbose() { return fakeSqlite3; },
-    Database: function(this: any, file: string) {
+    Database: function(this: any, file?: string) {
+      void file;
       const dbState = { credentials: [], audit_log: [], lastID: 0 } as any;
       this.run = (sql: string, params?: any[] | any, cb?: any) => {
         const s = String(sql).trim().toUpperCase();
@@ -45,7 +47,7 @@ const requireCJS = createRequire(import.meta.url);
           // naive parse: INSERT INTO table(columns...) VALUES(...)
           const m = sql.match(/INSERT INTO\s+([\w.]+)\s*\(([^)]+)\)/i);
           const tbl = m ? m[1] : 'unknown';
-          const cols = m ? m[2].split(',').map((c: any) => c.trim().replace(/"|\'|`/g, '')) : [];
+          const cols = m ? m[2].split(',').map((c: any) => c.trim().replace(/["'`]/g, '')) : [];
           dbState.tables = dbState.tables ?? {};
           dbState.tables[tbl] = dbState.tables[tbl] ?? [];
           const obj: any = { id: ++dbState.lastID };
@@ -120,7 +122,7 @@ import { SqliteCredentialStore } from '../src/lib/credential-store.ts';
 
 test('openSqlite falls back to sqlite3 when better-sqlite3 is not available', async () => {
   const tmp = path.resolve(process.cwd(), 'data', 'test-fallback.db');
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
   const requireFn = (name: string) => {
      if (name === 'better-sqlite3') throw new Error('not found');
      if (name === 'sqlite3') return fakeSqlite3; 
@@ -129,15 +131,15 @@ test('openSqlite falls back to sqlite3 when better-sqlite3 is not available', as
   const wrapper = openSqlite(tmp, requireFn as any);
   assert.equal(wrapper.type, 'sqlite3');
   await wrapper.run('CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, name TEXT)');
-  const res = await wrapper.run('INSERT INTO t(name) VALUES(?)', ['x']);
+  await wrapper.run('INSERT INTO t(name) VALUES(?)', ['x']);
   const row = await wrapper.get('SELECT id, name FROM t WHERE id = ?', [1]);
   assert.equal(row.name, 'x');
   if (wrapper.close) await wrapper.close();
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
 });
 
 test('openSqlite throws when no sqlite driver available', async () => {
-  const requireFn = (_name: string) => { throw new Error('missing'); };
+  const requireFn = () => { throw new Error('missing'); };
   try {
     openSqlite(undefined, requireFn as any);
     assert.fail('openSqlite should throw when both drivers unavailable');
@@ -148,7 +150,7 @@ test('openSqlite throws when no sqlite driver available', async () => {
 
 test('SqliteCredentialStore works with injected sqlite3 wrapper', async () => {
   const tmp = path.resolve(process.cwd(), 'data', 'test-credstore.db');
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
   const requireFn = (name: string) => {
      if (name === 'better-sqlite3') throw new Error('not found');
      if (name === 'sqlite3') return fakeSqlite3;
@@ -171,5 +173,5 @@ test('SqliteCredentialStore works with injected sqlite3 wrapper', async () => {
   const after = await store.getCredentials(id);
   assert.equal(after.length, 0);
   if ((wrapper as any).close) await (wrapper as any).close();
-  try { fs.unlinkSync(tmp); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
 });

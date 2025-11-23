@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ServerAPI } from '../src/lib/server-api.ts';

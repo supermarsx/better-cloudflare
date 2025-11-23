@@ -24,25 +24,32 @@ export function logAudit(entry: AuditEntry) {
       console.info('AUDIT', JSON.stringify(final));
       // If sqlite store exists, write audit there too (fire-and-forget)
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (store as any).writeAudit?.(final)?.catch?.(() => undefined);
-      } catch (_e) {
-        // ignore
+        // Try to call the optional writeAudit method if present on the store.
+        const s = store as unknown as { writeAudit?: (entry: AuditEntry) => Promise<unknown> };
+        s.writeAudit?.(final)?.catch?.(() => undefined);
+      } catch {
+        // ignore errors while attempting to write optional DB audit entries
       }
-    } catch (e) {
-    // ignore errors during logging.
-  }
+    } catch {
+      // ignore errors during logging.
+    }
 }
 
 export async function getAuditEntries(): Promise<AuditEntry[]> {
   // If DB store available return DB entries, otherwise in-memory
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if ((store as any).getAuditEntries) {
+    const s = store as unknown as { getAuditEntries?: () => Promise<{ actor?: string; operation: string; resource?: string; details?: string | null; timestamp?: string }[]> };
+    if (s.getAuditEntries) {
     try {
       // convert DB rows into AuditEntry[]
-      const rows = await (store as any).getAuditEntries();
-      return rows.map((r: any) => ({ actor: r.actor, operation: r.operation, resource: r.resource, details: JSON.parse(r.details || '{}'), timestamp: r.timestamp }));
-    } catch (_e) {
+      const rows = await s.getAuditEntries();
+      return rows.map((r) => ({
+        actor: r.actor,
+        operation: r.operation,
+        resource: r.resource,
+        details: r.details ? JSON.parse(r.details || '{}') : undefined,
+        timestamp: r.timestamp,
+      }));
+    } catch {
       return [...entries];
     }
   }

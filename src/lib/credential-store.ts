@@ -4,6 +4,7 @@ import { vaultManager } from '../server/vault';
 import { getEnv } from './env';
 import openSqlite from './sqlite-driver';
 import type { SqliteWrapper } from './sqlite-driver';
+import type { AuditEntry } from './audit';
 
 export type PasskeyCredential = {
   credentialID: string;
@@ -74,7 +75,8 @@ class VaultCredentialStore implements CredentialStore {
     const stored = await vaultManager.getSecret(`passkey:${id}`);
     const parsed = stored ? JSON.parse(stored) : [];
     const arr = Array.isArray(parsed) ? parsed : [parsed];
-    const filtered = arr.filter((c: any) => (c.credentialID ?? c.id) !== cid);
+    const arrTyped = arr as Array<{ credentialID?: string; id?: string }>;
+    const filtered = arrTyped.filter((c) => (c.credentialID ?? c.id) !== cid);
     await vaultManager.setSecret(`passkey:${id}`, JSON.stringify(filtered));
   }
 }
@@ -96,13 +98,13 @@ class MemoryCredentialStore implements CredentialStore {
 }
   export class SqliteCredentialStore implements CredentialStore {
     private db!: SqliteWrapper;
-    private initPromise: Promise<any> | null = null;
+    private initPromise: Promise<void> | null = null;
     constructor(dbFile?: string, dbWrapper?: SqliteWrapper) {
       const f = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
       // Ensure directory exists before opening the database
       try {
         mkdirSync(path.dirname(f), { recursive: true });
-      } catch (e) {
+      } catch {
         // ignore
       }
       this.db = dbWrapper ?? openSqlite(f);
@@ -130,7 +132,8 @@ class MemoryCredentialStore implements CredentialStore {
     async getCredentials(id: string): Promise<PasskeyCredential[]> {
         await this.initPromise;
         const rows = await this.db.all('SELECT credential_id, public_key as credentialPublicKey, counter, created_at as createdAt, label FROM credentials WHERE id = ?', [id]);
-        return rows.map((r: any) => ({ credentialID: r.credential_id, credentialPublicKey: r.credentialPublicKey, counter: r.counter, createdAt: r.createdAt, label: r.label }));
+        const typed = rows as Array<{ credential_id: string; credentialPublicKey?: string; counter?: number; createdAt?: string; label?: string }>;
+        return typed.map((r) => ({ credentialID: r.credential_id, credentialPublicKey: r.credentialPublicKey, counter: r.counter, createdAt: r.createdAt, label: r.label }));
     }
     async addCredential(id: string, cred: PasskeyCredential) {
       await this.initPromise;
@@ -141,7 +144,7 @@ class MemoryCredentialStore implements CredentialStore {
       await this.db.run('DELETE FROM credentials WHERE id = ? AND credential_id = ?', [id, cid]);
     }
     // Simple audit log insertion (we'll use for audit write from audit module)
-    async writeAudit(a: any) {
+    async writeAudit(a: AuditEntry) {
       await this.initPromise;
       await this.db.run('INSERT INTO audit_log(actor, operation, resource, details, timestamp) VALUES(?, ?, ?, ?, ?)', [a.actor ?? null, a.operation, a.resource ?? null, JSON.stringify(a.details ?? {}), a.timestamp ?? new Date().toISOString()]);
     }
@@ -167,7 +170,7 @@ export const createCredentialStore = () => {
         try {
           const inMem = openSqlite(undefined);
           return new SqliteCredentialStore(undefined, inMem);
-        } catch (_e) {
+        } catch {
           console.warn('In-memory sqlite fallback failed, using memory-only store');
           return new MemoryCredentialStore();
         }

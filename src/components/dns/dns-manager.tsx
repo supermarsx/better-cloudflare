@@ -335,10 +335,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
       if (valid.length) {
         if (bulkCreateDNSRecords) {
-          try {
+            try {
             const result = await bulkCreateDNSRecords(selectedZone, valid, dryRun);
             // Handle created and skipped results returned by server
-            const created = Array.isArray((result as any).created) ? (result as any).created : valid;
+            const r = result as unknown as { created?: DNSRecord[] };
+            const created = Array.isArray(r.created) ? r.created : valid;
             setRecords([...created, ...records]);
           } catch (err) {
             toast({
@@ -355,7 +356,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             try {
               const r = await createDNSRecord(selectedZone, v);
               createdRecords.push(r);
-            } catch (err) {
+            } catch {
+              // record creation failed for this item — count as skipped but ignore error details
               skipped++;
             }
           }

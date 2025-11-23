@@ -2,7 +2,7 @@
  * UI component rendering a single DNS record row and optional inline
  * editor allowing update and deletion of the record.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { ChangeEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -75,7 +75,7 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
   const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(parseSSHFP(record.content).algorithm);
   const [sshfpFptype, setSshfpFptype] = useState<number | undefined>(parseSSHFP(record.content).fptype);
   const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(parseSSHFP(record.content).fingerprint ?? '');
-  const splitNaptrTokens = (s: string) => {
+  const splitNaptrTokens = useCallback((s: string) => {
     const tokens: string[] = [];
     let current = '';
     let inQuote = false;
@@ -97,14 +97,14 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
     }
     if (current.trim().length > 0) tokens.push(current.trim());
     return tokens;
-  };
+  }, [] as const);
 
-  const parseNAPTR = (content?: string) => {
+  const parseNAPTR = useCallback((content?: string) => {
     if (!content) return { order: undefined, preference: undefined, flags: '', service: '', regexp: '', replacement: '' };
     const tokens = splitNaptrTokens(String(content).trim());
     const [order, preference, flags, service, regexp, replacement] = tokens;
     return { order: Number(order), preference: Number(preference), flags: flags?.replace(/^"|"$/g, ''), service, regexp: regexp?.replace(/^"|"$/g, ''), replacement };
-  };
+  }, [splitNaptrTokens]);
   const quoteIfNeeded = (s?: string) => {
     if (!s) return '';
     if (/\s/.test(s) || /"/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
@@ -149,7 +149,7 @@ export function RecordRow({ record, isEditing, onEdit, onSave, onCancel, onDelet
       setNaptrRegexp(parsed.regexp ?? '');
       setNaptrReplacement(parsed.replacement ?? '');
     }
-  }, [record]);
+  }, [record, parseNAPTR]);
 
   const ttlValue = editedRecord.ttl === 1 ? 'auto' : editedRecord.ttl;
   const isCustomTTL = !getTTLPresets().includes(ttlValue as TTLValue);
