@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// use unknown instead of `any` in tests
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Request, Response } from 'express';
 import { ServerAPI } from '../src/lib/server-api.ts';
 import { CloudflareAPI } from '../src/lib/cloudflare.ts';
 
-function createReq(body: any, params: Record<string, string>, query?: Record<string, string>): Request {
+function createReq(body: unknown, params: Record<string, string>, query?: Record<string, string>): Request {
   return {
     body,
     params,
@@ -18,7 +18,7 @@ function createReq(body: any, params: Record<string, string>, query?: Record<str
 
 function createRes() {
   let statusCode: number | undefined;
-  let jsonData: any;
+  let jsonData: unknown;
   const res: Partial<Response> = {
     status(code: number) {
       statusCode = code;
@@ -35,10 +35,11 @@ test('createBulkDNSRecords dry run', async () => {
   const handler = ServerAPI.createBulkDNSRecords();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = 0;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: any) => {
+  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
     called++;
-    return { id: `${called}`, ...record } as any;
-  };
+    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
+    return { id: `${called}`, ...rec } as unknown;
+  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   const payload = [
     { type: 'A', name: 'test1', content: '1.2.3.4' },
@@ -59,10 +60,11 @@ test('createBulkDNSRecords creates records', async () => {
   const handler = ServerAPI.createBulkDNSRecords();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = 0;
-  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: any) => {
+  CloudflareAPI.prototype.createDNSRecord = async (_zone: string, record: unknown) => {
     called++;
-    return { id: `${called}`, ...record } as any;
-  };
+    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
+    return { id: `${called}`, ...rec } as unknown;
+  } as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   const payload = [
     { type: 'A', name: 'test1', content: '1.2.3.4' },
