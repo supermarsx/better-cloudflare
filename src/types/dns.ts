@@ -189,7 +189,7 @@ function parsePresets(presetsStr: string): (number | 'auto')[] {
   try {
     const parsed = JSON.parse(presetsStr);
     if (Array.isArray(parsed)) return parsed.map((p) => (p === 'auto' ? 'auto' : Number(p)));
-  } catch (_) {
+  } catch {
     // not a JSON array; try comma-separated
   }
   return presetsStr.split(',').map((p) => {
