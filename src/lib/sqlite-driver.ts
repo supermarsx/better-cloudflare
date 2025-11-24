@@ -20,12 +20,22 @@ export type SqliteWrapper = {
 // native sqlite drivers are not available.
 const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
 
-function mkSyncWrapper(db: unknown): SqliteWrapper {
+// Minimal surface of the better-sqlite3 synchronous DB used by our code
+type BetterSqlite3Like = {
+  prepare: (sql: string) => {
+    run: (...params: unknown[]) => unknown;
+    all?: (...params: unknown[]) => unknown[];
+    get?: (...params: unknown[]) => unknown;
+  };
+  close?: () => void;
+};
+
+function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
   return {
     type: 'better-sqlite3',
     run(sql: string, params: any[] = []) {
       try {
-        const res = (db as any).prepare(sql).run(...params);
+        const res = db.prepare(sql).run(...params);
         return Promise.resolve(res);
       } catch (e) {
         return Promise.reject(e);
@@ -101,7 +111,7 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
 
 export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');
-  const globalRequire = (globalThis as unknown as { require?: unknown }).require;
+  const globalRequire = (globalThis as { require?: (name: string) => unknown }).require;
   const req = requireFn ? requireFn : (typeof globalRequire === 'function' ? (globalRequire as (name: string) => unknown) : createRequire(import.meta.url));
   // Try better-sqlite3 first (synchronous, faster).
   try {

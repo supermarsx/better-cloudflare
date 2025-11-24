@@ -12,7 +12,7 @@ export type AuditEntry = {
 };
 
 const entries: AuditEntry[] = [];
-import createCredentialStore from './credential-store';
+import createCredentialStore, { SqliteCredentialStore } from './credential-store';
 const store = createCredentialStore();
 
 export function logAudit(entry: AuditEntry) {
@@ -24,9 +24,14 @@ export function logAudit(entry: AuditEntry) {
       console.info('AUDIT', JSON.stringify(final));
       // If sqlite store exists, write audit there too (fire-and-forget)
       try {
-        // Try to call the optional writeAudit method if present on the store.
-        const s = store as unknown as { writeAudit?: (entry: AuditEntry) => Promise<unknown> };
-        s.writeAudit?.(final)?.catch?.(() => undefined);
+        // If the credential store is backed by sqlite, use its writeAudit method.
+        if (store instanceof SqliteCredentialStore && typeof store.writeAudit === 'function') {
+          try {
+            store.writeAudit(final).catch?.(() => undefined);
+          } catch {
+            // ignore
+          }
+        }
       } catch {
         // ignore errors while attempting to write optional DB audit entries
       }
@@ -37,11 +42,10 @@ export function logAudit(entry: AuditEntry) {
 
 export async function getAuditEntries(): Promise<AuditEntry[]> {
   // If DB store available return DB entries, otherwise in-memory
-    const s = store as unknown as { getAuditEntries?: () => Promise<{ actor?: string; operation: string; resource?: string; details?: string | null; timestamp?: string }[]> };
-    if (s.getAuditEntries) {
+    if (store instanceof SqliteCredentialStore && typeof store.getAuditEntries === 'function') {
     try {
       // convert DB rows into AuditEntry[]
-      const rows = await s.getAuditEntries();
+      const rows = await store.getAuditEntries();
       return rows.map((r) => ({
         actor: r.actor,
         operation: r.operation,

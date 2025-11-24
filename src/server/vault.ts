@@ -36,11 +36,12 @@ if (process.env.KEYTAR_ENABLED) {
   (async () => {
     try {
       const kt = await import('keytar').catch(() => null);
-      const keytar = (kt as unknown) as {
+      type KeytarLike = {
         setPassword?: (service: string, account: string, password: string) => Promise<void>;
         getPassword?: (service: string, account: string) => Promise<string | null>;
         deletePassword?: (service: string, account: string) => Promise<boolean>;
-      } | null;
+      };
+      const keytar = (kt as KeytarLike | null);
       if (keytar && typeof keytar.setPassword === 'function') {
         vault = {
           async setSecret(key: string, secret: Secret) {

@@ -14,7 +14,8 @@ export function LanguageSelector() {
     const lng = e.target.value;
     i18n.changeLanguage(lng);
     try {
-      const storage = (globalThis as unknown as { localStorage?: { setItem(key: string, value: string): void } }).localStorage;
+      const storageAvailable = typeof globalThis !== 'undefined' && 'localStorage' in globalThis;
+      const storage = storageAvailable ? (globalThis as { localStorage: Storage }).localStorage : undefined;
       storage?.setItem('locale', lng);
     } catch { /* ignore */ }
   };
@@ -29,7 +30,7 @@ export function LanguageSelector() {
         className="border rounded p-1 text-sm"
         defaultValue={i18n.language}
         onChange={handleChange}
-        aria-label="Select language"
+        aria-label={t('Select language', 'Select language')}
       >
         {availableLanguages.map((lng) => (
           <option key={lng} value={lng}>

@@ -14,6 +14,7 @@ import type { DNSRecord, RecordType, TTLValue } from '@/types/dns';
 import { parseSPF, composeSPF, validateSPF } from '@/lib/spf';
 import type { SPFGraph, SPFMechanism } from '@/lib/spf';
 import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
+import { useTranslation } from 'react-i18next';
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from '@/types/dns';
 import { Plus } from 'lucide-react';
 
@@ -43,6 +44,7 @@ export interface AddRecordDialogProps {
  * create action via `onAdd`.
  */
 export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, onAdd, zoneName, apiKey, email }: AddRecordDialogProps) {
+  const { t } = useTranslation();
   const { simulateSPF, getSPFGraph } = useCloudflareAPI(apiKey, email);
   const ttlValue = record.ttl === 1 ? 'auto' : record.ttl;
   const isCustomTTL = ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
@@ -175,7 +177,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
 
   const addSPFMechanism = () => {
     const mechVal = newSPFValue?.trim();
-    const newMech: SPFMechanism = { qualifier: newSPFQualifier || undefined, mechanism: newSPFMechanism as unknown as string, value: mechVal || undefined } as SPFMechanism;
+    const newMech: SPFMechanism = { qualifier: newSPFQualifier || undefined, mechanism: newSPFMechanism, value: mechVal || undefined };
     const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
     const mechs = [...parsed.mechanisms];
     if (editingSPFIndex !== null && editingSPFIndex >= 0 && editingSPFIndex < mechs.length) {
@@ -227,8 +229,9 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Type</Label>
+              <Label>{t('Type', 'Type')}</Label>
               <Select
+                aria-label={t('Record Type', 'Record Type')}
                 value={record.type}
                 onValueChange={(value: string) =>
                   onRecordChange({
@@ -251,8 +254,9 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>TTL</Label>
+              <Label>{t('TTL', 'TTL')}</Label>
               <Select
+                aria-label={t('TTL select', 'TTL')}
                 value={isCustomTTL ? 'custom' : String(ttlValue)}
                 onValueChange={(value: string) => {
                   if (value === 'custom') {
@@ -293,8 +297,9 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
             </div>
           </div>
           <div className="space-y-2">
-            <Label>Name</Label>
+            <Label>{t('Name', 'Name')}</Label>
             <Input
+              aria-label={t('Name input', 'Name')}
               value={record.name}
               onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
                 ...record,
@@ -304,13 +309,14 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
             />
           </div>
           <div className="space-y-2">
-            <Label>Content</Label>
+            <Label>{t('Content', 'Content')}</Label>
             {(() => {
               switch (record.type) {
                 case 'SRV':
                   return (
                     <div className="grid grid-cols-4 gap-2">
                       <Input
+                        aria-label={t('SRV priority', 'priority')}
                         type="number"
                         placeholder="priority"
                         value={srvPriority ?? ''}
@@ -321,6 +327,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('SRV weight', 'weight')}
                         type="number"
                         placeholder="weight"
                         value={srvWeight ?? ''}
@@ -331,6 +338,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('SRV port', 'port')}
                         type="number"
                         placeholder="port"
                         value={srvPort ?? ''}
@@ -341,6 +349,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('SRV target', 'target')}
                         placeholder="target"
                         value={srvTarget}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -387,6 +396,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('TLSA data', 'data')}
                         placeholder="data"
                         value={tlsaData}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -422,6 +432,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('SSHFP fingerprint', 'fingerprint')}
                         placeholder="fingerprint"
                         value={sshfpFingerprint}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -435,6 +446,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                   return (
                     <div className="grid grid-cols-6 gap-2">
                       <Input
+                        aria-label={t('NAPTR order', 'order')}
                         type="number"
                         placeholder="order"
                         value={naptrOrder ?? ''}
@@ -446,6 +458,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('NAPTR preference', 'preference')}
                         type="number"
                         placeholder="preference"
                         value={naptrPref ?? ''}
@@ -457,6 +470,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('NAPTR flags', 'flags')}
                         placeholder="flags"
                         value={naptrFlags}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -465,6 +479,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('NAPTR service', 'service')}
                         placeholder="service"
                         value={naptrService}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -473,6 +488,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('NAPTR regexp', 'regexp')}
                         placeholder="regexp"
                         value={naptrRegexp}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -481,6 +497,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                         }}
                       />
                       <Input
+                        aria-label={t('NAPTR replacement', 'replacement')}
                         placeholder="replacement"
                         value={naptrReplacement}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -494,6 +511,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                   return (
                     <div className="space-y-2">
                       <Input
+                        aria-label={t('SPF input', 'SPF')}
                         value={record.content}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
                           ...record,
@@ -577,6 +595,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                 default:
                   return (
                     <Input
+                      aria-label={t('Default content input', 'Content')}
                       value={record.content}
                       onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
                         ...record,

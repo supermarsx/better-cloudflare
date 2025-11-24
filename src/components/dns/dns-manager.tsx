@@ -337,9 +337,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (bulkCreateDNSRecords) {
             try {
             const result = await bulkCreateDNSRecords(selectedZone, valid, dryRun);
-            // Handle created and skipped results returned by server
-            const r = result as unknown as { created?: DNSRecord[] };
-            const created = Array.isArray(r.created) ? r.created : valid;
+            // Server returns { created: DNSRecord[]; skipped: unknown[] }
+            const created = Array.isArray(result?.created) ? result.created as DNSRecord[] : valid;
             setRecords([...created, ...records]);
           } catch (err) {
             toast({

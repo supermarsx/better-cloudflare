@@ -8,9 +8,13 @@ import { initReactI18next } from 'react-i18next';
 const loadResources = async () => {
   const en = await import('./locales/en-US.json');
   const pt = await import('./locales/pt-PT.json');
+  function extractDefault<T>(m: unknown): T {
+    if (m && typeof m === 'object' && 'default' in m) return (m as { default: T }).default;
+    return m as T;
+  }
   return {
-    'en-US': { translation: (((en as unknown) as { default?: unknown }).default ?? en) },
-    'pt-PT': { translation: (((pt as unknown) as { default?: unknown }).default ?? pt) },
+    'en-US': { translation: extractDefault<Record<string, string>>(en) },
+    'pt-PT': { translation: extractDefault<Record<string, string>>(pt) },
   };
 };
 
@@ -23,7 +27,7 @@ const loadResources = async () => {
     interpolation: { escapeValue: false },
   });
   try {
-  const saved = (globalThis as unknown as { localStorage?: { getItem(key: string): string | null } }).localStorage?.getItem('locale');
+  const saved = typeof globalThis !== 'undefined' && 'localStorage' in globalThis ? (globalThis as { localStorage: Storage }).localStorage.getItem('locale') : undefined;
     if (typeof saved === 'string' && Object.prototype.hasOwnProperty.call(resources, saved)) {
       void i18n.changeLanguage(saved);
     }

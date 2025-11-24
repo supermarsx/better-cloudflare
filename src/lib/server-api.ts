@@ -729,7 +729,23 @@ export class ServerAPI {
             const rawToBase64 = (r: unknown) => {
               if (typeof r === 'string') return r;
               if (r instanceof Uint8Array) return Buffer.from(r).toString('base64');
-              if (ArrayBuffer.isView(r as unknown as ArrayBufferView)) return Buffer.from(new Uint8Array((r as ArrayBufferLike))).toString('base64');
+              if (ArrayBuffer.isView(r)) {
+                // r is an ArrayBufferView: create a Uint8Array view over it
+                try {
+                  const view = r as ArrayBufferView;
+                  // Some ArrayBufferView implementations expose buffer/byteOffset/byteLength
+                  type ABViewLike = { buffer?: ArrayBuffer; byteOffset?: number; byteLength?: number };
+                  const v = view as unknown as ABViewLike;
+                  const buffer = v.buffer ?? new ArrayBuffer(0);
+                  const offset = v.byteOffset ?? 0;
+                  const length = typeof v.byteLength === 'number' ? v.byteLength : buffer.byteLength - offset;
+                  const u = new Uint8Array(buffer, offset, length);
+                  return Buffer.from(u).toString('base64');
+                } catch {
+                  // fallback to generic string conversion
+                  return Buffer.from(String(r)).toString('base64');
+                }
+              }
               if (r instanceof ArrayBuffer) return Buffer.from(new Uint8Array(r)).toString('base64');
               return Buffer.from(String(r)).toString('base64');
             };

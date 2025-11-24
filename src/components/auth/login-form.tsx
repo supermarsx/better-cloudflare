@@ -261,7 +261,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           },
         };
         const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
-        if ((serverResp as unknown as { success?: boolean }).success) {
+        if (serverResp?.success) {
           const secret = await scx.getVaultSecret(selectedKeyId);
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);

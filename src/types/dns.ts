@@ -207,16 +207,19 @@ export function getTTLPresets(): TTLValue[] {
   // safe typed access to avoid linting and TS errors in environments where
   // import.meta is undefined.
   if (typeof import.meta !== 'undefined') {
-    const meta = import.meta as unknown as { env?: Record<string, string> };
-    if (meta.env) {
+    const meta = (import.meta as { env?: Record<string, string> } | undefined);
+    if (meta?.env) {
       envVal = meta.env.VITE_TTL_PRESETS;
     }
   }
   if (!envVal) envVal = process.env.TTL_PRESETS || process.env.VITE_TTL_PRESETS;
-  if (!envVal) return TTL_PRESETS as unknown as TTLValue[];
+  if (!envVal) {
+    // Return a properly-typed copy of the readonly TTL_PRESETS
+    return TTL_PRESETS.map((v) => (v === 'auto' ? 'auto' : Number(v))) as TTLValue[];
+  }
   try {
     return parsePresets(envVal);
   } catch {
-    return TTL_PRESETS as unknown as TTLValue[];
+    return TTL_PRESETS.map((v) => (v === 'auto' ? 'auto' : Number(v))) as TTLValue[];
   }
 }

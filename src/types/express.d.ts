@@ -16,5 +16,7 @@ declare module 'express' {
   };
   export type NextFunction = (err?: unknown) => void;
   export const Router: unknown;
-  export default {} as unknown;
+  // default export intentionally empty - keep as a harmless object
+  // typed as an empty record to satisfy consumers without unsafe casts
+  export default {} as Record<string, never>;
 }

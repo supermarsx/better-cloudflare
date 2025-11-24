@@ -59,8 +59,8 @@ export const generateRegistrationOptions = (opts: Record<string, unknown> = {}):
 
   // Minimal fallback: include a generated base64 challenge and echo back
   // other inputs. This mirrors the shape expected by our tests.
-  const globalCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
-  const challenge = globalCrypto.crypto?.randomUUID
+  const globalCrypto = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: { randomUUID?: () => string } }).crypto : undefined;
+  const challenge = globalCrypto?.randomUUID
     ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
   const rpName = (opts as Record<string, unknown>)['rpName'] as string | undefined;
@@ -70,8 +70,8 @@ export const generateRegistrationOptions = (opts: Record<string, unknown> = {}):
 export const generateAuthenticationOptions = (opts: Record<string, unknown> = {}): Record<string, unknown> => {
   const mod = loadSwauthSync();
   if (mod && mod.generateAuthenticationOptions) return mod.generateAuthenticationOptions(opts);
-  const globalCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
-  const challenge = globalCrypto.crypto?.randomUUID
+  const globalCrypto = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: { randomUUID?: () => string } }).crypto : undefined;
+  const challenge = globalCrypto?.randomUUID
     ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
   const allowCredentials = (opts as Record<string, unknown>)['allowCredentials'] ?? [];

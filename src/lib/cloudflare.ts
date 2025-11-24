@@ -140,8 +140,8 @@ export class CloudflareAPI {
     const listParams: Record<string, unknown> = { zone_id: zoneId };
     if (page) listParams.page = page;
     if (perPage) listParams.per_page = perPage;
-    for await (const record of this.client.dns.records.list(listParams as unknown as Record<string, unknown>, { signal })) {
-      records.push(record as unknown as DNSRecord);
+    for await (const record of this.client.dns.records.list(listParams as Record<string, unknown>, { signal })) {
+      records.push(record as DNSRecord);
     }
     this.debugResponse(records);
     return records;
@@ -162,7 +162,7 @@ export class CloudflareAPI {
       body: record,
     });
     const params = this.buildRecordParams(zoneId, record);
-    const result = (await this.client.dns.records.create(params as unknown as Record<string, unknown>, { signal })) as unknown as DNSRecord;
+    const result = (await this.client.dns.records.create(params as Record<string, unknown>, { signal })) as DNSRecord;
     this.debugResponse(result);
     return result;
   }
@@ -183,7 +183,7 @@ export class CloudflareAPI {
       body: record,
     });
     const params = this.buildRecordParams(zoneId, record);
-    const result = (await this.client.dns.records.update(recordId, params as unknown as Record<string, unknown>, { signal })) as unknown as DNSRecord;
+    const result = (await this.client.dns.records.update(recordId, params as Record<string, unknown>, { signal })) as DNSRecord;
     this.debugResponse(result);
     return result;
   }
