@@ -540,8 +540,10 @@ export class ServerAPI {
       }
       // require valid credentials on request
       createClient(req);
-      const stored = await vaultManager.getSecret(`passkey:${id}`);
-      const creds = stored ? JSON.parse(stored) : [];
+      // Prefer the configured credential store for passkey storage so
+      // listing works consistently regardless of underlying store (vault,
+      // sqlite, file, memory).
+      const creds = await ServerAPI.credentialStore.getCredentials(id) ?? [];
       // Return credential metadata only (no private key material)
       const metadata = (Array.isArray(creds) ? creds : []).map((c: unknown) => {
         const obj = c as { credentialID?: string; id?: string; counter?: number };
