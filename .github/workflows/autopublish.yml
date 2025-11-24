@@ -1,13 +1,51 @@
 name: Autopublish Release
 
+# Only run this workflow after the main test/package workflow finishes.
+# This uses the `workflow_run` trigger so autopublish runs for the same commit
+# once `Test and Package` completes — and we verify that Format Check and Lint
+# also succeeded for the same head SHA before publishing.
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows:
+      - 'Test and Package'
+    types:
+      - completed
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Bail if upstream workflow didn't succeed
+        if: ${{ github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "Upstream workflow did not conclude successfully: ${{ github.event.workflow_run.conclusion }}"
+          exit 1
+      - name: Ensure jq is installed
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y jq
+          else
+            echo jq already available
+          fi
+      - name: Verify Format Check and Lint also passed for this commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          echo "Checking other workflows for commit $SHA"
+          runs_json=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100")
+          check_workflow() {
+            local name="$1"
+            local c=$(echo "$runs_json" | jq -r --arg name "$name" '.workflow_runs[] | select(.name==$name) | .conclusion' | head -n 1)
+            if [ "$c" != "success" ]; then
+              echo "Required workflow '$name' did not succeed for $SHA (conclusion=$c)."
+              exit 1
+            fi
+            echo "Workflow '$name' succeeded for $SHA"
+          }
+          check_workflow "Format Check"
+          check_workflow "Lint"
       - uses: actions/checkout@v4
       - name: Setup Node
         uses: actions/setup-node@v4
