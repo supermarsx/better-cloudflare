@@ -735,7 +735,7 @@ export class ServerAPI {
                   const view = r as ArrayBufferView;
                   // Some ArrayBufferView implementations expose buffer/byteOffset/byteLength
                   type ABViewLike = { buffer?: ArrayBuffer; byteOffset?: number; byteLength?: number };
-                  const v = view as unknown as ABViewLike;
+                  const v = view as ABViewLike;
                   const buffer = v.buffer ?? new ArrayBuffer(0);
                   const offset = v.byteOffset ?? 0;
                   const length = typeof v.byteLength === 'number' ? v.byteLength : buffer.byteLength - offset;

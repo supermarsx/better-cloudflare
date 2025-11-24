@@ -25,12 +25,12 @@ export interface RecordRowProps {
   isEditing: boolean;
   /** Callback invoked to transition into edit mode */
   onEdit: () => void;
-  /** Save callback after editing; receives the updated record */
-  onSave: (record: DNSRecord) => void;
+  /** Save callback after editing; receives the updated record. May return a promise. */
+  onSave: (record: DNSRecord) => void | Promise<void>;
   /** Cancel editing and revert changes */
   onCancel: () => void;
-  /** Remove the record */
-  onDelete: () => void;
+  /** Remove the record. May return a promise. */
+  onDelete: () => void | Promise<void>;
 }
 
 /**

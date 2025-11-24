@@ -433,7 +433,6 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                       />
                       <Input
                         aria-label={t('SSHFP fingerprint', 'fingerprint')}
-                        placeholder="fingerprint"
                         value={sshfpFingerprint}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setSshfpFingerprint(e.target.value);

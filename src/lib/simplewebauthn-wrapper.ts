@@ -61,7 +61,7 @@ export const generateRegistrationOptions = (opts: Record<string, unknown> = {}):
   // other inputs. This mirrors the shape expected by our tests.
   const globalCrypto = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: { randomUUID?: () => string } }).crypto : undefined;
   const challenge = globalCrypto?.randomUUID
-    ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
+    ? Buffer.from(globalCrypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
   const rpName = (opts as Record<string, unknown>)['rpName'] as string | undefined;
   return { challenge, ...opts, rp: { name: rpName ?? 'Better Cloudflare' } };
@@ -72,7 +72,7 @@ export const generateAuthenticationOptions = (opts: Record<string, unknown> = {}
   if (mod && mod.generateAuthenticationOptions) return mod.generateAuthenticationOptions(opts);
   const globalCrypto = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: { randomUUID?: () => string } }).crypto : undefined;
   const challenge = globalCrypto?.randomUUID
-    ? Buffer.from(globalCrypto.crypto.randomUUID()).toString('base64')
+    ? Buffer.from(globalCrypto.randomUUID()).toString('base64')
     : Buffer.from(String(Date.now())).toString('base64');
   const allowCredentials = (opts as Record<string, unknown>)['allowCredentials'] ?? [];
   const rpId = (opts as Record<string, unknown>)['rpID'] ?? (opts as Record<string, unknown>)['rpId'];

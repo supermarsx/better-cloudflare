@@ -28,8 +28,8 @@ import type { ApiKey } from '@/types/dns';
  * an API key and authenticate the user.
  */
 interface LoginFormProps {
-  /** Callback invoked on successful login with the decrypted apiKey */
-  onLogin: (apiKey: string) => void;
+  /** Callback invoked on successful login with the decrypted apiKey. May return a promise. */
+  onLogin: (apiKey: string) => void | Promise<void>;
 }
 
 /**
