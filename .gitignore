@@ -25,3 +25,4 @@ src/**/*.js
 *.sw?
 .env
 /data
+/test-results

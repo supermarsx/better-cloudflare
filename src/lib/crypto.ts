@@ -8,6 +8,7 @@ import {
   type EncryptionConfig,
   type EncryptionAlgorithm,
 } from '../types/dns';
+import { createRequire } from 'module';
 import { getStorage, type StorageLike } from './storage-util';
 
 const CONFIG_STORAGE_KEY = 'encryption-settings';
@@ -101,8 +102,29 @@ export class CryptoManager {
    *
    * @returns a Uint8Array containing the salt
    */
+  // Prefer the global Web Crypto API when available; otherwise fall back to
+  // Node's built-in webcrypto (require('crypto').webcrypto) when running in
+  // Node.js. If neither is available, throw a helpful error when crypto is
+  // actually needed.
+  private getWebCrypto(): typeof globalThis.crypto | undefined {
+    // use the global if present (browser / Node 25+)
+    if ((globalThis as any).crypto) return (globalThis as any).crypto;
+
+    // otherwise attempt to synchronously require Node's crypto and use webcrypto
+    try {
+      const req = createRequire(import.meta.url);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const nodeCrypto = req('crypto');
+      return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
   generateSalt(): Uint8Array {
-    return crypto.getRandomValues(new Uint8Array(16));
+    const webcrypto = this.getWebCrypto();
+    if (!webcrypto?.getRandomValues) throw new Error('Web Crypto API not available');
+    return webcrypto.getRandomValues(new Uint8Array(16));
   }
 
   /**
@@ -111,7 +133,9 @@ export class CryptoManager {
    * @returns a 12-byte Uint8Array iv
    */
   generateIV(): Uint8Array {
-    return crypto.getRandomValues(new Uint8Array(12));
+    const webcrypto = this.getWebCrypto();
+    if (!webcrypto?.getRandomValues) throw new Error('Web Crypto API not available');
+    return webcrypto.getRandomValues(new Uint8Array(12));
   }
 
   /**
@@ -123,7 +147,10 @@ export class CryptoManager {
    */
   async deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
     const encoder = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
+    const webcrypto = this.getWebCrypto();
+    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+
+    const keyMaterial = await webcrypto.subtle.importKey(
       'raw',
       encoder.encode(password),
       'PBKDF2',
@@ -163,7 +190,10 @@ export class CryptoManager {
     const iv = this.generateIV();
     const key = await this.deriveKey(password, salt);
 
-    const encrypted = await crypto.subtle.encrypt(
+    const webcrypto = this.getWebCrypto();
+    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+
+    const encrypted = await webcrypto.subtle.encrypt(
       { name: this.config.algorithm, iv: iv },
       key,
       encoder.encode(data)
@@ -188,8 +218,11 @@ export class CryptoManager {
    */
   async decrypt(encryptedData: string, salt: string, iv: string, password: string): Promise<string> {
     const key = await this.deriveKey(password, this.base64ToArrayBuffer(salt));
-    
-    const decrypted = await crypto.subtle.decrypt(
+
+    const webcrypto = this.getWebCrypto();
+    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+
+    const decrypted = await webcrypto.subtle.decrypt(
       { name: this.config.algorithm, iv: this.base64ToArrayBuffer(iv) },
       key,
       this.base64ToArrayBuffer(encryptedData)
