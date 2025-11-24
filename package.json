@@ -10,6 +10,8 @@
     "build:ts": "tsc -p tsconfig.build.json",
     "build": "npm run build:ts && vite build",
     "lint": "eslint .",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "format:fix": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "preview": "vite preview",
     "test": "tsx --test test/*.test.ts",
     "test:e2e": "playwright test",
@@ -78,6 +80,7 @@
     "vite": "^5.4.10",
     "@playwright/test": "^1.44.0",
     "@axe-core/playwright": "^4.11.0",
-    "axe-core": "^4.7.0"
+    "axe-core": "^4.7.0",
+    "prettier": "^3.6.2"
   }
 }

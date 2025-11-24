@@ -1,0 +1,39 @@
+name: Autopublish Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Create package
+        run: npm pack
+      - name: Get short SHA
+        run: echo "SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
+      - name: Create GitHub release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: "autopublish-${{ env.SHORT_SHA }}"
+          release_name: "Autopublish - ${{ env.SHORT_SHA }}"
+          body: "Automated release for commit ${{ env.SHORT_SHA }}"
+          draft: false
+          prerelease: false
+      - name: Upload package to release
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: "$(ls *.tgz | head -n1)"
+          asset_name: "app-${{ env.SHORT_SHA }}.tgz"
+          asset_content_type: application/gzip
