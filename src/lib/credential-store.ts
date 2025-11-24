@@ -97,7 +97,7 @@ class MemoryCredentialStore implements CredentialStore {
   }
 }
   export class SqliteCredentialStore implements CredentialStore {
-    private db!: SqliteWrapper;
+    public db!: SqliteWrapper;
     private initPromise: Promise<void> | null = null;
     constructor(dbFile?: string, dbWrapper?: SqliteWrapper) {
       const f = dbFile ?? path.resolve(process.cwd(), 'data', 'credentials.db');

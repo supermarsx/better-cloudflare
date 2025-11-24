@@ -29,7 +29,8 @@ export function parseSPF(content?: string): SPFRecord | null {
     // handle modifier like redirect=domain or exp=uri
     if (p.includes('=')) {
       const [key, val] = p.split('=');
-      return { qualifier: undefined, mechanism: `modifier:${key.toLowerCase()}`, value: val } as unknown as SPFMechanism;
+      const mech: SPFMechanism = { qualifier: undefined, mechanism: `modifier:${key.toLowerCase()}`, value: val };
+      return mech;
     }
     const qualifier = p[0] && ['+', '-', '~', '?'].includes(p[0]) ? p[0] : undefined;
     const core = qualifier ? p.substring(1) : p;
@@ -55,12 +56,20 @@ export type DNSResolver = {
   reverse(ip: string): Promise<string[]>;
 };
 
-let dnsResolver: DNSResolver = dnsPromises as unknown as DNSResolver;
+const defaultDnsResolver: DNSResolver = {
+  resolveTxt: (d: string) => dnsPromises.resolveTxt(d),
+  resolve4: (d: string) => dnsPromises.resolve4(d),
+  resolve6: (d: string) => dnsPromises.resolve6(d),
+  resolveMx: (d: string) => dnsPromises.resolveMx(d),
+  reverse: (d: string) => dnsPromises.reverse(d),
+};
+
+let dnsResolver: DNSResolver = defaultDnsResolver;
 export function setDnsResolverForTest(resolver: DNSResolver | undefined) {
-  dnsResolver = resolver ?? (dnsPromises as unknown as DNSResolver);
+  dnsResolver = resolver ?? defaultDnsResolver;
 }
 export function resetDnsResolver() {
-  dnsResolver = dnsPromises as unknown as DNSResolver;
+  dnsResolver = defaultDnsResolver;
 }
 
 export function composeSPF(record: SPFRecord): string {

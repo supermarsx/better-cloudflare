@@ -133,7 +133,9 @@ export function getStorage(storage?: StorageLike): StorageLike {
       // Note: not awaiting init here since module may run server side; try to init
       try { IDS.init(); } catch { /* ignore */ }
       // attach a helper to detect whether we've selected an IndexedDB backend
-      (IDS as unknown as Record<string, unknown>).__selected = 'indexeddb';
+      // mark selection explicitly on the instance so callers can tell which
+      // backend was chosen without unsafe casts
+      (IDS as IndexedDBStorage & { __selected?: string }).__selected = 'indexeddb';
       return IDS as StorageLike;
     }
     if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {

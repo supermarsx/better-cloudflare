@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getEnv } from './env';
-import createCredentialStore from './credential-store';
+import createCredentialStore, { SqliteCredentialStore } from './credential-store';
+import type { SqliteWrapper } from './sqlite-driver';
 
 /**
  * Simple RBAC middleware: allow when x-admin-token matches env ADMIN_TOKEN or
@@ -8,10 +9,7 @@ import createCredentialStore from './credential-store';
  * user row with role "admin" in the sqlite user table. This is intentionally
  * lightweight - for production consider using a robust identity system.
  */
-interface DBLike {
-  run: (sql: string, params?: unknown[]) => Promise<unknown>;
-  get: (sql: string, params?: unknown[]) => Promise<{ roles?: string } | undefined>;
-}
+// DB helper types are handled via SqliteWrapper in the credential-store/sqlite-driver
 
 export async function isAdmin(req: Request, res: Response, next: NextFunction) {
   const adminToken = getEnv('ADMIN_TOKEN', 'VITE_ADMIN_TOKEN', undefined);
@@ -26,11 +24,11 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
   }
   const store = createCredentialStore();
   // if store exposes a db (sqlite store), check users table
-  const maybeDb = (store as unknown as { db?: DBLike }).db;
-  if (maybeDb) {
+  if (store instanceof SqliteCredentialStore && store.db) {
+    const db = store.db as SqliteWrapper;
     try {
-      await maybeDb.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
-      const row = await maybeDb.get('SELECT roles FROM users WHERE email = ?', [email]);
+      await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
+      const row = await db.get('SELECT roles FROM users WHERE email = ?', [email]);
       if (!row) {
         res.status(403).json({ error: 'Admin credentials required' });
         return;

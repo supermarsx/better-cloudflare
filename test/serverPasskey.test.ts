@@ -9,18 +9,9 @@ import { vaultManager } from '../src/server/vault.ts';
 // Monkey-patch simplewebauthn server verification functions to avoid
 // needing a real WebAuthn attestation/assertion for unit tests.
 import swauth from '../src/lib/simplewebauthn-wrapper';
+import type { VerifyRegistrationResult, VerifyAuthenticationResult } from '../src/lib/simplewebauthn-wrapper';
 
-// Typed shapes for the test stubs
-type VerifyRegistrationResult = {
-  verified: boolean;
-  registrationInfo?: { credentialID?: string; credentialPublicKey?: string; counter?: number } | null;
-  attestationType?: string;
-};
-
-type VerifyAuthenticationResult = {
-  verified: boolean;
-  authenticationInfo?: { newCounter?: number } | null;
-};
+// The verification result shapes are imported from the wrapper types above
 
 // Store original functions to restore (use narrow unknown casts)
 const origVerifyReg = (swauth as unknown as { verifyRegistrationResponse?: (opts?: unknown) => Promise<VerifyRegistrationResult> }).verifyRegistrationResponse;

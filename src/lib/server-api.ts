@@ -1,19 +1,10 @@
 import type { Request, Response } from 'express';
 import { CloudflareAPI } from './cloudflare';
 import { vaultManager } from '../server/vault';
-import createCredentialStore, { type CredentialStore, type PasskeyCredential } from './credential-store';
+import createCredentialStore, { type CredentialStore, type PasskeyCredential, SqliteCredentialStore } from './credential-store';
+import type { SqliteWrapper } from './sqlite-driver';
 
-// Local types for optional simplewebauthn responses (module scope)
-type SwauthRegistrationVerification = {
-  verified?: boolean;
-  registrationInfo?: { credentialID?: string; id?: string; credentialPublicKey?: string; publicKey?: string; counter?: number } | null;
-  attestationType?: string | null;
-};
-
-type SwauthAuthenticationVerification = {
-  verified?: boolean;
-  authenticationInfo?: { newCounter?: number } | null;
-};
+// simplewebauthn verification result types are imported from the wrapper
 import { logAudit } from './audit';
 import { getAuditEntries } from './audit';
 import swauth from './simplewebauthn-wrapper';
@@ -480,7 +471,7 @@ export class ServerAPI {
           expectedChallenge,
           expectedOrigin: origin,
           expectedRPID: rpID,
-        }) as unknown as SwauthRegistrationVerification;
+        });
 
         if (!verification.verified) {
           res.status(400).json({ error: 'Attestation verification failed' });
@@ -576,7 +567,7 @@ export class ServerAPI {
         res.status(404).json({ error: 'Not found' });
         return;
       }
-      const creds = Array.isArray(stored) ? (stored as unknown[]) : [];
+      const creds = Array.isArray(stored) ? stored : [];
       const filtered = creds.filter((c) => {
         const key = c.credentialID || c.id;
         const keyStr = typeof key === 'string' ? key : Buffer.from(key).toString('base64');
@@ -638,9 +629,8 @@ export class ServerAPI {
         return;
       }
       // store user record in sqlite via credential store's db if available
-      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
-      if (store && typeof store.db !== 'undefined') {
-        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
+      if (ServerAPI.credentialStore instanceof SqliteCredentialStore && ServerAPI.credentialStore.db) {
+        const db = ServerAPI.credentialStore.db as SqliteWrapper;
         // db is a SqliteWrapper that provides async `run`/`all`/`get` for both better-sqlite3 and sqlite3 drivers
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [body.id, body.email ?? null, JSON.stringify(body.roles ?? [])]);
@@ -659,9 +649,8 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id' });
         return;
       }
-      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
-      if (store && typeof store.db !== 'undefined') {
-        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
+      if (ServerAPI.credentialStore instanceof SqliteCredentialStore && ServerAPI.credentialStore.db) {
+        const db = ServerAPI.credentialStore.db as SqliteWrapper;
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         const row = await db.get('SELECT id, email, roles FROM users WHERE id = ?', [id]);
         if (!row) {
@@ -690,9 +679,8 @@ export class ServerAPI {
         res.status(400).json({ error: 'Missing id or roles' });
         return;
       }
-      const store = ServerAPI.credentialStore as unknown as { db?: unknown };
-      if (store && typeof store.db !== 'undefined') {
-        const db = store.db as unknown as { run: (...args: unknown[]) => Promise<unknown>; get: (...args: unknown[]) => Promise<unknown>; all: (...args: unknown[]) => Promise<unknown>; close?: () => unknown };
+      if (ServerAPI.credentialStore instanceof SqliteCredentialStore && ServerAPI.credentialStore.db) {
+        const db = ServerAPI.credentialStore.db as SqliteWrapper;
         await db.run('CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)');
         await db.run('INSERT OR REPLACE INTO users (id, email, roles) VALUES (?, ?, ?)', [id, null, JSON.stringify(roles)]);
         res.json({ success: true });
@@ -732,7 +720,7 @@ export class ServerAPI {
           res.status(400).json({ error: 'No credential registered' });
           return;
         }
-        const credentials = Array.isArray(stored) ? (stored as unknown[]) : [];
+        const credentials = Array.isArray(stored) ? stored : [];
         // Try to find matching credential from assertion rawId or fallback to first
         let credential: unknown = credentials[0];
         try {
@@ -770,7 +758,7 @@ export class ServerAPI {
           expectedOrigin: origin,
           expectedRPID: rpID,
           authenticator: expected,
-        } as unknown as SwauthAuthenticationVerification);
+        });
         if (!verification.verified) {
           res.status(400).json({ error: 'Assertion verification failed' });
           return;

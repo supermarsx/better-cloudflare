@@ -2,9 +2,20 @@
 // have the optional dependency won't throw at import time.
 import { createRequire } from 'module';
 
+export type VerifyRegistrationResult = {
+  verified?: boolean;
+  registrationInfo?: { credentialID?: string; id?: string; credentialPublicKey?: string; publicKey?: string; counter?: number } | null;
+  attestationType?: string | null;
+};
+
+export type VerifyAuthenticationResult = {
+  verified?: boolean;
+  authenticationInfo?: { newCounter?: number } | null;
+};
+
 type SwauthMod = {
-  verifyRegistrationResponse?: (...args: unknown[]) => Promise<unknown>;
-  verifyAuthenticationResponse?: (...args: unknown[]) => Promise<unknown>;
+  verifyRegistrationResponse?: (...args: unknown[]) => Promise<VerifyRegistrationResult>;
+  verifyAuthenticationResponse?: (...args: unknown[]) => Promise<VerifyAuthenticationResult>;
   generateRegistrationOptions?: (opts?: Record<string, unknown>) => Record<string, unknown>;
   generateAuthenticationOptions?: (opts?: Record<string, unknown>) => Record<string, unknown>;
 };
@@ -26,17 +37,17 @@ function loadSwauthSync(): SwauthMod | null {
   }
 }
 
-export const verifyRegistrationResponse = async (...args: unknown[]): Promise<unknown> => {
+export const verifyRegistrationResponse = async (...args: unknown[]): Promise<VerifyRegistrationResult> => {
   const mod = loadSwauthSync();
   // runtime check: if the module or method isn't available throw
   if (!mod || !mod.verifyRegistrationResponse) throw new Error('@simplewebauthn/server not available');
-  return mod.verifyRegistrationResponse(...args);
+  return mod.verifyRegistrationResponse(...args) as Promise<VerifyRegistrationResult>;
 };
 
-export const verifyAuthenticationResponse = async (...args: unknown[]): Promise<unknown> => {
+export const verifyAuthenticationResponse = async (...args: unknown[]): Promise<VerifyAuthenticationResult> => {
   const mod = loadSwauthSync();
   if (!mod || !mod.verifyAuthenticationResponse) throw new Error('@simplewebauthn/server not available');
-  return mod.verifyAuthenticationResponse(...args);
+  return mod.verifyAuthenticationResponse(...args) as Promise<VerifyAuthenticationResult>;
 };
 
 // Provide synchronous fallbacks for registration/auth option generation so the

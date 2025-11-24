@@ -8,9 +8,9 @@ type DriverType = 'better-sqlite3' | 'sqlite3';
 export type SqliteWrapper = {
   type: DriverType;
   // our minimal promise-based API to run queries
-  run(sql: string, params?: any[]): Promise<any>;
-  all<T = any>(sql: string, params?: any[]): Promise<T[]>;
-  get<T = any>(sql: string, params?: any[]): Promise<T | undefined>;
+  run(sql: string, params?: unknown[]): Promise<unknown>;
+  all<T = unknown>(sql: string, params?: unknown[]): Promise<T[]>;
+  get<T = unknown>(sql: string, params?: unknown[]): Promise<T | undefined>;
   // used by some callers to persist/inspect DB
   close?(): Promise<void>;
 };
@@ -20,12 +20,12 @@ export type SqliteWrapper = {
 // native sqlite drivers are not available.
 const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
 
-function mkSyncWrapper(db: any): SqliteWrapper {
+function mkSyncWrapper(db: unknown): SqliteWrapper {
   return {
     type: 'better-sqlite3',
     run(sql: string, params: any[] = []) {
       try {
-        const res = db.prepare(sql).run(...params);
+        const res = (db as any).prepare(sql).run(...params);
         return Promise.resolve(res);
       } catch (e) {
         return Promise.reject(e);
@@ -60,16 +60,16 @@ function mkSyncWrapper(db: any): SqliteWrapper {
 
 function mkSqlite3Wrapper(db: any): SqliteWrapper {
   // sqlite3 callback API -> promisify
-  const run = function <T = any>(sql: string, params: any[] = []): Promise<T> {
+  const run = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T> {
     return new Promise((resolve, reject) => {
       db.run(sql, params, function (this: any, err: any) {
         if (err) return reject(err);
         // mimic better-sqlite3 return with lastInsertRowid & changes
-        return resolve({ lastInsertRowid: this.lastID, changes: this.changes } as unknown as T);
+        return resolve({ lastInsertRowid: this.lastID, changes: this.changes } as T);
       });
     });
   };
-  const all = function <T = any>(sql: string, params: any[] = []): Promise<T[]> {
+  const all = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
     return new Promise((resolve, reject) => {
       db.all(sql, params, (err: any, rows: any[]) => {
         if (err) return reject(err);
@@ -77,7 +77,7 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
       });
     });
   };
-  const get = function <T = any>(sql: string, params: any[] = []): Promise<T | undefined> {
+  const get = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T | undefined> {
     return new Promise((resolve, reject) => {
       db.get(sql, params, (err: any, row: any) => {
         if (err) return reject(err);
@@ -126,7 +126,8 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
     // (tests expect an explicit throw for this case), propagate the error.
     if (requireFn) {
       // include the original error message when available
-      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${(err as unknown as { message?: string })?.message ?? String(err)}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${errMsg}`);
     }
 
     // Otherwise create or reuse a simple in-memory sqlite-like wrapper for lightweight
