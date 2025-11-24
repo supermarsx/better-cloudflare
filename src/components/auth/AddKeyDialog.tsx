@@ -1,12 +1,19 @@
 /**
  * Modal dialog for adding and saving a new API key into encrypted storage.
  */
-import type { ChangeEvent } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Plus } from 'lucide-react';
+import type { ChangeEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Plus } from "lucide-react";
 
 /**
  * Props for the AddKeyDialog which collects an API key and encryption
@@ -41,7 +48,19 @@ export interface AddKeyDialogProps {
  * Render a dialog to add a new API key. The dialog collects a label, the
  * API key, (optionally) an associated email and an encryption password.
  */
-export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey, onApiKeyChange, email, onEmailChange, password, onPasswordChange, onAdd }: AddKeyDialogProps) {
+export function AddKeyDialog({
+  open,
+  onOpenChange,
+  label,
+  onLabelChange,
+  apiKey,
+  onApiKeyChange,
+  email,
+  onEmailChange,
+  password,
+  onPasswordChange,
+  onAdd,
+}: AddKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
@@ -63,7 +82,9 @@ export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey,
             <Input
               id="new-label"
               value={label}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onLabelChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onLabelChange(e.target.value)
+              }
               placeholder="e.g., Personal Account"
             />
           </div>
@@ -73,17 +94,23 @@ export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey,
               id="new-api-key"
               type="password"
               value={apiKey}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onApiKeyChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onApiKeyChange(e.target.value)
+              }
               placeholder="Your Cloudflare API key"
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="new-email">Account Email (optional for global keys)</Label>
+            <Label htmlFor="new-email">
+              Account Email (optional for global keys)
+            </Label>
             <Input
               id="new-email"
               type="email"
               value={email}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onEmailChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onEmailChange(e.target.value)
+              }
               placeholder="you@example.com"
             />
           </div>
@@ -93,7 +120,9 @@ export function AddKeyDialog({ open, onOpenChange, label, onLabelChange, apiKey,
               id="new-password"
               type="password"
               value={password}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onPasswordChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onPasswordChange(e.target.value)
+              }
               placeholder="Password to encrypt this key"
             />
           </div>

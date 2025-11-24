@@ -35,24 +35,40 @@ let vault: VaultProvider = new MemoryVault();
 if (process.env.KEYTAR_ENABLED) {
   (async () => {
     try {
-      const kt = await import('keytar').catch(() => null);
+      const kt = await import("keytar").catch(() => null);
       type KeytarLike = {
-        setPassword?: (service: string, account: string, password: string) => Promise<void>;
-        getPassword?: (service: string, account: string) => Promise<string | null>;
+        setPassword?: (
+          service: string,
+          account: string,
+          password: string,
+        ) => Promise<void>;
+        getPassword?: (
+          service: string,
+          account: string,
+        ) => Promise<string | null>;
         deletePassword?: (service: string, account: string) => Promise<boolean>;
       };
-      const keytar = (kt as KeytarLike | null);
-      if (keytar && typeof keytar.setPassword === 'function') {
+      const keytar = kt as KeytarLike | null;
+      if (keytar && typeof keytar.setPassword === "function") {
         vault = {
           async setSecret(key: string, secret: Secret) {
-            if (keytar.setPassword) await keytar.setPassword('better-cloudflare', String(key), secret);
+            if (keytar.setPassword)
+              await keytar.setPassword(
+                "better-cloudflare",
+                String(key),
+                secret,
+              );
           },
           async getSecret(key: string) {
             if (!keytar.getPassword) return null;
-            return (await keytar.getPassword('better-cloudflare', String(key))) ?? null;
+            return (
+              (await keytar.getPassword("better-cloudflare", String(key))) ??
+              null
+            );
           },
           async deleteSecret(key: string) {
-            if (keytar.deletePassword) await keytar.deletePassword('better-cloudflare', String(key));
+            if (keytar.deletePassword)
+              await keytar.deletePassword("better-cloudflare", String(key));
           },
         };
       }

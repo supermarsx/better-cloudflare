@@ -56,6 +56,7 @@ Key design goals:
 ## Passkey API (revisited)
 
 Existing endpoints:
+
 - `GET /api/passkeys/register/options/:id` - returns options and challenge for registration
 - `POST /api/passkeys/register/:id` - verifies attestation and stores credential(s)
 - `GET /api/passkeys/authenticate/options/:id` - returns challenge for assertion
@@ -64,6 +65,7 @@ Existing endpoints:
 - `DELETE /api/passkeys/:id/:cid` - deletes a credential by ID
 
 Authentication & access control:
+
 - All passkey endpoints require Cloudflare API credentials to be present in request headers (`Authorization` or `x-auth-key`/`x-auth-email`), ensuring only a user with valid Cloudflare access can register or read secrets for that `id`.
 - For RBAC-enabled deployments, additional middleware verifies role membership and API request permissions.
 
@@ -129,17 +131,20 @@ Goal: Provide a clear path for administrators to migrate from vault to a persist
 ## Implementation roadmap
 
 Phase 1 (low effort):
+
 - Add passkey list & delete API and tests (done).
 - Add DB abstraction layer (interface for `vault` or `sqlite`).
 - Update `spec.md` and docs.
 
 Phase 2 (medium effort):
+
 - Implement SQLite credential store with migration script.
 - RBAC skeleton and protected endpoints.
 - UI: list & revoke passkeys per key, device labels.
 - Add audit logging.
 
 Phase 3 (high effort):
+
 - Implement multi-tenant server DB with roles and user management.
 - Add E2E tests and CI integration.
 - Add policies for attestation verification and attestation enforcement.
@@ -162,7 +167,6 @@ Phase 3 (high effort):
 - Implement RBAC & audit logging.
 - Implement UI changes to list and revoke device credentials.
 - Decide on CI tooling and include E2E tests.
-
 
 ---
 

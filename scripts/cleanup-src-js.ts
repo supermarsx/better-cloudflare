@@ -3,8 +3,8 @@
  * Cleanup compiled JS files under src/.
  * Deletes .js and .js.map files from src recursively.
  */
-import fs from 'fs/promises';
-import path from 'path';
+import fs from "fs/promises";
+import path from "path";
 
 async function deleteJSFiles(dir: string) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -14,12 +14,12 @@ async function deleteJSFiles(dir: string) {
       await deleteJSFiles(full);
       // remove empty directory? No, leave directory structure intact
     } else if (entry.isFile()) {
-      if (full.endsWith('.js') || full.endsWith('.js.map')) {
+      if (full.endsWith(".js") || full.endsWith(".js.map")) {
         try {
           await fs.unlink(full);
-          console.log('deleted', full);
+          console.log("deleted", full);
         } catch (e) {
-          console.error('failed to delete', full, e);
+          console.error("failed to delete", full, e);
         }
       }
     }
@@ -27,17 +27,17 @@ async function deleteJSFiles(dir: string) {
 }
 
 async function main() {
-  const src = path.resolve(process.cwd(), 'src');
+  const src = path.resolve(process.cwd(), "src");
   try {
     await fs.access(src);
   } catch {
-    console.error('src directory not found');
+    console.error("src directory not found");
     process.exit(1);
   }
   await deleteJSFiles(src);
 }
 
 main().catch((e) => {
-  console.error('error cleaning js files', e);
+  console.error("error cleaning js files", e);
   process.exit(1);
 });

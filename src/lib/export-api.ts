@@ -1,4 +1,4 @@
-import type { DNSRecord } from '@/types/dns';
+import type { DNSRecord } from "@/types/dns";
 // date-fns not required for now; avoid dependency in build
 
 /**
@@ -12,14 +12,17 @@ import type { DNSRecord } from '@/types/dns';
  * common spreadsheet imports.
  */
 export function recordsToCSV(records: DNSRecord[]): string {
-  const headers = ['Type', 'Name', 'Content', 'TTL', 'Priority', 'Proxied'];
-  const escapeCSV = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const headers = ["Type", "Name", "Content", "TTL", "Priority", "Proxied"];
+  const escapeCSV = (value: unknown) =>
+    `"${String(value ?? "").replace(/"/g, '""')}"`;
   const rows = records
-    .map((r) => [r.type, r.name, r.content, r.ttl, r.priority ?? '', r.proxied ?? false]
-      .map(escapeCSV)
-      .join(','))
-    .join('\n');
-  return headers.map(escapeCSV).join(',') + '\n' + rows;
+    .map((r) =>
+      [r.type, r.name, r.content, r.ttl, r.priority ?? "", r.proxied ?? false]
+        .map(escapeCSV)
+        .join(","),
+    )
+    .join("\n");
+  return headers.map(escapeCSV).join(",") + "\n" + rows;
 }
 
 /**
@@ -32,10 +35,10 @@ export function recordsToBIND(records: DNSRecord[]): string {
   return records
     .map((r) => {
       const ttl = r.ttl === 1 ? 300 : r.ttl;
-      const priority = r.priority ? `${r.priority} ` : '';
+      const priority = r.priority ? `${r.priority} ` : "";
       return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
     })
-    .join('\n');
+    .join("\n");
 }
 
 /**

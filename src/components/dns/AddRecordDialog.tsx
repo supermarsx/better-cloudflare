@@ -2,21 +2,34 @@
  * Dialog used to collect DNS record properties required to create a new
  * record via the API.
  */
-import type { ChangeEvent } from 'react';
-import { useEffect, useState, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import type { DNSRecord, RecordType, TTLValue } from '@/types/dns';
-import { parseSPF, composeSPF, validateSPF } from '@/lib/spf';
-import type { SPFGraph, SPFMechanism } from '@/lib/spf';
-import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
-import { useTranslation } from 'react-i18next';
-import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from '@/types/dns';
-import { Plus } from 'lucide-react';
+import type { ChangeEvent } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
+import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
+import type { SPFGraph, SPFMechanism } from "@/lib/spf";
+import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
+import { useTranslation } from "react-i18next";
+import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
+import { Plus } from "lucide-react";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -43,52 +56,127 @@ export interface AddRecordDialogProps {
  * Dialog that collects fields to create a DNS record and forwards the
  * create action via `onAdd`.
  */
-export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, onAdd, zoneName, apiKey, email }: AddRecordDialogProps) {
+export function AddRecordDialog({
+  open,
+  onOpenChange,
+  record,
+  onRecordChange,
+  onAdd,
+  zoneName,
+  apiKey,
+  email,
+}: AddRecordDialogProps) {
   const { t } = useTranslation();
   const { simulateSPF, getSPFGraph } = useCloudflareAPI(apiKey, email);
-  const ttlValue = record.ttl === 1 ? 'auto' : record.ttl;
-  const isCustomTTL = ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
+  const ttlValue = record.ttl === 1 ? "auto" : record.ttl;
+  const isCustomTTL =
+    ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
   // SRV fields (priority weight port target) parsed from record.content
   const parseSRV = useCallback((content?: string) => {
-    if (!content) return { priority: undefined, weight: undefined, port: undefined, target: '' };
+    if (!content)
+      return {
+        priority: undefined,
+        weight: undefined,
+        port: undefined,
+        target: "",
+      };
     const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 4) return { priority: undefined, weight: undefined, port: undefined, target: content };
+    if (parts.length < 4)
+      return {
+        priority: undefined,
+        weight: undefined,
+        port: undefined,
+        target: content,
+      };
     const [priority, weight, port, ...rest] = parts;
-    return { priority: Number(priority), weight: Number(weight), port: Number(port), target: rest.join(' ') };
+    return {
+      priority: Number(priority),
+      weight: Number(weight),
+      port: Number(port),
+      target: rest.join(" "),
+    };
   }, [] as const);
-  const composeSRV = (p?: number, w?: number, prt?: number, t?: string) => `${p ?? 0} ${w ?? 0} ${prt ?? 0} ${t ?? ''}`;
-  const [srvPriority, setSrvPriority] = useState<number | undefined>(parseSRV(record.content).priority);
-  const [srvWeight, setSrvWeight] = useState<number | undefined>(parseSRV(record.content).weight);
-  const [srvPort, setSrvPort] = useState<number | undefined>(parseSRV(record.content).port);
-  const [srvTarget, setSrvTarget] = useState<string>(parseSRV(record.content).target ?? '');
+  const composeSRV = (p?: number, w?: number, prt?: number, t?: string) =>
+    `${p ?? 0} ${w ?? 0} ${prt ?? 0} ${t ?? ""}`;
+  const [srvPriority, setSrvPriority] = useState<number | undefined>(
+    parseSRV(record.content).priority,
+  );
+  const [srvWeight, setSrvWeight] = useState<number | undefined>(
+    parseSRV(record.content).weight,
+  );
+  const [srvPort, setSrvPort] = useState<number | undefined>(
+    parseSRV(record.content).port,
+  );
+  const [srvTarget, setSrvTarget] = useState<string>(
+    parseSRV(record.content).target ?? "",
+  );
   // TLSA fields (usage selector matchingType data)
   const parseTLSA = useCallback((content?: string) => {
-    if (!content) return { usage: undefined, selector: undefined, matchingType: undefined, data: '' };
+    if (!content)
+      return {
+        usage: undefined,
+        selector: undefined,
+        matchingType: undefined,
+        data: "",
+      };
     const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 4) return { usage: undefined, selector: undefined, matchingType: undefined, data: content };
+    if (parts.length < 4)
+      return {
+        usage: undefined,
+        selector: undefined,
+        matchingType: undefined,
+        data: content,
+      };
     const [usage, selector, matchingType, ...rest] = parts;
-    return { usage: Number(usage), selector: Number(selector), matchingType: Number(matchingType), data: rest.join(' ') };
+    return {
+      usage: Number(usage),
+      selector: Number(selector),
+      matchingType: Number(matchingType),
+      data: rest.join(" "),
+    };
   }, [] as const);
-  const composeTLSA = (u?: number, s?: number, m?: number, d?: string) => `${u ?? 0} ${s ?? 0} ${m ?? 0} ${d ?? ''}`;
-  const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(parseTLSA(record.content).usage);
-  const [tlsaSelector, setTlsaSelector] = useState<number | undefined>(parseTLSA(record.content).selector);
-  const [tlsaMatchingType, setTlsaMatchingType] = useState<number | undefined>(parseTLSA(record.content).matchingType);
-  const [tlsaData, setTlsaData] = useState<string>(parseTLSA(record.content).data ?? '');
+  const composeTLSA = (u?: number, s?: number, m?: number, d?: string) =>
+    `${u ?? 0} ${s ?? 0} ${m ?? 0} ${d ?? ""}`;
+  const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
+    parseTLSA(record.content).usage,
+  );
+  const [tlsaSelector, setTlsaSelector] = useState<number | undefined>(
+    parseTLSA(record.content).selector,
+  );
+  const [tlsaMatchingType, setTlsaMatchingType] = useState<number | undefined>(
+    parseTLSA(record.content).matchingType,
+  );
+  const [tlsaData, setTlsaData] = useState<string>(
+    parseTLSA(record.content).data ?? "",
+  );
   // SSHFP fields (algorithm, fptype, fingerprint)
   const parseSSHFP = useCallback((content?: string) => {
-    if (!content) return { algorithm: undefined, fptype: undefined, fingerprint: '' };
+    if (!content)
+      return { algorithm: undefined, fptype: undefined, fingerprint: "" };
     const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 3) return { algorithm: undefined, fptype: undefined, fingerprint: content };
+    if (parts.length < 3)
+      return { algorithm: undefined, fptype: undefined, fingerprint: content };
     const [algorithm, fptype, ...rest] = parts;
-    return { algorithm: Number(algorithm), fptype: Number(fptype), fingerprint: rest.join(' ') };
+    return {
+      algorithm: Number(algorithm),
+      fptype: Number(fptype),
+      fingerprint: rest.join(" "),
+    };
   }, [] as const);
-  const composeSSHFP = (a?: number, f?: number, fp?: string) => `${a ?? 0} ${f ?? 0} ${fp ?? ''}`;
-  const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(parseSSHFP(record.content).algorithm);
-  const [sshfpFptype, setSshfpFptype] = useState<number | undefined>(parseSSHFP(record.content).fptype);
-  const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(parseSSHFP(record.content).fingerprint ?? '');
+  const composeSSHFP = (a?: number, f?: number, fp?: string) =>
+    `${a ?? 0} ${f ?? 0} ${fp ?? ""}`;
+  const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
+    parseSSHFP(record.content).algorithm,
+  );
+  const [sshfpFptype, setSshfpFptype] = useState<number | undefined>(
+    parseSSHFP(record.content).fptype,
+  );
+  const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(
+    parseSSHFP(record.content).fingerprint ?? "",
+  );
   const splitNaptrTokens = useCallback((s: string) => {
     const tokens: string[] = [];
-    let current = '';
+    let current = "";
     let inQuote = false;
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];
@@ -97,10 +185,10 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
         current += ch;
         continue;
       }
-      if (ch === ' ' && !inQuote) {
+      if (ch === " " && !inQuote) {
         if (current.trim().length > 0) {
           tokens.push(current.trim());
-          current = '';
+          current = "";
         }
         continue;
       }
@@ -110,104 +198,176 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
     return tokens;
   }, [] as const);
 
-  const parseNAPTR = useCallback((content?: string) => {
-    if (!content) return { order: undefined, preference: undefined, flags: '', service: '', regexp: '', replacement: '' };
-    const tokens = splitNaptrTokens(String(content).trim());
-    const [order, preference, flags, service, regexp, replacement] = tokens;
-    return { order: Number(order), preference: Number(preference), flags: flags?.replace(/^"|"$/g, ''), service, regexp: regexp?.replace(/^"|"$/g, ''), replacement };
-  }, [splitNaptrTokens] as const);
+  const parseNAPTR = useCallback(
+    (content?: string) => {
+      if (!content)
+        return {
+          order: undefined,
+          preference: undefined,
+          flags: "",
+          service: "",
+          regexp: "",
+          replacement: "",
+        };
+      const tokens = splitNaptrTokens(String(content).trim());
+      const [order, preference, flags, service, regexp, replacement] = tokens;
+      return {
+        order: Number(order),
+        preference: Number(preference),
+        flags: flags?.replace(/^"|"$/g, ""),
+        service,
+        regexp: regexp?.replace(/^"|"$/g, ""),
+        replacement,
+      };
+    },
+    [splitNaptrTokens] as const,
+  );
   const quoteIfNeeded = (s?: string) => {
-    if (!s) return '';
+    if (!s) return "";
     if (/\s/.test(s) || /"/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
     return s;
   };
-  const composeNAPTR = (o?: number, p?: number, f?: string, s?: string, r?: string, rep?: string) => `${o ?? 0} ${p ?? 0} ${f ?? ''} ${s ?? ''} ${quoteIfNeeded(r)} ${rep ?? ''}`;
-  const [naptrOrder, setNaptrOrder] = useState<number | undefined>(parseNAPTR(record.content).order);
-  const [naptrPref, setNaptrPref] = useState<number | undefined>(parseNAPTR(record.content).preference);
-  const [naptrFlags, setNaptrFlags] = useState<string>(parseNAPTR(record.content).flags ?? '');
-  const [naptrService, setNaptrService] = useState<string>(parseNAPTR(record.content).service ?? '');
-  const [naptrRegexp, setNaptrRegexp] = useState<string>(parseNAPTR(record.content).regexp ?? '');
-  const [naptrReplacement, setNaptrReplacement] = useState<string>(parseNAPTR(record.content).replacement ?? '');
+  const composeNAPTR = (
+    o?: number,
+    p?: number,
+    f?: string,
+    s?: string,
+    r?: string,
+    rep?: string,
+  ) =>
+    `${o ?? 0} ${p ?? 0} ${f ?? ""} ${s ?? ""} ${quoteIfNeeded(r)} ${rep ?? ""}`;
+  const [naptrOrder, setNaptrOrder] = useState<number | undefined>(
+    parseNAPTR(record.content).order,
+  );
+  const [naptrPref, setNaptrPref] = useState<number | undefined>(
+    parseNAPTR(record.content).preference,
+  );
+  const [naptrFlags, setNaptrFlags] = useState<string>(
+    parseNAPTR(record.content).flags ?? "",
+  );
+  const [naptrService, setNaptrService] = useState<string>(
+    parseNAPTR(record.content).service ?? "",
+  );
+  const [naptrRegexp, setNaptrRegexp] = useState<string>(
+    parseNAPTR(record.content).regexp ?? "",
+  );
+  const [naptrReplacement, setNaptrReplacement] = useState<string>(
+    parseNAPTR(record.content).replacement ?? "",
+  );
 
   useEffect(() => {
-    if (record.type === 'SRV') {
+    if (record.type === "SRV") {
       const parsed = parseSRV(record.content);
       setSrvPriority(parsed.priority);
       setSrvWeight(parsed.weight);
       setSrvPort(parsed.port);
-      setSrvTarget(parsed.target ?? '');
+      setSrvTarget(parsed.target ?? "");
     }
-  }, [record.type, record.content, parseNAPTR, parseSSHFP, parseTLSA, parseSRV]);
+  }, [
+    record.type,
+    record.content,
+    parseNAPTR,
+    parseSSHFP,
+    parseTLSA,
+    parseSRV,
+  ]);
   useEffect(() => {
-    if (record.type === 'TLSA') {
+    if (record.type === "TLSA") {
       const parsed = parseTLSA(record.content);
       setTlsaUsage(parsed.usage);
       setTlsaSelector(parsed.selector);
       setTlsaMatchingType(parsed.matchingType);
-      setTlsaData(parsed.data ?? '');
+      setTlsaData(parsed.data ?? "");
     }
-    if (record.type === 'SSHFP') {
+    if (record.type === "SSHFP") {
       const parsed = parseSSHFP(record.content);
       setSshfpAlgorithm(parsed.algorithm);
       setSshfpFptype(parsed.fptype);
-      setSshfpFingerprint(parsed.fingerprint ?? '');
+      setSshfpFingerprint(parsed.fingerprint ?? "");
     }
-    if (record.type === 'NAPTR') {
+    if (record.type === "NAPTR") {
       const parsed = parseNAPTR(record.content);
       setNaptrOrder(parsed.order);
       setNaptrPref(parsed.preference);
-      setNaptrFlags(parsed.flags ?? '');
-      setNaptrService(parsed.service ?? '');
-      setNaptrRegexp(parsed.regexp ?? '');
-      setNaptrReplacement(parsed.replacement ?? '');
+      setNaptrFlags(parsed.flags ?? "");
+      setNaptrService(parsed.service ?? "");
+      setNaptrRegexp(parsed.regexp ?? "");
+      setNaptrReplacement(parsed.replacement ?? "");
     }
     // SSHFP state managed similarly below
   }, [record.type, record.content, parseNAPTR, parseSSHFP, parseTLSA]);
 
   // SPF state and builder
   const parsedSPF = parseSPF(record.content);
-  const [newSPFQualifier, setNewSPFQualifier] = useState<string>('');
-  const [newSPFMechanism, setNewSPFMechanism] = useState<string>('ip4');
-  const [newSPFValue, setNewSPFValue] = useState<string>('');
+  const [newSPFQualifier, setNewSPFQualifier] = useState<string>("");
+  const [newSPFMechanism, setNewSPFMechanism] = useState<string>("ip4");
+  const [newSPFValue, setNewSPFValue] = useState<string>("");
   const [editingSPFIndex, setEditingSPFIndex] = useState<number | null>(null);
-  const [spfSimIp, setSpfSimIp] = useState<string>('');
-  const [spfSimResult, setSpfSimResult] = useState<{ result: string; reasons: string[]; lookups: number } | null>(null);
+  const [spfSimIp, setSpfSimIp] = useState<string>("");
+  const [spfSimResult, setSpfSimResult] = useState<{
+    result: string;
+    reasons: string[];
+    lookups: number;
+  } | null>(null);
   const [spfGraph, setSpfGraph] = useState<SPFGraph | null>(null);
   const [spfGraphError, setSpfGraphError] = useState<string | null>(null);
 
   const addSPFMechanism = () => {
     const mechVal = newSPFValue?.trim();
-    const newMech: SPFMechanism = { qualifier: newSPFQualifier || undefined, mechanism: newSPFMechanism, value: mechVal || undefined };
-    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const newMech: SPFMechanism = {
+      qualifier: newSPFQualifier || undefined,
+      mechanism: newSPFMechanism,
+      value: mechVal || undefined,
+    };
+    const parsed = parseSPF(record.content) ?? {
+      version: "v=spf1",
+      mechanisms: [],
+    };
     const mechs = [...parsed.mechanisms];
-    if (editingSPFIndex !== null && editingSPFIndex >= 0 && editingSPFIndex < mechs.length) {
+    if (
+      editingSPFIndex !== null &&
+      editingSPFIndex >= 0 &&
+      editingSPFIndex < mechs.length
+    ) {
       mechs[editingSPFIndex] = newMech;
       setEditingSPFIndex(null);
     } else {
       mechs.push(newMech);
     }
-    const updated = composeSPF({ version: parsed.version, mechanisms: mechs as SPFMechanism[] });
+    const updated = composeSPF({
+      version: parsed.version,
+      mechanisms: mechs as SPFMechanism[],
+    });
     onRecordChange({ ...record, content: updated });
     // reset form
-    setNewSPFValue('');
-    setNewSPFQualifier('');
-    setNewSPFMechanism('ip4');
+    setNewSPFValue("");
+    setNewSPFQualifier("");
+    setNewSPFMechanism("ip4");
   };
 
   const removeSPFMechanism = (index: number) => {
-    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const parsed = parseSPF(record.content) ?? {
+      version: "v=spf1",
+      mechanisms: [],
+    };
     const mechs = [...parsed.mechanisms];
     mechs.splice(index, 1);
-    const updated = composeSPF({ version: parsed.version, mechanisms: mechs as SPFMechanism[] });
+    const updated = composeSPF({
+      version: parsed.version,
+      mechanisms: mechs as SPFMechanism[],
+    });
     onRecordChange({ ...record, content: updated });
   };
 
   const editSPFMechanism = (index: number) => {
-    const parsed = parseSPF(record.content) ?? { version: 'v=spf1', mechanisms: [] };
+    const parsed = parseSPF(record.content) ?? {
+      version: "v=spf1",
+      mechanisms: [],
+    };
     const m = parsed.mechanisms[index];
-    setNewSPFQualifier(m.qualifier || '');
-    setNewSPFMechanism(m.mechanism || 'ip4');
-    setNewSPFValue(m.value || '');
+    setNewSPFQualifier(m.qualifier || "");
+    setNewSPFMechanism(m.mechanism || "ip4");
+    setNewSPFValue(m.value || "");
     setEditingSPFIndex(index);
   };
 
@@ -229,15 +389,15 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{t('Type', 'Type')}</Label>
+              <Label>{t("Type", "Type")}</Label>
               <Select
-                aria-label={t('Record Type', 'Record Type')}
+                aria-label={t("Record Type", "Record Type")}
                 value={record.type}
                 onValueChange={(value: string) =>
                   onRecordChange({
                     ...record,
                     type: value as RecordType,
-                    priority: value === 'MX' ? record.priority : undefined
+                    priority: value === "MX" ? record.priority : undefined,
                   })
                 }
               >
@@ -246,7 +406,11 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                 </SelectTrigger>
                 <SelectContent>
                   {RECORD_TYPES.map((type) => (
-                    <SelectItem key={type} value={type} title={getRecordTypeLabel(type)}>
+                    <SelectItem
+                      key={type}
+                      value={type}
+                      title={getRecordTypeLabel(type)}
+                    >
                       {getRecordTypeLabel(type)}
                     </SelectItem>
                   ))}
@@ -254,17 +418,17 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>{t('TTL', 'TTL')}</Label>
+              <Label>{t("TTL", "TTL")}</Label>
               <Select
-                aria-label={t('TTL select', 'TTL')}
-                value={isCustomTTL ? 'custom' : String(ttlValue)}
+                aria-label={t("TTL select", "TTL")}
+                value={isCustomTTL ? "custom" : String(ttlValue)}
                 onValueChange={(value: string) => {
-                  if (value === 'custom') {
+                  if (value === "custom") {
                     onRecordChange({ ...record, ttl: 300 });
                   } else {
                     onRecordChange({
                       ...record,
-                      ttl: value === 'auto' ? 'auto' : Number(value)
+                      ttl: value === "auto" ? "auto" : Number(value),
                     });
                   }
                 }}
@@ -275,7 +439,7 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                 <SelectContent>
                   {getTTLPresets().map((ttl) => (
                     <SelectItem key={ttl} value={String(ttl)}>
-                      {ttl === 'auto' ? 'Auto' : ttl}
+                      {ttl === "auto" ? "Auto" : ttl}
                     </SelectItem>
                   ))}
                   <SelectItem value="custom">Custom</SelectItem>
@@ -284,12 +448,12 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
               {isCustomTTL && (
                 <Input
                   type="number"
-                  value={typeof record.ttl === 'number' ? record.ttl : ''}
+                  value={typeof record.ttl === "number" ? record.ttl : ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
                     onRecordChange({
                       ...record,
-                      ttl: Number.isNaN(n) ? 300 : n
+                      ttl: Number.isNaN(n) ? 300 : n,
                     });
                   }}
                 />
@@ -297,235 +461,392 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
             </div>
           </div>
           <div className="space-y-2">
-            <Label>{t('Name', 'Name')}</Label>
+            <Label>{t("Name", "Name")}</Label>
             <Input
-              aria-label={t('Name input', 'Name')}
+              aria-label={t("Name input", "Name")}
               value={record.name}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
-                ...record,
-                name: e.target.value
-              })}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onRecordChange({
+                  ...record,
+                  name: e.target.value,
+                })
+              }
               placeholder="e.g., www or @ for root"
             />
           </div>
           <div className="space-y-2">
-            <Label>{t('Content', 'Content')}</Label>
+            <Label>{t("Content", "Content")}</Label>
             {(() => {
               switch (record.type) {
-                case 'SRV':
+                case "SRV":
                   return (
                     <div className="grid grid-cols-4 gap-2">
                       <Input
-                        aria-label={t('SRV priority', 'priority')}
+                        aria-label={t("SRV priority", "priority")}
                         type="number"
                         placeholder="priority"
-                        value={srvPriority ?? ''}
+                        value={srvPriority ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           setSrvPriority(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({ ...record, content: composeSRV(Number.isNaN(n) ? undefined : n, srvWeight, srvPort, srvTarget) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSRV(
+                              Number.isNaN(n) ? undefined : n,
+                              srvWeight,
+                              srvPort,
+                              srvTarget,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('SRV weight', 'weight')}
+                        aria-label={t("SRV weight", "weight")}
                         type="number"
                         placeholder="weight"
-                        value={srvWeight ?? ''}
+                        value={srvWeight ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           setSrvWeight(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({ ...record, content: composeSRV(srvPriority, Number.isNaN(n) ? undefined : n, srvPort, srvTarget) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSRV(
+                              srvPriority,
+                              Number.isNaN(n) ? undefined : n,
+                              srvPort,
+                              srvTarget,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('SRV port', 'port')}
+                        aria-label={t("SRV port", "port")}
                         type="number"
                         placeholder="port"
-                        value={srvPort ?? ''}
+                        value={srvPort ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           setSrvPort(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({ ...record, content: composeSRV(srvPriority, srvWeight, Number.isNaN(n) ? undefined : n, srvTarget) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSRV(
+                              srvPriority,
+                              srvWeight,
+                              Number.isNaN(n) ? undefined : n,
+                              srvTarget,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('SRV target', 'target')}
+                        aria-label={t("SRV target", "target")}
                         placeholder="target"
                         value={srvTarget}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setSrvTarget(e.target.value);
-                          onRecordChange({ ...record, content: composeSRV(srvPriority, srvWeight, srvPort, e.target.value) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSRV(
+                              srvPriority,
+                              srvWeight,
+                              srvPort,
+                              e.target.value,
+                            ),
+                          });
                         }}
                       />
                     </div>
                   );
-                case 'TLSA':
+                case "TLSA":
                   return (
                     <div className="grid grid-cols-4 gap-2">
                       <Input
                         type="number"
                         placeholder="usage"
-                        value={tlsaUsage ?? ''}
+                        value={tlsaUsage ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setTlsaUsage(val);
-                          onRecordChange({ ...record, content: composeTLSA(val, tlsaSelector, tlsaMatchingType, tlsaData) });
+                          onRecordChange({
+                            ...record,
+                            content: composeTLSA(
+                              val,
+                              tlsaSelector,
+                              tlsaMatchingType,
+                              tlsaData,
+                            ),
+                          });
                         }}
                       />
                       <Input
                         type="number"
                         placeholder="selector"
-                        value={tlsaSelector ?? ''}
+                        value={tlsaSelector ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setTlsaSelector(val);
-                          onRecordChange({ ...record, content: composeTLSA(tlsaUsage, val, tlsaMatchingType, tlsaData) });
+                          onRecordChange({
+                            ...record,
+                            content: composeTLSA(
+                              tlsaUsage,
+                              val,
+                              tlsaMatchingType,
+                              tlsaData,
+                            ),
+                          });
                         }}
                       />
                       <Input
                         type="number"
                         placeholder="matching type"
-                        value={tlsaMatchingType ?? ''}
+                        value={tlsaMatchingType ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setTlsaMatchingType(val);
-                          onRecordChange({ ...record, content: composeTLSA(tlsaUsage, tlsaSelector, val, tlsaData) });
+                          onRecordChange({
+                            ...record,
+                            content: composeTLSA(
+                              tlsaUsage,
+                              tlsaSelector,
+                              val,
+                              tlsaData,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('TLSA data', 'data')}
+                        aria-label={t("TLSA data", "data")}
                         placeholder="data"
                         value={tlsaData}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setTlsaData(e.target.value);
-                          onRecordChange({ ...record, content: composeTLSA(tlsaUsage, tlsaSelector, tlsaMatchingType, e.target.value) });
+                          onRecordChange({
+                            ...record,
+                            content: composeTLSA(
+                              tlsaUsage,
+                              tlsaSelector,
+                              tlsaMatchingType,
+                              e.target.value,
+                            ),
+                          });
                         }}
                       />
                     </div>
                   );
-                case 'SSHFP':
+                case "SSHFP":
                   return (
                     <div className="grid grid-cols-3 gap-2">
                       <Input
                         type="number"
                         placeholder="algorithm"
-                        value={sshfpAlgorithm ?? ''}
+                        value={sshfpAlgorithm ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setSshfpAlgorithm(val);
-                          onRecordChange({ ...record, content: composeSSHFP(val, sshfpFptype, sshfpFingerprint) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSSHFP(
+                              val,
+                              sshfpFptype,
+                              sshfpFingerprint,
+                            ),
+                          });
                         }}
                       />
                       <Input
                         type="number"
                         placeholder="fptype"
-                        value={sshfpFptype ?? ''}
+                        value={sshfpFptype ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setSshfpFptype(val);
-                          onRecordChange({ ...record, content: composeSSHFP(sshfpAlgorithm, val, sshfpFingerprint) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSSHFP(
+                              sshfpAlgorithm,
+                              val,
+                              sshfpFingerprint,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('SSHFP fingerprint', 'fingerprint')}
+                        aria-label={t("SSHFP fingerprint", "fingerprint")}
                         value={sshfpFingerprint}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setSshfpFingerprint(e.target.value);
-                          onRecordChange({ ...record, content: composeSSHFP(sshfpAlgorithm, sshfpFptype, e.target.value) });
+                          onRecordChange({
+                            ...record,
+                            content: composeSSHFP(
+                              sshfpAlgorithm,
+                              sshfpFptype,
+                              e.target.value,
+                            ),
+                          });
                         }}
                       />
                     </div>
                   );
-                case 'NAPTR':
+                case "NAPTR":
                   return (
                     <div className="grid grid-cols-6 gap-2">
                       <Input
-                        aria-label={t('NAPTR order', 'order')}
+                        aria-label={t("NAPTR order", "order")}
                         type="number"
                         placeholder="order"
-                        value={naptrOrder ?? ''}
+                        value={naptrOrder ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setNaptrOrder(val);
-                          onRecordChange({ ...record, content: composeNAPTR(val, naptrPref, naptrFlags, naptrService, naptrRegexp, naptrReplacement) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              val,
+                              naptrPref,
+                              naptrFlags,
+                              naptrService,
+                              naptrRegexp,
+                              naptrReplacement,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('NAPTR preference', 'preference')}
+                        aria-label={t("NAPTR preference", "preference")}
                         type="number"
                         placeholder="preference"
-                        value={naptrPref ?? ''}
+                        value={naptrPref ?? ""}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           const n = Number.parseInt(e.target.value, 10);
                           const val = Number.isNaN(n) ? undefined : n;
                           setNaptrPref(val);
-                          onRecordChange({ ...record, content: composeNAPTR(naptrOrder, val, naptrFlags, naptrService, naptrRegexp, naptrReplacement) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              naptrOrder,
+                              val,
+                              naptrFlags,
+                              naptrService,
+                              naptrRegexp,
+                              naptrReplacement,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('NAPTR flags', 'flags')}
+                        aria-label={t("NAPTR flags", "flags")}
                         placeholder="flags"
                         value={naptrFlags}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setNaptrFlags(e.target.value);
-                          onRecordChange({ ...record, content: composeNAPTR(naptrOrder, naptrPref, e.target.value, naptrService, naptrRegexp, naptrReplacement) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              naptrOrder,
+                              naptrPref,
+                              e.target.value,
+                              naptrService,
+                              naptrRegexp,
+                              naptrReplacement,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('NAPTR service', 'service')}
+                        aria-label={t("NAPTR service", "service")}
                         placeholder="service"
                         value={naptrService}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setNaptrService(e.target.value);
-                          onRecordChange({ ...record, content: composeNAPTR(naptrOrder, naptrPref, naptrFlags, e.target.value, naptrRegexp, naptrReplacement) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              naptrOrder,
+                              naptrPref,
+                              naptrFlags,
+                              e.target.value,
+                              naptrRegexp,
+                              naptrReplacement,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('NAPTR regexp', 'regexp')}
+                        aria-label={t("NAPTR regexp", "regexp")}
                         placeholder="regexp"
                         value={naptrRegexp}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setNaptrRegexp(e.target.value);
-                          onRecordChange({ ...record, content: composeNAPTR(naptrOrder, naptrPref, naptrFlags, naptrService, e.target.value, naptrReplacement) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              naptrOrder,
+                              naptrPref,
+                              naptrFlags,
+                              naptrService,
+                              e.target.value,
+                              naptrReplacement,
+                            ),
+                          });
                         }}
                       />
                       <Input
-                        aria-label={t('NAPTR replacement', 'replacement')}
+                        aria-label={t("NAPTR replacement", "replacement")}
                         placeholder="replacement"
                         value={naptrReplacement}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setNaptrReplacement(e.target.value);
-                          onRecordChange({ ...record, content: composeNAPTR(naptrOrder, naptrPref, naptrFlags, naptrService, naptrRegexp, e.target.value) });
+                          onRecordChange({
+                            ...record,
+                            content: composeNAPTR(
+                              naptrOrder,
+                              naptrPref,
+                              naptrFlags,
+                              naptrService,
+                              naptrRegexp,
+                              e.target.value,
+                            ),
+                          });
                         }}
                       />
                     </div>
                   );
-                case 'SPF':
+                case "SPF":
                   return (
                     <div className="space-y-2">
                       <Input
-                        aria-label={t('SPF input', 'SPF')}
+                        aria-label={t("SPF input", "SPF")}
                         value={record.content}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
-                          ...record,
-                          content: e.target.value
-                        })}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                          onRecordChange({
+                            ...record,
+                            content: e.target.value,
+                          })
+                        }
                         placeholder="v=spf1 ip4:... ~all"
                       />
                       <div className="flex space-x-2">
-                        <select className="h-8 p-2" value={newSPFQualifier} onChange={(e) => setNewSPFQualifier(e.target.value)}>
+                        <select
+                          className="h-8 p-2"
+                          value={newSPFQualifier}
+                          onChange={(e) => setNewSPFQualifier(e.target.value)}
+                        >
                           <option value="">+</option>
                           <option value="-">-</option>
                           <option value="~">~</option>
                           <option value="?">?</option>
                         </select>
-                        <select className="h-8 p-2" value={newSPFMechanism} onChange={(e) => setNewSPFMechanism(e.target.value)}>
+                        <select
+                          className="h-8 p-2"
+                          value={newSPFMechanism}
+                          onChange={(e) => setNewSPFMechanism(e.target.value)}
+                        >
                           <option value="ip4">ip4</option>
                           <option value="ip6">ip6</option>
                           <option value="a">a</option>
@@ -533,60 +854,133 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                           <option value="include">include</option>
                           <option value="all">all</option>
                         </select>
-                        <Input placeholder="value (optional)" value={newSPFValue} onChange={(e: ChangeEvent<HTMLInputElement>) => setNewSPFValue(e.target.value)} />
-                        <Button onClick={addSPFMechanism}>{editingSPFIndex !== null ? 'Update' : 'Add'}</Button>
+                        <Input
+                          placeholder="value (optional)"
+                          value={newSPFValue}
+                          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                            setNewSPFValue(e.target.value)
+                          }
+                        />
+                        <Button onClick={addSPFMechanism}>
+                          {editingSPFIndex !== null ? "Update" : "Add"}
+                        </Button>
                       </div>
                       <div className="text-sm text-muted">
-                        {parsedSPF?.mechanisms && parsedSPF.mechanisms.length > 0 && (
-                          <div className="space-y-1 mb-2">
-                            <div className="text-xs font-semibold">Mechanisms:</div>
-                            {parsedSPF.mechanisms.map((m, i) => (
-                              <div key={`${m.mechanism}:${i}`} className="flex items-center space-x-2">
-                                <div className="text-xs">{`${m.qualifier ?? ''}${m.mechanism}${m.value ? `:${m.value}` : ''}`}{editingSPFIndex===i ? ' (editing)' : ''}</div>
-                                <Button size="sm" onClick={() => editSPFMechanism(i)}>Edit</Button>
-                                <Button size="sm" variant="destructive" onClick={() => removeSPFMechanism(i)}>Remove</Button>
+                        {parsedSPF?.mechanisms &&
+                          parsedSPF.mechanisms.length > 0 && (
+                            <div className="space-y-1 mb-2">
+                              <div className="text-xs font-semibold">
+                                Mechanisms:
                               </div>
-                            ))}
+                              {parsedSPF.mechanisms.map((m, i) => (
+                                <div
+                                  key={`${m.mechanism}:${i}`}
+                                  className="flex items-center space-x-2"
+                                >
+                                  <div className="text-xs">
+                                    {`${m.qualifier ?? ""}${m.mechanism}${m.value ? `:${m.value}` : ""}`}
+                                    {editingSPFIndex === i ? " (editing)" : ""}
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => editSPFMechanism(i)}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => removeSPFMechanism(i)}
+                                  >
+                                    Remove
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        <div>Preview:</div>
+                        <pre className="whitespace-pre-wrap">
+                          {composeSPF(
+                            parsedSPF ?? { version: "v=spf1", mechanisms: [] },
+                          )}
+                        </pre>
+                        {!validateSPF(record.content).ok && (
+                          <div className="text-red-600">
+                            SPF validation issues:{" "}
+                            {validateSPF(record.content).problems.join(", ")}
                           </div>
                         )}
-                        <div>Preview:</div>
-                        <pre className="whitespace-pre-wrap">{composeSPF(parsedSPF ?? { version: 'v=spf1', mechanisms: [] })}</pre>
-                        {!validateSPF(record.content).ok && (
-                          <div className="text-red-600">SPF validation issues: {validateSPF(record.content).problems.join(', ')}</div>
-                        )}
                         <div className="flex space-x-2 mt-2">
-                          <Input placeholder="simulate IP e.g., 1.2.3.4" value={spfSimIp} onChange={(e) => setSpfSimIp(e.target.value)} />
-                          <Button onClick={async () => {
-                            if (!zoneName) return;
-                            const domain = (record.name === '@' || !record.name) ? zoneName : `${record.name}.${zoneName}`;
-                            try {
-                              const result = await simulateSPF(domain, spfSimIp);
-                              setSpfSimResult(result);
-                            } catch (err) {
-                              setSpfSimResult({ result: 'temperror', reasons: [(err as Error).message], lookups: 0 });
-                            }
-                          }}>Simulate</Button>
-                          <Button onClick={async () => {
-                            if (!zoneName) return;
-                            const domain = (record.name === '@' || !record.name) ? zoneName : `${record.name}.${zoneName}`;
-                            try {
-                              const graph = await getSPFGraph(domain);
-                              setSpfGraph(graph);
-                              setSpfGraphError(null);
-                            } catch (err) {
-                              setSpfGraph(null);
-                              setSpfGraphError((err as Error).message);
-                            }
-                          }}>Graph</Button>
+                          <Input
+                            placeholder="simulate IP e.g., 1.2.3.4"
+                            value={spfSimIp}
+                            onChange={(e) => setSpfSimIp(e.target.value)}
+                          />
+                          <Button
+                            onClick={async () => {
+                              if (!zoneName) return;
+                              const domain =
+                                record.name === "@" || !record.name
+                                  ? zoneName
+                                  : `${record.name}.${zoneName}`;
+                              try {
+                                const result = await simulateSPF(
+                                  domain,
+                                  spfSimIp,
+                                );
+                                setSpfSimResult(result);
+                              } catch (err) {
+                                setSpfSimResult({
+                                  result: "temperror",
+                                  reasons: [(err as Error).message],
+                                  lookups: 0,
+                                });
+                              }
+                            }}
+                          >
+                            Simulate
+                          </Button>
+                          <Button
+                            onClick={async () => {
+                              if (!zoneName) return;
+                              const domain =
+                                record.name === "@" || !record.name
+                                  ? zoneName
+                                  : `${record.name}.${zoneName}`;
+                              try {
+                                const graph = await getSPFGraph(domain);
+                                setSpfGraph(graph);
+                                setSpfGraphError(null);
+                              } catch (err) {
+                                setSpfGraph(null);
+                                setSpfGraphError((err as Error).message);
+                              }
+                            }}
+                          >
+                            Graph
+                          </Button>
                         </div>
                         {spfSimResult && (
-                          <div className="text-sm mt-2">Result: <strong>{spfSimResult.result}</strong> (lookups: {spfSimResult.lookups})<div className="text-xs text-muted">{spfSimResult.reasons.join(', ')}</div></div>
+                          <div className="text-sm mt-2">
+                            Result: <strong>{spfSimResult.result}</strong>{" "}
+                            (lookups: {spfSimResult.lookups})
+                            <div className="text-xs text-muted">
+                              {spfSimResult.reasons.join(", ")}
+                            </div>
+                          </div>
                         )}
                         {spfGraphError && (
-                          <div className="text-sm text-red-600 mt-2">Error building graph: {spfGraphError}</div>
+                          <div className="text-sm text-red-600 mt-2">
+                            Error building graph: {spfGraphError}
+                          </div>
                         )}
                         {spfGraph && (
-                          <div className="text-sm mt-2"><div>Graph:</div><pre className="whitespace-pre-wrap">{JSON.stringify(spfGraph, null, 2)}</pre></div>
+                          <div className="text-sm mt-2">
+                            <div>Graph:</div>
+                            <pre className="whitespace-pre-wrap">
+                              {JSON.stringify(spfGraph, null, 2)}
+                            </pre>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -594,42 +988,46 @@ export function AddRecordDialog({ open, onOpenChange, record, onRecordChange, on
                 default:
                   return (
                     <Input
-                      aria-label={t('Default content input', 'Content')}
+                      aria-label={t("Default content input", "Content")}
                       value={record.content}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) => onRecordChange({
-                        ...record,
-                        content: e.target.value
-                      })}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                        onRecordChange({
+                          ...record,
+                          content: e.target.value,
+                        })
+                      }
                       placeholder="e.g., 192.168.1.1"
                     />
                   );
               }
             })()}
           </div>
-          {record.type === 'MX' && (
+          {record.type === "MX" && (
             <div className="space-y-2">
               <Label>Priority</Label>
               <Input
                 type="number"
-                value={record.priority || ''}
+                value={record.priority || ""}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => {
                   const n = Number.parseInt(e.target.value, 10);
                   onRecordChange({
                     ...record,
-                    priority: Number.isNaN(n) ? undefined : n
+                    priority: Number.isNaN(n) ? undefined : n,
                   });
                 }}
               />
             </div>
           )}
-          {(record.type === 'A' || record.type === 'AAAA' || record.type === 'CNAME') && (
+          {(record.type === "A" ||
+            record.type === "AAAA" ||
+            record.type === "CNAME") && (
             <div className="flex items-center space-x-2">
               <Switch
                 checked={record.proxied || false}
                 onCheckedChange={(checked: boolean) =>
                   onRecordChange({
                     ...record,
-                    proxied: checked
+                    proxied: checked,
                   })
                 }
               />

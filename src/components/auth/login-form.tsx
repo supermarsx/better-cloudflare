@@ -2,26 +2,38 @@
  * Login / Key selection UI used to open a session by decrypting a stored
  * API key and verifying it with the server.
  */
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-import { storageManager } from '@/lib/storage';
-import { useCloudflareAPI } from '@/hooks/use-cloudflare-api';
-import { useToast } from '@/hooks/use-toast';
-import { storageBackend } from '@/lib/storage-util';
-import { useTranslation } from 'react-i18next';
-import { Key, Trash2, Pencil } from 'lucide-react';
-import { cryptoManager } from '@/lib/crypto';
-import { AddKeyDialog } from './AddKeyDialog';
-import PasskeyManagerDialog from './PasskeyManagerDialog';
-import { ServerClient } from '@/lib/server-client';
-import { EncryptionSettingsDialog } from './EncryptionSettingsDialog';
-import { EditKeyDialog } from './EditKeyDialog';
-import type { ApiKey } from '@/types/dns';
+import { storageManager } from "@/lib/storage";
+import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
+import { useToast } from "@/hooks/use-toast";
+import { storageBackend } from "@/lib/storage-util";
+import { useTranslation } from "react-i18next";
+import { Key, Trash2, Pencil } from "lucide-react";
+import { cryptoManager } from "@/lib/crypto";
+import { AddKeyDialog } from "./AddKeyDialog";
+import PasskeyManagerDialog from "./PasskeyManagerDialog";
+import { ServerClient } from "@/lib/server-client";
+import { EncryptionSettingsDialog } from "./EncryptionSettingsDialog";
+import { EditKeyDialog } from "./EditKeyDialog";
+import type { ApiKey } from "@/types/dns";
 
 /**
  * Props for the login form used on the main page to select and decrypt
@@ -38,38 +50,42 @@ interface LoginFormProps {
  * via `onLogin` for the parent to use.
  */
 export function LoginForm({ onLogin }: LoginFormProps) {
-  const [selectedKeyId, setSelectedKeyId] = useState('');
-  const [password, setPassword] = useState('');
+  const [selectedKeyId, setSelectedKeyId] = useState("");
+  const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showAddKey, setShowAddKey] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [newKeyLabel, setNewKeyLabel] = useState('');
-  const [newApiKey, setNewApiKey] = useState('');
-  const [newEmail, setNewEmail] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  const [newKeyLabel, setNewKeyLabel] = useState("");
+  const [newApiKey, setNewApiKey] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [showEditKey, setShowEditKey] = useState(false);
-  const [editingKeyId, setEditingKeyId] = useState('');
-  const [editLabel, setEditLabel] = useState('');
-  const [editEmail, setEditEmail] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [editPassword, setEditPassword] = useState('');
-  const [encryptionSettings, setEncryptionSettings] = useState(cryptoManager.getConfig());
+  const [editingKeyId, setEditingKeyId] = useState("");
+  const [editLabel, setEditLabel] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [encryptionSettings, setEncryptionSettings] = useState(
+    cryptoManager.getConfig(),
+  );
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
   const [passkeyRegisterLoading, setPasskeyRegisterLoading] = useState(false);
   const [passkeyAuthLoading, setPasskeyAuthLoading] = useState(false);
   const [showManagePasskeys, setShowManagePasskeys] = useState(false);
-  const [passkeyViewKey, setPasskeyViewKey] = useState('');
-  const [passkeyViewEmail, setPasskeyViewEmail] = useState<string | undefined>(undefined);
-  
+  const [passkeyViewKey, setPasskeyViewKey] = useState("");
+  const [passkeyViewEmail, setPasskeyViewEmail] = useState<string | undefined>(
+    undefined,
+  );
+
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
   const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
   const backend = storageBackend();
   const { t } = useTranslation();
   useEffect(() => {
-    if (backend !== 'indexeddb') {
+    if (backend !== "indexeddb") {
       toast({
-        title: t('Note'),
+        title: t("Note"),
         description: `Using ${backend} storage. IndexedDB not available or in use. Some features may be limited.`,
       });
     }
@@ -85,21 +101,24 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       toast({
         title: "Error",
         description: "Please select an API key and enter your password",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
 
     setIsLoading(true);
     try {
-      const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decrypted = await storageManager.getDecryptedApiKey(
+        selectedKeyId,
+        password,
+      );
       const decryptedKey = decrypted?.key;
       const email = decrypted?.email;
       if (!decryptedKey) {
         toast({
           title: "Error",
           description: "Invalid password or corrupted key",
-          variant: "destructive"
+          variant: "destructive",
         });
         return;
       }
@@ -111,23 +130,23 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         toast({
           title: "Error",
           description: (err as Error).message,
-          variant: "destructive"
+          variant: "destructive",
         });
         return;
       }
 
       storageManager.setCurrentSession(selectedKeyId);
       onLogin(decryptedKey);
-      
+
       toast({
         title: "Success",
-        description: "Logged in successfully"
+        description: "Logged in successfully",
       });
     } catch (error) {
       toast({
         title: "Error",
         description: "Failed to login: " + (error as Error).message,
-        variant: "destructive"
+        variant: "destructive",
       });
     } finally {
       setIsLoading(false);
@@ -139,7 +158,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       toast({
         title: "Error",
         description: "Please fill in all fields",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
@@ -152,48 +171,68 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         toast({
           title: "Error",
           description: (err as Error).message,
-          variant: "destructive"
+          variant: "destructive",
         });
         return;
       }
 
-      await storageManager.addApiKey(newKeyLabel, newApiKey, newPassword, newEmail || undefined);
+      await storageManager.addApiKey(
+        newKeyLabel,
+        newApiKey,
+        newPassword,
+        newEmail || undefined,
+      );
       setApiKeys(storageManager.getApiKeys());
-      setNewKeyLabel('');
-      setNewApiKey('');
-      setNewEmail('');
-      setNewPassword('');
+      setNewKeyLabel("");
+      setNewApiKey("");
+      setNewEmail("");
+      setNewPassword("");
       setShowAddKey(false);
-      
+
       toast({
         title: "Success",
-        description: "API key added successfully"
+        description: "API key added successfully",
       });
     } catch (error) {
       toast({
         title: "Error",
         description: "Failed to add API key: " + (error as Error).message,
-        variant: "destructive"
+        variant: "destructive",
       });
     }
   };
 
   const handleRegisterPasskey = async () => {
     if (!selectedKeyId) {
-      toast({ title: 'Error', description: 'Select a key before registering a passkey', variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Select a key before registering a passkey",
+        variant: "destructive",
+      });
       return;
     }
 
     if (!password) {
-      toast({ title: 'Error', description: 'Enter your password to decrypt the key for registration', variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Enter your password to decrypt the key for registration",
+        variant: "destructive",
+      });
       return;
     }
 
     setPasskeyRegisterLoading(true);
     try {
-      const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decrypted = await storageManager.getDecryptedApiKey(
+        selectedKeyId,
+        password,
+      );
       if (!decrypted?.key) {
-        toast({ title: 'Error', description: 'Invalid password or corrupted key', variant: 'destructive' });
+        toast({
+          title: "Error",
+          description: "Invalid password or corrupted key",
+          variant: "destructive",
+        });
         return;
       }
 
@@ -201,16 +240,26 @@ export function LoginForm({ onLogin }: LoginFormProps) {
         const sc = new ServerClient(decrypted.key, undefined, decrypted.email);
         await sc.storeVaultSecret(selectedKeyId, decrypted.key);
       } catch (err) {
-        toast({ title: 'Warning', description: 'Failed to store key to OS vault: ' + (err as Error).message });
+        toast({
+          title: "Warning",
+          description:
+            "Failed to store key to OS vault: " + (err as Error).message,
+        });
       }
       const sc2 = new ServerClient(decrypted.key, undefined, decrypted.email);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
-      const challenge = Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0));
+      const challenge = Uint8Array.from(atob(options.challenge), (c) =>
+        c.charCodeAt(0),
+      );
       const publicKey = {
         challenge,
-        rp: { name: 'Better Cloudflare' },
-        user: { id: Uint8Array.from(new TextEncoder().encode(selectedKeyId)), name: selectedKeyId, displayName: selectedKeyId },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+        rp: { name: "Better Cloudflare" },
+        user: {
+          id: Uint8Array.from(new TextEncoder().encode(selectedKeyId)),
+          name: selectedKeyId,
+          displayName: selectedKeyId,
+        },
+        pubKeyCredParams: [{ alg: -7, type: "public-key" }],
       } as PublicKeyCredentialCreationOptions;
       const credential = await navigator.credentials.create({ publicKey });
       if (credential) {
@@ -219,15 +268,29 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           id: att.id,
           rawId: Array.from(new Uint8Array(att.rawId)),
           response: {
-            clientDataJSON: Array.from(new Uint8Array(att.response.clientDataJSON)),
-            attestationObject: Array.from(new Uint8Array((att.response as AuthenticatorAttestationResponse).attestationObject || new ArrayBuffer(0))),
+            clientDataJSON: Array.from(
+              new Uint8Array(att.response.clientDataJSON),
+            ),
+            attestationObject: Array.from(
+              new Uint8Array(
+                (att.response as AuthenticatorAttestationResponse)
+                  .attestationObject || new ArrayBuffer(0),
+              ),
+            ),
           },
         };
         await sc2.registerPasskey(selectedKeyId, attObj);
-        toast({ title: 'Success', description: 'Passkey registered to this key' });
+        toast({
+          title: "Success",
+          description: "Passkey registered to this key",
+        });
       }
     } catch (error) {
-      toast({ title: 'Error', description: 'Passkey registration failed: ' + (error as Error).message, variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Passkey registration failed: " + (error as Error).message,
+        variant: "destructive",
+      });
     } finally {
       setPasskeyRegisterLoading(false);
     }
@@ -235,14 +298,20 @@ export function LoginForm({ onLogin }: LoginFormProps) {
 
   const handleUsePasskey = async () => {
     if (!selectedKeyId) {
-      toast({ title: 'Error', description: 'Select a key to authenticate', variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Select a key to authenticate",
+        variant: "destructive",
+      });
       return;
     }
     setPasskeyAuthLoading(true);
     try {
-      const scx = new ServerClient('', undefined);
+      const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
-      const challenge = Uint8Array.from(atob(opts.challenge), c => c.charCodeAt(0));
+      const challenge = Uint8Array.from(atob(opts.challenge), (c) =>
+        c.charCodeAt(0),
+      );
       const publicKey = {
         challenge,
         allowCredentials: [],
@@ -254,10 +323,29 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           id: a.id,
           rawId: Array.from(new Uint8Array(a.rawId)),
           response: {
-            clientDataJSON: Array.from(new Uint8Array(a.response.clientDataJSON)),
-            authenticatorData: Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).authenticatorData || new ArrayBuffer(0))),
-            signature: Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).signature || new ArrayBuffer(0))),
-            userHandle: (a.response as AuthenticatorAssertionResponse).userHandle ? Array.from(new Uint8Array((a.response as AuthenticatorAssertionResponse).userHandle)) : null,
+            clientDataJSON: Array.from(
+              new Uint8Array(a.response.clientDataJSON),
+            ),
+            authenticatorData: Array.from(
+              new Uint8Array(
+                (a.response as AuthenticatorAssertionResponse)
+                  .authenticatorData || new ArrayBuffer(0),
+              ),
+            ),
+            signature: Array.from(
+              new Uint8Array(
+                (a.response as AuthenticatorAssertionResponse).signature ||
+                  new ArrayBuffer(0),
+              ),
+            ),
+            userHandle: (a.response as AuthenticatorAssertionResponse)
+              .userHandle
+              ? Array.from(
+                  new Uint8Array(
+                    (a.response as AuthenticatorAssertionResponse).userHandle,
+                  ),
+                )
+              : null,
           },
         };
         const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
@@ -266,16 +354,28 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);
             onLogin(secret);
-            toast({ title: 'Success', description: 'Logged in using passkey' });
+            toast({ title: "Success", description: "Logged in using passkey" });
           } else {
-            toast({ title: 'Error', description: 'No secret in vault for this key', variant: 'destructive' });
+            toast({
+              title: "Error",
+              description: "No secret in vault for this key",
+              variant: "destructive",
+            });
           }
         } else {
-          toast({ title: 'Error', description: 'Passkey authentication failed', variant: 'destructive' });
+          toast({
+            title: "Error",
+            description: "Passkey authentication failed",
+            variant: "destructive",
+          });
         }
       }
     } catch (error) {
-      toast({ title: 'Error', description: 'Passkey auth failed: ' + (error as Error).message, variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Passkey auth failed: " + (error as Error).message,
+        variant: "destructive",
+      });
     } finally {
       setPasskeyAuthLoading(false);
     }
@@ -284,9 +384,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const handleEditKeyInit = (key: ApiKey) => {
     setEditingKeyId(key.id);
     setEditLabel(key.label);
-    setEditEmail(key.email || '');
-    setCurrentPassword('');
-    setEditPassword('');
+    setEditEmail(key.email || "");
+    setCurrentPassword("");
+    setEditPassword("");
     setShowEditKey(true);
   };
 
@@ -302,14 +402,14 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       setApiKeys(storageManager.getApiKeys());
       setShowEditKey(false);
       toast({
-        title: 'Success',
-        description: 'API key updated successfully',
+        title: "Success",
+        description: "API key updated successfully",
       });
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to update API key: ' + (error as Error).message,
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to update API key: " + (error as Error).message,
+        variant: "destructive",
       });
     }
   };
@@ -318,28 +418,28 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     storageManager.removeApiKey(keyId);
     setApiKeys(storageManager.getApiKeys());
     if (selectedKeyId === keyId) {
-      setSelectedKeyId('');
+      setSelectedKeyId("");
     }
     toast({
       title: "Success",
-      description: "API key deleted"
+      description: "API key deleted",
     });
   };
 
   const handleBenchmark = async () => {
     try {
-      const { benchmark } = await import('@/lib/crypto-benchmark');
+      const { benchmark } = await import("@/lib/crypto-benchmark");
       const result = await benchmark(encryptionSettings.iterations);
       setBenchmarkResult(result);
       toast({
         title: "Benchmark Complete",
-        description: `Encryption took ${result.toFixed(2)}ms`
+        description: `Encryption took ${result.toFixed(2)}ms`,
       });
     } catch (error) {
       toast({
         title: "Error",
         description: "Benchmark failed: " + (error as Error).message,
-        variant: "destructive"
+        variant: "destructive",
       });
     }
   };
@@ -348,12 +448,14 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     cryptoManager.updateConfig(encryptionSettings);
     toast({
       title: "Success",
-      description: "Encryption settings updated"
+      description: "Encryption settings updated",
     });
     setShowSettings(false);
   };
 
-  const [vaultEnabled, setVaultEnabled] = useState(storageManager.getVaultEnabled());
+  const [vaultEnabled, setVaultEnabled] = useState(
+    storageManager.getVaultEnabled(),
+  );
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -364,17 +466,19 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               <Key className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl">{t('Cloudflare DNS Manager')}</CardTitle>
+          <CardTitle className="text-2xl">
+            {t("Cloudflare DNS Manager")}
+          </CardTitle>
           <CardDescription>
-            {t('Select your API key and enter your password to continue')}
+            {t("Select your API key and enter your password to continue")}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="api-key">{t('API Key')}</Label>
+            <Label htmlFor="api-key">{t("API Key")}</Label>
             <Select value={selectedKeyId} onValueChange={setSelectedKeyId}>
               <SelectTrigger>
-              <SelectValue placeholder={t('Select an API key')} />
+                <SelectValue placeholder={t("Select an API key")} />
               </SelectTrigger>
               <SelectContent>
                 {apiKeys.map((key) => (
@@ -413,39 +517,39 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </div>
 
           <div className="space-y-2">
-              <Label htmlFor="password">{t('Password')}</Label>
+            <Label htmlFor="password">{t("Password")}</Label>
             <Input
               id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-                  placeholder={t('Enter your password')}
-              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+              placeholder={t("Enter your password")}
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
             />
           </div>
 
-          <Button 
-            onClick={handleLogin} 
-            className="w-full" 
+          <Button
+            onClick={handleLogin}
+            className="w-full"
             disabled={isLoading || !selectedKeyId || !password}
           >
-            {isLoading ? t('Logging in...') : t('Login')}
+            {isLoading ? t("Logging in...") : t("Login")}
           </Button>
 
           <div className="flex gap-2">
-          <AddKeyDialog
-            open={showAddKey}
-            onOpenChange={setShowAddKey}
-            label={newKeyLabel}
-            onLabelChange={setNewKeyLabel}
-            apiKey={newApiKey}
-            onApiKeyChange={setNewApiKey}
-            email={newEmail}
-            onEmailChange={setNewEmail}
-            password={newPassword}
-            onPasswordChange={setNewPassword}
-            onAdd={handleAddKey}
-          />
+            <AddKeyDialog
+              open={showAddKey}
+              onOpenChange={setShowAddKey}
+              label={newKeyLabel}
+              onLabelChange={setNewKeyLabel}
+              apiKey={newApiKey}
+              onApiKeyChange={setNewApiKey}
+              email={newEmail}
+              onEmailChange={setNewEmail}
+              password={newPassword}
+              onPasswordChange={setNewPassword}
+              onAdd={handleAddKey}
+            />
 
             <EncryptionSettingsDialog
               open={showSettings}
@@ -467,14 +571,14 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               onClick={handleRegisterPasskey}
               disabled={!selectedKeyId || !password || passkeyRegisterLoading}
             >
-              {passkeyRegisterLoading ? 'Registering...' : 'Register Passkey'}
+              {passkeyRegisterLoading ? "Registering..." : "Register Passkey"}
             </Button>
             <PasskeyManagerDialog
               open={showManagePasskeys}
               onOpenChange={(open: boolean) => {
                 if (!open) {
                   setShowManagePasskeys(false);
-                  setPasskeyViewKey('');
+                  setPasskeyViewKey("");
                   setPasskeyViewEmail(undefined);
                 } else {
                   setShowManagePasskeys(true);
@@ -490,16 +594,28 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               onClick={async () => {
                 if (!selectedKeyId || !password) return;
                 try {
-                  const decrypted = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+                  const decrypted = await storageManager.getDecryptedApiKey(
+                    selectedKeyId,
+                    password,
+                  );
                   if (!decrypted?.key) {
-                    toast({ title: 'Error', description: 'Invalid password', variant: 'destructive' });
+                    toast({
+                      title: "Error",
+                      description: "Invalid password",
+                      variant: "destructive",
+                    });
                     return;
                   }
                   setPasskeyViewKey(decrypted.key);
                   setPasskeyViewEmail(decrypted.email);
                   setShowManagePasskeys(true);
                 } catch (err) {
-                  toast({ title: 'Error', description: 'Failed to decrypt key: ' + (err as Error).message, variant: 'destructive' });
+                  toast({
+                    title: "Error",
+                    description:
+                      "Failed to decrypt key: " + (err as Error).message,
+                    variant: "destructive",
+                  });
                 }
               }}
               disabled={!selectedKeyId || !password}
@@ -512,7 +628,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               onClick={handleUsePasskey}
               disabled={!selectedKeyId || passkeyAuthLoading}
             >
-              {passkeyAuthLoading ? 'Authenticating...' : 'Use Passkey'}
+              {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
             </Button>
             {vaultEnabled && (
               <Button
@@ -520,20 +636,42 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                 size="sm"
                 onClick={async () => {
                   if (!selectedKeyId || !password) {
-                    toast({ title: t('Error'), description: t('Select key and enter password to delete vault secret'), variant: 'destructive' });
+                    toast({
+                      title: t("Error"),
+                      description: t(
+                        "Select key and enter password to delete vault secret",
+                      ),
+                      variant: "destructive",
+                    });
                     return;
                   }
                   try {
-                    const dec = await storageManager.getDecryptedApiKey(selectedKeyId, password);
+                    const dec = await storageManager.getDecryptedApiKey(
+                      selectedKeyId,
+                      password,
+                    );
                     if (!dec?.key) {
-                      toast({ title: t('Error'), description: t('Invalid password'), variant: 'destructive' });
+                      toast({
+                        title: t("Error"),
+                        description: t("Invalid password"),
+                        variant: "destructive",
+                      });
                       return;
                     }
                     const sc = new ServerClient(dec.key, undefined, dec.email);
                     await sc.deleteVaultSecret(selectedKeyId);
-                    toast({ title: t('Success'), description: t('Vault secret removed') });
+                    toast({
+                      title: t("Success"),
+                      description: t("Vault secret removed"),
+                    });
                   } catch (err) {
-                    toast({ title: t('Error'), description: t('Failed to remove vault secret: ') + (err as Error).message, variant: 'destructive' });
+                    toast({
+                      title: t("Error"),
+                      description:
+                        t("Failed to remove vault secret: ") +
+                        (err as Error).message,
+                      variant: "destructive",
+                    });
                   }
                 }}
               >

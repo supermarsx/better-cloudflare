@@ -5,8 +5,8 @@ import {
   ToastProvider,
   ToastTitle,
   ToastViewport,
-} from "@/components/ui/toast"
-import { useToast } from "@/hooks/use-toast"
+} from "@/components/ui/toast";
+import { useToast } from "@/hooks/use-toast";
 
 /**
  * Toaster component that renders the current list of toasts from the
@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast"
  * the application to ensure toast notifications appear.
  */
 export function Toaster() {
-  const { toasts } = useToast()
+  const { toasts } = useToast();
 
   return (
     <ToastProvider>
@@ -30,8 +30,9 @@ export function Toaster() {
             {action}
             <ToastClose />
           </Toast>
-        )
+        );
       })}
       <ToastViewport />
     </ToastProvider>
-  )}
+  );
+}

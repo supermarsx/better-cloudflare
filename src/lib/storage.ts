@@ -7,12 +7,12 @@ import {
   ENCRYPTION_ALGORITHMS,
   type ApiKey,
   type EncryptionAlgorithm,
-} from '../types/dns';
-import { CryptoManager } from './crypto';
-import { getStorage, type StorageLike } from './storage-util';
-import { generateUUID } from './utils';
+} from "../types/dns";
+import { CryptoManager } from "./crypto";
+import { getStorage, type StorageLike } from "./storage-util";
+import { generateUUID } from "./utils";
 
-const STORAGE_KEY = 'cloudflare-dns-manager';
+const STORAGE_KEY = "cloudflare-dns-manager";
 
 interface StorageData {
   apiKeys: ApiKey[];
@@ -28,11 +28,11 @@ interface StorageData {
  * assigning into the in-memory representation.
  */
 export function isStorageData(value: unknown): value is StorageData {
-/**
- * @param value - value to validate against the StorageData shape
- * @returns true when the value conforms to StorageData, false otherwise
- */
-  if (!value || typeof value !== 'object') return false;
+  /**
+   * @param value - value to validate against the StorageData shape
+   * @returns true when the value conforms to StorageData, false otherwise
+   */
+  if (!value || typeof value !== "object") return false;
   const obj = value as {
     apiKeys?: unknown;
     currentSession?: unknown;
@@ -41,28 +41,28 @@ export function isStorageData(value: unknown): value is StorageData {
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
     obj.currentSession !== undefined &&
-    typeof obj.currentSession !== 'string'
+    typeof obj.currentSession !== "string"
   ) {
     return false;
   }
-  if (obj.lastZone !== undefined && typeof obj.lastZone !== 'string') {
+  if (obj.lastZone !== undefined && typeof obj.lastZone !== "string") {
     return false;
   }
-  return obj.apiKeys.every(k => {
-    if (!k || typeof k !== 'object') return false;
+  return obj.apiKeys.every((k) => {
+    if (!k || typeof k !== "object") return false;
     const key = k as Record<string, unknown>;
     return (
-      typeof key.id === 'string' &&
-      typeof key.label === 'string' &&
-      typeof key.encryptedKey === 'string' &&
-      typeof key.salt === 'string' &&
-      typeof key.iv === 'string' &&
-      typeof key.iterations === 'number' &&
-      typeof key.keyLength === 'number' &&
-      typeof key.algorithm === 'string' &&
+      typeof key.id === "string" &&
+      typeof key.label === "string" &&
+      typeof key.encryptedKey === "string" &&
+      typeof key.salt === "string" &&
+      typeof key.iv === "string" &&
+      typeof key.iterations === "number" &&
+      typeof key.keyLength === "number" &&
+      typeof key.algorithm === "string" &&
       ENCRYPTION_ALGORITHMS.includes(key.algorithm as EncryptionAlgorithm) &&
-      typeof key.createdAt === 'string' &&
-      (key.email === undefined || typeof key.email === 'string')
+      typeof key.createdAt === "string" &&
+      (key.email === undefined || typeof key.email === "string")
     );
   });
 }
@@ -100,7 +100,7 @@ export class StorageManager {
         }
       }
     } catch (error) {
-      console.error('Failed to load storage data:', error);
+      console.error("Failed to load storage data:", error);
       // Remove corrupted data so subsequent loads start with a clean slate.
       this.storage.removeItem(STORAGE_KEY);
       this.data = { apiKeys: [] };
@@ -114,7 +114,7 @@ export class StorageManager {
     try {
       this.storage.setItem(STORAGE_KEY, JSON.stringify(this.data));
     } catch (error) {
-      console.error('Failed to save storage data:', error);
+      console.error("Failed to save storage data:", error);
     }
   }
 
@@ -128,7 +128,12 @@ export class StorageManager {
    * @param email - optional email (when using key+email auth)
    * @returns generated API key id
    */
-  async addApiKey(label: string, apiKey: string, password: string, email?: string): Promise<string> {
+  async addApiKey(
+    label: string,
+    apiKey: string,
+    password: string,
+    email?: string,
+  ): Promise<string> {
     const { encrypted, salt, iv } = await this.crypto.encrypt(apiKey, password);
     const config = this.crypto.getConfig();
 
@@ -147,7 +152,7 @@ export class StorageManager {
 
     this.data.apiKeys.push(keyData);
     this.save();
-    
+
     return keyData.id;
   }
 
@@ -166,13 +171,16 @@ export class StorageManager {
    *
    * If decryption fails (wrong password or id not found) this returns
    * `null` instead of throwing to simplify UI handling.
-    *
-    * @param id - the locally generated api key id
-    * @param password - the password to decrypt the key with
-    * @returns an object with `key` and optional `email` or null on failure
+   *
+   * @param id - the locally generated api key id
+   * @param password - the password to decrypt the key with
+   * @returns an object with `key` and optional `email` or null on failure
    */
-  async getDecryptedApiKey(id: string, password: string): Promise<{ key: string; email?: string } | null> {
-    const keyData = this.data.apiKeys.find(k => k.id === id);
+  async getDecryptedApiKey(
+    id: string,
+    password: string,
+  ): Promise<{ key: string; email?: string } | null> {
+    const keyData = this.data.apiKeys.find((k) => k.id === id);
     if (!keyData) return null;
 
     try {
@@ -188,7 +196,7 @@ export class StorageManager {
         keyData.encryptedKey,
         keyData.salt,
         keyData.iv,
-        password
+        password,
       );
       return { key: decrypted, email: keyData.email };
     } catch {
@@ -200,10 +208,10 @@ export class StorageManager {
    * Update an API key record. Supports renaming, changing the associated
    * email, and rotating the stored password (re-encrypts the key using the
    * new password - `currentPassword` is required for rotation).
-    *
-    * @param id - api key id to update
-    * @param updates - partial update object; supported fields: label, email,
-    *  currentPassword, newPassword
+   *
+   * @param id - api key id to update
+   * @param updates - partial update object; supported fields: label, email,
+   *  currentPassword, newPassword
    */
   async updateApiKey(
     id: string,
@@ -214,9 +222,9 @@ export class StorageManager {
       newPassword?: string;
     },
   ): Promise<void> {
-    const keyData = this.data.apiKeys.find(k => k.id === id);
+    const keyData = this.data.apiKeys.find((k) => k.id === id);
     if (!keyData) {
-      throw new Error('API key not found');
+      throw new Error("API key not found");
     }
 
     if (updates.label !== undefined) {
@@ -229,7 +237,7 @@ export class StorageManager {
 
     if (updates.newPassword) {
       if (!updates.currentPassword) {
-        throw new Error('Current password required');
+        throw new Error("Current password required");
       }
 
       const cm = new CryptoManager(
@@ -267,11 +275,11 @@ export class StorageManager {
   /**
    * Remove an API key by id and clear the current session if it referenced
    * the removed key.
-    *
-    * @param id - id of the key to remove
+   *
+   * @param id - id of the key to remove
    */
   removeApiKey(id: string): void {
-    this.data.apiKeys = this.data.apiKeys.filter(k => k.id !== id);
+    this.data.apiKeys = this.data.apiKeys.filter((k) => k.id !== id);
     if (this.data.currentSession === id) {
       this.data.currentSession = undefined;
     }
@@ -366,11 +374,11 @@ export class StorageManager {
     try {
       imported = JSON.parse(jsonData);
     } catch {
-      throw new Error('Failed to import data: Invalid JSON');
+      throw new Error("Failed to import data: Invalid JSON");
     }
 
     if (!isStorageData(imported)) {
-      throw new Error('Invalid data format');
+      throw new Error("Invalid data format");
     }
 
     this.data = imported as StorageData;

@@ -5,7 +5,7 @@
  * snippets into arrays of `Partial<DNSRecord>` that can be consumed by the
  * UI import workflow.
  */
-import type { DNSRecord } from '@/types/dns';
+import type { DNSRecord } from "@/types/dns";
 
 /**
  * Parse a single CSV line into its values while handling quoted
@@ -16,7 +16,7 @@ import type { DNSRecord } from '@/types/dns';
  */
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
-  let current = '';
+  let current = "";
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
@@ -27,9 +27,9 @@ function parseCSVLine(line: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (char === ',' && !inQuotes) {
+    } else if (char === "," && !inQuotes) {
       result.push(current);
-      current = '';
+      current = "";
     } else {
       current += char;
     }
@@ -51,12 +51,12 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
 
   const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase());
   const idx = {
-    type: headers.indexOf('type'),
-    name: headers.indexOf('name'),
-    content: headers.indexOf('content'),
-    ttl: headers.indexOf('ttl'),
-    priority: headers.indexOf('priority'),
-    proxied: headers.indexOf('proxied'),
+    type: headers.indexOf("type"),
+    name: headers.indexOf("name"),
+    content: headers.indexOf("content"),
+    ttl: headers.indexOf("ttl"),
+    priority: headers.indexOf("priority"),
+    proxied: headers.indexOf("proxied"),
   };
 
   const records: Partial<DNSRecord>[] = [];
@@ -70,7 +70,7 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
     };
 
     const ttlVal = idx.ttl >= 0 ? values[idx.ttl] : undefined;
-    if (ttlVal) record.ttl = ttlVal === 'auto' ? 'auto' : Number(ttlVal);
+    if (ttlVal) record.ttl = ttlVal === "auto" ? "auto" : Number(ttlVal);
 
     const prVal = idx.priority >= 0 ? values[idx.priority] : undefined;
     if (prVal) record.priority = Number(prVal);
@@ -96,15 +96,15 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
 
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line || line.startsWith(';')) continue;
-    const noComment = line.split(';')[0].trim();
+    if (!line || line.startsWith(";")) continue;
+    const noComment = line.split(";")[0].trim();
     const parts = noComment.split(/\s+/);
     if (parts.length < 4) continue;
     const [name, ttlStr, , type, ...rest] = parts;
     const ttl = Number(ttlStr) || 300;
     let priority: number | undefined;
     let contentParts = rest;
-    if (type.toUpperCase() === 'MX' && rest.length >= 2) {
+    if (type.toUpperCase() === "MX" && rest.length >= 2) {
       priority = Number(rest[0]);
       contentParts = rest.slice(1);
     }
@@ -112,7 +112,7 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
       name,
       ttl,
       type,
-      content: contentParts.join(' '),
+      content: contentParts.join(" "),
     };
     if (priority !== undefined) record.priority = priority;
     records.push(record);
@@ -120,4 +120,3 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
 
   return records;
 }
-

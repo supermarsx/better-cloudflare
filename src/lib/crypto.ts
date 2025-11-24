@@ -7,16 +7,16 @@ import {
   ENCRYPTION_ALGORITHMS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
-} from '../types/dns';
-import { createRequire } from 'module';
-import { getStorage, type StorageLike } from './storage-util';
+} from "../types/dns";
+import { createRequire } from "module";
+import { getStorage, type StorageLike } from "./storage-util";
 
-const CONFIG_STORAGE_KEY = 'encryption-settings';
+const CONFIG_STORAGE_KEY = "encryption-settings";
 
 const DEFAULT_CONFIG: EncryptionConfig = {
   iterations: 100000,
   keyLength: 256,
-  algorithm: 'AES-GCM'
+  algorithm: "AES-GCM",
 };
 
 /**
@@ -47,10 +47,7 @@ export class CryptoManager {
    * @param config - partial configuration to override defaults
    * @param storage - optional `StorageLike` instance (defaults to global localStorage)
    */
-  constructor(
-    config: Partial<EncryptionConfig> = {},
-    storage?: StorageLike,
-  ) {
+  constructor(config: Partial<EncryptionConfig> = {}, storage?: StorageLike) {
     this.storage = getStorage(storage);
     const stored = this.loadFromStorage();
     this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
@@ -70,7 +67,7 @@ export class CryptoManager {
       const stored = this.storage.getItem(CONFIG_STORAGE_KEY);
       return stored ? JSON.parse(stored) : {};
     } catch (error) {
-      console.error('Failed to load encryption config:', error);
+      console.error("Failed to load encryption config:", error);
       return {};
     }
   }
@@ -82,7 +79,7 @@ export class CryptoManager {
     try {
       this.storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.config));
     } catch (error) {
-      console.error('Failed to save encryption config:', error);
+      console.error("Failed to save encryption config:", error);
     }
   }
 
@@ -114,7 +111,7 @@ export class CryptoManager {
     try {
       const req = createRequire(import.meta.url);
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const nodeCrypto = req('crypto');
+      const nodeCrypto = req("crypto");
       return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
     } catch (e) {
       return undefined;
@@ -123,7 +120,8 @@ export class CryptoManager {
 
   generateSalt(): Uint8Array {
     const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.getRandomValues) throw new Error('Web Crypto API not available');
+    if (!webcrypto?.getRandomValues)
+      throw new Error("Web Crypto API not available");
     return webcrypto.getRandomValues(new Uint8Array(16));
   }
 
@@ -134,7 +132,8 @@ export class CryptoManager {
    */
   generateIV(): Uint8Array {
     const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.getRandomValues) throw new Error('Web Crypto API not available');
+    if (!webcrypto?.getRandomValues)
+      throw new Error("Web Crypto API not available");
     return webcrypto.getRandomValues(new Uint8Array(12));
   }
 
@@ -148,27 +147,28 @@ export class CryptoManager {
   async deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
     const encoder = new TextEncoder();
     const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+    if (!webcrypto?.subtle)
+      throw new Error("Web Crypto Subtle API not available");
 
     const keyMaterial = await webcrypto.subtle.importKey(
-      'raw',
+      "raw",
       encoder.encode(password),
-      'PBKDF2',
+      "PBKDF2",
       false,
-      ['deriveBits', 'deriveKey']
+      ["deriveBits", "deriveKey"],
     );
 
     return crypto.subtle.deriveKey(
       {
-        name: 'PBKDF2',
+        name: "PBKDF2",
         salt: salt,
         iterations: this.config.iterations,
-        hash: 'SHA-256'
+        hash: "SHA-256",
       },
       keyMaterial,
       { name: this.config.algorithm, length: this.config.keyLength },
       false,
-      ['encrypt', 'decrypt']
+      ["encrypt", "decrypt"],
     );
   }
 
@@ -180,7 +180,10 @@ export class CryptoManager {
    * @param password - the password/passphrase to derive keys from
    * @returns an object containing base64-encoded `encrypted`, `salt`, and `iv`
    */
-  async encrypt(data: string, password: string): Promise<{
+  async encrypt(
+    data: string,
+    password: string,
+  ): Promise<{
     encrypted: string;
     salt: string;
     iv: string;
@@ -191,18 +194,19 @@ export class CryptoManager {
     const key = await this.deriveKey(password, salt);
 
     const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+    if (!webcrypto?.subtle)
+      throw new Error("Web Crypto Subtle API not available");
 
     const encrypted = await webcrypto.subtle.encrypt(
       { name: this.config.algorithm, iv: iv },
       key,
-      encoder.encode(data)
+      encoder.encode(data),
     );
 
     return {
       encrypted: this.arrayBufferToBase64(encrypted),
       salt: this.arrayBufferToBase64(salt),
-      iv: this.arrayBufferToBase64(iv)
+      iv: this.arrayBufferToBase64(iv),
     };
   }
 
@@ -216,16 +220,22 @@ export class CryptoManager {
    * @param password - password to derive the decryption key
    * @returns the decrypted plain-text string
    */
-  async decrypt(encryptedData: string, salt: string, iv: string, password: string): Promise<string> {
+  async decrypt(
+    encryptedData: string,
+    salt: string,
+    iv: string,
+    password: string,
+  ): Promise<string> {
     const key = await this.deriveKey(password, this.base64ToArrayBuffer(salt));
 
     const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.subtle) throw new Error('Web Crypto Subtle API not available');
+    if (!webcrypto?.subtle)
+      throw new Error("Web Crypto Subtle API not available");
 
     const decrypted = await webcrypto.subtle.decrypt(
       { name: this.config.algorithm, iv: this.base64ToArrayBuffer(iv) },
       key,
-      this.base64ToArrayBuffer(encryptedData)
+      this.base64ToArrayBuffer(encryptedData),
     );
 
     return new TextDecoder().decode(decrypted);
@@ -239,7 +249,7 @@ export class CryptoManager {
    */
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
-    let binary = '';
+    let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
@@ -278,7 +288,7 @@ export class CryptoManager {
    */
   updateConfig(newConfig: Partial<EncryptionConfig>): void {
     if (newConfig.algorithm && !isValidAlgorithm(newConfig.algorithm)) {
-      throw new Error('Invalid algorithm');
+      throw new Error("Invalid algorithm");
     }
     this.config = { ...this.config, ...newConfig };
     this.saveToStorage();

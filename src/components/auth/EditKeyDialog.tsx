@@ -2,11 +2,17 @@
  * Modal dialog to edit metadata for an existing encrypted API key and to
  * optionally rotate its encryption password.
  */
-import type { ChangeEvent } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import type { ChangeEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /**
  * Props for the EditKeyDialog allowing label/email changes and password
@@ -41,7 +47,19 @@ export interface EditKeyDialogProps {
  * Dialog used to update key metadata and optionally rotate its encryption
  * password (requires current password to perform rotation).
  */
-export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email, onEmailChange, currentPassword, onCurrentPasswordChange, newPassword, onNewPasswordChange, onSave }: EditKeyDialogProps) {
+export function EditKeyDialog({
+  open,
+  onOpenChange,
+  label,
+  onLabelChange,
+  email,
+  onEmailChange,
+  currentPassword,
+  onCurrentPasswordChange,
+  newPassword,
+  onNewPasswordChange,
+  onSave,
+}: EditKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -57,7 +75,9 @@ export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email,
             <Input
               id="edit-label"
               value={label}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onLabelChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onLabelChange(e.target.value)
+              }
               placeholder="e.g., Personal Account"
             />
           </div>
@@ -67,7 +87,9 @@ export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email,
               id="edit-email"
               type="email"
               value={email}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onEmailChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onEmailChange(e.target.value)
+              }
               placeholder="you@example.com"
             />
           </div>
@@ -77,7 +99,9 @@ export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email,
               id="current-password"
               type="password"
               value={currentPassword}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onCurrentPasswordChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onCurrentPasswordChange(e.target.value)
+              }
               placeholder="Required to change password"
             />
           </div>
@@ -87,7 +111,9 @@ export function EditKeyDialog({ open, onOpenChange, label, onLabelChange, email,
               id="new-password"
               type="password"
               value={newPassword}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onNewPasswordChange(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onNewPasswordChange(e.target.value)
+              }
               placeholder="Leave blank to keep current"
             />
           </div>

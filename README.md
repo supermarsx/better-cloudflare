@@ -7,7 +7,6 @@ Better Cloudflare is a minimalist interface for managing DNS records on Cloudfla
 The project requires **Node 18 or higher**. Use a modern Node version when running
 `npm install`, `npm run dev`, and `npm run build`.
 
-
 ## Development
 
 Install dependencies and start the Vite development server:
@@ -29,7 +28,6 @@ be pointed at a different Cloudflare base by setting `CLOUDFLARE_API_BASE`.
 
 All API calls are handled server-side by `server.ts`. Start the API server
 first:
-
 
 ```bash
 npm run server
@@ -61,7 +59,12 @@ custom timeout in milliseconds as the fourth constructor argument when you need
 to adjust this:
 
 ```ts
-const client = new ServerClient('token', 'http://example.com', undefined, 15_000);
+const client = new ServerClient(
+  "token",
+  "http://example.com",
+  undefined,
+  15_000,
+);
 ```
 
 ### Debugging
@@ -128,7 +131,6 @@ When running the optional local server (`npm run server`) you can enable an OS-b
 
 The server also exposes simple passkey (WebAuthn) registration and authentication endpoints. These allow you to register a platform passkey for a stored key and authenticate using the passkey instead of a password. The implementation is a scaffold for local usage and demonstrates the UI flow; production readiness requires a full WebAuthn verification implementation on the server.
 
-
 ## Developer Documentation (JSDoc / TypeDoc)
 
 This codebase includes TypeScript JSDoc comments and can generate developer
@@ -146,3 +148,13 @@ values. For React components prefer documenting props and any callbacks.
 ## License
 
 This project is released under the MIT License. See [license.md](license.md) for details.
+
+## CI and Autopublish
+
+The repository runs multiple GitHub Actions workflows for quality checks and packaging:
+
+- Format Check — uses Prettier to ensure consistent formatting
+- Lint — ESLint checks the codebase
+- Test and Package — runs unit tests, builds the app, and creates a package artifact
+
+The Autopublish workflow only runs after the `Test and Package` workflow completes successfully for the same commit and also verifies that `Format Check` and `Lint` passed for that commit. This ensures releases are created only when formatting, linting, tests, build and packaging all succeeded.

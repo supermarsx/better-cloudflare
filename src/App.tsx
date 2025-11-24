@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react';
-import { LoginForm } from '@/components/auth/login-form';
-import { DNSManager } from '@/components/dns/dns-manager';
-import { Toaster } from '@/components/ui/toaster';
-import { storageManager } from '@/lib/storage';
-import { LanguageSelector } from '@/components/ui/LanguageSelector';
+import { useState, useEffect } from "react";
+import { LoginForm } from "@/components/auth/login-form";
+import { DNSManager } from "@/components/dns/dns-manager";
+import { Toaster } from "@/components/ui/toaster";
+import { storageManager } from "@/lib/storage";
+import { LanguageSelector } from "@/components/ui/LanguageSelector";
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [apiKey, setApiKey] = useState<string>('');
+  const [apiKey, setApiKey] = useState<string>("");
   const [email, setEmail] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -26,7 +26,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    setApiKey('');
+    setApiKey("");
     setIsAuthenticated(false);
   };
 

@@ -30,18 +30,18 @@
  * to forward them to the Cloudflare API.
  * @module server
  */
-import express from 'express';
-import type { Request, Response, NextFunction } from 'express';
-import rateLimit from 'express-rate-limit';
-import { apiRouter } from './src/server/router';
-import { errorHandler } from './src/server/errorHandler';
+import express from "express";
+import type { Request, Response, NextFunction } from "express";
+import rateLimit from "express-rate-limit";
+import { apiRouter } from "./src/server/router";
+import { errorHandler } from "./src/server/errorHandler";
 import {
   getEnvBool,
   getEnvNumber,
   RATE_LIMIT_WINDOW,
   RATE_LIMIT_MAX,
-} from './src/lib/env';
-import { getCorsMiddleware } from './src/server/cors';
+} from "./src/lib/env";
+import { getCorsMiddleware } from "./src/server/cors";
 
 /**
  * Express application instance. Exported for testing and integration where
@@ -53,12 +53,12 @@ const app = express();
  * Port to listen on. Reads `PORT` and `VITE_PORT` environment variables
  * followed by a default of 8787.
  */
-const PORT = getEnvNumber('PORT', 'VITE_PORT', 8787);
+const PORT = getEnvNumber("PORT", "VITE_PORT", 8787);
 /**
  * A debug switch (boolean) to enable request logging. Controlled via
  * `DEBUG_SERVER` or `VITE_DEBUG_SERVER`.
  */
-const DEBUG = getEnvBool('DEBUG_SERVER', 'VITE_DEBUG_SERVER');
+const DEBUG = getEnvBool("DEBUG_SERVER", "VITE_DEBUG_SERVER");
 
 /**
  * Rate limiting middleware to reduce abusive traffic. Configure via ENV:
@@ -82,10 +82,10 @@ if (DEBUG) {
   // the DEBUG_SERVER flag is enabled. This is intentionally simple and
   // only used during local development; don't enable in production.
   app.use((req: Request, res: Response, next: NextFunction) => {
-    console.debug('Incoming request', req.method, req.originalUrl);
-    res.on('finish', () => {
+    console.debug("Incoming request", req.method, req.originalUrl);
+    res.on("finish", () => {
       console.debug(
-        'Completed request',
+        "Completed request",
         req.method,
         req.originalUrl,
         res.statusCode,

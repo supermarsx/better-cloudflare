@@ -1,9 +1,8 @@
- 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { storageManager } from '../src/lib/storage.ts';
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { storageManager } from "../src/lib/storage.ts";
 
-test('auto refresh preference persisted', async () => {
+test("auto refresh preference persisted", async () => {
   storageManager.setAutoRefreshInterval(60000);
   const v = storageManager.getAutoRefreshInterval();
   assert.equal(v, 60000);
@@ -11,7 +10,7 @@ test('auto refresh preference persisted', async () => {
   assert.equal(storageManager.getAutoRefreshInterval(), null);
 });
 
-test('vault enabled persisted', async () => {
+test("vault enabled persisted", async () => {
   storageManager.setVaultEnabled(true);
   assert.equal(storageManager.getVaultEnabled(), true);
   storageManager.setVaultEnabled(false);

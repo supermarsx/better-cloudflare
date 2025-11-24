@@ -2,13 +2,16 @@
 /*
  * Migrate existing passkeys from vault to SQLite DB.
  */
-import { vaultManager } from '../src/server/vault';
-import path from 'path';
-import openSqlite from '../src/lib/sqlite-driver';
+import { vaultManager } from "../src/server/vault";
+import path from "path";
+import openSqlite from "../src/lib/sqlite-driver";
 
 let args = process.argv.slice(2);
-let dbPath = path.resolve(process.cwd(), 'data', 'credentials.db');
-if (args.length && (args[0].includes('/') || args[0].includes('\\') || args[0].endsWith('.db'))) {
+let dbPath = path.resolve(process.cwd(), "data", "credentials.db");
+if (
+  args.length &&
+  (args[0].includes("/") || args[0].includes("\\") || args[0].endsWith(".db"))
+) {
   dbPath = args[0];
   args = args.slice(1);
 }
@@ -37,14 +40,17 @@ interface StoredCredential {
 }
 
 function insert(id: string, cred: StoredCredential) {
-  return db.run('INSERT OR REPLACE INTO credentials (id, credential_id, public_key, counter, created_at, label) VALUES (?, ?, ?, ?, ?, ?)', [
-    id,
-    cred.credentialID || cred.id,
-    cred.credentialPublicKey || cred.publicKey,
-    cred.counter ?? 0,
-    cred.createdAt ?? new Date().toISOString(),
-    cred.label ?? null
-  ]);
+  return db.run(
+    "INSERT OR REPLACE INTO credentials (id, credential_id, public_key, counter, created_at, label) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      id,
+      cred.credentialID || cred.id,
+      cred.credentialPublicKey || cred.publicKey,
+      cred.counter ?? 0,
+      cred.createdAt ?? new Date().toISOString(),
+      cred.label ?? null,
+    ],
+  );
 }
 
 (async () => {
@@ -53,12 +59,14 @@ function insert(id: string, cred: StoredCredential) {
   // Iterate all ids - for vault we don't have an index, so accept `ids` as argv
   const ids = args;
   if (ids.length === 0) {
-    console.error('usage: migrate-vault-to-sqlite.ts <id> <id>... (dbPath optional)');
+    console.error(
+      "usage: migrate-vault-to-sqlite.ts <id> <id>... (dbPath optional)",
+    );
     process.exit(1);
   }
   // if first arg looks like a path and exists as file, use it
   const maybePath = ids[0];
-  if (maybePath.includes('/') || maybePath.includes('\\')) {
+  if (maybePath.includes("/") || maybePath.includes("\\")) {
     // treat as db path
     // shift
   }
@@ -71,7 +79,7 @@ function insert(id: string, cred: StoredCredential) {
       console.log(`Migrated ${creds.length} credentials for ${id}`);
       // Optionally clear the vault: vaultManager.deleteSecret(`passkey:${id}`)
     } catch (e) {
-      console.error('Invalid creds for', id, e);
+      console.error("Invalid creds for", id, e);
     }
   }
   process.exit(0);

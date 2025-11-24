@@ -1,5 +1,5 @@
-declare module 'express' {
-  import * as http from 'http';
+declare module "express" {
+  import * as http from "http";
   export type Request = http.IncomingMessage & {
     headers: Record<string, string | undefined>;
     header: (name: string) => string | undefined; // express request.header

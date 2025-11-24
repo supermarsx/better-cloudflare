@@ -1,18 +1,18 @@
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import express from 'express';
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import express from "express";
 
-import { apiRouter } from '../src/server/router.ts';
-import { errorHandler } from '../src/server/errorHandler.ts';
-import { asyncHandler } from '../src/lib/async-handler.ts';
-import { getCorsMiddleware } from '../src/server/cors.ts';
+import { apiRouter } from "../src/server/router.ts";
+import { errorHandler } from "../src/server/errorHandler.ts";
+import { asyncHandler } from "../src/lib/async-handler.ts";
+import { getCorsMiddleware } from "../src/server/cors.ts";
 
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo } from "node:net";
 
 // Ensure fetch exists for Node
-import 'cloudflare/shims/web';
+import "cloudflare/shims/web";
 
-test('missing credentials returns 400 error', async () => {
+test("missing credentials returns 400 error", async () => {
   const app = express();
   app.use(express.json());
   app.use(apiRouter);
@@ -30,14 +30,14 @@ test('missing credentials returns 400 error', async () => {
   }
 });
 
-test('generic errors return 500', async () => {
+test("generic errors return 500", async () => {
   const app = express();
   app.use(
-    '/api/error',
+    "/api/error",
     asyncHandler(async (_req, _res) => {
       void _req;
       void _res;
-      throw new Error('boom');
+      throw new Error("boom");
     }),
   );
   app.use(errorHandler);
@@ -54,11 +54,11 @@ test('generic errors return 500', async () => {
   }
 });
 
-test('allowed origin sets CORS header', async () => {
-  process.env.ALLOWED_ORIGINS = 'http://allowed.test';
+test("allowed origin sets CORS header", async () => {
+  process.env.ALLOWED_ORIGINS = "http://allowed.test";
   const app = express();
   app.use(getCorsMiddleware());
-  app.get('/api/test', (_req, res) => {
+  app.get("/api/test", (_req, res) => {
     res.json({ ok: true });
   });
 
@@ -66,21 +66,24 @@ test('allowed origin sets CORS header', async () => {
   const { port } = server.address() as AddressInfo;
   try {
     const res = await fetch(`http://localhost:${port}/api/test`, {
-      headers: { Origin: 'http://allowed.test' },
+      headers: { Origin: "http://allowed.test" },
     });
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get('access-control-allow-origin'), 'http://allowed.test');
+    assert.equal(
+      res.headers.get("access-control-allow-origin"),
+      "http://allowed.test",
+    );
   } finally {
     server.close();
     delete process.env.ALLOWED_ORIGINS;
   }
 });
 
-test('disallowed origin returns 403', async () => {
-  process.env.ALLOWED_ORIGINS = 'http://allowed.test';
+test("disallowed origin returns 403", async () => {
+  process.env.ALLOWED_ORIGINS = "http://allowed.test";
   const app = express();
   app.use(getCorsMiddleware());
-  app.get('/api/test', (_req, res) => {
+  app.get("/api/test", (_req, res) => {
     res.json({ ok: true });
   });
 
@@ -88,7 +91,7 @@ test('disallowed origin returns 403', async () => {
   const { port } = server.address() as AddressInfo;
   try {
     const res = await fetch(`http://localhost:${port}/api/test`, {
-      headers: { Origin: 'http://evil.test' },
+      headers: { Origin: "http://evil.test" },
     });
     assert.equal(res.status, 403);
     const data = await res.json();

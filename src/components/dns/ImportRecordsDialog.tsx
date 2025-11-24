@@ -3,19 +3,25 @@
  * current zone. This component is a light overlay that validates JSON
  * client-side and forwards the payload to the parent for processing.
  */
-import { ImportExportDialog } from './import-export-dialog';
+import { ImportExportDialog } from "./import-export-dialog";
 
 /**
  * Deprecated wrapper that forwards to ImportExportDialog with JSON format.
  * Kept for compatibility with older imports.
  */
-export function ImportRecordsDialog({ open, onOpenChange, data, onDataChange, onImport }: ImportRecordsDialogProps) {
+export function ImportRecordsDialog({
+  open,
+  onOpenChange,
+  data,
+  onDataChange,
+  onImport,
+}: ImportRecordsDialogProps) {
   return (
     <ImportExportDialog
       open={open}
       onOpenChange={onOpenChange}
       importData={data}
-      importFormat={'json'}
+      importFormat={"json"}
       onImportDataChange={onDataChange}
       onImportFormatChange={() => {}}
       onImport={onImport}

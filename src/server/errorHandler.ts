@@ -1,7 +1,7 @@
-import type { Request, Response, NextFunction } from 'express';
-import { getEnvBool } from '../lib/env';
+import type { Request, Response, NextFunction } from "express";
+import { getEnvBool } from "../lib/env";
 
-const DEBUG = getEnvBool('DEBUG_SERVER_API', 'VITE_DEBUG_SERVER_API');
+const DEBUG = getEnvBool("DEBUG_SERVER_API", "VITE_DEBUG_SERVER_API");
 
 /**
  * Express error middleware that returns JSON responses for errors.
@@ -29,4 +29,3 @@ export function errorHandler(
   const status = (err as { status?: number }).status ?? 500;
   res.status(status).json({ error: (err as Error).message });
 }
-

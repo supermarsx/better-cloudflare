@@ -13,7 +13,7 @@ export interface DNSRecord {
   /** Record content (IP, host, text, etc.) */
   content: string;
   /** Time-to-live in seconds or 'auto' */
-  ttl: number | 'auto';
+  ttl: number | "auto";
   /** Optional priority (used for MX records) */
   priority?: number;
   /** Whether Cloudflare proxy is enabled for the record (A/AAAA/CNAME) */
@@ -51,8 +51,8 @@ export interface Zone {
  * Supported encryption algorithms used by the CryptoManager when encrypting
  * API keys in storage. AES-GCM is preferred for authenticated encryption.
  */
-export const ENCRYPTION_ALGORITHMS = ['AES-GCM', 'AES-CBC'] as const;
-export type EncryptionAlgorithm = typeof ENCRYPTION_ALGORITHMS[number];
+export const ENCRYPTION_ALGORITHMS = ["AES-GCM", "AES-CBC"] as const;
+export type EncryptionAlgorithm = (typeof ENCRYPTION_ALGORITHMS)[number];
 
 /**
  * Stored API key metadata used by the StorageManager. The `encryptedKey`
@@ -92,80 +92,80 @@ export interface EncryptionConfig {
   algorithm: EncryptionAlgorithm;
 }
 export const RECORD_TYPES = [
-  'A',
-  'AAAA',
-  'CNAME',
-  'MX',
-  'TXT',
-  'SRV',
-  'NS',
-  'PTR',
-  'CAA',
-  'DS',
-  'DNSKEY',
-  'NAPTR',
-  'SSHFP',
-  'TLSA',
-  'HINFO',
-  'LOC',
-  'SPF',
-  'RP',
-  'DNAME',
-  'CERT',
-  'CDNSKEY',
-  'AFSDB',
-  'APL',
-  'DCHID',
-  'HIP',
-  'IPSECKEY',
-  'NSEC',
-  'RRSIG',
-  'SOA',
-  'SVCB',
-  'HTTPS',
-  'URI',
-  'ALIAS',
-  'ANAME'
+  "A",
+  "AAAA",
+  "CNAME",
+  "MX",
+  "TXT",
+  "SRV",
+  "NS",
+  "PTR",
+  "CAA",
+  "DS",
+  "DNSKEY",
+  "NAPTR",
+  "SSHFP",
+  "TLSA",
+  "HINFO",
+  "LOC",
+  "SPF",
+  "RP",
+  "DNAME",
+  "CERT",
+  "CDNSKEY",
+  "AFSDB",
+  "APL",
+  "DCHID",
+  "HIP",
+  "IPSECKEY",
+  "NSEC",
+  "RRSIG",
+  "SOA",
+  "SVCB",
+  "HTTPS",
+  "URI",
+  "ALIAS",
+  "ANAME",
 ] as const;
 
-export type RecordType = typeof RECORD_TYPES[number];
+export type RecordType = (typeof RECORD_TYPES)[number];
 
 /** Human-friendly labels for record types used in UI dropdowns */
 export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
-  A: 'A (IPv4 address)',
-  AAAA: 'AAAA (IPv6 address)',
-  CNAME: 'CNAME (alias)',
-  MX: 'MX (mail exchange)',
-  TXT: 'TXT (text)',
-  SRV: 'SRV (service record)',
-  NS: 'NS (name server)',
-  PTR: 'PTR (pointer)',
-  CAA: 'CAA (cert authority allowed)',
-  DS: 'DS (delegation signer)',
-  DNSKEY: 'DNSKEY (DNS public key)',
-  NAPTR: 'NAPTR (naming authority pointer)',
-  SSHFP: 'SSHFP (SSH fingerprint)',
-  TLSA: 'TLSA (TLS authentication)',
-  HINFO: 'HINFO (host info)',
-  LOC: 'LOC (location)',
-  SPF: 'SPF (SPF text)',
-  RP: 'RP (responsible person)',
-  DNAME: 'DNAME (delegation name)',
-  CERT: 'CERT (certificates)',
-  CDNSKEY: 'CDNSKEY (child DNSKEY)',
-  AFSDB: 'AFSDB (Andrew File System DB)',
-  APL: 'APL (address prefix list)',
-  DCHID: 'DCHID (DHCP identifier)',
-  HIP: 'HIP (Host Identity Protocol)',
-  IPSECKEY: 'IPSECKEY (IPsec key)',
-  NSEC: 'NSEC (next secure record)',
-  RRSIG: 'RRSIG (DNSSEC signature)',
-  SOA: 'SOA (start of authority)',
-  SVCB: 'SVCB (service binding)',
-  HTTPS: 'HTTPS (http service binding)',
-  URI: 'URI (URI record)',
-  ALIAS: 'ALIAS (alias)',
-  ANAME: 'ANAME (apex alias)'
+  A: "A (IPv4 address)",
+  AAAA: "AAAA (IPv6 address)",
+  CNAME: "CNAME (alias)",
+  MX: "MX (mail exchange)",
+  TXT: "TXT (text)",
+  SRV: "SRV (service record)",
+  NS: "NS (name server)",
+  PTR: "PTR (pointer)",
+  CAA: "CAA (cert authority allowed)",
+  DS: "DS (delegation signer)",
+  DNSKEY: "DNSKEY (DNS public key)",
+  NAPTR: "NAPTR (naming authority pointer)",
+  SSHFP: "SSHFP (SSH fingerprint)",
+  TLSA: "TLSA (TLS authentication)",
+  HINFO: "HINFO (host info)",
+  LOC: "LOC (location)",
+  SPF: "SPF (SPF text)",
+  RP: "RP (responsible person)",
+  DNAME: "DNAME (delegation name)",
+  CERT: "CERT (certificates)",
+  CDNSKEY: "CDNSKEY (child DNSKEY)",
+  AFSDB: "AFSDB (Andrew File System DB)",
+  APL: "APL (address prefix list)",
+  DCHID: "DCHID (DHCP identifier)",
+  HIP: "HIP (Host Identity Protocol)",
+  IPSECKEY: "IPSECKEY (IPsec key)",
+  NSEC: "NSEC (next secure record)",
+  RRSIG: "RRSIG (DNSSEC signature)",
+  SOA: "SOA (start of authority)",
+  SVCB: "SVCB (service binding)",
+  HTTPS: "HTTPS (http service binding)",
+  URI: "URI (URI record)",
+  ALIAS: "ALIAS (alias)",
+  ANAME: "ANAME (apex alias)",
 };
 
 export function getRecordTypeLabel(type: RecordType) {
@@ -175,26 +175,38 @@ export function getRecordTypeLabel(type: RecordType) {
 /**
  * Supported record types used across the UI and validation schema.
  */
- 
 
 /**
  * TTL presets used in the UI for quick selection (seconds or 'auto')
  */
 // Default TTL presets (seconds), `auto` preserved for Cloudflare's automatic setting.
-export const TTL_PRESETS = ['auto', 60, 120, 300, 900, 1800, 3600, 14400, 43200, 86400, 604800] as const;
-export type TTLValue = number | 'auto';
+export const TTL_PRESETS = [
+  "auto",
+  60,
+  120,
+  300,
+  900,
+  1800,
+  3600,
+  14400,
+  43200,
+  86400,
+  604800,
+] as const;
+export type TTLValue = number | "auto";
 
-function parsePresets(presetsStr: string): (number | 'auto')[] {
+function parsePresets(presetsStr: string): (number | "auto")[] {
   // Accept JSON array or comma-separated list
   try {
     const parsed = JSON.parse(presetsStr);
-    if (Array.isArray(parsed)) return parsed.map((p) => (p === 'auto' ? 'auto' : Number(p)));
+    if (Array.isArray(parsed))
+      return parsed.map((p) => (p === "auto" ? "auto" : Number(p)));
   } catch {
     // not a JSON array; try comma-separated
   }
-  return presetsStr.split(',').map((p) => {
+  return presetsStr.split(",").map((p) => {
     const v = p.trim();
-    if (v.toLowerCase() === 'auto') return 'auto';
+    if (v.toLowerCase() === "auto") return "auto";
     const n = Number(v);
     return Number.isNaN(n) ? 300 : n;
   });
@@ -206,8 +218,8 @@ export function getTTLPresets(): TTLValue[] {
   // import.meta may be available when the code is bundled by Vite. Use a
   // safe typed access to avoid linting and TS errors in environments where
   // import.meta is undefined.
-  if (typeof import.meta !== 'undefined') {
-    const meta = (import.meta as { env?: Record<string, string> } | undefined);
+  if (typeof import.meta !== "undefined") {
+    const meta = import.meta as { env?: Record<string, string> } | undefined;
     if (meta?.env) {
       envVal = meta.env.VITE_TTL_PRESETS;
     }
@@ -215,11 +227,15 @@ export function getTTLPresets(): TTLValue[] {
   if (!envVal) envVal = process.env.TTL_PRESETS || process.env.VITE_TTL_PRESETS;
   if (!envVal) {
     // Return a properly-typed copy of the readonly TTL_PRESETS
-    return TTL_PRESETS.map((v) => (v === 'auto' ? 'auto' : Number(v))) as TTLValue[];
+    return TTL_PRESETS.map((v) =>
+      v === "auto" ? "auto" : Number(v),
+    ) as TTLValue[];
   }
   try {
     return parsePresets(envVal);
   } catch {
-    return TTL_PRESETS.map((v) => (v === 'auto' ? 'auto' : Number(v))) as TTLValue[];
+    return TTL_PRESETS.map((v) =>
+      v === "auto" ? "auto" : Number(v),
+    ) as TTLValue[];
   }
 }

@@ -64,7 +64,7 @@ export function getStorage(storage?: StorageLike): StorageLike {
   if (storage) return storage;
   try {
     // Prefer IndexedDB storage when available
-    if (typeof indexedDB !== 'undefined') {
+    if (typeof indexedDB !== "undefined") {
       // lazily load idb and create a simple wrapper
       // We intentionally load idb dynamically inside init() so this module
       // remains synchronous to callers while still enabling an async
@@ -83,21 +83,21 @@ export function getStorage(storage?: StorageLike): StorageLike {
         private initialized = false;
         async init() {
           // load the idb module lazily so we don't import it at package init
-          const idb = await import('idb').catch(() => null);
+          const idb = await import("idb").catch(() => null);
           if (!idb) return;
           const { openDB } = idb;
-          this.db = await openDB('better-cloudflare', 1, {
+          this.db = await openDB("better-cloudflare", 1, {
             upgrade(db: { createObjectStore: (name: string) => void }) {
-              db.createObjectStore('kv');
+              db.createObjectStore("kv");
             },
           });
           try {
             // @ts-expect-error - idb runtime methods accessed via dynamic import
-            const keys = await (this.db as IDBRuntime).getAllKeys?.('kv');
+            const keys = await (this.db as IDBRuntime).getAllKeys?.("kv");
             for (const k of keys) {
               try {
                 // @ts-expect-error runtime access
-                const v = await (this.db as IDBRuntime).get?.('kv', k);
+                const v = await (this.db as IDBRuntime).get?.("kv", k);
                 this.store[k] = String(v);
               } catch {
                 // ignore - best-effort cache population
@@ -117,28 +117,33 @@ export function getStorage(storage?: StorageLike): StorageLike {
           this.store[key] = String(value);
           if (this.initialized) {
             // @ts-expect-error runtime call to idb. We don't block on errors.
-            (this.db as IDBRuntime).put?.('kv', value, key).catch(() => {});
+            (this.db as IDBRuntime).put?.("kv", value, key).catch(() => {});
           }
         }
         removeItem(key: string) {
           delete this.store[key];
           if (this.initialized) {
             // @ts-expect-error runtime call
-            (this.db as IDBRuntime).delete?.('kv', key).catch(() => {});
+            (this.db as IDBRuntime).delete?.("kv", key).catch(() => {});
           }
         }
       }
 
       const IDS = new IndexedDBStorage();
       // Note: not awaiting init here since module may run server side; try to init
-      try { IDS.init(); } catch { /* ignore */ }
+      try {
+        IDS.init();
+      } catch {
+        /* ignore */
+      }
       // attach a helper to detect whether we've selected an IndexedDB backend
       // mark selection explicitly on the instance so callers can tell which
       // backend was chosen without unsafe casts
-      (IDS as IndexedDBStorage & { __selected?: string }).__selected = 'indexeddb';
+      (IDS as IndexedDBStorage & { __selected?: string }).__selected =
+        "indexeddb";
       return IDS as StorageLike;
     }
-    if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {
+    if (typeof globalThis !== "undefined" && "localStorage" in globalThis) {
       return (globalThis as { localStorage: StorageLike }).localStorage;
     }
   } catch {
@@ -155,12 +160,13 @@ export function getStorage(storage?: StorageLike): StorageLike {
  * 'localstorage' or 'memory'. Useful for informing the user or changing
  * behavior depending on the environment.
  */
-export function storageBackend(): 'indexeddb' | 'localstorage' | 'memory' {
+export function storageBackend(): "indexeddb" | "localstorage" | "memory" {
   try {
-    if (typeof indexedDB !== 'undefined') return 'indexeddb';
-    if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) return 'localstorage';
+    if (typeof indexedDB !== "undefined") return "indexeddb";
+    if (typeof globalThis !== "undefined" && "localStorage" in globalThis)
+      return "localstorage";
   } catch {
     // ignore
   }
-  return 'memory';
+  return "memory";
 }

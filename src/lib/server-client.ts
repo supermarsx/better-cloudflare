@@ -5,11 +5,14 @@
  * the local API proxy server and handles timeouts, request headers and
  * JSON parsing with reasonable defaults.
  */
-import type { DNSRecord, Zone } from '@/types/dns';
-import { getEnv } from './env';
+import type { DNSRecord, Zone } from "@/types/dns";
+import { getEnv } from "./env";
 
-const DEFAULT_BASE =
-  getEnv('SERVER_API_BASE', 'VITE_SERVER_API_BASE', 'http://localhost:8787/api')!;
+const DEFAULT_BASE = getEnv(
+  "SERVER_API_BASE",
+  "VITE_SERVER_API_BASE",
+  "http://localhost:8787/api",
+)!;
 const DEFAULT_TIMEOUT = 10_000;
 
 /**
@@ -25,18 +28,17 @@ const DEFAULT_TIMEOUT = 10_000;
 function authHeaders(key: string, email?: string): HeadersInit {
   if (email) {
     return {
-      'x-auth-key': key,
-      'x-auth-email': email,
-      'Content-Type': 'application/json',
+      "x-auth-key": key,
+      "x-auth-email": email,
+      "Content-Type": "application/json",
     };
   }
   return {
     authorization: `Bearer ${key}`,
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   };
 }
 
- 
 /**
  * Client for communicating with the local server API that proxies requests
  * to Cloudflare. The client handles authorization headers and JSON parsing
@@ -78,8 +80,8 @@ export class ServerClient {
    */
   private async request<T>(
     endpoint: string,
-    { 
-      method = 'GET',
+    {
+      method = "GET",
       body,
       signal,
     }: { method?: string; body?: unknown; signal?: AbortSignal } = {},
@@ -98,40 +100,42 @@ export class ServerClient {
         body: body ? JSON.stringify(body) : undefined,
         signal,
       });
-      const contentType = res.headers.get('content-type');
+      const contentType = res.headers.get("content-type");
       if (!res.ok) {
-        let detail = '';
-        if (contentType && contentType.includes('application/json')) {
+        let detail = "";
+        if (contentType && contentType.includes("application/json")) {
           try {
             const data: unknown = await res.json();
             if (
-              typeof data === 'object' &&
+              typeof data === "object" &&
               data !== null &&
               Array.isArray((data as { errors?: unknown }).errors) &&
               (data as { errors: unknown[] }).errors.length > 0
             ) {
-              detail = (data as {
-                errors: { code?: unknown; message?: unknown }[];
-              }).errors
+              detail = (
+                data as {
+                  errors: { code?: unknown; message?: unknown }[];
+                }
+              ).errors
                 .map((e: { code?: unknown; message?: unknown }) => {
                   const code = e.code;
                   const message = e.message;
                   return code && message
                     ? `${code}: ${message}`
-                    : typeof message === 'string'
-                    ? message
-                    : code !== undefined
-                    ? String(code)
-                    : '';
+                    : typeof message === "string"
+                      ? message
+                      : code !== undefined
+                        ? String(code)
+                        : "";
                 })
                 .filter((s) => s)
-                .join(', ');
+                .join(", ");
             } else if (
-              typeof (data as { message?: unknown }).message === 'string'
+              typeof (data as { message?: unknown }).message === "string"
             ) {
               detail = (data as { message: string }).message;
             } else if (
-              typeof (data as { error?: unknown }).error === 'string'
+              typeof (data as { error?: unknown }).error === "string"
             ) {
               detail = (data as { error: string }).error;
             } else {
@@ -147,7 +151,7 @@ export class ServerClient {
           `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${detail}`,
         );
       }
-      if (contentType && contentType.includes('application/json')) {
+      if (contentType && contentType.includes("application/json")) {
         return res.json();
       }
       return undefined as T;
@@ -158,46 +162,51 @@ export class ServerClient {
 
   /**
    * Verify credentials by calling the /verify-token endpoint.
-    *
-    * @param signal - optional AbortSignal to cancel the request
-    * @returns Promise that resolves when verification succeeded
+   *
+   * @param signal - optional AbortSignal to cancel the request
+   * @returns Promise that resolves when verification succeeded
    */
   async verifyToken(signal?: AbortSignal): Promise<void> {
-    await this.request('/verify-token', { method: 'POST', signal });
+    await this.request("/verify-token", { method: "POST", signal });
   }
 
   /**
    * Get all zones associated with the account/token.
-    *
-    * @param signal - optional AbortSignal to cancel the request
-    * @returns an array of Zone objects
+   *
+   * @param signal - optional AbortSignal to cancel the request
+   * @returns an array of Zone objects
    */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
-    return this.request('/zones', { signal });
+    return this.request("/zones", { signal });
   }
 
   /**
    * Retrieve DNS records for the provided zone id.
-    *
-    * @param zoneId - the id of the zone to fetch records for
-    * @param signal - optional AbortSignal
-    * @returns a list of DNSRecord objects
+   *
+   * @param zoneId - the id of the zone to fetch records for
+   * @param signal - optional AbortSignal
+   * @returns a list of DNSRecord objects
    */
-  async getDNSRecords(zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> {
+  async getDNSRecords(
+    zoneId: string,
+    page?: number,
+    perPage?: number,
+    signal?: AbortSignal,
+  ): Promise<DNSRecord[]> {
     const qsParts = [] as string[];
     if (page) qsParts.push(`page=${page}`);
     if (perPage) qsParts.push(`per_page=${perPage}`);
-    const query = qsParts.length ? `?${qsParts.join('&')}` : '';
+    const query = qsParts.length ? `?${qsParts.join("&")}` : "";
     return this.request(`/zones/${zoneId}/dns_records${query}`, { signal });
   }
 
   /**
    * Create a new DNS record via the server API.
-    *
-    * @param zoneId - id of the zone to create the record in
-    * @param record - partial DNS record data to submit
-    * @param signal - optional AbortSignal
-    * @returns the created DNSRecord as returned by the API
+   *
+   * @param zoneId - id of the zone to create the record in
+   * @param record - partial DNS record data to submit
+   * @param signal - optional AbortSignal
+   * @returns the created DNSRecord as returned by the API
    */
   async createDNSRecord(
     zoneId: string,
@@ -205,7 +214,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
     return this.request(`/zones/${zoneId}/dns_records`, {
-      method: 'POST',
+      method: "POST",
       body: record,
       signal,
     });
@@ -216,14 +225,19 @@ export class ServerClient {
    * @param zoneId - id of the zone
    * @param records - records to create
    */
-  async bulkCreateDNSRecords(zoneId: string, records: Partial<DNSRecord>[], dryrun?: boolean, signal?: AbortSignal): Promise<{ created: DNSRecord[]; skipped: unknown[] }> {
+  async bulkCreateDNSRecords(
+    zoneId: string,
+    records: Partial<DNSRecord>[],
+    dryrun?: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ created: DNSRecord[]; skipped: unknown[] }> {
     /**
      * Create multiple DNS records in a single request when supported by the
      * server. Optionally performs a dry-run by setting `dryrun` to true.
      */
-    const q = dryrun ? '?dryrun=1' : '';
+    const q = dryrun ? "?dryrun=1" : "";
     return this.request(`/zones/${zoneId}/dns_records/bulk${q}`, {
-      method: 'POST',
+      method: "POST",
       body: records,
       signal,
     });
@@ -231,12 +245,12 @@ export class ServerClient {
 
   /**
    * Update an existing DNS record via the server API.
-    *
-    * @param zoneId - id of the zone containing the record
-    * @param recordId - id of the record to update
-    * @param record - partial record fields to update
-    * @param signal - optional AbortSignal
-    * @returns the updated DNSRecord
+   *
+   * @param zoneId - id of the zone containing the record
+   * @param recordId - id of the record to update
+   * @param record - partial record fields to update
+   * @param signal - optional AbortSignal
+   * @returns the updated DNSRecord
    */
   async updateDNSRecord(
     zoneId: string,
@@ -245,7 +259,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: 'PUT',
+      method: "PUT",
       body: record,
       signal,
     });
@@ -253,11 +267,11 @@ export class ServerClient {
 
   /**
    * Delete a DNS record via the server API.
-    *
-    * @param zoneId - id of the zone containing the record
-    * @param recordId - id of the record to delete
-    * @param signal - optional AbortSignal
-    * @returns void
+   *
+   * @param zoneId - id of the zone containing the record
+   * @param recordId - id of the record to delete
+   * @param signal - optional AbortSignal
+   * @returns void
    */
   async deleteDNSRecord(
     zoneId: string,
@@ -265,7 +279,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<void> {
     await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: 'DELETE',
+      method: "DELETE",
       signal,
     });
   }
@@ -275,25 +289,27 @@ export class ServerClient {
      * Store a secret in the server-side vault. The server requires
      * valid credentials in the request headers to protect this endpoint.
      */
-    await this.request(`/vault/${id}`, { method: 'POST', body: { secret } });
+    await this.request(`/vault/${id}`, { method: "POST", body: { secret } });
   }
 
   async getVaultSecret(id: string): Promise<string | undefined> {
-    const data = await this.request(`/vault/${id}`, { method: 'GET' });
+    const data = await this.request(`/vault/${id}`, { method: "GET" });
     if (!data) return undefined;
     return (data as { secret?: string }).secret;
   }
 
   async deleteVaultSecret(id: string): Promise<void> {
     /** Delete a vault secret on the server */
-    await this.request(`/vault/${id}`, { method: 'DELETE' });
+    await this.request(`/vault/${id}`, { method: "DELETE" });
   }
 
-  async getPasskeyRegistrationOptions(id: string): Promise<{ challenge: string }> {
+  async getPasskeyRegistrationOptions(
+    id: string,
+  ): Promise<{ challenge: string }> {
     /**
      * Request passkey registration options (a challenge) from the server.
      */
-    return this.request(`/passkeys/register/options/${id}`, { method: 'GET' });
+    return this.request(`/passkeys/register/options/${id}`, { method: "GET" });
   }
 
   async registerPasskey(id: string, attestation: unknown): Promise<void> {
@@ -303,43 +319,67 @@ export class ServerClient {
      * currently stores the provided attestation and should be extended to
      * verify it against a FIDO2 library in production deployments.
      */
-    await this.request(`/passkeys/register/${id}`, { method: 'POST', body: attestation });
+    await this.request(`/passkeys/register/${id}`, {
+      method: "POST",
+      body: attestation,
+    });
   }
 
   async getPasskeyAuthOptions(id: string): Promise<{ challenge: string }> {
     /**
      * Request passkey authentication options (a challenge) from the server.
      */
-    return this.request(`/passkeys/authenticate/options/${id}`, { method: 'GET' });
+    return this.request(`/passkeys/authenticate/options/${id}`, {
+      method: "GET",
+    });
   }
 
-  async simulateSPF(domain: string, ip: string): Promise<{ result: string; reasons: string[]; lookups: number }> {
-    return this.request(`/spf/simulate?domain=${encodeURIComponent(domain)}&ip=${encodeURIComponent(ip)}`, { method: 'GET' });
+  async simulateSPF(
+    domain: string,
+    ip: string,
+  ): Promise<{ result: string; reasons: string[]; lookups: number }> {
+    return this.request(
+      `/spf/simulate?domain=${encodeURIComponent(domain)}&ip=${encodeURIComponent(ip)}`,
+      { method: "GET" },
+    );
   }
 
   async getSPFGraph(domain: string): Promise<unknown> {
-    return this.request(`/spf/graph?domain=${encodeURIComponent(domain)}`, { method: 'GET' });
+    return this.request(`/spf/graph?domain=${encodeURIComponent(domain)}`, {
+      method: "GET",
+    });
   }
 
-  async authenticatePasskey(id: string, assertion: unknown): Promise<{ success: boolean }> {
+  async authenticatePasskey(
+    id: string,
+    assertion: unknown,
+  ): Promise<{ success: boolean }> {
     /**
      * Submit a passkey assertion (authentication) to the server. The server
      * should verify the assertion and respond with success. This project
      * includes a stubbed verification; extend with proper use of FIDO2
      * verification before production use.
      */
-    return this.request(`/passkeys/authenticate/${id}`, { method: 'POST', body: assertion });
+    return this.request(`/passkeys/authenticate/${id}`, {
+      method: "POST",
+      body: assertion,
+    });
   }
 
   async listPasskeys(id: string): Promise<{ id: string; counter?: number }[]> {
-    return this.request(`/passkeys/${id}`, { method: 'GET' });
+    return this.request(`/passkeys/${id}`, { method: "GET" });
   }
 
   async deletePasskey(id: string, cid: string): Promise<void> {
-    await this.request(`/passkeys/${id}/${cid}`, { method: 'DELETE' });
+    await this.request(`/passkeys/${id}/${cid}`, { method: "DELETE" });
   }
 
-  async exportDNSRecords(zoneId: string, format: 'json' | 'csv' | 'bind' = 'json', page?: number, perPage?: number): Promise<string> {
+  async exportDNSRecords(
+    zoneId: string,
+    format: "json" | "csv" | "bind" = "json",
+    page?: number,
+    perPage?: number,
+  ): Promise<string> {
     /**
      * Export DNS records for a zone in a specific format. Supported formats
      * are 'json', 'csv' and 'bind'. Optional pagination parameters are
@@ -349,7 +389,7 @@ export class ServerClient {
     q.push(`format=${format}`);
     if (page) q.push(`page=${page}`);
     if (perPage) q.push(`per_page=${perPage}`);
-    const query = q.length ? `?${q.join('&')}` : '';
+    const query = q.length ? `?${q.join("&")}` : "";
     return this.request(`/zones/${zoneId}/dns_records/export${query}`);
   }
 }

@@ -3,20 +3,33 @@
  * `CryptoManager` and to run a performance benchmark of the configured
  * PBKDF2 iteration count.
  */
-import type { ChangeEvent } from 'react';
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import type { ChangeEvent } from "react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   ENCRYPTION_ALGORITHMS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
-} from '../../types/dns';
-import { Settings } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
+} from "../../types/dns";
+import { Settings } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 
 /**
  * Props for the EncryptionSettingsDialog, which allows users to configure
@@ -47,7 +60,17 @@ export interface EncryptionSettingsDialogProps {
  * Dialog to configure encryption settings and run a benchmark to estimate
  * the PBKDF2 cost for the currently selected iteration count.
  */
-export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSettingsChange, onBenchmark, onUpdate, benchmarkResult, vaultEnabled, onVaultEnabledChange }: EncryptionSettingsDialogProps) {
+export function EncryptionSettingsDialog({
+  open,
+  onOpenChange,
+  settings,
+  onSettingsChange,
+  onBenchmark,
+  onUpdate,
+  benchmarkResult,
+  vaultEnabled,
+  onVaultEnabledChange,
+}: EncryptionSettingsDialogProps) {
   const [useVault, setUseVault] = useState(vaultEnabled);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -74,7 +97,7 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
                 const n = Number.parseInt(e.target.value, 10);
                 onSettingsChange({
                   ...settings,
-                  iterations: Number.isNaN(n) ? 100000 : n
+                  iterations: Number.isNaN(n) ? 100000 : n,
                 });
               }}
             />
@@ -102,7 +125,10 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
             <Select
               value={settings.algorithm}
               onValueChange={(value) =>
-                onSettingsChange({ ...settings, algorithm: value as EncryptionAlgorithm })
+                onSettingsChange({
+                  ...settings,
+                  algorithm: value as EncryptionAlgorithm,
+                })
               }
             >
               <SelectTrigger>
@@ -110,7 +136,9 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
               </SelectTrigger>
               <SelectContent>
                 {ENCRYPTION_ALGORITHMS.map((alg) => (
-                  <SelectItem key={alg} value={alg}>{alg}</SelectItem>
+                  <SelectItem key={alg} value={alg}>
+                    {alg}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -125,7 +153,13 @@ export function EncryptionSettingsDialog({ open, onOpenChange, settings, onSetti
           </div>
           <div className="flex items-center gap-2">
             <Label>Enable OS Vault</Label>
-            <Switch checked={useVault} onCheckedChange={(v: boolean) => { setUseVault(v); onVaultEnabledChange(v); }} />
+            <Switch
+              checked={useVault}
+              onCheckedChange={(v: boolean) => {
+                setUseVault(v);
+                onVaultEnabledChange(v);
+              }}
+            />
           </div>
           {benchmarkResult !== null && (
             <p className="text-sm text-muted-foreground">

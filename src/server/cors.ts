@@ -1,5 +1,5 @@
-import type { Request, Response, NextFunction } from 'express';
-import { getEnv } from '../lib/env';
+import type { Request, Response, NextFunction } from "express";
+import { getEnv } from "../lib/env";
 
 /**
  * Build a CORS middleware suitable for the server. The function reads
@@ -10,10 +10,10 @@ import { getEnv } from '../lib/env';
  * @returns express middleware handling CORS headers and preflight requests
  */
 export function getCorsMiddleware() {
-  const env = getEnv('ALLOWED_ORIGINS', 'VITE_ALLOWED_ORIGINS', '*')!;
+  const env = getEnv("ALLOWED_ORIGINS", "VITE_ALLOWED_ORIGINS", "*")!;
   const allowed = new Set(
     env
-      .split(',')
+      .split(",")
       .map((o) => o.trim())
       .filter((o) => o.length > 0),
   );
@@ -22,30 +22,30 @@ export function getCorsMiddleware() {
     const origin = req.headers.origin as string | undefined;
     let allowedOrigin: string | undefined;
 
-    if (allowed.has('*')) {
-      allowedOrigin = '*';
+    if (allowed.has("*")) {
+      allowedOrigin = "*";
     } else if (origin && allowed.has(origin)) {
       allowedOrigin = origin;
     } else if (origin) {
-      res.status(403).json({ error: 'Origin not allowed' });
+      res.status(403).json({ error: "Origin not allowed" });
       return;
     }
 
     if (allowedOrigin) {
-      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-      res.setHeader('Vary', 'Origin');
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Vary", "Origin");
     }
 
     res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Auth-Key, X-Auth-Email',
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Auth-Key, X-Auth-Email",
     );
     res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET,POST,PUT,DELETE,OPTIONS',
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,DELETE,OPTIONS",
     );
 
-    if (req.method === 'OPTIONS') {
+    if (req.method === "OPTIONS") {
       res.sendStatus(204);
       return;
     }

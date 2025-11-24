@@ -52,7 +52,6 @@
     "better-sqlite3": "^8.2.0"
   },
   "devDependencies": {
-    
     "@simplewebauthn/browser": "^6.0.0",
     "react-window": "^1.8.7",
     "@eslint/js": "^9.30.1",

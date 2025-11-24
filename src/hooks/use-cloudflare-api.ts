@@ -1,7 +1,7 @@
-import { useCallback, useMemo } from 'react';
-import { ServerClient } from '../lib/server-client';
-import type { SPFGraph } from '@/lib/spf';
-import type { DNSRecord, Zone } from '../types/dns';
+import { useCallback, useMemo } from "react";
+import { ServerClient } from "../lib/server-client";
+import type { SPFGraph } from "@/lib/spf";
+import type { DNSRecord, Zone } from "../types/dns";
 
 /**
  * React hook exposing a higher-level API for interacting with the
@@ -25,7 +25,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   // No-op placeholder to trigger build of use-cloudflare-api changes if needed.
   const verifyToken = useCallback(
     async (
-      key: string = apiKey ?? '',
+      key: string = apiKey ?? "",
       keyEmail: string | undefined = email,
       signal?: AbortSignal,
     ) => {
@@ -33,7 +33,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
         await api.verifyToken(signal);
         return;
       }
-      if (!key) return Promise.reject(new Error('API key not provided'));
+      if (!key) return Promise.reject(new Error("API key not provided"));
       const client = new ServerClient(key, undefined, keyEmail);
       await client.verifyToken(signal);
     },
@@ -42,31 +42,45 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
 
   const getZones = useCallback(
     (signal?: AbortSignal): Promise<Zone[]> => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.getZones(signal);
     },
     [api],
   );
 
   const getDNSRecords = useCallback(
-    (zoneId: string, page?: number, perPage?: number, signal?: AbortSignal): Promise<DNSRecord[]> => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+    (
+      zoneId: string,
+      page?: number,
+      perPage?: number,
+      signal?: AbortSignal,
+    ): Promise<DNSRecord[]> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.getDNSRecords(zoneId, page, perPage, signal);
     },
     [api],
   );
 
   const createDNSRecord = useCallback(
-    (zoneId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+    (
+      zoneId: string,
+      record: Partial<DNSRecord>,
+      signal?: AbortSignal,
+    ): Promise<DNSRecord> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.createDNSRecord(zoneId, record, signal);
     },
     [api],
   );
 
   const updateDNSRecord = useCallback(
-    (zoneId: string, recordId: string, record: Partial<DNSRecord>, signal?: AbortSignal): Promise<DNSRecord> => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+    (
+      zoneId: string,
+      recordId: string,
+      record: Partial<DNSRecord>,
+      signal?: AbortSignal,
+    ): Promise<DNSRecord> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.updateDNSRecord(zoneId, recordId, record, signal);
     },
     [api],
@@ -74,73 +88,116 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
 
   const deleteDNSRecord = useCallback(
     (zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.deleteDNSRecord(zoneId, recordId, signal);
     },
     [api],
   );
 
   const bulkCreateDNSRecords = useCallback(
-    (zoneId: string, records: Partial<DNSRecord>[], dryrun?: boolean, signal?: AbortSignal) => {
-      if (!api) return Promise.reject(new Error('API key not provided'));
+    (
+      zoneId: string,
+      records: Partial<DNSRecord>[],
+      dryrun?: boolean,
+      signal?: AbortSignal,
+    ) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
       return api.bulkCreateDNSRecords(zoneId, records, dryrun, signal);
     },
     [api],
   );
 
-  const storeVaultSecret = useCallback((id: string, secret: string) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.storeVaultSecret(id, secret);
-  }, [api]);
+  const storeVaultSecret = useCallback(
+    (id: string, secret: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.storeVaultSecret(id, secret);
+    },
+    [api],
+  );
 
-  const getVaultSecret = useCallback((id: string) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.getVaultSecret(id);
-  }, [api]);
+  const getVaultSecret = useCallback(
+    (id: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getVaultSecret(id);
+    },
+    [api],
+  );
 
-  const deleteVaultSecret = useCallback((id: string) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.deleteVaultSecret(id);
-  }, [api]);
+  const deleteVaultSecret = useCallback(
+    (id: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteVaultSecret(id);
+    },
+    [api],
+  );
 
-  const getPasskeyRegistrationOptions = useCallback((id: string) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.getPasskeyRegistrationOptions(id);
-  }, [api]);
+  const getPasskeyRegistrationOptions = useCallback(
+    (id: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getPasskeyRegistrationOptions(id);
+    },
+    [api],
+  );
 
-  const registerPasskey = useCallback((id: string, attestation: unknown) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.registerPasskey(id, attestation);
-  }, [api]);
+  const registerPasskey = useCallback(
+    (id: string, attestation: unknown) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.registerPasskey(id, attestation);
+    },
+    [api],
+  );
 
-  const getPasskeyAuthOptions = useCallback((id: string) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.getPasskeyAuthOptions(id);
-  }, [api]);
+  const getPasskeyAuthOptions = useCallback(
+    (id: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getPasskeyAuthOptions(id);
+    },
+    [api],
+  );
 
-  const authenticatePasskey = useCallback((id: string, assertion: unknown) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.authenticatePasskey(id, assertion);
-  }, [api]);
+  const authenticatePasskey = useCallback(
+    (id: string, assertion: unknown) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.authenticatePasskey(id, assertion);
+    },
+    [api],
+  );
 
-  const exportDNSRecords = useCallback((zoneId: string, format: 'json'|'csv'|'bind' = 'json', page?: number, perPage?: number) => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.exportDNSRecords(zoneId, format, page, perPage);
-  }, [api]);
+  const exportDNSRecords = useCallback(
+    (
+      zoneId: string,
+      format: "json" | "csv" | "bind" = "json",
+      page?: number,
+      perPage?: number,
+    ) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.exportDNSRecords(zoneId, format, page, perPage);
+    },
+    [api],
+  );
 
-  const simulateSPF = useCallback((domain: string, ip: string): Promise<{ result: string; reasons: string[]; lookups: number }> => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.simulateSPF(domain, ip);
-  }, [api]);
+  const simulateSPF = useCallback(
+    (
+      domain: string,
+      ip: string,
+    ): Promise<{ result: string; reasons: string[]; lookups: number }> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.simulateSPF(domain, ip);
+    },
+    [api],
+  );
 
-  const getSPFGraph = useCallback((domain: string): Promise<SPFGraph> => {
-    if (!api) return Promise.reject(new Error('API key not provided'));
-    return api.getSPFGraph(domain);
-  }, [api]);
+  const getSPFGraph = useCallback(
+    (domain: string): Promise<SPFGraph> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getSPFGraph(domain);
+    },
+    [api],
+  );
 
   return {
-      simulateSPF,
-      getSPFGraph,
+    simulateSPF,
+    getSPFGraph,
     verifyToken,
     getZones,
     getDNSRecords,

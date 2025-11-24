@@ -12,7 +12,9 @@ export type AuditEntry = {
 };
 
 const entries: AuditEntry[] = [];
-import createCredentialStore, { SqliteCredentialStore } from './credential-store';
+import createCredentialStore, {
+  SqliteCredentialStore,
+} from "./credential-store";
 const store = createCredentialStore();
 
 export function logAudit(entry: AuditEntry) {
@@ -20,29 +22,35 @@ export function logAudit(entry: AuditEntry) {
   entries.push(final);
   // Simple console log for now; in production route to structured log
   // or write to a secure audit store.
+  try {
+    console.info("AUDIT", JSON.stringify(final));
+    // If sqlite store exists, write audit there too (fire-and-forget)
     try {
-      console.info('AUDIT', JSON.stringify(final));
-      // If sqlite store exists, write audit there too (fire-and-forget)
-      try {
-        // If the credential store is backed by sqlite, use its writeAudit method.
-        if (store instanceof SqliteCredentialStore && typeof store.writeAudit === 'function') {
-          try {
-            store.writeAudit(final).catch?.(() => undefined);
-          } catch {
-            // ignore
-          }
+      // If the credential store is backed by sqlite, use its writeAudit method.
+      if (
+        store instanceof SqliteCredentialStore &&
+        typeof store.writeAudit === "function"
+      ) {
+        try {
+          store.writeAudit(final).catch?.(() => undefined);
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore errors while attempting to write optional DB audit entries
       }
     } catch {
-      // ignore errors during logging.
+      // ignore errors while attempting to write optional DB audit entries
     }
+  } catch {
+    // ignore errors during logging.
+  }
 }
 
 export async function getAuditEntries(): Promise<AuditEntry[]> {
   // If DB store available return DB entries, otherwise in-memory
-    if (store instanceof SqliteCredentialStore && typeof store.getAuditEntries === 'function') {
+  if (
+    store instanceof SqliteCredentialStore &&
+    typeof store.getAuditEntries === "function"
+  ) {
     try {
       // convert DB rows into AuditEntry[]
       const rows = await store.getAuditEntries();
@@ -50,7 +58,7 @@ export async function getAuditEntries(): Promise<AuditEntry[]> {
         actor: r.actor,
         operation: r.operation,
         resource: r.resource,
-        details: r.details ? JSON.parse(r.details || '{}') : undefined,
+        details: r.details ? JSON.parse(r.details || "{}") : undefined,
         timestamp: r.timestamp,
       }));
     } catch {

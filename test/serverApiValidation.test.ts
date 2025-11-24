@@ -1,16 +1,16 @@
 // prefer unknown in tests
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import type { Request, Response } from 'express';
-import { ServerAPI } from '../src/lib/server-api.ts';
-import { CloudflareAPI } from '../src/lib/cloudflare.ts';
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { Request, Response } from "express";
+import { ServerAPI } from "../src/lib/server-api.ts";
+import { CloudflareAPI } from "../src/lib/cloudflare.ts";
 
 function createReq(body: unknown, params: Record<string, string>): Request {
   return {
     body,
     params,
     header(name: string) {
-      return name === 'authorization' ? 'Bearer token' : undefined;
+      return name === "authorization" ? "Bearer token" : undefined;
     },
   } as unknown as Request;
 }
@@ -27,38 +27,52 @@ function createRes() {
       jsonData = data;
     },
   };
-  return { res: res as Response, get status() { return statusCode; }, get data() { return jsonData; } };
+  return {
+    res: res as Response,
+    get status() {
+      return statusCode;
+    },
+    get data() {
+      return jsonData;
+    },
+  };
 }
 
-test('createDNSRecord validation', async () => {
+test("createDNSRecord validation", async () => {
   const handler = ServerAPI.createDNSRecord();
   const orig = CloudflareAPI.prototype.createDNSRecord;
   let called = false;
-  CloudflareAPI.prototype.createDNSRecord = (async (_zone: string, record: unknown) => {
+  CloudflareAPI.prototype.createDNSRecord = (async (
+    _zone: string,
+    record: unknown,
+  ) => {
     called = true;
-    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
-    return { id: '1', ...rec } as unknown;
+    const rec =
+      typeof record === "object" && record !== null
+        ? (record as Record<string, unknown>)
+        : {};
+    return { id: "1", ...rec } as unknown;
   }) as unknown as (zone: string, record: unknown) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(
-    { type: 'A', name: 'test', content: '1.2.3.4' },
-    { zone: 'zone' },
+    { type: "A", name: "test", content: "1.2.3.4" },
+    { zone: "zone" },
   );
   const validRes = createRes();
   await handler(validReq, validRes.res);
   assert.equal(validRes.status, undefined);
   assert.deepEqual(validRes.data, {
-    id: '1',
-    type: 'A',
-    name: 'test',
-    content: '1.2.3.4',
+    id: "1",
+    type: "A",
+    name: "test",
+    content: "1.2.3.4",
   });
   assert.equal(called, true);
 
   // Invalid payload
   called = false;
-  const invalidReq = createReq({ type: 'A' }, { zone: 'zone' });
+  const invalidReq = createReq({ type: "A" }, { zone: "zone" });
   const invalidRes = createRes();
   await handler(invalidReq, invalidRes.res);
   assert.equal(invalidRes.status, 400);
@@ -68,7 +82,7 @@ test('createDNSRecord validation', async () => {
   CloudflareAPI.prototype.createDNSRecord = orig;
 });
 
-test('updateDNSRecord validation', async () => {
+test("updateDNSRecord validation", async () => {
   const handler = ServerAPI.updateDNSRecord();
   const orig = CloudflareAPI.prototype.updateDNSRecord;
   let called = false;
@@ -78,29 +92,36 @@ test('updateDNSRecord validation', async () => {
     record: unknown,
   ) => {
     called = true;
-    const rec = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
-    return { id: '1', ...rec } as unknown;
-  }) as unknown as (zone: string, id: string, record: unknown) => Promise<unknown>;
+    const rec =
+      typeof record === "object" && record !== null
+        ? (record as Record<string, unknown>)
+        : {};
+    return { id: "1", ...rec } as unknown;
+  }) as unknown as (
+    zone: string,
+    id: string,
+    record: unknown,
+  ) => Promise<unknown>;
 
   // Valid payload
   const validReq = createReq(
-    { type: 'A', name: 'test', content: '1.2.3.4' },
-    { zone: 'zone', id: '1' },
+    { type: "A", name: "test", content: "1.2.3.4" },
+    { zone: "zone", id: "1" },
   );
   const validRes = createRes();
   await handler(validReq, validRes.res);
   assert.equal(validRes.status, undefined);
   assert.deepEqual(validRes.data, {
-    id: '1',
-    type: 'A',
-    name: 'test',
-    content: '1.2.3.4',
+    id: "1",
+    type: "A",
+    name: "test",
+    content: "1.2.3.4",
   });
   assert.equal(called, true);
 
   // Invalid payload
   called = false;
-  const invalidReq = createReq({ name: 'test' }, { zone: 'zone', id: '1' });
+  const invalidReq = createReq({ name: "test" }, { zone: "zone", id: "1" });
   const invalidRes = createRes();
   await handler(invalidReq, invalidRes.res);
   assert.equal(invalidRes.status, 400);
