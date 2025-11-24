@@ -5,6 +5,13 @@ import type { Request, Response } from 'express';
 import { ServerAPI } from '../src/lib/server-api.ts';
 import { getAuditEntries, clearAuditEntries } from '../src/lib/audit.ts';
 import { vaultManager } from '../src/server/vault.ts';
+import createCredentialStore from '../src/lib/credential-store.ts';
+
+// Use an isolated in-memory credential store for these tests to avoid
+// cross-test state when other tests change the global CREDENTIAL_STORE.
+process.env.CREDENTIAL_STORE = 'memory';
+const isolatedStore = createCredentialStore();
+ServerAPI.setCredentialStore(isolatedStore as any);
 
 // Monkey-patch simplewebauthn server verification functions to avoid
 // needing a real WebAuthn attestation/assertion for unit tests.
