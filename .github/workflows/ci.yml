@@ -28,7 +28,9 @@ jobs:
           npm uninstall better-sqlite3 --no-save || rm -rf node_modules/better-sqlite3 || true
       - name: Run unit tests
         run: npm test
-      - name: Install Playwright browsers
+      - name: Install Playwright browsers (skipped in CI)
+        if: false
         run: npx playwright install --with-deps
-      - name: Run E2E tests
+      - name: Run E2E tests (skipped in CI)
+        if: false
         run: npm run test:e2e

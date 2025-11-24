@@ -9,7 +9,7 @@ test('openSqlite should return a sqlite wrapper and support basic calls', async 
   try { fs.unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
   const wrapper = openSqlite(tmp);
   assert.ok(wrapper, 'openSqlite returned a wrapper');
-  assert.ok(['better-sqlite3', 'sqlite3'].includes((wrapper as unknown as { type?: string }).type), 'driver type should be known');
+  assert.ok(['better-sqlite3', 'sqlite3', 'sql.js'].includes((wrapper as unknown as { type?: string }).type), 'driver type should be known');
   // basic run & get & all interface
   await wrapper.run('CREATE TABLE IF NOT EXISTS tmp (id INTEGER PRIMARY KEY, v TEXT)');
   const res = await wrapper.run('INSERT INTO tmp(v) VALUES(?)', ['x']);

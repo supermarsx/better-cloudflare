@@ -3,7 +3,7 @@ import path from 'path';
 import { createRequire } from 'module';
 // promisify unused; intentionally omitted
 
-type DriverType = 'better-sqlite3' | 'sqlite3';
+type DriverType = 'better-sqlite3' | 'sqlite3' | 'sql.js';
 
 export type SqliteWrapper = {
   type: DriverType;
@@ -138,6 +138,85 @@ export function openSqlite(dbFile?: string, requireFn?: (name: string) => any): 
       // include the original error message when available
       const errMsg = err instanceof Error ? err.message : String(err);
       throw new Error(`No sqlite driver available (tried better-sqlite3 and sqlite3): ${errMsg}`);
+    }
+
+    // Try SQL.js (pure JS/WASM) as next fallback to avoid native builds.
+    try {
+      const SQLjs = req('sql.js');
+      const Database = (SQLjs && SQLjs.Database) ?? (SQLjs && SQLjs.default && SQLjs.default.Database) ?? SQLjs;
+      const fs = req('fs');
+      let instance: any;
+      if (fs && fs.existsSync && fs.existsSync(file)) {
+        const buf = fs.readFileSync(file);
+        instance = new Database(new Uint8Array(buf));
+      } else {
+        instance = new Database();
+      }
+
+      const mkSqljsWrapper = function (db: any, persistenceFile?: string, fsMod?: any): SqliteWrapper {
+        const run = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T> {
+          try {
+            const stmt = db.prepare(sql);
+            if (Array.isArray(params) && params.length) stmt.bind(params);
+            const executed = stmt.step();
+            stmt.free();
+            let lastId = 0;
+            try {
+              const r = db.exec('SELECT last_insert_rowid() AS id');
+              if (r && r[0] && r[0].values && r[0].values[0] && typeof r[0].values[0][0] !== 'undefined') lastId = r[0].values[0][0];
+            } catch {}
+            const changes = /INSERT|UPDATE|DELETE/i.test(sql) && executed ? 1 : 0;
+            return Promise.resolve({ lastInsertRowid: lastId, changes } as unknown as T);
+          } catch (e) {
+            return Promise.reject(e);
+          }
+        };
+
+        const all = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
+          try {
+            const stmt = db.prepare(sql);
+            if (Array.isArray(params) && params.length) stmt.bind(params);
+            const rows: any[] = [];
+            while (stmt.step()) rows.push(stmt.getAsObject());
+            stmt.free();
+            return Promise.resolve(rows as T[]);
+          } catch (e) {
+            return Promise.reject(e);
+          }
+        };
+
+        const get = function <T = unknown>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+          try {
+            const stmt = db.prepare(sql);
+            if (Array.isArray(params) && params.length) stmt.bind(params);
+            const ok = stmt.step();
+            const row = ok ? stmt.getAsObject() : undefined;
+            stmt.free();
+            return Promise.resolve(row as T | undefined);
+          } catch (e) {
+            return Promise.reject(e);
+          }
+        };
+
+        const close = function () {
+          try {
+            if (persistenceFile && fsMod && typeof fsMod.writeFileSync === 'function') {
+              const bytes = db.export();
+              fsMod.writeFileSync(persistenceFile, Buffer.from(bytes));
+            }
+            return Promise.resolve();
+          } catch (e) {
+            return Promise.reject(e);
+          }
+        };
+
+        return { type: 'sql.js', run, all, get, close };
+      };
+
+      console.info('openSqlite: using sql.js (WASM) fallback');
+      return mkSqljsWrapper(instance, file, fs);
+    } catch {
+      // ignore and fall through to in-memory wrapper
     }
 
     // Otherwise create or reuse a simple in-memory sqlite-like wrapper for lightweight
