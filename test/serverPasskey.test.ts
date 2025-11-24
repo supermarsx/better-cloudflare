@@ -79,8 +79,8 @@ test('registerPasskey verifies and stores credential', async () => {
   await handler(req, res.res);
   assert.equal(res.data.success, true);
 
-  const secret = await vaultManager.getSecret('passkey:key2');
-  assert.ok(secret);
+  const storedCreds = await ServerAPI.credentialStore.getCredentials('key2');
+  assert.ok(Array.isArray(storedCreds) && storedCreds.length >= 1);
   const entries = await getAuditEntries();
   assert.ok(entries.some((e) => e.operation === 'passkey:register'));
 
@@ -107,10 +107,8 @@ test('registerPasskey supports multiple credentials', async () => {
   await start(reqStart, resStart.res);
   await handler(createReq({ id, response: {} }, { id }), createRes().res);
 
-  const stored = await vaultManager.getSecret(`passkey:${id}`);
-  assert.ok(stored);
-  const arr = JSON.parse(stored as string);
-  assert.ok(Array.isArray(arr) && arr.length >= 2);
+  const storedCreds2 = await ServerAPI.credentialStore.getCredentials(id);
+  assert.ok(Array.isArray(storedCreds2) && storedCreds2.length >= 2);
 
   // Now fetch auth options and validate allowCredentials contains >= 2
   const authOptsHandler = ServerAPI.createPasskeyAuthOptions();
@@ -199,7 +197,7 @@ test('authenticatePasskey verifies assertion', async () => {
 
   const handler = ServerAPI.authenticatePasskey();
   // store a credential in vault to simulate registered credential
-  await vaultManager.setSecret('passkey:key3', JSON.stringify({ credentialID: 'cid', credentialPublicKey: 'pk', counter: 0 }));
+  await ServerAPI.credentialStore.addCredential('key3', { credentialID: 'cid', credentialPublicKey: 'pk', counter: 0 });
   // create options to set a challenge
   const start = ServerAPI.createPasskeyAuthOptions();
   const reqStart = createReq({}, { id: 'key3' });
@@ -211,8 +209,8 @@ test('authenticatePasskey verifies assertion', async () => {
   await handler(req, res.res);
   assert.equal(res.data.success, true);
 
-  const secretNew = await vaultManager.getSecret('passkey:key3');
-  assert.ok(secretNew);
+  const secretNewCreds = await ServerAPI.credentialStore.getCredentials('key3');
+  assert.ok(Array.isArray(secretNewCreds) && secretNewCreds.length >= 1);
 
   // restore
   (swauth as unknown as { verifyAuthenticationResponse?: (opts?: unknown) => Promise<VerifyAuthenticationResult> }).verifyAuthenticationResponse = origVerifyAuth;
