@@ -7,7 +7,7 @@ name: Autopublish Release
 on:
   workflow_run:
     workflows:
-      - 'Test and Package'
+      - "Test and Package"
     types:
       - completed
 

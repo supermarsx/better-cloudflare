@@ -2,9 +2,9 @@ name: Test and Package
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main]
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   test-and-package:
@@ -30,4 +30,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: package-tarball
-          path: '*.tgz'
+          path: "*.tgz"
