@@ -7,11 +7,19 @@ const languageNames: Record<string, string> = {
   "pt-PT": "Português",
 };
 
+import { Globe } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+
 export function LanguageSelector() {
   const { t } = useTranslation();
 
-  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const lng = e.target.value;
+  const changeLanguage = (lng: string) => {
     i18n.changeLanguage(lng);
     try {
       const storageAvailable =
@@ -26,23 +34,28 @@ export function LanguageSelector() {
   };
 
   return (
-    <div className="p-2">
-      <label htmlFor="language" className="sr-only">
-        {t("Language")}
-      </label>
-      <select
-        id="language"
-        className="border rounded p-1 text-sm"
-        defaultValue={i18n.language}
-        onChange={handleChange}
-        aria-label={t("Select language", "Select language")}
-      >
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 rounded-full border border-orange-500/30 bg-black/40 text-orange-500 hover:bg-orange-500/20 hover:text-orange-400 shadow-[0_0_10px_rgba(255,100,0,0.2)] transition-all duration-300"
+          aria-label={t("Select language")}
+        >
+          <Globe className="h-5 w-5 animate-pulse-slow" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="bg-black/80 border-orange-500/30 backdrop-blur-xl text-orange-100">
         {availableLanguages.map((lng) => (
-          <option key={lng} value={lng}>
+          <DropdownMenuItem
+            key={lng}
+            onClick={() => changeLanguage(lng)}
+            className="focus:bg-orange-500/20 focus:text-orange-200 cursor-pointer"
+          >
             {languageNames[lng] ?? lng}
-          </option>
+          </DropdownMenuItem>
         ))}
-      </select>
-    </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

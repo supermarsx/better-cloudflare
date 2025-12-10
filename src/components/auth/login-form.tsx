@@ -457,35 +457,38 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     storageManager.getVaultEnabled(),
   );
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
-          <div className="flex justify-center mb-4">
-            <div className="p-3 bg-primary/10 rounded-full">
-              <Key className="h-8 w-8 text-primary" />
+    <div className="min-h-screen flex items-center justify-center bg-background p-4 relative overflow-hidden">
+      {/* Background effects are handled in index.html, but we add a local glow here */}
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
+      
+      <Card className="w-full max-w-md relative z-10 border-orange-500/30 shadow-[0_0_40px_-10px_rgba(255,80,0,0.3)] bg-black/60 backdrop-blur-xl">
+        <CardHeader className="text-center pb-2">
+          <div className="flex justify-center mb-6 relative">
+            <div className="absolute inset-0 bg-orange-500/20 blur-xl rounded-full transform scale-150" />
+            <div className="p-4 bg-gradient-to-br from-orange-900/80 to-black rounded-full border border-orange-500/40 shadow-[0_0_15px_rgba(255,100,0,0.4)] relative z-10">
+              <Key className="h-10 w-10 text-orange-500 drop-shadow-[0_0_8px_rgba(255,100,0,0.8)]" />
             </div>
           </div>
-          <CardTitle className="text-2xl">
+          <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-red-500 to-orange-600 drop-shadow-sm">
             {t("Cloudflare DNS Manager")}
           </CardTitle>
-          <CardDescription>
+          <CardDescription className="text-orange-100/60 mt-2">
             {t("Select your API key and enter your password to continue")}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-6 pt-4">
           <div className="space-y-2">
-            <Label htmlFor="api-key">{t("API Key")}</Label>
+            <Label htmlFor="api-key" className="text-orange-100/80">{t("API Key")}</Label>
             <Select value={selectedKeyId} onValueChange={setSelectedKeyId}>
-              <SelectTrigger>
+              <SelectTrigger className="bg-black/40 border-orange-500/20 focus:ring-orange-500/50 text-orange-50 h-11">
                 <SelectValue placeholder={t("Select an API key")} />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="bg-black/90 border-orange-500/30 text-orange-50">
                 {apiKeys.map((key) => (
-                  <SelectItem key={key.id} value={key.id}>
+                  <SelectItem key={key.id} value={key.id} className="focus:bg-orange-500/20 focus:text-orange-100 cursor-pointer">
                     <div className="flex items-center justify-between w-full">
-                      <span>{key.label}</span>
-                      <div className="flex">
+                      <span className="font-medium">{key.label}</span>
+                      <div className="flex items-center gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
@@ -493,9 +496,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                             e.stopPropagation();
                             handleEditKeyInit(key);
                           }}
-                          className="h-6 w-6 p-0 ml-2"
+                          className="h-7 w-7 p-0 hover:bg-orange-500/20 hover:text-orange-300"
                         >
-                          <Pencil className="h-3 w-3" />
+                          <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -504,9 +507,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                             e.stopPropagation();
                             handleDeleteKey(key.id);
                           }}
-                          className="h-6 w-6 p-0 ml-2"
+                          className="h-7 w-7 p-0 hover:bg-red-900/30 hover:text-red-400"
                         >
-                          <Trash2 className="h-3 w-3" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </div>
@@ -517,7 +520,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">{t("Password")}</Label>
+            <Label htmlFor="password" className="text-orange-100/80">{t("Password")}</Label>
             <Input
               id="password"
               type="password"
@@ -525,71 +528,58 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               onChange={(e) => setPassword(e.target.value)}
               placeholder={t("Enter your password")}
               onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 placeholder:text-orange-500/20"
             />
           </div>
 
           <Button
             onClick={handleLogin}
-            className="w-full"
+            className="w-full h-12 text-lg font-semibold shadow-[0_0_20px_rgba(255,80,0,0.3)] hover:shadow-[0_0_30px_rgba(255,80,0,0.5)] transition-all duration-300"
             disabled={isLoading || !selectedKeyId || !password}
           >
             {isLoading ? t("Logging in...") : t("Login")}
           </Button>
 
-          <div className="flex flex-wrap gap-2">
-            <AddKeyDialog
-              open={showAddKey}
-              onOpenChange={setShowAddKey}
-              label={newKeyLabel}
-              onLabelChange={setNewKeyLabel}
-              apiKey={newApiKey}
-              onApiKeyChange={setNewApiKey}
-              email={newEmail}
-              onEmailChange={setNewEmail}
-              password={newPassword}
-              onPasswordChange={setNewPassword}
-              onAdd={handleAddKey}
-            />
-
-            <EncryptionSettingsDialog
-              open={showSettings}
-              onOpenChange={setShowSettings}
-              settings={encryptionSettings}
-              onSettingsChange={setEncryptionSettings}
-              onBenchmark={handleBenchmark}
-              onUpdate={handleUpdateSettings}
-              benchmarkResult={benchmarkResult}
-              vaultEnabled={vaultEnabled}
-              onVaultEnabledChange={(enabled: boolean) => {
-                setVaultEnabled(enabled);
-                storageManager.setVaultEnabled(enabled);
-              }}
-            />
+          <div className="grid grid-cols-2 gap-3 pt-2">
             <Button
-              variant="outline"
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowAddKey(true)}
+              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+            >
+              Add New Key
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowSettings(true)}
+              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+            >
+              Settings
+            </Button>
+            
+            <Button
+              variant="secondary"
               size="sm"
               onClick={handleRegisterPasskey}
               disabled={!selectedKeyId || !password || passkeyRegisterLoading}
+              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
             >
               {passkeyRegisterLoading ? "Registering..." : "Register Passkey"}
             </Button>
-            <PasskeyManagerDialog
-              open={showManagePasskeys}
-              onOpenChange={(open: boolean) => {
-                if (!open) {
-                  setShowManagePasskeys(false);
-                  setPasskeyViewKey("");
-                  setPasskeyViewEmail(undefined);
-                } else {
-                  setShowManagePasskeys(true);
-                }
-              }}
-              id={selectedKeyId}
-              apiKey={passkeyViewKey}
-              email={passkeyViewEmail}
-            />
+            
             <Button
-              variant="outline"
+              variant="secondary"
+              size="sm"
+              onClick={handleUsePasskey}
+              disabled={!selectedKeyId || passkeyAuthLoading}
+              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+            >
+              {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
+            </Button>
+
+            <Button
+              variant="secondary"
               size="sm"
               onClick={async () => {
                 if (!selectedKeyId || !password) return;
@@ -619,17 +609,11 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                 }
               }}
               disabled={!selectedKeyId || !password}
+              className="col-span-2 bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
             >
               Manage Passkeys
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleUsePasskey}
-              disabled={!selectedKeyId || passkeyAuthLoading}
-            >
-              {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
-            </Button>
+
             {vaultEnabled && (
               <Button
                 variant="destructive"
@@ -674,11 +658,59 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                     });
                   }
                 }}
+                className="col-span-2 bg-red-900/20 border border-red-500/30 hover:bg-red-900/40 text-red-200"
               >
                 Remove Vault Secret
               </Button>
             )}
           </div>
+
+          {/* Dialogs remain unchanged in logic, just rendering them here */}
+          <AddKeyDialog
+            open={showAddKey}
+            onOpenChange={setShowAddKey}
+            label={newKeyLabel}
+            onLabelChange={setNewKeyLabel}
+            apiKey={newApiKey}
+            onApiKeyChange={setNewApiKey}
+            email={newEmail}
+            onEmailChange={setNewEmail}
+            password={newPassword}
+            onPasswordChange={setNewPassword}
+            onAdd={handleAddKey}
+          />
+
+          <EncryptionSettingsDialog
+            open={showSettings}
+            onOpenChange={setShowSettings}
+            settings={encryptionSettings}
+            onSettingsChange={setEncryptionSettings}
+            onBenchmark={handleBenchmark}
+            onUpdate={handleUpdateSettings}
+            benchmarkResult={benchmarkResult}
+            vaultEnabled={vaultEnabled}
+            onVaultEnabledChange={(enabled: boolean) => {
+              setVaultEnabled(enabled);
+              storageManager.setVaultEnabled(enabled);
+            }}
+          />
+          
+          <PasskeyManagerDialog
+            open={showManagePasskeys}
+            onOpenChange={(open: boolean) => {
+              if (!open) {
+                setShowManagePasskeys(false);
+                setPasskeyViewKey("");
+                setPasskeyViewEmail(undefined);
+              } else {
+                setShowManagePasskeys(true);
+              }
+            }}
+            id={selectedKeyId}
+            apiKey={passkeyViewKey}
+            email={passkeyViewEmail}
+          />
+
           <EditKeyDialog
             open={showEditKey}
             onOpenChange={setShowEditKey}
