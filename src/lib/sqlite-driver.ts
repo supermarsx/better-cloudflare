@@ -33,33 +33,38 @@ type BetterSqlite3Like = {
 function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
   return {
     type: "better-sqlite3",
-    run(sql: string, params: any[] = []) {
+    run(sql: string, params?: unknown[]) {
       try {
-        const res = db.prepare(sql).run(...params);
+        const p = (params ?? []) as any[];
+        const res = (db as any).prepare(sql).run(...p);
         return Promise.resolve(res);
       } catch (e) {
         return Promise.reject(e);
       }
     },
-    all(sql: string, params: any[] = []) {
+    all<T = unknown>(sql: string, params?: unknown[]) {
       try {
-        const rows = db.prepare(sql).all(...params);
+        const p = (params ?? []) as any[];
+        const prep: any = (db as any).prepare(sql);
+        const rows: T[] = prep && typeof prep.all === "function" ? (prep.all(...p) as T[]) : ([] as T[]);
         return Promise.resolve(rows);
       } catch (e) {
         return Promise.reject(e);
       }
     },
-    get(sql: string, params: any[] = []) {
+    get<T = unknown>(sql: string, params?: unknown[]) {
       try {
-        const row = db.prepare(sql).get(...params);
-        return Promise.resolve(row);
+        const p = (params ?? []) as any[];
+        const prep: any = (db as any).prepare(sql);
+        const row = prep && typeof prep.get === "function" ? (prep.get(...p) as T) : undefined;
+        return Promise.resolve(row as T | undefined);
       } catch (e) {
         return Promise.reject(e);
       }
     },
     close() {
       try {
-        db.close();
+        if (typeof (db as any).close === "function") (db as any).close();
         return Promise.resolve();
       } catch (e) {
         return Promise.reject(e);

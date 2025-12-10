@@ -92,11 +92,11 @@ export function getStorage(storage?: StorageLike): StorageLike {
             },
           });
           try {
-            // @ts-expect-error - idb runtime methods accessed via dynamic import
+            // dynamic idb runtime methods accessed via dynamic import
             const keys = await (this.db as IDBRuntime).getAllKeys?.("kv");
             for (const k of keys) {
               try {
-                // @ts-expect-error runtime access
+                // runtime access
                 const v = await (this.db as IDBRuntime).get?.("kv", k);
                 this.store[k] = String(v);
               } catch {
@@ -116,14 +116,14 @@ export function getStorage(storage?: StorageLike): StorageLike {
         setItem(key: string, value: string) {
           this.store[key] = String(value);
           if (this.initialized) {
-            // @ts-expect-error runtime call to idb. We don't block on errors.
+            // runtime call to idb. We don't block on errors.
             (this.db as IDBRuntime).put?.("kv", value, key).catch(() => {});
           }
         }
         removeItem(key: string) {
           delete this.store[key];
           if (this.initialized) {
-            // @ts-expect-error runtime call
+            // runtime call
             (this.db as IDBRuntime).delete?.("kv", key).catch(() => {});
           }
         }

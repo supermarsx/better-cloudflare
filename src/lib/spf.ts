@@ -1,5 +1,51 @@
-import { promises as dnsPromises } from "node:dns";
-import net from "node:net";
+// runtime access to Node DNS and net modules without static imports to avoid Vite externalization
+function getRuntimeRequire(): ((name: string) => any) | undefined {
+  try {
+    if (typeof (globalThis as any).require === "function") return (globalThis as any).require;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const r = eval("typeof require === 'function' ? require : undefined");
+    return typeof r === "function" ? r : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getDnsPromisesModule(): any | undefined {
+  if ((globalThis as any).__dnsPromises) return (globalThis as any).__dnsPromises;
+  const req = getRuntimeRequire();
+  if (!req) return undefined;
+  try {
+    const mod = req("node:dns") || req("dns");
+    const p = mod && mod.promises ? mod.promises : mod;
+    (globalThis as any).__dnsPromises = p;
+    return p;
+  } catch {
+    return undefined;
+  }
+}
+
+function getNetModule(): any | undefined {
+  if ((globalThis as any).__netModule) return (globalThis as any).__netModule;
+  const req = getRuntimeRequire();
+  if (!req) return undefined;
+  try {
+    const m = req("node:net") || req("net");
+    (globalThis as any).__netModule = m;
+    return m;
+  } catch {
+    return undefined;
+  }
+}
+
+function getNetIsIP(addr: string): number {
+  const m = getNetModule();
+  if (m && typeof m.isIP === "function") return m.isIP(addr);
+  // simple fallback
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(addr)) return 4;
+  if (addr.includes(":")) return 6;
+  return 0;
+}
+
 
 export type SPFMechanism = {
   qualifier?: string; // + - ~ ?
@@ -73,12 +119,33 @@ export type DNSResolver = {
 };
 
 const defaultDnsResolver: DNSResolver = {
-  resolveTxt: (d: string) => dnsPromises.resolveTxt(d),
-  resolve4: (d: string) => dnsPromises.resolve4(d),
-  resolve6: (d: string) => dnsPromises.resolve6(d),
-  resolveMx: (d: string) => dnsPromises.resolveMx(d),
-  reverse: (d: string) => dnsPromises.reverse(d),
+  resolveTxt: (d: string) => {
+    const p = getDnsPromisesModule();
+    if (p && typeof p.resolveTxt === "function") return p.resolveTxt(d);
+    return Promise.reject(new Error("DNS resolver not available in this environment"));
+  },
+  resolve4: (d: string) => {
+    const p = getDnsPromisesModule();
+    if (p && typeof p.resolve4 === "function") return p.resolve4(d);
+    return Promise.reject(new Error("DNS resolver not available in this environment"));
+  },
+  resolve6: (d: string) => {
+    const p = getDnsPromisesModule();
+    if (p && typeof p.resolve6 === "function") return p.resolve6(d);
+    return Promise.reject(new Error("DNS resolver not available in this environment"));
+  },
+  resolveMx: (d: string) => {
+    const p = getDnsPromisesModule();
+    if (p && typeof p.resolveMx === "function") return p.resolveMx(d);
+    return Promise.reject(new Error("DNS resolver not available in this environment"));
+  },
+  reverse: (d: string) => {
+    const p = getDnsPromisesModule();
+    if (p && typeof p.reverse === "function") return p.reverse(d);
+    return Promise.reject(new Error("DNS resolver not available in this environment"));
+  },
 };
+
 
 let dnsResolver: DNSResolver = defaultDnsResolver;
 export function setDnsResolverForTest(resolver: DNSResolver | undefined) {
@@ -185,7 +252,7 @@ async function resolveTxtCached(domain: string): Promise<string[][]> {
     dnsCache.set(key, val);
     return val;
   } catch (err) {
-    dnsCache.set(key, err);
+    dnsCache.set(key, err as Error);
     throw err;
   }
 }
@@ -366,8 +433,8 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
     if (!cidr.includes("/")) return ip === cidr;
     let [base, prefix] = cidr.split("/");
     // Use net.isIP and compare network prefix via buffer
-    let ipType = net.isIP(ip);
-    let baseType = net.isIP(base);
+    let ipType = getNetIsIP(ip);
+    let baseType = getNetIsIP(base);
     // Support IPv4-mapped IPv6 addresses (e.g. ::ffff:1.2.3.4) by treating
     // them as IPv4 for the purpose of IPv4 CIDR comparisons.
     const isIPv4Mapped = (addr: string) =>
@@ -423,7 +490,7 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
         // convert dotted IPv4 at the end into two hextets
         const ipv4 = last;
         const octets = ipv4.split(".").map(Number);
-        if (octets.length === 4 && octets.every((o) => !Number.isNaN(o))) {
+        if (octets.length === 4 && octets.every((o: number) => !Number.isNaN(o))) {
           const hex1 = ((octets[0] << 8) | octets[1])
             .toString(16)
             .padStart(4, "0");
