@@ -392,8 +392,8 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       // Require server auth to manipulate vault secrets
       createClient(req);
-      const id = String((req.params as any).id);
-      const secret = (req.body as any)?.secret;
+      const id = String(req.params?.id);
+      const secret = req.body?.secret;
       if (!id || !secret) {
         res.status(400).json({ error: "Missing id or secret" });
         return;
@@ -415,7 +415,7 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       createClient(req);
-      const id = String((req.params as any).id);
+      const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -441,7 +441,7 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       createClient(req);
-      const id = String((req.params as any).id);
+      const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -479,14 +479,14 @@ export class ServerAPI {
       }
       const client = createClient(req);
       const record = await client.updateDNSRecord(
-        String((req.params as any).zone),
-        String((req.params as any).id),
+        String(req.params?.zone),
+        String(req.params?.id),
         parsed.data,
       );
       logAudit({
         operation: "dns:update",
         actor: actorFromReq(req),
-        resource: `zone:${String((req.params as any).zone)}/record:${String((req.params as any).id)}`,
+        resource: `zone:${String(req.params?.zone)}/record:${String(req.params?.id)}`,
         details: { record },
       });
       res.json(record);
@@ -502,11 +502,11 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
-      await client.deleteDNSRecord(String((req.params as any).zone), String((req.params as any).id));
+      await client.deleteDNSRecord(String(req.params?.zone), String(req.params?.id));
       logAudit({
         operation: "dns:delete",
         actor: actorFromReq(req),
-        resource: `zone:${String((req.params as any).zone)}/record:${String((req.params as any).id)}`,
+        resource: `zone:${String(req.params?.zone)}/record:${String(req.params?.id)}`,
       });
       res.json({ success: true });
     };
@@ -531,7 +531,7 @@ export class ServerAPI {
      * `@simplewebauthn/server` to craft proper registration options.
      */
     return async (req: Request, res: Response) => {
-      const id = String((req.params as any).id);
+      const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -646,7 +646,7 @@ export class ServerAPI {
      * Generate a challenge for WebAuthn authentication (assertion).
      */
     return async (req: Request, res: Response) => {
-      const id = String((req.params as any).id);
+      const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -711,8 +711,8 @@ export class ServerAPI {
 
   static deletePasskey() {
     return async (req: Request, res: Response) => {
-      const id = String((req.params as any).id);
-      const cid = String((req.params as any).cid);
+      const id = String(req.params?.id);
+      const cid = String(req.params?.cid);
       if (!id || !cid) {
         res.status(400).json({ error: "Missing id or credential id" });
         return;
@@ -726,7 +726,7 @@ export class ServerAPI {
       }
       const creds = Array.isArray(stored) ? stored : [];
       const filtered = creds.filter((c) => {
-        const key = (c as any).credentialID || (c as any).id;
+        const key = c.credentialID || c.id;
         const keyStr =
           typeof key === "string" ? key : Buffer.from(String(key)).toString("base64");
         // direct match on id string
@@ -747,15 +747,15 @@ export class ServerAPI {
       for (const c of creds) {
         await ServerAPI.credentialStore.deleteCredential(
           id,
-          String((c as any).credentialID ?? (c as any).id),
+          String(c.credentialID ?? c.id),
         );
       }
       for (const c of filtered) {
         await ServerAPI.credentialStore.addCredential(id, {
-          credentialID: (c as any).credentialID ?? (c as any).id,
-          credentialPublicKey: (c as any).credentialPublicKey ?? (c as any).publicKey,
-          counter: (c as any).counter ?? 0,
-        } as any);
+          credentialID: c.credentialID ?? c.id ?? "",
+          credentialPublicKey: c.credentialPublicKey ?? c.publicKey,
+          counter: c.counter ?? 0,
+        });
       }
       logAudit({
         operation: "passkey:delete",
@@ -854,18 +854,23 @@ export class ServerAPI {
         await db.run(
           "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, roles TEXT)",
         );
-        const row = await db.get(
+        interface UserRow {
+          id: string;
+          email: string;
+          roles: string;
+        }
+        const row = (await db.get(
           "SELECT id, email, roles FROM users WHERE id = ?",
           [id],
-        );
+        )) as UserRow | undefined;
         if (!row) {
           res.status(404).json({ error: "Not found" });
           return;
         }
         res.json({
-          id: (row as any).id,
-          email: (row as any).email,
-          roles: JSON.parse(((row as any).roles as string) || "[]"),
+          id: row.id,
+          email: row.email,
+          roles: JSON.parse(row.roles || "[]"),
         });
         logAudit({
           operation: "user:get",
@@ -933,8 +938,8 @@ export class ServerAPI {
      * library (e.g. `@simplewebauthn/server`).
      */
     return async (req: Request, res: Response) => {
-      const id = String((req.params as any).id);
-      const body = req.body as any;
+      const id = String(req.params?.id);
+      const body = req.body;
       if (!id || !body) {
         res.status(400).json({ error: "Missing id or body" });
         return;

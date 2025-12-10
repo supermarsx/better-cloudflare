@@ -145,7 +145,7 @@ test("registerPasskey supports multiple credentials", async () => {
   ).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: {
-      credentialID: `cid-${Date.now()}`,
+      credentialID: `cid-${Date.now()}-${Math.random()}`,
       credentialPublicKey: "pk",
       counter: 0,
     },
@@ -195,7 +195,7 @@ test("listPasskeys returns stored credentials and deletePasskey removes one", as
   ).verifyRegistrationResponse = async () => ({
     verified: true,
     registrationInfo: {
-      credentialID: `cid-${Date.now()}`,
+      credentialID: `cid-${Date.now()}-${Math.random()}`,
       credentialPublicKey: "pk",
       counter: 0,
     },
