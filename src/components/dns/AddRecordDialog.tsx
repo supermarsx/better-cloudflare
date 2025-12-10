@@ -25,6 +25,16 @@ import {
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
+import {
+  parseSRV,
+  composeSRV,
+  parseTLSA,
+  composeTLSA,
+  parseSSHFP,
+  composeSSHFP,
+  parseNAPTR,
+  composeNAPTR,
+} from "@/lib/dns-parsers";
 import type { SPFGraph, SPFMechanism } from "@/lib/spf";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useTranslation } from "react-i18next";
@@ -71,33 +81,7 @@ export function AddRecordDialog({
   const ttlValue = record.ttl === 1 ? "auto" : record.ttl;
   const isCustomTTL =
     ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
-  // SRV fields (priority weight port target) parsed from record.content
-  const parseSRV = useCallback((content?: string) => {
-    if (!content)
-      return {
-        priority: undefined,
-        weight: undefined,
-        port: undefined,
-        target: "",
-      };
-    const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 4)
-      return {
-        priority: undefined,
-        weight: undefined,
-        port: undefined,
-        target: content,
-      };
-    const [priority, weight, port, ...rest] = parts;
-    return {
-      priority: Number(priority),
-      weight: Number(weight),
-      port: Number(port),
-      target: rest.join(" "),
-    };
-  }, []);
-  const composeSRV = (p?: number, w?: number, prt?: number, t?: string) =>
-    `${p ?? 0} ${w ?? 0} ${prt ?? 0} ${t ?? ""}`;
+  
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
     parseSRV(record.content).priority,
   );
@@ -110,33 +94,7 @@ export function AddRecordDialog({
   const [srvTarget, setSrvTarget] = useState<string>(
     parseSRV(record.content).target ?? "",
   );
-  // TLSA fields (usage selector matchingType data)
-  const parseTLSA = useCallback((content?: string) => {
-    if (!content)
-      return {
-        usage: undefined,
-        selector: undefined,
-        matchingType: undefined,
-        data: "",
-      };
-    const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 4)
-      return {
-        usage: undefined,
-        selector: undefined,
-        matchingType: undefined,
-        data: content,
-      };
-    const [usage, selector, matchingType, ...rest] = parts;
-    return {
-      usage: Number(usage),
-      selector: Number(selector),
-      matchingType: Number(matchingType),
-      data: rest.join(" "),
-    };
-  }, []);
-  const composeTLSA = (u?: number, s?: number, m?: number, d?: string) =>
-    `${u ?? 0} ${s ?? 0} ${m ?? 0} ${d ?? ""}`;
+  
   const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
     parseTLSA(record.content).usage,
   );
@@ -149,22 +107,7 @@ export function AddRecordDialog({
   const [tlsaData, setTlsaData] = useState<string>(
     parseTLSA(record.content).data ?? "",
   );
-  // SSHFP fields (algorithm, fptype, fingerprint)
-  const parseSSHFP = useCallback((content?: string) => {
-    if (!content)
-      return { algorithm: undefined, fptype: undefined, fingerprint: "" };
-    const parts = String(content).trim().split(/\s+/);
-    if (parts.length < 3)
-      return { algorithm: undefined, fptype: undefined, fingerprint: content };
-    const [algorithm, fptype, ...rest] = parts;
-    return {
-      algorithm: Number(algorithm),
-      fptype: Number(fptype),
-      fingerprint: rest.join(" "),
-    };
-  }, []);
-  const composeSSHFP = (a?: number, f?: number, fp?: string) =>
-    `${a ?? 0} ${f ?? 0} ${fp ?? ""}`;
+  
   const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
     parseSSHFP(record.content).algorithm,
   );
@@ -174,68 +117,7 @@ export function AddRecordDialog({
   const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(
     parseSSHFP(record.content).fingerprint ?? "",
   );
-  const splitNaptrTokens = useCallback((s: string) => {
-    const tokens: string[] = [];
-    let current = "";
-    let inQuote = false;
-    for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-      if (ch === '"') {
-        inQuote = !inQuote;
-        current += ch;
-        continue;
-      }
-      if (ch === " " && !inQuote) {
-        if (current.trim().length > 0) {
-          tokens.push(current.trim());
-          current = "";
-        }
-        continue;
-      }
-      current += ch;
-    }
-    if (current.trim().length > 0) tokens.push(current.trim());
-    return tokens;
-  }, []);
-
-  const parseNAPTR = useCallback(
-    (content?: string) => {
-      if (!content)
-        return {
-          order: undefined,
-          preference: undefined,
-          flags: "",
-          service: "",
-          regexp: "",
-          replacement: "",
-        };
-      const tokens = splitNaptrTokens(String(content).trim());
-      const [order, preference, flags, service, regexp, replacement] = tokens;
-      return {
-        order: Number(order),
-        preference: Number(preference),
-        flags: flags?.replace(/^"|"$/g, ""),
-        service,
-        regexp: regexp?.replace(/^"|"$/g, ""),
-        replacement,
-      };
-    },
-    [splitNaptrTokens] as const,
-  );
-  const quoteIfNeeded = (s?: string) => {
-    if (!s) return "";
-    if (/\s/.test(s) || /"/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
-    return s;
-  };
-  const composeNAPTR = (
-    o?: number,
-    p?: number,
-    f?: string,
-    s?: string,
-    r?: string,
-    rep?: string,
-  ) =>
-    `${o ?? 0} ${p ?? 0} ${f ?? ""} ${s ?? ""} ${quoteIfNeeded(r)} ${rep ?? ""}`;
+  
   const [naptrOrder, setNaptrOrder] = useState<number | undefined>(
     parseNAPTR(record.content).order,
   );
@@ -258,44 +140,65 @@ export function AddRecordDialog({
   useEffect(() => {
     if (record.type === "SRV") {
       const parsed = parseSRV(record.content);
-      setSrvPriority(parsed.priority);
-      setSrvWeight(parsed.weight);
-      setSrvPort(parsed.port);
-      setSrvTarget(parsed.target ?? "");
+      if (parsed.priority !== srvPriority) setSrvPriority(parsed.priority);
+      if (parsed.weight !== srvWeight) setSrvWeight(parsed.weight);
+      if (parsed.port !== srvPort) setSrvPort(parsed.port);
+      if (parsed.target !== srvTarget) setSrvTarget(parsed.target ?? "");
     }
   }, [
     record.type,
     record.content,
-    parseNAPTR,
-    parseSSHFP,
-    parseTLSA,
-    parseSRV,
+    srvPriority,
+    srvWeight,
+    srvPort,
+    srvTarget,
   ]);
   useEffect(() => {
     if (record.type === "TLSA") {
       const parsed = parseTLSA(record.content);
-      setTlsaUsage(parsed.usage);
-      setTlsaSelector(parsed.selector);
-      setTlsaMatchingType(parsed.matchingType);
-      setTlsaData(parsed.data ?? "");
+      if (parsed.usage !== tlsaUsage) setTlsaUsage(parsed.usage);
+      if (parsed.selector !== tlsaSelector) setTlsaSelector(parsed.selector);
+      if (parsed.matchingType !== tlsaMatchingType)
+        setTlsaMatchingType(parsed.matchingType);
+      if (parsed.data !== tlsaData) setTlsaData(parsed.data ?? "");
     }
     if (record.type === "SSHFP") {
       const parsed = parseSSHFP(record.content);
-      setSshfpAlgorithm(parsed.algorithm);
-      setSshfpFptype(parsed.fptype);
-      setSshfpFingerprint(parsed.fingerprint ?? "");
+      if (parsed.algorithm !== sshfpAlgorithm)
+        setSshfpAlgorithm(parsed.algorithm);
+      if (parsed.fptype !== sshfpFptype) setSshfpFptype(parsed.fptype);
+      if (parsed.fingerprint !== sshfpFingerprint)
+        setSshfpFingerprint(parsed.fingerprint ?? "");
     }
     if (record.type === "NAPTR") {
       const parsed = parseNAPTR(record.content);
-      setNaptrOrder(parsed.order);
-      setNaptrPref(parsed.preference);
-      setNaptrFlags(parsed.flags ?? "");
-      setNaptrService(parsed.service ?? "");
-      setNaptrRegexp(parsed.regexp ?? "");
-      setNaptrReplacement(parsed.replacement ?? "");
+      if (parsed.order !== naptrOrder) setNaptrOrder(parsed.order);
+      if (parsed.preference !== naptrPref) setNaptrPref(parsed.preference);
+      if (parsed.flags !== naptrFlags) setNaptrFlags(parsed.flags ?? "");
+      if (parsed.service !== naptrService)
+        setNaptrService(parsed.service ?? "");
+      if (parsed.regexp !== naptrRegexp) setNaptrRegexp(parsed.regexp ?? "");
+      if (parsed.replacement !== naptrReplacement)
+        setNaptrReplacement(parsed.replacement ?? "");
     }
     // SSHFP state managed similarly below
-  }, [record.type, record.content, parseNAPTR, parseSSHFP, parseTLSA]);
+  }, [
+    record.type,
+    record.content,
+    tlsaUsage,
+    tlsaSelector,
+    tlsaMatchingType,
+    tlsaData,
+    sshfpAlgorithm,
+    sshfpFptype,
+    sshfpFingerprint,
+    naptrOrder,
+    naptrPref,
+    naptrFlags,
+    naptrService,
+    naptrRegexp,
+    naptrReplacement,
+  ]);
 
   // SPF state and builder
   const parsedSPF = parseSPF(record.content);

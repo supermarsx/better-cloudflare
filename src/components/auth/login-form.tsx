@@ -360,7 +360,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               title: "Error",
               description: "No secret in vault for this key",
               variant: "destructive",
-            });
+              });
           }
         } else {
           toast({
@@ -558,64 +558,71 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             >
               Settings
             </Button>
-            
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleRegisterPasskey}
-              disabled={!selectedKeyId || !password || passkeyRegisterLoading}
-              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-            >
-              {passkeyRegisterLoading ? "Registering..." : "Register Passkey"}
-            </Button>
-            
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleUsePasskey}
-              disabled={!selectedKeyId || passkeyAuthLoading}
-              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-            >
-              {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
-            </Button>
+          </div>
 
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={async () => {
-                if (!selectedKeyId || !password) return;
-                try {
-                  const decrypted = await storageManager.getDecryptedApiKey(
-                    selectedKeyId,
-                    password,
-                  );
-                  if (!decrypted?.key) {
+          <div className="space-y-2 pt-4 border-t border-orange-500/20">
+            <Label className="text-orange-100/60 text-xs uppercase tracking-wider font-semibold pl-1">Passkeys</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleRegisterPasskey}
+                disabled={!selectedKeyId || !password || passkeyRegisterLoading}
+                className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+              >
+                {passkeyRegisterLoading ? "Registering..." : "Register"}
+              </Button>
+              
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleUsePasskey}
+                disabled={!selectedKeyId || passkeyAuthLoading}
+                className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+              >
+                {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
+              </Button>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={async () => {
+                  if (!selectedKeyId || !password) return;
+                  try {
+                    const decrypted = await storageManager.getDecryptedApiKey(
+                      selectedKeyId,
+                      password,
+                    );
+                    if (!decrypted?.key) {
+                      toast({
+                        title: "Error",
+                        description: "Invalid password",
+                        variant: "destructive",
+                      });
+                      return;
+                    }
+                    setPasskeyViewKey(decrypted.key);
+                    setPasskeyViewEmail(decrypted.email);
+                    setShowManagePasskeys(true);
+                  } catch (err) {
                     toast({
                       title: "Error",
-                      description: "Invalid password",
+                      description:
+                        "Failed to decrypt key: " + (err as Error).message,
                       variant: "destructive",
                     });
-                    return;
                   }
-                  setPasskeyViewKey(decrypted.key);
-                  setPasskeyViewEmail(decrypted.email);
-                  setShowManagePasskeys(true);
-                } catch (err) {
-                  toast({
-                    title: "Error",
-                    description:
-                      "Failed to decrypt key: " + (err as Error).message,
-                    variant: "destructive",
-                  });
-                }
-              }}
-              disabled={!selectedKeyId || !password}
-              className="col-span-2 bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-            >
-              Manage Passkeys
-            </Button>
+                }}
+                disabled={!selectedKeyId || !password}
+                className="col-span-2 bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
+              >
+                Manage Passkeys
+              </Button>
+            </div>
+          </div>
 
-            {vaultEnabled && (
+          {vaultEnabled && (
+            <div className="pt-2">
               <Button
                 variant="destructive"
                 size="sm"
@@ -659,12 +666,12 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                     });
                   }
                 }}
-                className="col-span-2 bg-red-900/20 border border-red-500/30 hover:bg-red-900/40 text-red-200"
+                className="w-full bg-red-900/20 border border-red-500/30 hover:bg-red-900/40 text-red-200"
               >
                 Remove Vault Secret
               </Button>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Dialogs remain unchanged in logic, just rendering them here */}
           <AddKeyDialog

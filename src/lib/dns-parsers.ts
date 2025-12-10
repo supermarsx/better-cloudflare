@@ -120,3 +120,138 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
 
   return records;
 }
+
+export const parseSRV = (content?: string) => {
+  if (!content)
+    return {
+      priority: undefined,
+      weight: undefined,
+      port: undefined,
+      target: "",
+    };
+  const parts = String(content).trim().split(/\s+/);
+  if (parts.length < 4)
+    return {
+      priority: undefined,
+      weight: undefined,
+      port: undefined,
+      target: content,
+    };
+  const [priority, weight, port, ...rest] = parts;
+  return {
+    priority: Number(priority),
+    weight: Number(weight),
+    port: Number(port),
+    target: rest.join(" "),
+  };
+};
+
+export const composeSRV = (p?: number, w?: number, prt?: number, t?: string) =>
+  `${p ?? 0} ${w ?? 0} ${prt ?? 0} ${t ?? ""}`;
+
+export const parseTLSA = (content?: string) => {
+  if (!content)
+    return {
+      usage: undefined,
+      selector: undefined,
+      matchingType: undefined,
+      data: "",
+    };
+  const parts = String(content).trim().split(/\s+/);
+  if (parts.length < 4)
+    return {
+      usage: undefined,
+      selector: undefined,
+      matchingType: undefined,
+      data: content,
+    };
+  const [usage, selector, matchingType, ...rest] = parts;
+  return {
+    usage: Number(usage),
+    selector: Number(selector),
+    matchingType: Number(matchingType),
+    data: rest.join(" "),
+  };
+};
+
+export const composeTLSA = (u?: number, s?: number, m?: number, d?: string) =>
+  `${u ?? 0} ${s ?? 0} ${m ?? 0} ${d ?? ""}`;
+
+export const parseSSHFP = (content?: string) => {
+  if (!content)
+    return { algorithm: undefined, fptype: undefined, fingerprint: "" };
+  const parts = String(content).trim().split(/\s+/);
+  if (parts.length < 3)
+    return { algorithm: undefined, fptype: undefined, fingerprint: content };
+  const [algorithm, fptype, ...rest] = parts;
+  return {
+    algorithm: Number(algorithm),
+    fptype: Number(fptype),
+    fingerprint: rest.join(" "),
+  };
+};
+
+export const composeSSHFP = (a?: number, f?: number, fp?: string) =>
+  `${a ?? 0} ${f ?? 0} ${fp ?? ""}`;
+
+const splitNaptrTokens = (s: string) => {
+  const tokens: string[] = [];
+  let current = "";
+  let inQuote = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"') {
+      inQuote = !inQuote;
+      current += ch;
+      continue;
+    }
+    if (ch === " " && !inQuote) {
+      if (current.trim().length > 0) {
+        tokens.push(current.trim());
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim().length > 0) tokens.push(current.trim());
+  return tokens;
+};
+
+export const parseNAPTR = (content?: string) => {
+  if (!content)
+    return {
+      order: undefined,
+      preference: undefined,
+      flags: "",
+      service: "",
+      regexp: "",
+      replacement: "",
+    };
+  const tokens = splitNaptrTokens(String(content).trim());
+  const [order, preference, flags, service, regexp, replacement] = tokens;
+  return {
+    order: Number(order),
+    preference: Number(preference),
+    flags: flags?.replace(/^"|"$/g, ""),
+    service,
+    regexp: regexp?.replace(/^"|"$/g, ""),
+    replacement,
+  };
+};
+
+const quoteIfNeeded = (s?: string) => {
+  if (!s) return "";
+  if (/\s/.test(s) || /"/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+  return s;
+};
+
+export const composeNAPTR = (
+  o?: number,
+  p?: number,
+  f?: string,
+  s?: string,
+  r?: string,
+  rep?: string,
+) =>
+  `${o ?? 0} ${p ?? 0} ${f ?? ""} ${s ?? ""} ${quoteIfNeeded(r)} ${rep ?? ""}`;
