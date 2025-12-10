@@ -146,7 +146,7 @@ export function getStorage(storage?: StorageLike): StorageLike {
       return IDS as StorageLike;
     }
     if (typeof globalThis !== "undefined" && "localStorage" in globalThis) {
-      const maybeLS = (globalThis as any).localStorage;
+      const maybeLS = (globalThis as unknown as { localStorage: Storage }).localStorage;
       // Ensure global localStorage provides the expected methods; otherwise
       // fall through to the in-memory fallback to avoid runtime errors in
       // non-browser test environments that leak a non-standard value.

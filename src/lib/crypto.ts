@@ -120,7 +120,7 @@ export class CryptoManager {
         return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
       }
       return undefined;
-    } catch (e) {
+    } catch {
       return undefined;
     }
   }
@@ -165,7 +165,7 @@ export class CryptoManager {
       ["deriveBits", "deriveKey"],
     );
 
-    return crypto.subtle.deriveKey(
+    return webcrypto.subtle.deriveKey(
       {
         name: "PBKDF2",
         salt: salt,
