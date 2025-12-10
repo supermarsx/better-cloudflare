@@ -95,7 +95,7 @@ export function AddRecordDialog({
       port: Number(port),
       target: rest.join(" "),
     };
-  }, [] as const);
+  }, []);
   const composeSRV = (p?: number, w?: number, prt?: number, t?: string) =>
     `${p ?? 0} ${w ?? 0} ${prt ?? 0} ${t ?? ""}`;
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
@@ -134,7 +134,7 @@ export function AddRecordDialog({
       matchingType: Number(matchingType),
       data: rest.join(" "),
     };
-  }, [] as const);
+  }, []);
   const composeTLSA = (u?: number, s?: number, m?: number, d?: string) =>
     `${u ?? 0} ${s ?? 0} ${m ?? 0} ${d ?? ""}`;
   const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
@@ -162,7 +162,7 @@ export function AddRecordDialog({
       fptype: Number(fptype),
       fingerprint: rest.join(" "),
     };
-  }, [] as const);
+  }, []);
   const composeSSHFP = (a?: number, f?: number, fp?: string) =>
     `${a ?? 0} ${f ?? 0} ${fp ?? ""}`;
   const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
@@ -196,7 +196,7 @@ export function AddRecordDialog({
     }
     if (current.trim().length > 0) tokens.push(current.trim());
     return tokens;
-  }, [] as const);
+  }, []);
 
   const parseNAPTR = useCallback(
     (content?: string) => {

@@ -25,7 +25,12 @@ import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./import-export-dialog";
 import { RecordRow } from "./RecordRow";
 import { FixedSizeList as List } from "react-window";
-const AnyList = (List as unknown) as any;
+
+// Wrapper to avoid TS issues with react-window FixedSizeList generic types
+const VirtualList = (props: any) => {
+  const { children, ...rest } = props;
+  return <List {...rest}>{children}</List>;
+};
 import { filterRecords } from "./filter-records";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 
@@ -657,7 +662,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <AnyList
+                  <VirtualList
                     height={Math.min(600, filteredRecords.length * 72)}
                     itemCount={filteredRecords.length}
                     itemSize={72}
@@ -686,7 +691,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       );
                     }}
-                  </AnyList>
+                  </VirtualList>
                 </div>
               )}
             </CardContent>

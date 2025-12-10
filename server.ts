@@ -82,12 +82,12 @@ if (DEBUG) {
   // the DEBUG_SERVER flag is enabled. This is intentionally simple and
   // only used during local development; don't enable in production.
   app.use((req: Request, res: Response, next: NextFunction) => {
-    console.debug("Incoming request", req.method, req.originalUrl);
+    console.debug("Incoming request", req.method, (req as any).originalUrl);
     res.on("finish", () => {
       console.debug(
         "Completed request",
         req.method,
-        req.originalUrl,
+        (req as any).originalUrl,
         res.statusCode,
       );
     });

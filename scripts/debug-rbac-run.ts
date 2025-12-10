@@ -1,5 +1,6 @@
 // Debug helper script — keep types narrow where feasible
 import createCredentialStore from "../src/lib/credential-store";
+import type { CredentialStore } from "../src/lib/credential-store";
 import { ServerAPI } from "../src/lib/server-api";
 import { getAuditEntries } from "../src/lib/audit";
 import { isAdmin } from "../src/lib/rbac";
@@ -16,11 +17,11 @@ process.env.ADMIN_TOKEN = "adm-token";
       };
       initPromise?: Promise<unknown>;
     };
-    const store = createCredentialStore() as unknown as AnyStore;
+    const store = createCredentialStore() as unknown as CredentialStore;
     ServerAPI.setCredentialStore(store);
     console.log(
       "Store type",
-      store.db ? store.db.type : store.constructor.name,
+      (store as any).db ? (store as any).db.type : store.constructor.name,
     );
 
     // Create user
@@ -46,7 +47,7 @@ process.env.ADMIN_TOKEN = "adm-token";
     } as unknown as Response;
 
     console.log("Invoking createUser handler...");
-    await handler(req, res);
+    await handler(req as any, res as any);
     console.log(
       "createUser handler returned, status=",
       status,
@@ -56,7 +57,7 @@ process.env.ADMIN_TOKEN = "adm-token";
 
     // Inspect raw DB rows in store
     try {
-      const raw = await store.db?.all?.("SELECT id, email, roles FROM users");
+      const raw = await (store as any).db?.all?.("SELECT id, email, roles FROM users");
       console.log("Raw users in ServerAPI store db:", raw);
     } catch (e) {
       console.log(
@@ -81,7 +82,7 @@ process.env.ADMIN_TOKEN = "adm-token";
     } as unknown as Response;
     const entryHandler = ServerAPI.getAuditEntries();
     try {
-      await entryHandler(arReq, arRes);
+      await entryHandler(arReq as any, arRes as any);
     } catch (err) {
       console.log(
         "Expected error when calling getAuditEntries without credentials:",
@@ -111,9 +112,9 @@ process.env.ADMIN_TOKEN = "adm-token";
       },
     } as unknown as Response;
     // Also inspect the DB used by a newly created store in isAdmin
-    const newStore = createCredentialStore() as unknown as AnyStore;
+    const newStore = createCredentialStore() as unknown as CredentialStore;
     try {
-      const raw2 = await newStore.db?.all("SELECT id, email, roles FROM users");
+      const raw2 = await (newStore as any).db?.all?.("SELECT id, email, roles FROM users");
       console.log("Raw users in new store db:", raw2);
     } catch (e) {
       console.log(
@@ -123,7 +124,7 @@ process.env.ADMIN_TOKEN = "adm-token";
     }
 
     await new Promise<void>((resolve, reject) => {
-      isAdmin(mwReq, mwRes, (err?: unknown) => {
+      isAdmin(mwReq as any, mwRes as any, (err?: unknown) => {
         if (err) return reject(err);
         mwCalled = true;
         resolve();

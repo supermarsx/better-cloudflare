@@ -212,8 +212,8 @@ export class CryptoManager {
 
     return {
       encrypted: this.arrayBufferToBase64(encrypted),
-      salt: this.arrayBufferToBase64(salt),
-      iv: this.arrayBufferToBase64(iv),
+      salt: this.arrayBufferToBase64(salt as any),
+      iv: this.arrayBufferToBase64(iv as any),
     };
   }
 

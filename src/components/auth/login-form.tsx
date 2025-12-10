@@ -457,6 +457,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     storageManager.getVaultEnabled(),
   );
 
+  return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative overflow-hidden">
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
@@ -464,9 +465,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       <Card className="w-full max-w-md relative z-10 border-orange-500/30 shadow-[0_0_40px_-10px_rgba(255,80,0,0.3)] bg-black/60 backdrop-blur-xl">
         <CardHeader className="text-center pb-2">
           <div className="flex justify-center mb-6 relative">
-            <div className="absolute inset-0 bg-orange-500/20 blur-xl rounded-full transform scale-150" />
-            <div className="p-4 bg-gradient-to-br from-orange-900/80 to-black rounded-full border border-orange-500/40 shadow-[0_0_15px_rgba(255,100,0,0.4)] relative z-10">
-              <Key className="h-10 w-10 text-orange-500 drop-shadow-[0_0_8px_rgba(255,100,0,0.8)]" />
+            <div className="absolute inset-0 bg-orange-500/10 blur-lg rounded-full transform scale-125" />
+            <div className="p-4 bg-gradient-to-br from-orange-900/60 to-black rounded-full border border-orange-500/30 shadow-[0_0_10px_rgba(255,100,0,0.2)] relative z-10">
+              <Key className="h-10 w-10 text-orange-500/90 drop-shadow-[0_0_4px_rgba(255,100,0,0.5)]" />
             </div>
           </div>
           <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-red-500 to-orange-600 drop-shadow-sm">

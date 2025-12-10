@@ -2,8 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    turbo: {},
+    // turbo is enabled by default in 'next dev --turbo'
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
