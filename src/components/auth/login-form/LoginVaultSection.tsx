@@ -1,11 +1,11 @@
 import { Button } from "@/components/ui/Button";
 import { useTranslation } from "react-i18next";
 
-interface VaultSectionProps {
+interface LoginVaultSectionProps {
   onRemoveVaultSecret: () => void;
 }
 
-export function VaultSection({ onRemoveVaultSecret }: VaultSectionProps) {
+export function LoginVaultSection({ onRemoveVaultSecret }: LoginVaultSectionProps) {
   const { t } = useTranslation();
 
   return (

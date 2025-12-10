@@ -1,11 +1,11 @@
 import { Button } from "@/components/ui/Button";
 
-interface ActionButtonsProps {
+interface LoginActionButtonsProps {
   onAddKey: () => void;
   onSettings: () => void;
 }
 
-export function ActionButtons({ onAddKey, onSettings }: ActionButtonsProps) {
+export function LoginActionButtons({ onAddKey, onSettings }: LoginActionButtonsProps) {
   return (
     <div className="grid grid-cols-2 gap-3 pt-2">
       <Button

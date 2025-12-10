@@ -9,7 +9,7 @@ export function LoginHeader() {
     <CardHeader className="text-center pb-2">
       <div className="flex justify-center mb-6 relative">
         <div className="absolute inset-0 bg-orange-500/10 blur-lg rounded-full transform scale-125" />
-        <div className="p-4 bg-gradient-to-br from-orange-900/60 to-black rounded-full border border-orange-500/30 shadow-[0_0_10px_rgba(255,100,0,0.2)] relative z-10">
+        <div className="p-4 bg-gradient-to-br from-orange-900/60 to-black rounded-full border border-orange-500/30 relative z-10">
           <Key className="h-10 w-10 text-orange-500/90 drop-shadow-[0_0_4px_rgba(255,100,0,0.5)]" />
         </div>
       </div>

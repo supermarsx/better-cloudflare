@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/Button";
 import { Label } from "@/components/ui/Label";
 
-interface PasskeySectionProps {
+interface LoginPasskeySectionProps {
   onRegister: () => void;
   onUsePasskey: () => void;
   onManagePasskeys: () => void;
@@ -11,7 +11,7 @@ interface PasskeySectionProps {
   authLoading: boolean;
 }
 
-export function PasskeySection({
+export function LoginPasskeySection({
   onRegister,
   onUsePasskey,
   onManagePasskeys,
@@ -19,7 +19,7 @@ export function PasskeySection({
   password,
   registerLoading,
   authLoading,
-}: PasskeySectionProps) {
+}: LoginPasskeySectionProps) {
   return (
     <div className="space-y-2 pt-4 border-t border-orange-500/20">
       <Label className="text-orange-100/60 text-xs uppercase tracking-wider font-semibold pl-1">

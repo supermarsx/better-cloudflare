@@ -12,7 +12,7 @@ import { Pencil, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ApiKey } from "@/types/dns";
 
-interface KeySelectorProps {
+interface LoginKeySelectorProps {
   apiKeys: ApiKey[];
   selectedKeyId: string;
   onSelectKey: (id: string) => void;
@@ -24,7 +24,7 @@ interface KeySelectorProps {
   isLoading: boolean;
 }
 
-export function KeySelector({
+export function LoginKeySelector({
   apiKeys,
   selectedKeyId,
   onSelectKey,
@@ -34,7 +34,7 @@ export function KeySelector({
   onPasswordChange,
   onLogin,
   isLoading,
-}: KeySelectorProps) {
+}: LoginKeySelectorProps) {
   const { t } = useTranslation();
 
   return (

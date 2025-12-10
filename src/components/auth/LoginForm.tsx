@@ -3,30 +3,12 @@
  * API key and verifying it with the server.
  */
 import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/Label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select";
-
+import { Card, CardContent } from "@/components/ui/Card";
+import { useToast } from "@/hooks/use-toast";
 import { storageManager } from "@/lib/storage";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
-import { useToast } from "@/hooks/use-toast";
 import { storageBackend } from "@/lib/storage-util";
 import { useTranslation } from "react-i18next";
-import { Key, Trash2, Pencil } from "lucide-react";
 import { cryptoManager } from "@/lib/crypto";
 import { AddKeyDialog } from "./AddKeyDialog";
 import PasskeyManagerDialog from "./PasskeyManagerDialog";
@@ -34,6 +16,12 @@ import { ServerClient } from "@/lib/server-client";
 import { EncryptionSettingsDialog } from "./EncryptionSettingsDialog";
 import { EditKeyDialog } from "./EditKeyDialog";
 import type { ApiKey } from "@/types/dns";
+
+import { LoginHeader } from "./login-form/LoginHeader";
+import { KeySelector } from "./login-form/KeySelector";
+import { ActionButtons } from "./login-form/ActionButtons";
+import { PasskeySection } from "./login-form/PasskeySection";
+import { VaultSection } from "./login-form/VaultSection";
 
 /**
  * Props for the login form used on the main page to select and decrypt
@@ -454,6 +442,75 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     setShowSettings(false);
   };
 
+  const handleManagePasskeys = async () => {
+    if (!selectedKeyId || !password) return;
+    try {
+      const decrypted = await storageManager.getDecryptedApiKey(
+        selectedKeyId,
+        password,
+      );
+      if (!decrypted?.key) {
+        toast({
+          title: "Error",
+          description: "Invalid password",
+          variant: "destructive",
+        });
+        return;
+      }
+      setPasskeyViewKey(decrypted.key);
+      setPasskeyViewEmail(decrypted.email);
+      setShowManagePasskeys(true);
+    } catch (err) {
+      toast({
+        title: "Error",
+        description:
+          "Failed to decrypt key: " + (err as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRemoveVaultSecret = async () => {
+    if (!selectedKeyId || !password) {
+      toast({
+        title: t("Error"),
+        description: t(
+          "Select key and enter password to delete vault secret",
+        ),
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const dec = await storageManager.getDecryptedApiKey(
+        selectedKeyId,
+        password,
+      );
+      if (!dec?.key) {
+        toast({
+          title: t("Error"),
+          description: t("Invalid password"),
+          variant: "destructive",
+        });
+        return;
+      }
+      const sc = new ServerClient(dec.key, undefined, dec.email);
+      await sc.deleteVaultSecret(selectedKeyId);
+      toast({
+        title: t("Success"),
+        description: t("Vault secret removed"),
+      });
+    } catch (err) {
+      toast({
+        title: t("Error"),
+        description:
+          t("Failed to remove vault secret: ") +
+          (err as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
   const [vaultEnabled, setVaultEnabled] = useState(
     storageManager.getVaultEnabled(),
   );
@@ -464,217 +521,40 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
       
       <Card className="w-full max-w-md relative z-10 border-white/10 shadow-[0_0_15px_rgba(255,255,255,0.1)] bg-black/30 backdrop-blur-xl">
-        <CardHeader className="text-center pb-2">
-          <div className="flex justify-center mb-6 relative">
-            <div className="absolute inset-0 bg-orange-500/10 blur-lg rounded-full transform scale-125" />
-            <div className="p-4 bg-gradient-to-br from-orange-900/60 to-black rounded-full border border-orange-500/30 shadow-[0_0_10px_rgba(255,100,0,0.2)] relative z-10">
-              <Key className="h-10 w-10 text-orange-500/90 drop-shadow-[0_0_4px_rgba(255,100,0,0.5)]" />
-            </div>
-          </div>
-          <CardTitle className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-red-500 to-orange-600 drop-shadow-sm">
-            {t("Cloudflare DNS Manager")}
-          </CardTitle>
-          <CardDescription className="text-orange-100/60 mt-2">
-            {t("Select your API key and enter your password to continue")}
-          </CardDescription>
-        </CardHeader>
+        <LoginHeader />
         <CardContent className="space-y-6 pt-4">
-          <div className="space-y-2">
-            <Label htmlFor="api-key" className="text-orange-100/80">{t("API Key")}</Label>
-            <Select value={selectedKeyId} onValueChange={setSelectedKeyId}>
-              <SelectTrigger className="bg-black/40 border-orange-500/20 focus:ring-orange-500/50 text-orange-50 h-11">
-                <SelectValue placeholder={t("Select an API key")} />
-              </SelectTrigger>
-              <SelectContent className="bg-black/90 border-orange-500/30 text-orange-50">
-                {apiKeys.map((key) => (
-                  <SelectItem key={key.id} value={key.id} className="focus:bg-orange-500/20 focus:text-orange-100 cursor-pointer">
-                    <div className="flex items-center justify-between w-full">
-                      <span className="font-medium">{key.label}</span>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditKeyInit(key);
-                          }}
-                          className="h-7 w-7 p-0 hover:bg-orange-500/20 hover:text-orange-300"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteKey(key.id);
-                          }}
-                          className="h-7 w-7 p-0 hover:bg-red-900/30 hover:text-red-400"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <KeySelector
+            apiKeys={apiKeys}
+            selectedKeyId={selectedKeyId}
+            onSelectKey={setSelectedKeyId}
+            onEditKey={handleEditKeyInit}
+            onDeleteKey={handleDeleteKey}
+            password={password}
+            onPasswordChange={setPassword}
+            onLogin={handleLogin}
+            isLoading={isLoading}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="password" className="text-orange-100/80">{t("Password")}</Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t("Enter your password")}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-              className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 placeholder:text-orange-500/20"
-            />
-          </div>
+          <ActionButtons
+            onAddKey={() => setShowAddKey(true)}
+            onSettings={() => setShowSettings(true)}
+          />
 
-          <Button
-            onClick={handleLogin}
-            className="w-full h-12 text-lg font-semibold shadow-[0_0_20px_rgba(255,80,0,0.3)] hover:shadow-[0_0_30px_rgba(255,80,0,0.5)] transition-all duration-300"
-            disabled={isLoading || !selectedKeyId || !password}
-          >
-            {isLoading ? t("Logging in...") : t("Login")}
-          </Button>
-
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowAddKey(true)}
-              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-            >
-              Add New Key
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowSettings(true)}
-              className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-            >
-              Settings
-            </Button>
-          </div>
-
-          <div className="space-y-2 pt-4 border-t border-orange-500/20">
-            <Label className="text-orange-100/60 text-xs uppercase tracking-wider font-semibold pl-1">Passkeys</Label>
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleRegisterPasskey}
-                disabled={!selectedKeyId || !password || passkeyRegisterLoading}
-                className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-              >
-                {passkeyRegisterLoading ? "Registering..." : "Register"}
-              </Button>
-              
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleUsePasskey}
-                disabled={!selectedKeyId || passkeyAuthLoading}
-                className="w-full bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-              >
-                {passkeyAuthLoading ? "Authenticating..." : "Use Passkey"}
-              </Button>
-
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={async () => {
-                  if (!selectedKeyId || !password) return;
-                  try {
-                    const decrypted = await storageManager.getDecryptedApiKey(
-                      selectedKeyId,
-                      password,
-                    );
-                    if (!decrypted?.key) {
-                      toast({
-                        title: "Error",
-                        description: "Invalid password",
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    setPasskeyViewKey(decrypted.key);
-                    setPasskeyViewEmail(decrypted.email);
-                    setShowManagePasskeys(true);
-                  } catch (err) {
-                    toast({
-                      title: "Error",
-                      description:
-                        "Failed to decrypt key: " + (err as Error).message,
-                      variant: "destructive",
-                    });
-                  }
-                }}
-                disabled={!selectedKeyId || !password}
-                className="col-span-2 bg-black/40 border border-orange-500/20 hover:bg-orange-500/10 hover:border-orange-500/40 text-orange-200/80"
-              >
-                Manage Passkeys
-              </Button>
-            </div>
-          </div>
+          <PasskeySection
+            onRegister={handleRegisterPasskey}
+            onUsePasskey={handleUsePasskey}
+            onManagePasskeys={handleManagePasskeys}
+            selectedKeyId={selectedKeyId}
+            password={password}
+            registerLoading={passkeyRegisterLoading}
+            authLoading={passkeyAuthLoading}
+          />
 
           {vaultEnabled && (
-            <div className="pt-2">
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={async () => {
-                  if (!selectedKeyId || !password) {
-                    toast({
-                      title: t("Error"),
-                      description: t(
-                        "Select key and enter password to delete vault secret",
-                      ),
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-                  try {
-                    const dec = await storageManager.getDecryptedApiKey(
-                      selectedKeyId,
-                      password,
-                    );
-                    if (!dec?.key) {
-                      toast({
-                        title: t("Error"),
-                        description: t("Invalid password"),
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    const sc = new ServerClient(dec.key, undefined, dec.email);
-                    await sc.deleteVaultSecret(selectedKeyId);
-                    toast({
-                      title: t("Success"),
-                      description: t("Vault secret removed"),
-                    });
-                  } catch (err) {
-                    toast({
-                      title: t("Error"),
-                      description:
-                        t("Failed to remove vault secret: ") +
-                        (err as Error).message,
-                      variant: "destructive",
-                    });
-                  }
-                }}
-                className="w-full bg-red-900/20 border border-red-500/30 hover:bg-red-900/40 text-red-200"
-              >
-                Remove Vault Secret
-              </Button>
-            </div>
+            <VaultSection onRemoveVaultSecret={handleRemoveVaultSecret} />
           )}
 
-          {/* Dialogs remain unchanged in logic, just rendering them here */}
+          {/* Dialogs */}
           <AddKeyDialog
             open={showAddKey}
             onOpenChange={setShowAddKey}
