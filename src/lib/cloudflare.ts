@@ -11,6 +11,11 @@
  */
 import "cloudflare/shims/web";
 import Cloudflare from "cloudflare";
+import type {
+  RecordListParams,
+  RecordCreateParams,
+  RecordUpdateParams,
+} from "cloudflare/resources/dns/records";
 import type { DNSRecord, Zone } from "@/types/dns";
 import { getEnv, getEnvBool } from "./env";
 
@@ -147,7 +152,7 @@ export class CloudflareAPI {
     if (page) listParams.page = page;
     if (perPage) listParams.per_page = perPage;
     for await (const record of this.client.dns.records.list(
-      listParams as any,
+      listParams as RecordListParams,
       { signal },
     )) {
       records.push(record as unknown as DNSRecord);
@@ -176,7 +181,7 @@ export class CloudflareAPI {
     });
     const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.create(
-      params as any,
+      params as RecordCreateParams,
       { signal },
     )) as unknown as DNSRecord;
     this.debugResponse(result);
@@ -206,7 +211,7 @@ export class CloudflareAPI {
     const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.update(
       recordId,
-      params as any,
+      params as RecordUpdateParams,
       { signal },
     )) as unknown as DNSRecord;
     this.debugResponse(result);

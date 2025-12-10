@@ -23,11 +23,11 @@ const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
 // Minimal surface of the better-sqlite3 synchronous DB used by our code
 type BetterSqlite3Like = {
   prepare: (sql: string) => {
-    run: (...params: unknown[]) => unknown;
-    all?: (...params: unknown[]) => unknown[];
-    get?: (...params: unknown[]) => unknown;
+    run: (...params: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
+    all: (...params: unknown[]) => unknown[];
+    get: (...params: unknown[]) => unknown;
   };
-  close?: () => void;
+  close: () => void;
 };
 
 function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
@@ -35,8 +35,8 @@ function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
     type: "better-sqlite3",
     run(sql: string, params?: unknown[]) {
       try {
-        const p = (params ?? []) as any[];
-        const res = (db as any).prepare(sql).run(...p);
+        const p = (params ?? []) as unknown[];
+        const res = db.prepare(sql).run(...p);
         return Promise.resolve(res);
       } catch (e) {
         return Promise.reject(e);
@@ -44,9 +44,9 @@ function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
     },
     all<T = unknown>(sql: string, params?: unknown[]) {
       try {
-        const p = (params ?? []) as any[];
-        const prep: any = (db as any).prepare(sql);
-        const rows: T[] = prep && typeof prep.all === "function" ? (prep.all(...p) as T[]) : ([] as T[]);
+        const p = (params ?? []) as unknown[];
+        const stmt = db.prepare(sql);
+        const rows = stmt.all(...p) as T[];
         return Promise.resolve(rows);
       } catch (e) {
         return Promise.reject(e);
@@ -54,17 +54,17 @@ function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
     },
     get<T = unknown>(sql: string, params?: unknown[]) {
       try {
-        const p = (params ?? []) as any[];
-        const prep: any = (db as any).prepare(sql);
-        const row = prep && typeof prep.get === "function" ? (prep.get(...p) as T) : undefined;
-        return Promise.resolve(row as T | undefined);
+        const p = (params ?? []) as unknown[];
+        const stmt = db.prepare(sql);
+        const row = stmt.get(...p) as T | undefined;
+        return Promise.resolve(row);
       } catch (e) {
         return Promise.reject(e);
       }
     },
     close() {
       try {
-        if (typeof (db as any).close === "function") (db as any).close();
+        if (typeof db.close === "function") db.close();
         return Promise.resolve();
       } catch (e) {
         return Promise.reject(e);
@@ -73,20 +73,27 @@ function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
   };
 }
 
-function mkSqlite3Wrapper(db: any): SqliteWrapper {
+type Sqlite3Like = {
+  run(sql: string, params: unknown[], callback?: (this: { lastID: number; changes: number }, err: Error | null) => void): void;
+  all(sql: string, params: unknown[], callback?: (err: Error | null, rows: unknown[]) => void): void;
+  get(sql: string, params: unknown[], callback?: (err: Error | null, row: unknown) => void): void;
+  close(callback?: (err: Error | null) => void): void;
+};
+
+function mkSqlite3Wrapper(db: Sqlite3Like): SqliteWrapper {
   // sqlite3 callback API -> promisify
   const run = function <T = unknown>(
     sql: string,
     params: unknown[] = [],
   ): Promise<T> {
     return new Promise((resolve, reject) => {
-      db.run(sql, params, function (this: any, err: any) {
+      db.run(sql, params, function (this: { lastID: number; changes: number }, err: Error | null) {
         if (err) return reject(err);
         // mimic better-sqlite3 return with lastInsertRowid & changes
         return resolve({
           lastInsertRowid: this.lastID,
           changes: this.changes,
-        } as T);
+        } as unknown as T);
       });
     });
   };
@@ -95,9 +102,9 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
     params: unknown[] = [],
   ): Promise<T[]> {
     return new Promise((resolve, reject) => {
-      db.all(sql, params, (err: any, rows: any[]) => {
+      db.all(sql, params, (err: Error | null, rows: unknown[]) => {
         if (err) return reject(err);
-        resolve(rows);
+        resolve(rows as T[]);
       });
     });
   };
@@ -106,15 +113,15 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
     params: unknown[] = [],
   ): Promise<T | undefined> {
     return new Promise((resolve, reject) => {
-      db.get(sql, params, (err: any, row: any) => {
+      db.get(sql, params, (err: Error | null, row: unknown) => {
         if (err) return reject(err);
-        resolve(row);
+        resolve(row as T | undefined);
       });
     });
   };
   const close = function () {
     return new Promise<void>((resolve, reject) => {
-      db.close((err: any) => (err ? reject(err) : resolve()));
+      db.close((err: Error | null) => (err ? reject(err) : resolve()));
     });
   };
   return {
@@ -128,7 +135,7 @@ function mkSqlite3Wrapper(db: any): SqliteWrapper {
 
 export function openSqlite(
   dbFile?: string,
-  requireFn?: (name: string) => any,
+  requireFn?: (name: string) => unknown,
 ): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), "data", "credentials.db");
   const globalRequire = (globalThis as { require?: (name: string) => unknown })
@@ -137,7 +144,7 @@ export function openSqlite(
     ? requireFn
     : typeof globalRequire === "function"
       ? (globalRequire as (name: string) => unknown)
-      : ((): any => {
+      : ((): unknown => {
           // Try to obtain a runtime require without static imports so bundlers
           // don't externalize 'module'. If unavailable, return a function that
           // throws when used so callers can handle the absence.
@@ -153,7 +160,7 @@ export function openSqlite(
   // Try better-sqlite3 first (synchronous, faster).
   try {
     // allow injection for tests (e.g., throw on better-sqlite3)
-    const better = req("better-sqlite3");
+    const better = (req as (name: string) => any)("better-sqlite3");
     const db = new better(file);
     console.info("openSqlite: using better-sqlite3 driver");
     return mkSyncWrapper(db);
@@ -163,7 +170,7 @@ export function openSqlite(
   }
   // Fallback to sqlite3 (async wrappers). This should be a valid Node driver
   try {
-    const sqlite3 = req("sqlite3");
+    const sqlite3 = (req as (name: string) => any)("sqlite3");
     const sqlite3verbose = sqlite3.verbose ? sqlite3.verbose() : sqlite3;
     const db = new sqlite3verbose.Database(file);
     console.info("openSqlite: using sqlite3 driver fallback");
@@ -181,13 +188,13 @@ export function openSqlite(
 
     // Try SQL.js (pure JS/WASM) as next fallback to avoid native builds.
     try {
-      const SQLjs = req("sql.js");
+      const SQLjs = (req as (name: string) => any)("sql.js");
       const Database =
         (SQLjs && SQLjs.Database) ??
         (SQLjs && SQLjs.default && SQLjs.default.Database) ??
         SQLjs;
-      const fs = req("fs");
-      let instance: any;
+      const fs = (req as (name: string) => any)("fs");
+      let instance: unknown;
       if (fs && fs.existsSync && fs.existsSync(file)) {
         const buf = fs.readFileSync(file);
         instance = new Database(new Uint8Array(buf));
@@ -195,10 +202,23 @@ export function openSqlite(
         instance = new Database();
       }
 
+      type SqlJsStatement = {
+        bind(params: unknown[]): boolean;
+        step(): boolean;
+        getAsObject(): unknown;
+        free(): void;
+      };
+
+      type SqlJsDatabase = {
+        prepare(sql: string): SqlJsStatement;
+        exec(sql: string): { values: unknown[][] }[];
+        export(): Uint8Array;
+      };
+
       const mkSqljsWrapper = function (
-        db: any,
+        db: SqlJsDatabase,
         persistenceFile?: string,
-        fsMod?: any,
+        fsMod?: { writeFileSync: (path: string, data: Uint8Array) => void },
       ): SqliteWrapper {
         const run = function <T = unknown>(
           sql: string,
@@ -284,7 +304,7 @@ export function openSqlite(
       };
 
       console.info("openSqlite: using sql.js (WASM) fallback");
-      return mkSqljsWrapper(instance, file, fs);
+      return mkSqljsWrapper(instance as SqlJsDatabase, file, fs);
     } catch {
       // ignore and fall through to in-memory wrapper
     }
