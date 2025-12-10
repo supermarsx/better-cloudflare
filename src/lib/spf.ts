@@ -431,7 +431,9 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
   try {
     // naive implementation: exact match for IPs without netmask or prefix check
     if (!cidr.includes("/")) return ip === cidr;
-    const [base, prefix] = cidr.split("/");
+    const parts = cidr.split("/");
+    let base = parts[0];
+    const prefix = parts[1];
     // Use net.isIP and compare network prefix via buffer
     let ipType = getNetIsIP(ip);
     let baseType = getNetIsIP(base);
