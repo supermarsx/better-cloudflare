@@ -39,7 +39,7 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
         res.status(403).json({ error: "Admin credentials required" });
         return;
       }
-      const roles = JSON.parse(row.roles || "[]");
+      const roles = JSON.parse(((row as any).roles as string) || "[]");
       if (Array.isArray(roles) && roles.includes("admin")) {
         return next();
       }

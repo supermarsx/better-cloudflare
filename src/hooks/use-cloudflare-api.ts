@@ -190,7 +190,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   const getSPFGraph = useCallback(
     (domain: string): Promise<SPFGraph> => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.getSPFGraph(domain);
+      return (api.getSPFGraph(domain) as Promise<SPFGraph>);
     },
     [api],
   );

@@ -147,10 +147,10 @@ export class CloudflareAPI {
     if (page) listParams.page = page;
     if (perPage) listParams.per_page = perPage;
     for await (const record of this.client.dns.records.list(
-      listParams as Record<string, unknown>,
+      listParams as any,
       { signal },
     )) {
-      records.push(record as DNSRecord);
+      records.push(record as unknown as DNSRecord);
     }
     this.debugResponse(records);
     return records;
@@ -176,9 +176,9 @@ export class CloudflareAPI {
     });
     const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.create(
-      params as Record<string, unknown>,
+      params as any,
       { signal },
-    )) as DNSRecord;
+    )) as unknown as DNSRecord;
     this.debugResponse(result);
     return result;
   }
@@ -206,9 +206,9 @@ export class CloudflareAPI {
     const params = this.buildRecordParams(zoneId, record);
     const result = (await this.client.dns.records.update(
       recordId,
-      params as Record<string, unknown>,
+      params as any,
       { signal },
-    )) as DNSRecord;
+    )) as unknown as DNSRecord;
     this.debugResponse(result);
     return result;
   }

@@ -54,13 +54,16 @@ export async function getAuditEntries(): Promise<AuditEntry[]> {
     try {
       // convert DB rows into AuditEntry[]
       const rows = await store.getAuditEntries();
-      return rows.map((r) => ({
-        actor: r.actor,
-        operation: r.operation,
-        resource: r.resource,
-        details: r.details ? JSON.parse(r.details || "{}") : undefined,
-        timestamp: r.timestamp,
-      }));
+      return rows.map((r) => {
+        const row = r as any;
+        return {
+          actor: row.actor,
+          operation: row.operation,
+          resource: row.resource,
+          details: row.details ? JSON.parse(row.details || "{}") : undefined,
+          timestamp: row.timestamp,
+        };
+      });
     } catch {
       return [...entries];
     }

@@ -1,22 +1,23 @@
 declare module "express" {
   import * as http from "http";
-  export type Request = http.IncomingMessage & {
+  export interface Request extends http.IncomingMessage {
     headers: Record<string, string | undefined>;
-    header: (name: string) => string | undefined; // express request.header
-    body?: unknown;
-    params?: Record<string, unknown> | undefined;
-    query?: Record<string, unknown> | undefined;
-  };
-  export type Response = http.ServerResponse & {
-    json: (d: unknown) => Response;
+    header(name: string): string | undefined;
+    body?: any;
+    params?: any;
+    query?: any;
+    method?: string;
+  }
+  export interface Response extends http.ServerResponse {
+    json: (d: any) => Response;
     status: (code: number) => Response;
-    send: (d: unknown) => void;
+    send: (d: any) => void;
     sendStatus: (code: number) => void;
     end: () => void;
-  };
-  export type NextFunction = (err?: unknown) => void;
-  export const Router: unknown;
-  // default export intentionally empty - keep as a harmless object
-  // typed as an empty record to satisfy consumers without unsafe casts
-  export default {} as Record<string, never>;
+  }
+  export type NextFunction = (err?: any) => void;
+  export function Router(): any;
+  const express: any;
+  export default express;
 }
+

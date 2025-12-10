@@ -8,7 +8,9 @@ import type { AuditEntry } from "./audit";
 
 export type PasskeyCredential = {
   credentialID: string;
-  credentialPublicKey: string;
+  id?: string;
+  credentialPublicKey?: string;
+  publicKey?: string;
   counter?: number;
   createdAt?: string;
   label?: string;
@@ -150,7 +152,9 @@ export class SqliteCredentialStore implements CredentialStore {
     }>;
     return typed.map((r) => ({
       credentialID: r.credential_id,
+      id: r.credential_id,
       credentialPublicKey: r.credentialPublicKey,
+      publicKey: r.credentialPublicKey,
       counter: r.counter,
       createdAt: r.createdAt,
       label: r.label,
@@ -217,7 +221,7 @@ export const createCredentialStore = () => {
       // higher-level code). This keeps APIs (db.run/get/all) available.
       console.warn(
         "Sqlite not available; attempting in-memory sqlite fallback:",
-        err?.message ?? err,
+        (err as any)?.message ?? err,
       );
       try {
         const inMem = openSqlite(undefined);

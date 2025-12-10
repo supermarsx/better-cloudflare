@@ -342,7 +342,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               .userHandle
               ? Array.from(
                   new Uint8Array(
-                    (a.response as AuthenticatorAssertionResponse).userHandle,
+                    (a.response as AuthenticatorAssertionResponse).userHandle as ArrayBuffer,
                   ),
                 )
               : null,
@@ -536,7 +536,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             {isLoading ? t("Logging in...") : t("Login")}
           </Button>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <AddKeyDialog
               open={showAddKey}
               onOpenChange={setShowAddKey}

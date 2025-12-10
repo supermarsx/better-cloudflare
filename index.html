@@ -7,6 +7,12 @@
     <title>Cloudflare DNS Manager</title>
   </head>
   <body>
+    <!-- Subtle background overlays for glassy effect -->
+    <div aria-hidden="true" style="position:fixed;inset:0;pointer-events:none;z-index:-10;">
+      <div style="position:absolute;left:-15%;top:-10%;width:60%;height:60%;filter:blur(80px);background:radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06), rgba(255,255,255,0) 30%);"></div>
+      <div style="position:absolute;right:-10%;bottom:-10%;width:50%;height:50%;filter:blur(56px);background:radial-gradient(circle at 80% 80%, rgba(0,150,255,0.06), rgba(0,150,255,0) 30%);"></div>
+      <div style="position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0));opacity:0.12;transform:rotate(12deg);mix-blend-mode:screen;"></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

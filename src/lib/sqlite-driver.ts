@@ -146,7 +146,7 @@ export function openSqlite(
             const r = eval("typeof require === 'function' ? require : undefined");
             if (typeof r === "function") return r;
           } catch {}
-          return (name: string) => {
+          return (_name: string) => {
             throw new Error("require not available in this environment");
           };
         })();

@@ -392,8 +392,8 @@ export class ServerAPI {
     return async (req: Request, res: Response) => {
       // Require server auth to manipulate vault secrets
       createClient(req);
-      const id = req.params.id;
-      const secret = req.body && req.body.secret;
+      const id = String((req.params as any).id);
+      const secret = (req.body as any)?.secret;
       if (!id || !secret) {
         res.status(400).json({ error: "Missing id or secret" });
         return;
@@ -415,7 +415,7 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       createClient(req);
-      const id = req.params.id;
+      const id = String((req.params as any).id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -441,7 +441,7 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       createClient(req);
-      const id = req.params.id;
+      const id = String((req.params as any).id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -479,14 +479,14 @@ export class ServerAPI {
       }
       const client = createClient(req);
       const record = await client.updateDNSRecord(
-        req.params.zone,
-        req.params.id,
+        String((req.params as any).zone),
+        String((req.params as any).id),
         parsed.data,
       );
       logAudit({
         operation: "dns:update",
         actor: actorFromReq(req),
-        resource: `zone:${req.params.zone}/record:${req.params.id}`,
+        resource: `zone:${String((req.params as any).zone)}/record:${String((req.params as any).id)}`,
         details: { record },
       });
       res.json(record);
@@ -502,11 +502,11 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       const client = createClient(req);
-      await client.deleteDNSRecord(req.params.zone, req.params.id);
+      await client.deleteDNSRecord(String((req.params as any).zone), String((req.params as any).id));
       logAudit({
         operation: "dns:delete",
         actor: actorFromReq(req),
-        resource: `zone:${req.params.zone}/record:${req.params.id}`,
+        resource: `zone:${String((req.params as any).zone)}/record:${String((req.params as any).id)}`,
       });
       res.json({ success: true });
     };
@@ -531,7 +531,7 @@ export class ServerAPI {
      * `@simplewebauthn/server` to craft proper registration options.
      */
     return async (req: Request, res: Response) => {
-      const id = req.params.id;
+      const id = String((req.params as any).id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -550,7 +550,7 @@ export class ServerAPI {
         userName: id,
       });
       // Store the base64 challenge to validate later
-      ServerAPI.passkeyChallenges.set(id, opts.challenge);
+      ServerAPI.passkeyChallenges.set(id, String(opts.challenge));
       res.json({ challenge: opts.challenge, options: opts });
       logAudit({
         operation: "passkey:request_registration",
@@ -646,7 +646,7 @@ export class ServerAPI {
      * Generate a challenge for WebAuthn authentication (assertion).
      */
     return async (req: Request, res: Response) => {
-      const id = req.params.id;
+      const id = String((req.params as any).id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
@@ -669,7 +669,7 @@ export class ServerAPI {
         allowCredentials: allowList,
         rpID,
       });
-      ServerAPI.passkeyChallenges.set(id, opts.challenge);
+      ServerAPI.passkeyChallenges.set(id, String(opts.challenge));
       res.json({ challenge: opts.challenge, options: opts });
       logAudit({
         operation: "passkey:request_auth",
@@ -711,8 +711,8 @@ export class ServerAPI {
 
   static deletePasskey() {
     return async (req: Request, res: Response) => {
-      const id = req.params.id;
-      const cid = req.params.cid;
+      const id = String((req.params as any).id);
+      const cid = String((req.params as any).cid);
       if (!id || !cid) {
         res.status(400).json({ error: "Missing id or credential id" });
         return;
@@ -726,9 +726,9 @@ export class ServerAPI {
       }
       const creds = Array.isArray(stored) ? stored : [];
       const filtered = creds.filter((c) => {
-        const key = c.credentialID || c.id;
+        const key = (c as any).credentialID || (c as any).id;
         const keyStr =
-          typeof key === "string" ? key : Buffer.from(key).toString("base64");
+          typeof key === "string" ? key : Buffer.from(String(key)).toString("base64");
         // direct match on id string
         if (keyStr === cid || key === cid) return false;
         // if cid is base64 encoded representation, try to decode and compare
@@ -747,15 +747,15 @@ export class ServerAPI {
       for (const c of creds) {
         await ServerAPI.credentialStore.deleteCredential(
           id,
-          c.credentialID || c.id,
+          String((c as any).credentialID ?? (c as any).id),
         );
       }
       for (const c of filtered) {
         await ServerAPI.credentialStore.addCredential(id, {
-          credentialID: c.credentialID ?? c.id,
-          credentialPublicKey: c.credentialPublicKey ?? c.publicKey,
-          counter: c.counter ?? 0,
-        });
+          credentialID: (c as any).credentialID ?? (c as any).id,
+          credentialPublicKey: (c as any).credentialPublicKey ?? (c as any).publicKey,
+          counter: (c as any).counter ?? 0,
+        } as any);
       }
       logAudit({
         operation: "passkey:delete",
@@ -863,9 +863,9 @@ export class ServerAPI {
           return;
         }
         res.json({
-          id: row.id,
-          email: row.email,
-          roles: JSON.parse(row.roles || "[]"),
+          id: (row as any).id,
+          email: (row as any).email,
+          roles: JSON.parse(((row as any).roles as string) || "[]"),
         });
         logAudit({
           operation: "user:get",
@@ -933,8 +933,8 @@ export class ServerAPI {
      * library (e.g. `@simplewebauthn/server`).
      */
     return async (req: Request, res: Response) => {
-      const id = req.params.id;
-      const body = req.body;
+      const id = String((req.params as any).id);
+      const body = req.body as any;
       if (!id || !body) {
         res.status(400).json({ error: "Missing id or body" });
         return;

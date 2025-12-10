@@ -4,7 +4,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -63,12 +62,7 @@ export function PasskeyManagerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
-          Manage Passkeys
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
+          <DialogContent>
         <DialogHeader>
           <DialogTitle>Manage Passkeys</DialogTitle>
         </DialogHeader>

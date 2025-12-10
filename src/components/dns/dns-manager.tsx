@@ -25,6 +25,7 @@ import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./import-export-dialog";
 import { RecordRow } from "./RecordRow";
 import { FixedSizeList as List } from "react-window";
+const AnyList = (List as unknown) as any;
 import { filterRecords } from "./filter-records";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 
@@ -656,7 +657,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <List
+                  <AnyList
                     height={Math.min(600, filteredRecords.length * 72)}
                     itemCount={filteredRecords.length}
                     itemSize={72}
@@ -685,7 +686,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       );
                     }}
-                  </List>
+                  </AnyList>
                 </div>
               )}
             </CardContent>

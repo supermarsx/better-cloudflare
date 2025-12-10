@@ -94,13 +94,15 @@ export function getStorage(storage?: StorageLike): StorageLike {
           try {
             // dynamic idb runtime methods accessed via dynamic import
             const keys = await (this.db as IDBRuntime).getAllKeys?.("kv");
-            for (const k of keys) {
-              try {
-                // runtime access
-                const v = await (this.db as IDBRuntime).get?.("kv", k);
-                this.store[k] = String(v);
-              } catch {
-                // ignore - best-effort cache population
+            if (keys) {
+              for (const k of keys) {
+                try {
+                  // runtime access
+                  const v = await (this.db as IDBRuntime).get?.("kv", k);
+                  this.store[k] = String(v);
+                } catch {
+                  // ignore - best-effort cache population
+                }
               }
             }
           } catch {

@@ -19,7 +19,7 @@ import { isAdmin } from "../lib/rbac";
  * - PUT /api/zones/:zone/dns_records/:id
  * - DELETE /api/zones/:zone/dns_records/:id
  */
-export const apiRouter = Router();
+export const apiRouter = (Router as any)();
 
 apiRouter.post("/api/verify-token", asyncHandler(ServerAPI.verifyToken()));
 
