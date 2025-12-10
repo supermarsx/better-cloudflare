@@ -5,7 +5,7 @@ import {
   ToastProvider,
   ToastTitle,
   ToastViewport,
-} from "@/components/ui/toast";
+} from "@/components/ui/Toast";
 import { useToast } from "@/hooks/use-toast";
 
 /**

@@ -3,7 +3,7 @@ import React from "react";
 import { create } from "react-test-renderer";
 import { test } from "node:test";
 
-import { LoginForm } from "../src/components/auth/login-form";
+import { LoginForm } from "../src/components/auth/LoginForm";
 
 test("LoginForm renders login button", () => {
   const r = create(React.createElement(LoginForm, { onLogin: () => {} }));

@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
+import type { ToastActionElement, ToastProps } from "@/components/ui/Toast";
 
 /**
  * Small in-memory toast manager used by the UI. It supports adding,

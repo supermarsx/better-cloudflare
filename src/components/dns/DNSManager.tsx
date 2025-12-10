@@ -3,17 +3,17 @@
  * list and dialogs for creating/importing records.
  */
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/ui/Select";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import type { DNSRecord, Zone, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import { storageManager } from "@/lib/storage";
 import { LogOut } from "lucide-react";
 import { AddRecordDialog } from "./AddRecordDialog";
-import { ImportExportDialog } from "./import-export-dialog";
+import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { FixedSizeList as List } from "react-window";
 

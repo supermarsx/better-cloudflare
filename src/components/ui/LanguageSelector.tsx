@@ -13,8 +13,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
+} from "@/components/ui/DropdownMenu";
+import { Button } from "@/components/ui/Button";
 
 export function LanguageSelector() {
   const { t } = useTranslation();

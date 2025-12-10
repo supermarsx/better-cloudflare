@@ -3,7 +3,7 @@
  * current zone. This component is a light overlay that validates JSON
  * client-side and forwards the payload to the parent for processing.
  */
-import { ImportExportDialog } from "./import-export-dialog";
+import { ImportExportDialog } from "./ImportExportDialog";
 
 /**
  * Deprecated wrapper that forwards to ImportExportDialog with JSON format.

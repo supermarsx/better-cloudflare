@@ -5,16 +5,16 @@
  */
 import type { ChangeEvent } from "react";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Label } from "@/components/ui/Label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/ui/Select";
 import {
   Dialog,
   DialogContent,
@@ -22,14 +22,14 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
+} from "@/components/ui/Dialog";
 import {
   ENCRYPTION_ALGORITHMS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
 } from "../../types/dns";
 import { Settings } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
+import { Switch } from "@/components/ui/Switch";
 
 /**
  * Props for the EncryptionSettingsDialog, which allows users to configure
