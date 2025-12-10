@@ -9,7 +9,7 @@ import { LoginActionButtons } from "./login-form/LoginActionButtons";
 import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
 import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
-import { useLoginForm } from "./login-form/useLoginForm";
+import { useLoginForm } from "@/hooks/use-login-form";
 
 /**
  * Props for the login form used on the main page to select and decrypt
