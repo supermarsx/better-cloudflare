@@ -50,6 +50,12 @@ interface LoginFormProps {
  * via `onLogin` for the parent to use.
  */
 export function LoginForm({ onLogin }: LoginFormProps) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const { verifyToken } = useCloudflareAPI();
+  const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
+  const backend = storageBackend();
+
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -77,11 +83,6 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     undefined,
   );
 
-  const { toast } = useToast();
-  const { verifyToken } = useCloudflareAPI();
-  const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
-  const backend = storageBackend();
-  const { t } = useTranslation();
   useEffect(() => {
     if (backend !== "indexeddb") {
       toast({
@@ -462,7 +463,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
       
-      <Card className="w-full max-w-md relative z-10 border-orange-500/30 shadow-[0_0_40px_-10px_rgba(255,80,0,0.3)] bg-black/60 backdrop-blur-xl">
+      <Card className="w-full max-w-md relative z-10 border-white/10 shadow-[0_0_15px_rgba(255,255,255,0.1)] bg-black/30 backdrop-blur-xl">
         <CardHeader className="text-center pb-2">
           <div className="flex justify-center mb-6 relative">
             <div className="absolute inset-0 bg-orange-500/10 blur-lg rounded-full transform scale-125" />
