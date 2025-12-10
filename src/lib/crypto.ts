@@ -8,7 +8,7 @@ import {
   type EncryptionConfig,
   type EncryptionAlgorithm,
 } from "../types/dns";
-import { createRequire } from "module";
+
 import { getStorage, type StorageLike } from "./storage-util";
 
 const CONFIG_STORAGE_KEY = "encryption-settings";
@@ -109,10 +109,17 @@ export class CryptoManager {
 
     // otherwise attempt to synchronously require Node's crypto and use webcrypto
     try {
-      const req = createRequire(import.meta.url);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const nodeCrypto = req("crypto");
-      return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
+      // Use runtime require if available to load Node's crypto in CommonJS environments.
+      // In ESM environments (no require) this will not run and will safely fall through.
+      const maybeRequire = (typeof (globalThis as any).require === "function")
+        ? (globalThis as any).require
+        : eval("typeof require === 'function' ? require : undefined");
+      if (maybeRequire) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodeCrypto = maybeRequire("crypto");
+        return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
+      }
+      return undefined;
     } catch (e) {
       return undefined;
     }

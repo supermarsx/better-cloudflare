@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import path from "path";
-import { createRequire } from "module";
+
 // promisify unused; intentionally omitted
 
 type DriverType = "better-sqlite3" | "sqlite3" | "sql.js";
@@ -132,7 +132,19 @@ export function openSqlite(
     ? requireFn
     : typeof globalRequire === "function"
       ? (globalRequire as (name: string) => unknown)
-      : createRequire(import.meta.url);
+      : ((): any => {
+          // Try to obtain a runtime require without static imports so bundlers
+          // don't externalize 'module'. If unavailable, return a function that
+          // throws when used so callers can handle the absence.
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-implied-eval
+            const r = eval("typeof require === 'function' ? require : undefined");
+            if (typeof r === "function") return r;
+          } catch {}
+          return (name: string) => {
+            throw new Error("require not available in this environment");
+          };
+        })();
   // Try better-sqlite3 first (synchronous, faster).
   try {
     // allow injection for tests (e.g., throw on better-sqlite3)

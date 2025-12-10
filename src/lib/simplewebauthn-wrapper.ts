@@ -1,6 +1,6 @@
 // Lazy-load @simplewebauthn/server so tests and environments that don't
 // have the optional dependency won't throw at import time.
-import { createRequire } from "module";
+
 
 export type VerifyRegistrationResult = {
   verified?: boolean;
@@ -42,7 +42,23 @@ function loadSwauthSync(): SwauthMod | null {
     // attempt to synchronously require the module if it exists; keep the
     // dependency optional so tests and environments without the package
     // don't blow up at import time.
-    const req = createRequire(import.meta.url);
+    // Avoid static import of 'module' to prevent bundlers (Vite) externalizing it
+    let req: ((name: string) => any) | undefined;
+    try {
+      // Prefer a global require if one exists (CommonJS)
+      if (typeof (globalThis as any).require === "function") {
+        req = (globalThis as any).require;
+      } else {
+        // Try eval-based require detection to avoid static analysis by bundlers
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval
+        const r = eval("typeof require === 'function' ? require : undefined");
+        if (typeof r === "function") req = r;
+      }
+    } catch {}
+    if (!req) {
+      swauth = null;
+      return null;
+    }
     swauth = req("@simplewebauthn/server") as SwauthMod;
     return swauth;
   } catch {
