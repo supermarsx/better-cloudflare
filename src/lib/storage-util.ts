@@ -146,7 +146,18 @@ export function getStorage(storage?: StorageLike): StorageLike {
       return IDS as StorageLike;
     }
     if (typeof globalThis !== "undefined" && "localStorage" in globalThis) {
-      return (globalThis as { localStorage: StorageLike }).localStorage;
+      const maybeLS = (globalThis as any).localStorage;
+      // Ensure global localStorage provides the expected methods; otherwise
+      // fall through to the in-memory fallback to avoid runtime errors in
+      // non-browser test environments that leak a non-standard value.
+      if (
+        maybeLS &&
+        typeof maybeLS.getItem === "function" &&
+        typeof maybeLS.setItem === "function" &&
+        typeof maybeLS.removeItem === "function"
+      ) {
+        return maybeLS as StorageLike;
+      }
     }
   } catch {
     // Ignore access errors and fall back to memory storage

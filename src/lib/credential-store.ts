@@ -57,7 +57,7 @@ class FileCredentialStore implements CredentialStore {
   async deleteCredential(id: string, cid: string) {
     const obj = await this.load();
     const arr = obj[id] ?? [];
-    obj[id] = arr.filter((c) => c.credentialID !== cid);
+    obj[id] = arr.filter((c) => (c.credentialID ?? c.id) !== cid);
     await this.save(obj);
   }
 }
@@ -100,7 +100,7 @@ class MemoryCredentialStore implements CredentialStore {
     const arr = this.map.get(id) ?? [];
     this.map.set(
       id,
-      arr.filter((c) => c.credentialID !== cid),
+      arr.filter((c) => (c.credentialID ?? c.id) !== cid),
     );
   }
 }
