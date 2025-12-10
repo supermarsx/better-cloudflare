@@ -2,7 +2,7 @@ import { AddKeyDialog } from "../AddKeyDialog";
 import { EncryptionSettingsDialog } from "../EncryptionSettingsDialog";
 import PasskeyManagerDialog from "../PasskeyManagerDialog";
 import { EditKeyDialog } from "../EditKeyDialog";
-import type { EncryptionSettings } from "@/lib/crypto";
+import type { EncryptionConfig } from "@/types/dns";
 
 interface LoginDialogsProps {
   showAddKey: boolean;
@@ -19,8 +19,8 @@ interface LoginDialogsProps {
 
   showSettings: boolean;
   setShowSettings: (open: boolean) => void;
-  encryptionSettings: EncryptionSettings;
-  setEncryptionSettings: (settings: EncryptionSettings) => void;
+  encryptionSettings: EncryptionConfig;
+  setEncryptionSettings: (settings: EncryptionConfig) => void;
   handleBenchmark: () => void;
   handleUpdateSettings: () => void;
   benchmarkResult: number | null;
