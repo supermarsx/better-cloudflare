@@ -239,7 +239,7 @@ export function openSqlite(
                 r[0].values[0] &&
                 typeof r[0].values[0][0] !== "undefined"
               )
-                lastId = r[0].values[0][0];
+                lastId = r[0].values[0][0] as number;
             } catch {}
             const changes =
               /INSERT|UPDATE|DELETE/i.test(sql) && executed ? 1 : 0;
