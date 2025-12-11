@@ -70,7 +70,7 @@ export function PasskeyManagerDialog({
           <div>
             <Label>Registered Passkeys</Label>
             <div className="space-y-2 mt-2">
-              {items.length === 0 ? (
+              {!items || items.length === 0 ? (
                 <div className="text-sm text-muted-foreground">
                   No passkeys found
                 </div>

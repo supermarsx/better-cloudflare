@@ -40,6 +40,7 @@ test.describe('Client-side Stability Checks', () => {
     
     // Catch unhandled exceptions
     page.on('pageerror', exception => {
+      console.error('Monkey test caught exception:', exception);
       exceptions.push(exception);
     });
 
