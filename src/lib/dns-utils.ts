@@ -1,4 +1,4 @@
-import type { DNSRecord } from "../../types/dns";
+import type { DNSRecord } from "@/types/dns";
 
 /**
  * Filter DNS records by a search term matching name, type, or content.

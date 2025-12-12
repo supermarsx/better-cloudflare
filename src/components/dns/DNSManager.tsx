@@ -31,7 +31,7 @@ const VirtualList = (props: any) => {
   const { children, ...rest } = props;
   return <List {...rest}>{children}</List>;
 };
-import { filterRecords } from "./filter-records";
+import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 
 /**
