@@ -402,7 +402,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             const created = Array.isArray(result?.created)
               ? (result.created as DNSRecord[])
               : valid;
-            setRecords([...created, ...records]);
+            if (!dryRun) {
+              setRecords([...created, ...records]);
+            }
           } catch (err) {
             toast({
               title: "Error",
@@ -420,21 +422,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               const r = await createDNSRecord(selectedZone, v);
               createdRecords.push(r);
             } catch {
-              // record creation failed for this item — count as skipped but ignore error details
+              // record creation failed for this item - count as skipped but ignore error details
               skipped++;
             }
           }
-          setRecords([...createdRecords, ...records]);
+          if (!dryRun) {
+            setRecords([...createdRecords, ...records]);
+          }
         }
-        setImportData("");
-        setShowImport(false);
-
-        toast({
-          title: "Success",
-          description:
-            `Imported ${valid.length} record(s)` +
-            (skipped ? `, skipped ${skipped}` : ""),
-        });
+        if (!dryRun) {
+          setImportData("");
+          setShowImport(false);
+          toast({
+            title: "Success",
+            description:
+              `Imported ${valid.length} record(s)` +
+              (skipped ? `, skipped ${skipped}` : ""),
+          });
+        } else {
+          toast({
+            title: "Dry Run",
+            description:
+              `Would import ${valid.length} record(s)` +
+              (skipped ? `, skipped ${skipped}` : ""),
+          });
+        }
       } else {
         toast({
           title: "Error",

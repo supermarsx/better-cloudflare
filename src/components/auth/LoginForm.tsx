@@ -17,7 +17,7 @@ import { useLoginForm } from "@/hooks/use-login-form";
  */
 interface LoginFormProps {
   /** Callback invoked on successful login with the decrypted apiKey. May return a promise. */
-  onLogin: (apiKey: string) => void | Promise<void>;
+  onLogin: (apiKey: string, email?: string) => void | Promise<void>;
 }
 
 /**
