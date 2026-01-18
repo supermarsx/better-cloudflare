@@ -315,7 +315,10 @@ export function useLoginForm(
         };
         const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
         if (serverResp?.success) {
-          const secret = await scx.getVaultSecret(selectedKeyId);
+          const secret = await scx.getVaultSecret(
+            selectedKeyId,
+            serverResp.token,
+          );
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);
             onLogin(secret);
