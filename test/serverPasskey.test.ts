@@ -364,6 +364,20 @@ test("authenticatePasskey verifies assertion", async () => {
   );
   assert.equal(vaultRes.data.secret, "vault-secret");
 
+  const vaultRes2 = createRes();
+  await assert.rejects(
+    () =>
+      ServerAPI.getVaultSecret()(
+        createReq(
+          {},
+          { id: "key3" },
+          { "x-passkey-token": res.data.token, authorization: "" },
+        ),
+        vaultRes2.res,
+      ),
+    (err: { status?: number }) => err.status === 400,
+  );
+
   const secretNewCreds = await ServerAPI.credentialStore.getCredentials("key3");
   assert.ok(Array.isArray(secretNewCreds) && secretNewCreds.length >= 1);
 
@@ -413,6 +427,67 @@ test("authenticatePasskey rejects failed assertion", async () => {
       ) => Promise<VerifyAuthenticationResult>;
     }
   ).verifyAuthenticationResponse = origVerifyAuth;
+});
+
+test("passkey session token expires", async () => {
+  const originalNow = Date.now;
+  const base = 1_000_000;
+  Date.now = () => base;
+  process.env.PASSKEY_TOKEN_TTL_MS = "1";
+  try {
+    (
+      swauth as unknown as {
+        verifyAuthenticationResponse: (
+          opts?: unknown,
+        ) => Promise<VerifyAuthenticationResult>;
+      }
+    ).verifyAuthenticationResponse = async () => ({
+      verified: true,
+      authenticationInfo: { newCounter: 1 },
+    });
+
+    const handler = ServerAPI.authenticatePasskey();
+    await ServerAPI.credentialStore.addCredential("key-expire", {
+      credentialID: "cid",
+      credentialPublicKey: "pk",
+      counter: 0,
+    });
+    await ServerAPI.createPasskeyAuthOptions()(
+      createReq({}, { id: "key-expire" }),
+      createRes().res,
+    );
+    const res = createRes();
+    await handler(
+      createReq({ id: "key-expire", response: {} }, { id: "key-expire" }),
+      res.res,
+    );
+    assert.ok(res.data.token);
+    await vaultManager.setSecret("key-expire", "vault-expire");
+
+    Date.now = () => base + 10;
+    await assert.rejects(
+      () =>
+        ServerAPI.getVaultSecret()(
+          createReq(
+            {},
+            { id: "key-expire" },
+            { "x-passkey-token": res.data.token, authorization: "" },
+          ),
+          createRes().res,
+        ),
+      (err: { status?: number }) => err.status === 400,
+    );
+  } finally {
+    delete process.env.PASSKEY_TOKEN_TTL_MS;
+    Date.now = originalNow;
+    (
+      swauth as unknown as {
+        verifyAuthenticationResponse?: (
+          opts?: unknown,
+        ) => Promise<VerifyAuthenticationResult>;
+      }
+    ).verifyAuthenticationResponse = origVerifyAuth;
+  }
 });
 
 test.after(() => {

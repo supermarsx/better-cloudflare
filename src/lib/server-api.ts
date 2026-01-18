@@ -16,7 +16,7 @@ import swauth from "./simplewebauthn-wrapper";
 import { dnsRecordSchema } from "./validation";
 import type { Zone } from "@/types/dns";
 import { validateSPFContentAsync } from "./spf";
-import { getEnv, getEnvBool } from "./env";
+import { getEnv, getEnvBool, getEnvNumber } from "./env";
 import { simulateSPF, buildSPFGraph } from "./spf";
 
 const DEBUG = getEnvBool("DEBUG_SERVER_API", "VITE_DEBUG_SERVER_API");
@@ -56,6 +56,14 @@ async function requireVerifiedClient(req: Request): Promise<CloudflareAPI> {
   return client;
 }
 
+function getPasskeyTokenTtlMs() {
+  return getEnvNumber(
+    "PASSKEY_TOKEN_TTL_MS",
+    "VITE_PASSKEY_TOKEN_TTL_MS",
+    5 * 60 * 1000,
+  );
+}
+
 function generatePasskeyToken(): string {
   try {
     return randomUUID();
@@ -67,7 +75,13 @@ function generatePasskeyToken(): string {
 function hasValidPasskeySession(req: Request, id: string, consume = true) {
   const token = req.header("x-passkey-token");
   const expected = ServerAPI.passkeySessionTokens.get(id);
-  if (token && expected && token === expected) {
+  if (!token || !expected) return false;
+  const now = Date.now();
+  if (expected.expiresAt <= now) {
+    ServerAPI.passkeySessionTokens.delete(id);
+    return false;
+  }
+  if (token === expected.token) {
     if (consume) ServerAPI.passkeySessionTokens.delete(id);
     return true;
   }
@@ -544,7 +558,10 @@ export class ServerAPI {
   // mechanism for production use.
   private static passkeyChallenges: Map<string, string> = new Map();
   private static passkeyCredentials: Map<string, unknown> = new Map();
-  private static passkeySessionTokens: Map<string, string> = new Map();
+  private static passkeySessionTokens: Map<
+    string,
+    { token: string; expiresAt: number }
+  > = new Map();
   private static credentialStore: CredentialStore = createCredentialStore();
   static setCredentialStore(store: CredentialStore) {
     ServerAPI.credentialStore = store;
@@ -1069,7 +1086,10 @@ export class ServerAPI {
           return;
         }
         const sessionToken = generatePasskeyToken();
-        ServerAPI.passkeySessionTokens.set(id, sessionToken);
+        ServerAPI.passkeySessionTokens.set(id, {
+          token: sessionToken,
+          expiresAt: Date.now() + getPasskeyTokenTtlMs(),
+        });
         // Update stored counter
         const newCounter =
           verification.authenticationInfo?.newCounter ??
