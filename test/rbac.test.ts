@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { ServerAPI } from "../src/lib/server-api.ts";
 import { isAdmin } from "../src/lib/rbac";
 import createCredentialStore from "../src/lib/credential-store.ts";
+import { CloudflareAPI } from "../src/lib/cloudflare.ts";
 
 type MockReq = Partial<Request> & {
   header: (name: string) => string | undefined;
@@ -50,6 +51,8 @@ function makeRes() {
 test("RBAC: admin token or user role is required for admin endpoints", async () => {
   process.env.CREDENTIAL_STORE = "sqlite";
   process.env.ADMIN_TOKEN = "adm-token";
+  const origVerify = CloudflareAPI.prototype.verifyToken;
+  CloudflareAPI.prototype.verifyToken = async () => {};
   const store = createCredentialStore() as ReturnType<
     typeof createCredentialStore
   >;
@@ -99,7 +102,11 @@ test("RBAC: admin token or user role is required for admin endpoints", async () 
   assert.ok(Array.isArray(arRes2.data));
 
   // Check role-based admin via middleware: isAdmin should allow our admin user
-  const mwReq = makeReq({}, {}, { "x-auth-email": "admin@example.com" });
+  const mwReq = makeReq(
+    {},
+    {},
+    { "x-auth-email": "admin@example.com", "x-auth-key": "key" },
+  );
   const mwRes = makeRes();
   let called = false;
   await new Promise<void>((resolve, reject) => {
@@ -117,4 +124,5 @@ test("RBAC: admin token or user role is required for admin endpoints", async () 
     );
   });
   assert.equal(called, true);
+  CloudflareAPI.prototype.verifyToken = origVerify;
 });

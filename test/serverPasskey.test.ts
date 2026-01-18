@@ -6,6 +6,7 @@ import { ServerAPI } from "../src/lib/server-api.ts";
 import { getAuditEntries, clearAuditEntries } from "../src/lib/audit.ts";
 import { vaultManager } from "../src/server/vault.ts";
 import createCredentialStore from "../src/lib/credential-store.ts";
+import { CloudflareAPI } from "../src/lib/cloudflare.ts";
 
 // Use an isolated in-memory credential store for these tests to avoid
 // cross-test state when other tests change the global CREDENTIAL_STORE.
@@ -22,6 +23,9 @@ import type {
 } from "../src/lib/simplewebauthn-wrapper";
 
 // The verification result shapes are imported from the wrapper types above
+
+const origVerifyToken = CloudflareAPI.prototype.verifyToken;
+CloudflareAPI.prototype.verifyToken = async () => {};
 
 // Store original functions to restore (use narrow unknown casts)
 const origVerifyReg = (
@@ -345,6 +349,7 @@ test("authenticatePasskey verifies assertion", async () => {
   const res = createRes();
   await handler(req, res.res);
   assert.equal(res.data.success, true);
+  assert.ok(res.data.token);
 
   const secretNewCreds = await ServerAPI.credentialStore.getCredentials("key3");
   assert.ok(Array.isArray(secretNewCreds) && secretNewCreds.length >= 1);
@@ -395,4 +400,8 @@ test("authenticatePasskey rejects failed assertion", async () => {
       ) => Promise<VerifyAuthenticationResult>;
     }
   ).verifyAuthenticationResponse = origVerifyAuth;
+});
+
+test.after(() => {
+  CloudflareAPI.prototype.verifyToken = origVerifyToken;
 });
