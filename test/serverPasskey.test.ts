@@ -43,12 +43,17 @@ const origVerifyAuth = (
   }
 ).verifyAuthenticationResponse;
 
-function createReq(body: unknown, params: Record<string, string>) {
+function createReq(
+  body: unknown,
+  params: Record<string, string>,
+  headers?: Record<string, string>,
+) {
   // minimal Request-like object (satisfies handlers used in tests)
   return {
     body,
     params,
     header(name: string) {
+      if (headers && name in headers) return headers[name];
       return name === "authorization" ? "Bearer token" : undefined;
     },
   } as unknown as Request;
@@ -346,10 +351,18 @@ test("authenticatePasskey verifies assertion", async () => {
     },
     { id: "key3" },
   );
+  await vaultManager.setSecret("key3", "vault-secret");
   const res = createRes();
   await handler(req, res.res);
   assert.equal(res.data.success, true);
   assert.ok(res.data.token);
+
+  const vaultRes = createRes();
+  await ServerAPI.getVaultSecret()(
+    createReq({}, { id: "key3" }, { "x-passkey-token": res.data.token }),
+    vaultRes.res,
+  );
+  assert.equal(vaultRes.data.secret, "vault-secret");
 
   const secretNewCreds = await ServerAPI.credentialStore.getCredentials("key3");
   assert.ok(Array.isArray(secretNewCreds) && secretNewCreds.length >= 1);
