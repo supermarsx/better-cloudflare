@@ -1851,27 +1851,114 @@ cargo bench
 
 ## 17. Extensibility & integration points
 
-- Server has a small `ServerAPI` class which maps endpoints to `CloudflareAPI` functions — a natural place to add more Cloudflare operations (e.g., page rules, other DNS features).
-- `CryptoManager` & `StorageManager` are designed for injection of storage/crypto implementations in tests; this also supports substituting a server-backed cryptographic store for multi-user deployments.
-- `ServerClient` is a thin wrapper; additional error handling or response shaping is simple to add.
+### Rust Backend Extension Points
 
-Suggested extensions:
+**Adding New Tauri Commands:**
+1. Define command handler in `src-tauri/src/commands.rs`:
+   ```rust
+   #[tauri::command]
+   pub async fn my_new_command(param: String) -> Result<String, String> {
+       // Implementation
+       Ok("result".to_string())
+   }
+   ```
 
-- Support for bulk operations on the server to import large zone files server-side.
-- Paginated zone records and offline editing with background sync.
-- A role-based access control (RBAC) server that stores keys securely.
+2. Register command in `src-tauri/src/main.rs`:
+   ```rust
+   tauri::Builder::default()
+       .invoke_handler(tauri::generate_handler![
+           // ... existing commands
+           my_new_command,
+       ])
+   ```
 
-### Suggested new features (proactive roadmap)
+3. Add TypeScript wrapper in `src/lib/tauri-client.ts`:
+   ```typescript
+   async myNewCommand(param: string): Promise<string> {
+       return await invoke('my_new_command', { param });
+   }
+   ```
 
-- Multi-device passkey management: Add UI to list, revoke, and label registered passkeys per stored key. Add server routes to delete specific passkey credentials.
-- Passkey revocation and management: Allow users to list registered credentials per id and remove a credential or all credentials when needed.
-- Server-side credential store with access control: Add optional server-side persistent storage (encrypted DB) for credentials with multi-user support and RBAC.
-- E2E test suite and CI pipelines: Add Playwright or Cypress tests to validate critical flows (add key, login, CRUD records, import/export, passkeys, vault).
-- Accessibility automated testing: Integrate axe-core accessibility checks into testing pipeline.
-- Pagination and virtualized lists + offline-first UX: Enhance performance and offline support for large zones.
-- Background.sync or PWA support for offline editing and later synchronization (requires server-side conflict resolution).
-- Audit logs: Track sensitive events (key addition, rotation, delete, passkey registration, passkey auth) in server logs or a secure audit store.
-- Trusted attestation and attestation policies: Add configurable attestation verification rules (e.g., require certain attestation formats or authenticators).
+**Cloudflare API Extensions:**
+- `cloudflare_api.rs` provides the foundation for additional Cloudflare operations
+- Natural place to add: Page Rules, Workers, Firewall Rules, SSL/TLS settings
+- Follow existing pattern: async methods with `reqwest` HTTP client
+- Add corresponding Tauri commands in `commands.rs`
+
+**Storage Backends:**
+- `storage.rs` abstracts OS keychain access
+- Easy to add: SQLite backend, cloud storage, encrypted file storage
+- Trait-based design allows pluggable implementations
+- Tests use mock storage for isolation
+
+**Crypto Implementations:**
+- `crypto.rs` provides AES-256-GCM encryption
+- Can add: other ciphers (ChaCha20-Poly1305), key derivation algorithms
+- Modular design allows swapping implementations
+- Benchmark utilities help compare performance
+
+**Frontend Customization:**
+- React components in `src/components/` are composable
+- UI primitives in `src/components/ui/` follow Radix UI patterns
+- Theming via Tailwind CSS classes and CSS variables
+- Easy to add custom themes, layouts, or workflows
+
+### Integration Opportunities
+
+**CLI Tool Integration:**
+- Rust backend code can be reused for CLI tool
+- Share crypto, storage, and API client modules
+- Provide headless mode for automation
+- Example: `better-cloudflare-cli record create ...`
+
+**Plugin System (Future):**
+- Tauri supports plugin architecture
+- Could allow: custom record types, third-party DNS providers, validation rules
+- Plugins would be Rust crates or JS modules
+- Security: plugins run in sandbox, explicit permissions required
+
+**External Tool Integration:**
+- Export audit logs → SIEM systems
+- Import records from → Terraform, Pulumi, other IaC tools
+- Webhook support → notify external services on DNS changes
+- API: expose subset of functionality via local HTTP server (optional)
+
+### Testing & Development Extensions
+
+**Mock Implementations:**
+- `storage.rs` includes in-memory mock for testing
+- Easy to add mock Cloudflare API responses
+- Tauri provides `mock_app()` for command testing
+- Frontend can use `mockIPC()` for component tests
+
+**Development Tools:**
+- Tauri DevTools accessible in dev mode
+- Rust debugging with `lldb` or `gdb`
+- Frontend debugging with Chrome DevTools
+- Performance profiling with `cargo flamegraph`
+
+### Suggested Extensions (Roadmap)
+
+**High Priority:**
+- Bulk operations with progress tracking
+- Paginated record loading for large zones
+- Advanced search with regex and filters
+- Export templates and scheduled backups
+- Enhanced audit log viewer with filtering
+
+**Medium Priority:**
+- Additional Cloudflare API features (Workers, Page Rules)
+- CLI companion tool for automation
+- Plugin system for custom workflows
+- Webhook notifications for DNS changes
+- Multi-zone operations (bulk changes across zones)
+
+**Low Priority:**
+- Cloud sync with end-to-end encryption (opt-in)
+- Custom validation rules engine
+- DNS analytics and insights
+- Cost tracking and optimization suggestions
+- Integration with infrastructure-as-code tools
 
 ## 18. Distribution & deployment
 
@@ -2221,99 +2308,419 @@ rm -rf "~/.local/share/com.better-cloudflare.app"
 rm -rf "~/.config/com.better-cloudflare.app"
 ```
 
+## 19. Known limitations & future work
+
+### Current Limitations
+
+**Platform-Specific:**
+- **macOS**: Requires macOS 10.15+ (Catalina or later)
+- **Windows**: Requires Windows 10 1809+ or Windows 11
+- **Linux**: Requires modern desktop environment (GNOME, KDE, etc.)
+- **Mobile**: No iOS/Android support (desktop only)
+
+**Functionality:**
+- **Single Device**: No credential sync across devices (by design - security)
+- **Local Only**: Requires local installation, cannot run in browser
+- **Large Zones**: May be slow with 10,000+ records (pagination planned)
+- **Real-time Updates**: No live refresh of DNS changes (manual refresh required)
+- **Collaboration**: Single-user app, no multi-user features
+
+**API Coverage:**
+- DNS records only - no support for:
+  - Page Rules
+  - Workers
+  - Firewall Rules
+  - SSL/TLS settings
+  - Analytics
+  - (These are out of scope for this DNS-focused app)
+
+**Technical:**
+- **Webview Limitations**: Uses system webview (may vary by OS)
+- **Passkey Storage**: Credentials tied to device, not portable
+- **Offline Mode**: Read-only when offline (cannot create/update records)
+
+### Future Enhancements
+
+**High Priority:**
+
+1. **Record Pagination & Virtualization**
+   - Handle zones with 10,000+ records
+   - Virtual scrolling for large lists
+   - Lazy loading with infinite scroll
+   - Server-side filtering and search
+
+2. **Advanced Import/Export**
+   - Import from other DNS providers (AWS Route53, Cloudflare bulk format)
+   - Export templates
+   - Scheduled exports (backup automation)
+   - Import preview with conflict resolution
+
+3. **Bulk Operations UI**
+   - Multi-select records
+   - Batch edit (TTL, proxy status)
+   - Batch delete with confirmation
+   - Progress indicators for large operations
+
+4. **Enhanced Audit Logging**
+   - Searchable audit log UI
+   - Export audit logs (JSON, CSV)
+   - Retention policies
+   - Event filtering
+
+5. **Accessibility Improvements**
+   - Full keyboard navigation
+   - Screen reader optimization
+   - High contrast theme
+   - Font size scaling
+   - ARIA labels on all interactive elements
+
+**Medium Priority:**
+
+6. **Advanced DNS Features**
+   - DNSSEC management
+   - Zone templates
+   - Record validation (SPF checker, DMARC validator)
+   - DNS propagation checker
+   - TTL recommendations
+
+7. **Improved Search & Filtering**
+   - Regex search
+   - Advanced filters (date range, TTL range)
+   - Saved filters
+   - Quick filters (proxied only, recently modified)
+
+8. **Theme Customization**
+   - Multiple built-in themes
+   - Custom color schemes
+   - Light/dark mode toggle
+   - System theme sync
+
+9. **Internationalization (i18n)**
+   - Multi-language support
+   - RTL language support
+   - Locale-specific date/time formats
+
+10. **CLI Companion Tool**
+    - Headless CLI for automation
+    - Scriptable operations
+    - CI/CD integration
+    - Batch processing
+
+**Low Priority:**
+
+11. **Cloud Sync (Optional)**
+    - End-to-end encrypted sync
+    - Conflict resolution
+    - Selective sync
+    - Must remain opt-in (privacy first)
+
+12. **Plugin System**
+    - Custom record types
+    - Third-party integrations
+    - Custom validation rules
+    - Extension marketplace
+
+13. **Advanced Passkey Features**
+    - Passkey backup/recovery
+    - Cross-device passkey sharing (via iCloud Keychain, etc.)
+    - FIDO2 security key support
+    - Biometric fallback options
+
+14. **Notification System**
+    - Desktop notifications for important events
+    - Update notifications
+    - Scheduled task reminders
+    - DNS propagation alerts
+
+### Considered but Not Planned
+
+**Web Version:**
+- Desktop-only by design for maximum security
+- Web version would require server infrastructure
+- Conflicts with local-first philosophy
+
+**Mobile Apps:**
+- DNS management typically done on desktop
+- Mobile browser support sufficient for quick changes
+- Cloudflare official app exists for mobile
+
+**Multi-User / Team Features:**
+- Out of scope for single-user local app
+- Would require server infrastructure
+- Enterprise users should use Cloudflare Teams
+
+### Community Contributions Welcome
+
+We welcome contributions in the following areas:
+- Bug fixes and performance improvements
+- New DNS record type support
+- UI/UX enhancements
+- Documentation improvements
+- Translations (i18n)
+- Test coverage improvements
+- Accessibility enhancements
+
+See `CONTRIBUTING.md` for guidelines.
+
+## Appendix: Useful References and File Locations
+
+**Rust Backend:**
+- Entry point: `src-tauri/src/main.rs`
+- Command handlers: `src-tauri/src/commands.rs`
+- Crypto module: `src-tauri/src/crypto.rs`
+- Storage module: `src-tauri/src/storage.rs`
+- Cloudflare API client: `src-tauri/src/cloudflare_api.rs`
+- Passkey manager: `src-tauri/src/passkey.rs`
+- Audit logging: `src-tauri/src/audit.rs`
+- Configuration: `src-tauri/tauri.conf.json`
+- Dependencies: `src-tauri/Cargo.toml`
+
+**Frontend:**
+- Entry: `src/main.tsx`, `app/page.tsx`
+- Auth components: `src/components/auth/*`
+- DNS components: `src/components/dns/*`
+- UI primitives: `src/components/ui/*`
+- Tauri client: `src/lib/tauri-client.ts`
+- Storage & crypto: `src/lib/storage.ts`, `src/lib/crypto.ts` (legacy)
+- Validation: `src/lib/validation.ts`
+- Types: `src/types/*`
+
+**Tests:**
+- Rust tests: `src-tauri/src/**/tests.rs`, `src-tauri/tests/**`
+- Frontend tests: `test/*`
+- E2E tests: `e2e/*`
+
+**Documentation:**
+- Main README: `README.md`
+- Desktop README: `README-TAURI.md`
+- Migration guide: `docs/tauri-migration.md`
+- TODO list: `TODO-TAURI-MIGRATION.md`
+- Spec: `spec.md`
+
+## Examples — Tauri IPC & UI Flows
+
+### IPC Command Examples (Tauri)
+
+**Verify Token:**
+```typescript
+import { invoke } from '@tauri-apps/api/core';
+
+try {
+  const result = await invoke<{ success: boolean }>('verify_token', {
+    token: 'cf_api_token_here',
+    email: null  // null for API token, email for global key
+  });
+  console.log('Token valid:', result.success);
+} catch (error) {
+  console.error('Verification failed:', error);
+}
+```
+
+**List Zones:**
+```typescript
+const zones = await invoke<Zone[]>('get_zones', {
+  token: currentToken,
+  email: null
+});
+
+console.log('Zones:', zones);
+// [{ id: "zone_id", name: "example.com", status: "active", ... }]
+```
+
+**Get DNS Records:**
+```typescript
+const records = await invoke<DnsRecord[]>('get_dns_records', {
+  token: currentToken,
+  email: null,
+  zone_id: selectedZoneId
+});
+
+console.log('Records:', records);
+// [{ id: "rec_id", type: "A", name: "www", content: "1.2.3.4", ... }]
+```
+
+**Create DNS Record:**
+```typescript
+const newRecord = await invoke<DnsRecord>('create_dns_record', {
+  token: currentToken,
+  email: null,
+  zone_id: selectedZoneId,
+  record: {
+    type: 'A',
+    name: 'test',
+    content: '1.2.3.4',
+    ttl: 300,
+    proxied: false
+  }
+});
+
+console.log('Created:', newRecord);
+```
+
+**Encrypt/Decrypt Data:**
+```typescript
+// Encrypt
+const encrypted = await invoke<{
+  encrypted: string;
+  salt: string;
+  nonce: string;
+}>('encrypt_data', {
+  data: 'my_api_token',
+  password: 'user_password',
+  iterations: 100000,
+  key_length: 256
+});
+
+// Store encrypted data in OS keychain
+await invoke('vault_set', {
+  id: 'api_key_1',
+  secret: JSON.stringify(encrypted)
+});
+
+// Later: retrieve and decrypt
+const stored = await invoke<{ secret: string }>('vault_get', {
+  id: 'api_key_1'
+});
+
+const encryptedData = JSON.parse(stored.secret);
+const decrypted = await invoke<{ decrypted: string }>('decrypt_data', {
+  encrypted: encryptedData.encrypted,
+  salt: encryptedData.salt,
+  nonce: encryptedData.nonce,
+  password: 'user_password',
+  iterations: 100000,
+  key_length: 256
+});
+
+console.log('Decrypted token:', decrypted.decrypted);
+```
+
+**Passkey Registration:**
+```typescript
+// Get registration options
+const options = await invoke<PasskeyRegisterOptions>(
+  'passkey_get_register_options',
+  {
+    id: 'user_key_1',
+    display_name: 'MacBook Pro Touch ID'
+  }
+);
+
+// Use WebAuthn API to create credential
+const credential = await navigator.credentials.create({
+  publicKey: options
+});
+
+// Register credential with backend
+await invoke('passkey_register', {
+  id: 'user_key_1',
+  credential: credential,
+  device_name: 'MacBook Pro Touch ID'
+});
+```
+
+### Common UI Flows (Desktop App)
+
+**Add and Encrypt Key:**
+1. User clicks "Add API Key" button in `LoginForm`
+2. `AddKeyDialog` opens
+3. User fills: label, API token, optional email, encryption password
+4. On save:
+   - Frontend validates token via `invoke('verify_token', ...)`
+   - If valid, frontend encrypts token via `invoke('encrypt_data', ...)`
+   - Encrypted data stored in OS keychain via `invoke('vault_set', ...)`
+   - Metadata (label, id, encryption config) saved to localStorage
+5. Success toast shown, dialog closes
+
+**Login With Stored Key:**
+1. User selects stored key from dropdown
+2. User enters decryption password (or uses passkey)
+3. On login click:
+   - Frontend retrieves encrypted data via `invoke('vault_get', ...)`
+   - Frontend decrypts via `invoke('decrypt_data', ...)`
+   - Frontend verifies token via `invoke('verify_token', ...)`
+   - If successful, store active session in memory
+   - Navigate to DNS Manager view
+4. If error: show error toast, clear password field
+
+**Create DNS Record:**
+1. User in DNS Manager, zone selected
+2. User clicks "Add Record" button
+3. `AddRecordDialog` opens
+4. User fills record details (type, name, content, TTL, etc.)
+5. Client-side validation runs
+6. On save:
+   - Frontend calls `invoke('create_dns_record', ...)`
+   - Backend validates and creates record via Cloudflare API
+   - Frontend updates local record list
+7. Success toast shown, dialog closes
+
+**Bulk Import:**
+1. User clicks "Import" button
+2. `ImportExportDialog` opens
+3. User pastes CSV/JSON/BIND data
+4. Frontend parses and validates records client-side
+5. Preview shown with skipped duplicates
+6. On confirm:
+   - Frontend calls `invoke('bulk_create_dns_records', ...)`
+   - Backend creates records in batch
+   - Progress indicator updates
+   - Results summary shown (success count, errors)
+7. Record list refreshed
+
+## Acceptance Criteria
+
+**Desktop App Functionality:**
+- ✅ App launches on macOS, Windows, Linux
+- ✅ OS keychain integration works on all platforms
+- ✅ Credentials stored securely with AES-256-GCM encryption
+- ✅ Passkey authentication works with platform authenticators
+- ✅ All Tauri commands execute successfully
+- ✅ UI responsive and performant
+- ✅ No network server required
+
+**DNS Management:**
+- ✅ Users can add API tokens with password or passkey authentication
+- ✅ Login flow validates credentials before granting access
+- ✅ Zones and records match Cloudflare API responses
+- ✅ CRUD operations work for all supported record types
+- ✅ Import/export handles JSON, CSV, and BIND formats
+- ✅ Bulk operations complete without errors
+- ✅ Duplicate detection during import works correctly
+
+**Security:**
+- ✅ Credentials never logged or exposed
+- ✅ Encryption uses recommended parameters (100k iterations minimum)
+- ✅ OS keychain access prompts user on first use
+- ✅ Fallback to in-memory storage with user warning
+- ✅ Passkey counters prevent replay attacks
+- ✅ CSP prevents XSS attacks
+- ✅ Code signing validates app authenticity
+
+## Edge Cases and Error Scenarios
+
+**Authentication Errors:**
+- ❌ Wrong encryption password → Error toast: "Incorrect password"
+- ❌ Invalid Cloudflare token → Error toast: "Invalid API token. Check your credentials."
+- ❌ Network offline → Error toast: "Cannot reach Cloudflare API. Check your connection."
+- ❌ OS keychain denied → Warning: "Using in-memory storage. Credentials will not persist."
+
+**DNS Operation Errors:**
+- ❌ Invalid IP address → Validation error: "Invalid IP address format"
+- ❌ Duplicate record → Skipped with count: "3 duplicates skipped"
+- ❌ Cloudflare rate limit → Retry with backoff, user notification
+- ❌ Network timeout → Retry 3 times, then error toast
+
+**App-Level Errors:**
+- ❌ Corrupted localStorage → Clear and prompt re-add keys
+- ❌ Corrupted keychain entry → Delete and prompt re-add
+- ❌ App crash → Audit log preserved, safe restart
+
+**Performance Edge Cases:**
+- ⚠️ Large zone (10,000+ records) → May be slow, pagination recommended
+- ⚠️ Slow encryption (1M iterations) → Show spinner, consider reducing
+- ⚠️ Bulk import (1,000 records) → Progress bar, may take 30-60 seconds
 
 
 - Single-user oriented: Local storage-based keys and session model assume a single user per browser.
-- No multi-account server model: the server is a simple proxy and is not meant to be a shared multi-user platform.
-- Lack of fine-grained control for API tokens on the server; consider adding OAuth or a more secure server-side credential manager for multi-tenant deployments.
-- No live events or automatic polling of changes; the UI expects the user to use operations to refresh lists.
-- Large zones may cause the browser to display long lists; implement pagination or virtualized lists for performance.
 
-Appendix: Useful References and File Locations
-
-- Frontend entry: `src/main.tsx`, `src/App.tsx`
-- Key components: `src/components/auth` and `src/components/dns`
-- Client API: `src/lib/server-client.ts`
-- Server API: `src/lib/server-api.ts`, `src/server/router.ts`
-- Cloudflare wrapper: `src/lib/cloudflare.ts`
-- Storage & crypto: `src/lib/storage.ts`, `src/lib/crypto.ts`
-- Validation: `src/lib/validation.ts`
-- Tests: `test/*` — includes coverage for many key areas
-
-## Examples — API & UI flows
-
-### API requests (examples)
-
-- Verify token (Bearer auth)
-  - Request:
-    - POST /api/verify-token
-    - Headers: `Authorization: Bearer <token>`
-  - Response: 200 { "success": true }
-
-- List zones
-  - Request:
-    - GET /api/zones
-    - Headers: `Authorization: Bearer <token>`
-  - Response: 200 [ { id: "zoneId", name: "example.org", status: "active", ... } ]
-
-- Get records
-  - Request: GET /api/zones/:zone/dns_records
-  - Response: 200 [ { id: "recId", type: "A", name: "www", content: "1.2.3.4", ttl: 3600, zone_id: "zoneId" } ]
-
-- Create record
-  - Request: POST /api/zones/:zone/dns_records
-  - Body example:
-    {
-    "type": "A",
-    "name": "www",
-    "content": "1.2.3.4",
-    "ttl": 300,
-    "proxied": false
-    }
-  - Response: newly created record (200)
-
-- Update record
-  - PUT /api/zones/:zone/dns_records/:id
-  - Body: same as Create record but partial fields allowed
-  - Response: updated record (200)
-
-- Delete record
-  - DELETE /api/zones/:zone/dns_records/:id
-  - Response: 200 { "success": true }
-
-### Common UI flows
-
-- Add and Encrypt Key
-  1. Open Add Key dialog in `LoginForm`.
-  2. Fill label, API token, optional email, encryption password.
-  3. Click Add — app verifies the token via `POST /api/verify-token`.
-  4. If valid, the key is encrypted with the password and stored locally.
-
-- Login With Stored Key
-  1. Select a stored key in `LoginForm`.
-  2. Enter the encryption password and click Login.
-  3. `LoginForm` decrypts token via `StorageManager.getDecryptedApiKey` and verifies with the server.
-  4. On success, set current session and show DNS Manager.
-
-- Create & Update Record
-  1. Select zone in `DNSManager`.
-  2. Click Add Record and fill required fields.
-  3. Submitting sends POST to `/api/zones/:zone/dns_records`.
-  4. For updates, Edit inline or via modal then send PUT to `/api/zones/:zone/dns_records/:id`.
-
-## Acceptance Criteria (for the main features)
-
-- Users can add API tokens and store them encrypted locally.
-- Login flow must validate decrypted credentials against the server before creating a live session.
-- Listing zones and records must match Cloudflare's responses for the token used.
-- Create, update and delete record operations must be performed and reflected in UI state.
-- Import/export operations handle JSON, CSV and BIND format and provide user feedback for skipped/invalid items.
-- Server should enforce rate limiting and CORS policies.
-
-## Edge Cases and Error scenarios
-
-- Wrong encryption password: UI should display an error toast and not set the session.
-- Invalid credentials: server returns an error; UI surfaces a descriptive toast.
-- Network timeouts: ServerClient has a default timeout; UI should handle AbortError and display informative messages.
-- Import duplicates: duplicates skipped; user is informed of skipped count.
-- Large zone lists: consider adding pagination or virtualized lists if performance limits observed.
