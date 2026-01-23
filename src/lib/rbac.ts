@@ -4,6 +4,7 @@ import createCredentialStore, {
   SqliteCredentialStore,
 } from "./credential-store";
 import type { SqliteWrapper } from "./sqlite-driver";
+import { CloudflareAPI } from "./cloudflare";
 
 /**
  * Simple RBAC middleware: allow when x-admin-token matches env ADMIN_TOKEN or
@@ -17,6 +18,25 @@ export async function isAdmin(req: Request, res: Response, next: NextFunction) {
   const adminToken = getEnv("ADMIN_TOKEN", "VITE_ADMIN_TOKEN", undefined);
   const reqAdmin = req.header("x-admin-token");
   if (reqAdmin && adminToken && reqAdmin === adminToken) return next();
+
+  // Require valid Cloudflare credentials before checking DB roles.
+  try {
+    const auth = req.header("authorization");
+    if (auth?.startsWith("Bearer ") && auth.length > "Bearer ".length) {
+      await new CloudflareAPI(auth.slice(7)).verifyToken();
+    } else {
+      const key = req.header("x-auth-key");
+      const emailHeader = req.header("x-auth-email");
+      if (!key || !emailHeader) {
+        res.status(403).json({ error: "Admin credentials required" });
+        return;
+      }
+      await new CloudflareAPI(key, undefined, emailHeader).verifyToken();
+    }
+  } catch {
+    res.status(403).json({ error: "Admin credentials required" });
+    return;
+  }
 
   // fallback to check email mapping in sqlite (if credential store supports DB)
   const email = req.header("x-auth-email");

@@ -6,6 +6,7 @@ import { ServerAPI } from "../src/lib/server-api.ts";
 import { getAuditEntries, clearAuditEntries } from "../src/lib/audit.ts";
 import { vaultManager } from "../src/server/vault.ts";
 import createCredentialStore from "../src/lib/credential-store.ts";
+import { CloudflareAPI } from "../src/lib/cloudflare.ts";
 
 // Use an isolated in-memory credential store for these tests to avoid
 // cross-test state when other tests change the global CREDENTIAL_STORE.
@@ -23,6 +24,9 @@ import type {
 
 // The verification result shapes are imported from the wrapper types above
 
+const origVerifyToken = CloudflareAPI.prototype.verifyToken;
+CloudflareAPI.prototype.verifyToken = async () => {};
+
 // Store original functions to restore (use narrow unknown casts)
 const origVerifyReg = (
   swauth as unknown as {
@@ -39,12 +43,17 @@ const origVerifyAuth = (
   }
 ).verifyAuthenticationResponse;
 
-function createReq(body: unknown, params: Record<string, string>) {
+function createReq(
+  body: unknown,
+  params: Record<string, string>,
+  headers?: Record<string, string>,
+) {
   // minimal Request-like object (satisfies handlers used in tests)
   return {
     body,
     params,
     header(name: string) {
+      if (headers && name in headers) return headers[name];
       return name === "authorization" ? "Bearer token" : undefined;
     },
   } as unknown as Request;
@@ -342,9 +351,32 @@ test("authenticatePasskey verifies assertion", async () => {
     },
     { id: "key3" },
   );
+  await vaultManager.setSecret("key3", "vault-secret");
   const res = createRes();
   await handler(req, res.res);
   assert.equal(res.data.success, true);
+  assert.ok(res.data.token);
+
+  const vaultRes = createRes();
+  await ServerAPI.getVaultSecret()(
+    createReq({}, { id: "key3" }, { "x-passkey-token": res.data.token }),
+    vaultRes.res,
+  );
+  assert.equal(vaultRes.data.secret, "vault-secret");
+
+  const vaultRes2 = createRes();
+  await assert.rejects(
+    () =>
+      ServerAPI.getVaultSecret()(
+        createReq(
+          {},
+          { id: "key3" },
+          { "x-passkey-token": res.data.token, authorization: "" },
+        ),
+        vaultRes2.res,
+      ),
+    (err: { status?: number }) => err.status === 400,
+  );
 
   const secretNewCreds = await ServerAPI.credentialStore.getCredentials("key3");
   assert.ok(Array.isArray(secretNewCreds) && secretNewCreds.length >= 1);
@@ -395,4 +427,69 @@ test("authenticatePasskey rejects failed assertion", async () => {
       ) => Promise<VerifyAuthenticationResult>;
     }
   ).verifyAuthenticationResponse = origVerifyAuth;
+});
+
+test("passkey session token expires", async () => {
+  const originalNow = Date.now;
+  const base = 1_000_000;
+  Date.now = () => base;
+  process.env.PASSKEY_TOKEN_TTL_MS = "1";
+  try {
+    (
+      swauth as unknown as {
+        verifyAuthenticationResponse: (
+          opts?: unknown,
+        ) => Promise<VerifyAuthenticationResult>;
+      }
+    ).verifyAuthenticationResponse = async () => ({
+      verified: true,
+      authenticationInfo: { newCounter: 1 },
+    });
+
+    const handler = ServerAPI.authenticatePasskey();
+    await ServerAPI.credentialStore.addCredential("key-expire", {
+      credentialID: "cid",
+      credentialPublicKey: "pk",
+      counter: 0,
+    });
+    await ServerAPI.createPasskeyAuthOptions()(
+      createReq({}, { id: "key-expire" }),
+      createRes().res,
+    );
+    const res = createRes();
+    await handler(
+      createReq({ id: "key-expire", response: {} }, { id: "key-expire" }),
+      res.res,
+    );
+    assert.ok(res.data.token);
+    await vaultManager.setSecret("key-expire", "vault-expire");
+
+    Date.now = () => base + 10;
+    await assert.rejects(
+      () =>
+        ServerAPI.getVaultSecret()(
+          createReq(
+            {},
+            { id: "key-expire" },
+            { "x-passkey-token": res.data.token, authorization: "" },
+          ),
+          createRes().res,
+        ),
+      (err: { status?: number }) => err.status === 400,
+    );
+  } finally {
+    delete process.env.PASSKEY_TOKEN_TTL_MS;
+    Date.now = originalNow;
+    (
+      swauth as unknown as {
+        verifyAuthenticationResponse?: (
+          opts?: unknown,
+        ) => Promise<VerifyAuthenticationResult>;
+      }
+    ).verifyAuthenticationResponse = origVerifyAuth;
+  }
+});
+
+test.after(() => {
+  CloudflareAPI.prototype.verifyToken = origVerifyToken;
 });

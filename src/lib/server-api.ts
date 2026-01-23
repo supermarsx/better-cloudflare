@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { CloudflareAPI } from "./cloudflare";
 import { vaultManager } from "../server/vault";
 import createCredentialStore, {
@@ -15,7 +16,7 @@ import swauth from "./simplewebauthn-wrapper";
 import { dnsRecordSchema } from "./validation";
 import type { Zone } from "@/types/dns";
 import { validateSPFContentAsync } from "./spf";
-import { getEnv, getEnvBool } from "./env";
+import { getEnv, getEnvBool, getEnvNumber } from "./env";
 import { simulateSPF, buildSPFGraph } from "./spf";
 
 const DEBUG = getEnvBool("DEBUG_SERVER_API", "VITE_DEBUG_SERVER_API");
@@ -32,7 +33,7 @@ const DEBUG = getEnvBool("DEBUG_SERVER_API", "VITE_DEBUG_SERVER_API");
  */
 function createClient(req: Request): CloudflareAPI {
   const auth = req.header("authorization");
-  if (auth?.startsWith("Bearer ")) {
+  if (auth?.startsWith("Bearer ") && auth.length > "Bearer ".length) {
     if (DEBUG) console.debug("Using bearer token for Cloudflare API");
     return new CloudflareAPI(auth.slice(7));
   }
@@ -47,6 +48,44 @@ function createClient(req: Request): CloudflareAPI {
   };
   err.status = 400;
   throw err;
+}
+
+async function requireVerifiedClient(req: Request): Promise<CloudflareAPI> {
+  const client = createClient(req);
+  await client.verifyToken();
+  return client;
+}
+
+function getPasskeyTokenTtlMs() {
+  return getEnvNumber(
+    "PASSKEY_TOKEN_TTL_MS",
+    "VITE_PASSKEY_TOKEN_TTL_MS",
+    5 * 60 * 1000,
+  );
+}
+
+function generatePasskeyToken(): string {
+  try {
+    return randomUUID();
+  } catch {
+    return Math.random().toString(36).slice(2);
+  }
+}
+
+function hasValidPasskeySession(req: Request, id: string, consume = true) {
+  const token = req.header("x-passkey-token");
+  const expected = ServerAPI.passkeySessionTokens.get(id);
+  if (!token || !expected) return false;
+  const now = Date.now();
+  if (expected.expiresAt <= now) {
+    ServerAPI.passkeySessionTokens.delete(id);
+    return false;
+  }
+  if (token === expected.token) {
+    if (consume) ServerAPI.passkeySessionTokens.delete(id);
+    return true;
+  }
+  return false;
 }
 
 function actorFromReq(req: Request) {
@@ -391,7 +430,7 @@ export class ServerAPI {
      */
     return async (req: Request, res: Response) => {
       // Require server auth to manipulate vault secrets
-      createClient(req);
+      await requireVerifiedClient(req);
       const id = String(req.params?.id);
       const secret = req.body?.secret;
       if (!id || !secret) {
@@ -414,11 +453,13 @@ export class ServerAPI {
      * Requires credentials in the request and will return 404 when not found.
      */
     return async (req: Request, res: Response) => {
-      createClient(req);
       const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
         return;
+      }
+      if (!hasValidPasskeySession(req, id)) {
+        await requireVerifiedClient(req);
       }
       const secret = await vaultManager.getSecret(String(id));
       if (!secret) {
@@ -440,7 +481,7 @@ export class ServerAPI {
      * valid credentials and a vault id parameter.
      */
     return async (req: Request, res: Response) => {
-      createClient(req);
+      await requireVerifiedClient(req);
       const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
@@ -517,6 +558,10 @@ export class ServerAPI {
   // mechanism for production use.
   private static passkeyChallenges: Map<string, string> = new Map();
   private static passkeyCredentials: Map<string, unknown> = new Map();
+  private static passkeySessionTokens: Map<
+    string,
+    { token: string; expiresAt: number }
+  > = new Map();
   private static credentialStore: CredentialStore = createCredentialStore();
   static setCredentialStore(store: CredentialStore) {
     ServerAPI.credentialStore = store;
@@ -531,6 +576,7 @@ export class ServerAPI {
      * `@simplewebauthn/server` to craft proper registration options.
      */
     return async (req: Request, res: Response) => {
+      await requireVerifiedClient(req);
       const id = String(req.params?.id);
       if (!id) {
         res.status(400).json({ error: "Missing id" });
@@ -574,6 +620,7 @@ export class ServerAPI {
         res.status(400).json({ error: "Missing id or body" });
         return;
       }
+      await requireVerifiedClient(req);
       // Verify attestation using simplewebauthn server utilities
       try {
         const origin = getEnv(
@@ -686,7 +733,7 @@ export class ServerAPI {
         return;
       }
       // require valid credentials on request
-      createClient(req);
+      await requireVerifiedClient(req);
       // Prefer the configured credential store for passkey storage so
       // listing works consistently regardless of underlying store (vault,
       // sqlite, file, memory).
@@ -718,7 +765,7 @@ export class ServerAPI {
         return;
       }
       // require valid credentials on request
-      createClient(req);
+      await requireVerifiedClient(req);
       const stored = await ServerAPI.credentialStore.getCredentials(id);
       if (!stored || stored.length === 0) {
         res.status(404).json({ error: "Not found" });
@@ -1038,6 +1085,11 @@ export class ServerAPI {
           res.status(400).json({ error: "Assertion verification failed" });
           return;
         }
+        const sessionToken = generatePasskeyToken();
+        ServerAPI.passkeySessionTokens.set(id, {
+          token: sessionToken,
+          expiresAt: Date.now() + getPasskeyTokenTtlMs(),
+        });
         // Update stored counter
         const newCounter =
           verification.authenticationInfo?.newCounter ??
@@ -1060,7 +1112,7 @@ export class ServerAPI {
           resource: `passkey:${id}`,
         });
         ServerAPI.passkeyChallenges.delete(id);
-        res.json({ success: true });
+        res.json({ success: true, token: sessionToken });
       } catch (err) {
         res.status(400).json({ error: (err as Error).message });
       }

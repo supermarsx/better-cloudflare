@@ -38,7 +38,7 @@ export function getCorsMiddleware() {
 
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, X-Auth-Key, X-Auth-Email",
+      "Content-Type, Authorization, X-Auth-Key, X-Auth-Email, X-Passkey-Token",
     );
     res.setHeader(
       "Access-Control-Allow-Methods",

@@ -266,3 +266,18 @@ test("listPasskeys and deletePasskey", async () => {
   assert.equal(called2.url, "http://example.com/passkeys/keyid/cid1");
   assert.equal(called2.init?.method, "DELETE");
 });
+
+test("getVaultSecret sends passkey token when provided", async () => {
+  const client = new ServerClient("", "http://example.com");
+  const restore = mockFetch({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: { secret: "s" },
+  });
+  const secret = await client.getVaultSecret("id1", "ptok");
+  assert.equal(secret, "s");
+  const called = restore();
+  const headers = called.init?.headers as Record<string, string>;
+  assert.equal(headers["x-passkey-token"], "ptok");
+});

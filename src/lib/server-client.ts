@@ -33,8 +33,13 @@ function authHeaders(key: string, email?: string): HeadersInit {
       "Content-Type": "application/json",
     };
   }
+  if (key) {
+    return {
+      authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    };
+  }
   return {
-    authorization: `Bearer ${key}`,
     "Content-Type": "application/json",
   };
 }
@@ -83,8 +88,14 @@ export class ServerClient {
     {
       method = "GET",
       body,
+      headers,
       signal,
-    }: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+    }: {
+      method?: string;
+      body?: unknown;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<T> {
     let controller: AbortController | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -96,7 +107,10 @@ export class ServerClient {
     try {
       const res = await fetch(`${this.baseUrl}${endpoint}`, {
         method,
-        headers: this.headers(),
+        headers: {
+          ...(this.headers() as Record<string, string>),
+          ...(headers ?? {}),
+        },
         body: body ? JSON.stringify(body) : undefined,
         signal,
       });
@@ -292,8 +306,14 @@ export class ServerClient {
     await this.request(`/vault/${id}`, { method: "POST", body: { secret } });
   }
 
-  async getVaultSecret(id: string): Promise<string | undefined> {
-    const data = await this.request(`/vault/${id}`, { method: "GET" });
+  async getVaultSecret(
+    id: string,
+    passkeyToken?: string,
+  ): Promise<string | undefined> {
+    const data = await this.request(`/vault/${id}`, {
+      method: "GET",
+      headers: passkeyToken ? { "x-passkey-token": passkeyToken } : undefined,
+    });
     if (!data) return undefined;
     return (data as { secret?: string }).secret;
   }
@@ -353,7 +373,7 @@ export class ServerClient {
   async authenticatePasskey(
     id: string,
     assertion: unknown,
-  ): Promise<{ success: boolean }> {
+  ): Promise<{ success: boolean; token?: string }> {
     /**
      * Submit a passkey assertion (authentication) to the server. The server
      * should verify the assertion and respond with success. This project

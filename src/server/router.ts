@@ -73,7 +73,6 @@ apiRouter.post(
 apiRouter.get("/api/passkeys/:id", asyncHandler(ServerAPI.listPasskeys()));
 apiRouter.delete(
   "/api/passkeys/:id/:cid",
-  isAdmin,
   asyncHandler(ServerAPI.deletePasskey()),
 );
 apiRouter.get("/api/audit", isAdmin, asyncHandler(ServerAPI.getAuditEntries()));

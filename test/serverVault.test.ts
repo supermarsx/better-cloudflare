@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { ServerAPI } from "../src/lib/server-api.ts";
 import { vaultManager } from "../src/server/vault.ts";
 import type { Request, Response } from "express";
+import { CloudflareAPI } from "../src/lib/cloudflare.ts";
 
 function createReq(body: unknown, params: Record<string, string>) {
   return {
@@ -39,6 +40,8 @@ function createRes() {
 }
 
 test("store/get/delete vault secret", async () => {
+  const origVerify = CloudflareAPI.prototype.verifyToken;
+  CloudflareAPI.prototype.verifyToken = async () => {};
   const storeH = ServerAPI.storeVaultSecret();
   const getH = ServerAPI.getVaultSecret();
   const delH = ServerAPI.deleteVaultSecret();
@@ -60,4 +63,5 @@ test("store/get/delete vault secret", async () => {
 
   const secret = await vaultManager.getSecret("id1");
   assert.equal(secret, null);
+  CloudflareAPI.prototype.verifyToken = origVerify;
 });

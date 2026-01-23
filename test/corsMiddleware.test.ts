@@ -96,7 +96,7 @@ test("OPTIONS preflight returns 204 with CORS headers", async () => {
     );
     assert.equal(
       res.headers.get("access-control-allow-headers"),
-      "Content-Type, Authorization, X-Auth-Key, X-Auth-Email",
+      "Content-Type, Authorization, X-Auth-Key, X-Auth-Email, X-Passkey-Token",
     );
   } finally {
     server.close();

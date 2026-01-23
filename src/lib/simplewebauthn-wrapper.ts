@@ -1,6 +1,8 @@
 // Lazy-load @simplewebauthn/server so tests and environments that don't
 // have the optional dependency won't throw at import time.
+import { createRequire } from "node:module";
 
+const moduleRequire = createRequire(import.meta.url);
 
 export type VerifyRegistrationResult = {
   verified?: boolean;
@@ -56,8 +58,7 @@ function loadSwauthSync(): SwauthMod | null {
       }
     } catch {}
     if (!req) {
-      swauth = null;
-      return null;
+      req = moduleRequire;
     }
     swauth = req("@simplewebauthn/server") as SwauthMod;
     return swauth;

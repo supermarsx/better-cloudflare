@@ -8,7 +8,9 @@ import { cryptoManager } from "@/lib/crypto";
 import { ServerClient } from "@/lib/server-client";
 import type { ApiKey } from "@/types/dns";
 
-export function useLoginForm(onLogin: (apiKey: string) => void | Promise<void>) {
+export function useLoginForm(
+  onLogin: (apiKey: string, email?: string) => void | Promise<void>,
+) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
@@ -99,7 +101,7 @@ export function useLoginForm(onLogin: (apiKey: string) => void | Promise<void>) 
       }
 
       storageManager.setCurrentSession(selectedKeyId);
-      onLogin(decryptedKey);
+      onLogin(decryptedKey, email);
 
       toast({
         title: "Success",
@@ -313,7 +315,10 @@ export function useLoginForm(onLogin: (apiKey: string) => void | Promise<void>) 
         };
         const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
         if (serverResp?.success) {
-          const secret = await scx.getVaultSecret(selectedKeyId);
+          const secret = await scx.getVaultSecret(
+            selectedKeyId,
+            serverResp.token,
+          );
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);
             onLogin(secret);
