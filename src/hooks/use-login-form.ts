@@ -187,6 +187,13 @@ export function useLoginForm(
     }
 
     setPasskeyRegisterLoading(true);
+    
+    // Show initial guidance toast
+    toast({
+      title: "Passkey Registration",
+      description: "Follow the prompts from your device to register a new passkey...",
+    });
+
     try {
       const decrypted = await storageManager.getDecryptedApiKey(
         selectedKeyId,
@@ -205,12 +212,10 @@ export function useLoginForm(
         const sc = new ServerClient(decrypted.key, undefined, decrypted.email);
         await sc.storeVaultSecret(selectedKeyId, decrypted.key);
       } catch (err) {
-        toast({
-          title: "Warning",
-          description:
-            "Failed to store key to OS vault: " + (err as Error).message,
-        });
+        console.warn("Failed to store key to OS vault:", err);
+        // Don't show toast for vault failures as it's optional
       }
+      
       const sc2 = new ServerClient(decrypted.key, undefined, decrypted.email);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
       const challenge = Uint8Array.from(atob(options.challenge), (c) =>
@@ -224,8 +229,19 @@ export function useLoginForm(
           name: selectedKeyId,
           displayName: selectedKeyId,
         },
-        pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" as const },  // ES256
+          { alg: -257, type: "public-key" as const }, // RS256
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform" as const,
+          requireResidentKey: false,
+          residentKey: "preferred" as const,
+          userVerification: "preferred" as const,
+        },
+        timeout: 60000,
       } as PublicKeyCredentialCreationOptions;
+      
       const credential = await navigator.credentials.create({ publicKey });
       if (credential) {
         const att = credential as PublicKeyCredential;
@@ -246,14 +262,31 @@ export function useLoginForm(
         };
         await sc2.registerPasskey(selectedKeyId, attObj);
         toast({
-          title: "Success",
-          description: "Passkey registered to this key",
+          title: "✓ Passkey Registered",
+          description: "You can now use this passkey for passwordless login",
+        });
+      } else {
+        toast({
+          title: "Registration Cancelled",
+          description: "Passkey registration was not completed",
+          variant: "destructive",
         });
       }
     } catch (error) {
+      const errorMsg = (error as Error).message;
+      let userMessage = errorMsg;
+      
+      if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
+        userMessage = "Registration was cancelled or not allowed by your device";
+      } else if (errorMsg.includes("NotSupportedError")) {
+        userMessage = "Passkeys are not supported on this device or browser";
+      } else if (errorMsg.includes("SecurityError")) {
+        userMessage = "Security error: Please ensure you're using HTTPS or localhost";
+      }
+      
       toast({
-        title: "Error",
-        description: "Passkey registration failed: " + (error as Error).message,
+        title: "Passkey Registration Failed",
+        description: userMessage,
         variant: "destructive",
       });
     } finally {
@@ -270,7 +303,15 @@ export function useLoginForm(
       });
       return;
     }
+    
     setPasskeyAuthLoading(true);
+    
+    // Show guidance toast
+    toast({
+      title: "Passkey Authentication",
+      description: "Use your device's biometric or security key to authenticate...",
+    });
+    
     try {
       const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
@@ -280,8 +321,12 @@ export function useLoginForm(
       const publicKey = {
         challenge,
         allowCredentials: [],
+        timeout: 60000,
+        userVerification: "preferred" as const,
       } as PublicKeyCredentialRequestOptions;
+      
       const assertion = await navigator.credentials.get({ publicKey });
+      
       if (assertion) {
         const a = assertion as PublicKeyCredential;
         const auth = {
@@ -322,26 +367,48 @@ export function useLoginForm(
           if (secret) {
             storageManager.setCurrentSession(selectedKeyId);
             onLogin(secret);
-            toast({ title: "Success", description: "Logged in using passkey" });
+            toast({ 
+              title: "✓ Login Successful", 
+              description: "Authenticated using passkey" 
+            });
           } else {
             toast({
               title: "Error",
-              description: "No secret in vault for this key",
+              description: "No API key found in vault. Please register a passkey first.",
               variant: "destructive",
-              });
+            });
           }
         } else {
           toast({
-            title: "Error",
-            description: "Passkey authentication failed",
+            title: "Authentication Failed",
+            description: "Passkey verification failed. Please try again.",
             variant: "destructive",
           });
         }
+      } else {
+        toast({
+          title: "Authentication Cancelled",
+          description: "Passkey authentication was not completed",
+          variant: "destructive",
+        });
       }
     } catch (error) {
+      const errorMsg = (error as Error).message;
+      let userMessage = errorMsg;
+      
+      if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
+        userMessage = "Authentication was cancelled or not allowed by your device";
+      } else if (errorMsg.includes("NotSupportedError")) {
+        userMessage = "Passkeys are not supported on this device or browser";
+      } else if (errorMsg.includes("No secret") || errorMsg.includes("not found")) {
+        userMessage = "No passkey registered for this API key. Please register one first.";
+      } else if (errorMsg.includes("SecurityError")) {
+        userMessage = "Security error: Please ensure you're using HTTPS or localhost";
+      }
+      
       toast({
-        title: "Error",
-        description: "Passkey auth failed: " + (error as Error).message,
+        title: "Authentication Failed",
+        description: userMessage,
         variant: "destructive",
       });
     } finally {

@@ -115,6 +115,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             password={password}
             registerLoading={passkeyRegisterLoading}
             authLoading={passkeyAuthLoading}
+            hasKeys={apiKeys.length > 0}
           />
 
           {vaultEnabled && (
