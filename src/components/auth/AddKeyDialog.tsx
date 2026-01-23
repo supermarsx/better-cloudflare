@@ -11,9 +11,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/Dialog";
-import { Plus } from "lucide-react";
 
 /**
  * Props for the AddKeyDialog which collects an API key and encryption
@@ -63,12 +61,6 @@ export function AddKeyDialog({
 }: AddKeyDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild>
-        <Button variant="outline" className="flex-1">
-          <Plus className="h-4 w-4 mr-2" />
-          Add Key
-        </Button>
-      </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add New API Key</DialogTitle>

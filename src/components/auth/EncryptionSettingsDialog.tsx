@@ -21,14 +21,12 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/Dialog";
 import {
   ENCRYPTION_ALGORITHMS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
 } from "../../types/dns";
-import { Settings } from "lucide-react";
 import { Switch } from "@/components/ui/Switch";
 
 /**
@@ -74,11 +72,6 @@ export function EncryptionSettingsDialog({
   const [useVault, setUseVault] = useState(vaultEnabled);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="icon">
-          <Settings className="h-4 w-4" />
-        </Button>
-      </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Encryption Settings</DialogTitle>
