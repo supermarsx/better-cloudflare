@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+out
 *.local
 src/**/*.js
 
@@ -26,3 +27,7 @@ src/**/*.js
 .env
 /data
 /test-results
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
