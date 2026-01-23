@@ -36,15 +36,16 @@ export function LoginKeySelector({
   isLoading,
 }: LoginKeySelectorProps) {
   const { t } = useTranslation();
+  const hasKeys = apiKeys.length > 0;
 
   return (
     <>
       <div className="space-y-2">
-        <Label htmlFor="api-key" className="text-orange-100/80">
+        <Label htmlFor="api-key" className={hasKeys ? "text-orange-100/80" : "text-orange-100/40"}>
           {t("API Key")}
         </Label>
-        <Select value={selectedKeyId} onValueChange={onSelectKey}>
-          <SelectTrigger className="bg-black/40 border-orange-500/20 focus:ring-orange-500/50 text-orange-50 h-11">
+        <Select value={selectedKeyId} onValueChange={onSelectKey} disabled={!hasKeys}>
+          <SelectTrigger className="bg-black/40 border-orange-500/20 focus:ring-orange-500/50 text-orange-50 h-11 disabled:opacity-50 disabled:cursor-not-allowed">
             <SelectValue placeholder={t("Select an API key")} />
           </SelectTrigger>
           <SelectContent className="bg-black/90 border-orange-500/30 text-orange-50">
@@ -88,7 +89,7 @@ export function LoginKeySelector({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="password" className="text-orange-100/80">
+        <Label htmlFor="password" className={hasKeys ? "text-orange-100/80" : "text-orange-100/40"}>
           {t("Password")}
         </Label>
         <Input
@@ -96,9 +97,10 @@ export function LoginKeySelector({
           type="password"
           value={password}
           onChange={(e) => onPasswordChange(e.target.value)}
-          placeholder={t("Enter your password")}
-          onKeyDown={(e) => e.key === "Enter" && onLogin()}
-          className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 placeholder:text-orange-500/20"
+          placeholder={hasKeys ? t("Enter your password") : t("Add an API key first")}
+          onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
+          disabled={!hasKeys}
+          className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 placeholder:text-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
         />
       </div>
 

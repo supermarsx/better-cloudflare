@@ -104,6 +104,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           <LoginActionButtons
             onAddKey={() => setShowAddKey(true)}
             onSettings={() => setShowSettings(true)}
+            hasKeys={apiKeys.length > 0}
           />
 
           <LoginPasskeySection
