@@ -2,115 +2,307 @@
 
 ⚙️ Overview
 
-Better Cloudflare is a minimalist single-page application (SPA) for managing DNS records on Cloudflare. It provides a lightweight, secure, and self-contained environment: a React + Vite frontend with an optional Node/Express server that acts as a proxy to the Cloudflare API.
+Better Cloudflare is a secure native desktop application for managing DNS records on Cloudflare. Built with Tauri 2.0, it combines a Next.js/React frontend with a Rust backend, providing a lightweight, fast, and fully offline-capable environment.
 
-The application stores Cloudflare credentials locally in encrypted form, and the user unlocks keys with a password. Key features include: listing zones, browsing DNS records, adding/updating/deleting records, importing/exporting records (JSON/CSV/BIND), and secure local storage for API tokens.
+The application stores Cloudflare credentials locally in the operating system's secure keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux) with AES-256-GCM encryption. Users unlock keys with a password or passkey authentication. Key features include: listing zones, browsing DNS records, adding/updating/deleting records, importing/exporting records (JSON/CSV/BIND), secure OS-level credential storage, and platform-native passkey support.
+
+**Key Advantages of Desktop Architecture:**
+- Native OS keychain integration for maximum security
+- No network server required - fully offline capable
+- Fast IPC communication between frontend and Rust backend
+- Platform-native performance and security
+- Single-binary distribution with no runtime dependencies
 
 ## Table of contents
 
 1. Product purpose & scope
 2. Target users
-3. System architecture
-4. Runtime requirements & environment variables
+3. System architecture (Tauri + Rust backend)
+4. Runtime requirements & build dependencies
 5. Pages & UI sections
 6. Features & flows
 7. Detailed UI components
 8. Data models & validation rules
-9. Client-server API specification
-10. Storage & encryption
+9. IPC API specification (Tauri commands)
+10. Storage & encryption (OS keychain + AES-256-GCM)
 11. Security, privacy and operations
 12. Error handling & logging
 13. Performance & benchmarks
 14. Testing & QA
 15. Accessibility & UX considerations
-
-- Optional OS vault: The server can optionally store secrets in the OS keychain when `KEYTAR_ENABLED=1` and `keytar` is available. This provides alternative secure storage for decrypted API keys and passkey credential storage in local server environments.
-- Passkeys (WebAuthn): The app integrates an optional passkey flow to register and authenticate using platform passkeys as an alternative to password-based decryption. The passkey flow uses `@simplewebauthn/server` to validate attestation and assertions, and the server stores registered credentials in the vault. Password fallback remains supported.
-  - Multiple credentials: The server supports multiple passkey credentials per `id` (user/key) and stores an array of credential objects under `passkey:{id}` in the vault. `createPasskeyAuthOptions` aggregates all known credentials as `allowCredentials`.
-  - Server origin & rpID: The server uses `SERVER_ORIGIN` (or `VITE_SERVER_ORIGIN`) to compute the expected origin and `rpID` for verification — set this variable when deploying beyond local development.
-  - Registration verification: `registerPasskey` verifies the attestation blob (`verifyRegistrationResponse`) and persists credential metadata securely in the vault.
-  - Assertion verification: `authenticatePasskey` verifies assertions (`verifyAuthenticationResponse`) and updates counters; mismatches return 400 errors. The UI uses server-provided options to call platform WebAuthn APIs.
-
 16. Internationalization & configuration
 17. Extensibility & integration points
-18. Known limitations & future work
+18. Distribution & deployment
+19. Known limitations & future work
+
+**Key Architecture Features:**
+- **OS Keychain Integration**: Credentials are stored in the operating system's native secure storage using the `keyring` Rust crate (macOS Keychain, Windows Credential Manager, Linux Secret Service). Fallback to encrypted in-memory storage when OS keychain is unavailable.
+- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, attestation verification, and credential storage in the vault.
+  - Multiple credentials: Supports multiple passkey credentials per stored key with device naming and management UI
+  - Platform integration: Uses native platform authenticators (Touch ID, Windows Hello, etc.)
+  - Registration/Authentication: Rust backend handles WebAuthn challenge generation and verification
+- **Tauri IPC**: All communication between frontend (Next.js/React) and backend (Rust) uses Tauri's secure IPC mechanism instead of HTTP
+- **Rust Backend**: Complete rewrite of backend logic in Rust for performance, security, and native compilation
 
 ## 1. Product purpose & scope
 
-Purpose: To make Cloudflare DNS management easier and safer for users who prefer a local-first/desktop-like experience: store tokens locally (encrypted), manage DNS records quickly with a UI, and use the official Cloudflare API via a proxied server.
+Purpose: To provide a secure, fast, and fully offline-capable native desktop application for Cloudflare DNS management. Users benefit from OS-level security (keychain integration), platform-native performance, and passwordless authentication via passkeys.
 
 Scope:
 
-- Manage DNS records across zones for accounts/tokens.
-- Securely store API tokens locally using password-based encryption.
-- Provide simple import/export options for records (JSON, CSV, BIND zone files).
-- Support three authentication modes: bearer token, global API key + email, or use local stored keys decrypted with password.
-- Keep the server small, ephemeral, and stateless (does not store tokens persistently).
+- Manage DNS records across zones for accounts/tokens
+- Securely store API tokens in OS keychain with AES-256-GCM encryption
+- Provide simple import/export options for records (JSON, CSV, BIND zone files)
+- Support three authentication modes: bearer token, global API key + email, or stored keys unlocked with password/passkey
+- Native desktop application with no server dependency - fully offline capable
+- Cross-platform support: macOS, Windows, Linux
+- Platform-native passkey support (Touch ID, Windows Hello, etc.)
 
 Out-of-scope (explicit):
 
-- Multi-user server-side account management.
-- Long-term server-side credential storage.
-- Fine-grained role-based access.
+- Cloud/server-based credential synchronization (local-first architecture)
+- Multi-user account management (single-user desktop app)
+- Web-based hosting or SaaS model
+- Real-time collaboration features
 
 ## 2. Target users
 
-- System administrators and devops/engineers who manage Cloudflare zones and prefer a lightweight local UI instead of dashboards.
-- Users who want to keep API tokens locally and encrypted rather than using a hosted solution.
-- Power users who need import/export, fast edits, and bulk operations.
+- System administrators and devops/engineers who manage Cloudflare zones and prefer a native desktop application with OS-level security
+- Users who want maximum security via OS keychain storage and passwordless passkey authentication
+- Power users who need fast, offline-capable DNS management with import/export and bulk operations
+- Privacy-conscious users who prefer local-first applications with no cloud dependency
+- Teams requiring audit logs and secure credential management on developer workstations
 
 ## 3. System architecture
 
-The app is a two-tier architecture:
+Better Cloudflare uses a **native desktop application architecture** powered by Tauri 2.0:
 
-- Frontend: React (Vite) SPA located in `src/`. Handles UI, local storage for encrypted API keys, client-side DNS record and zone UX, encryption controls, and local import/export.
-- Proxy Server: A small Node/Express-based server (`server.ts` and `src/server/*`) that acts as a secure proxy for Cloudflare API endpoints. It's optional but recommended for local development.
-
-Key server responsibilities:
-
-- Accept HTTP requests from local UI clients.
-- Accept either `Authorization: Bearer <token>` or `X-Auth-Key` + `X-Auth-Email` for credentials.
-- Proxy and map operations to the Cloudflare API using the `cloudflare` library.
-- Validate input using server-side validation.
-- Expose the following API endpoints (see specification below): verify-token, zones, dns_records list/create/update/delete.
-
-Server features:
-
-- CORS handling with `ALLOWED_ORIGINS`.
-- JSON body parsing.
-- Rate limiting (configurable via env variables).
-- Error handler returning JSON.
-- Debug logging toggles (DEBUG_SERVER, DEBUG_SERVER_API, DEBUG_CF_API, VITE_DEBUG_CF_API).
-
-## 4. Runtime requirements & environment variables
-
-Requirements:
-
-- Node 18+ for development and server.
-- NPM for scripts: `npm install`, `npm run dev` and `npm run server`.
-
-Important environment variables:
-
-- For frontend (Vite): `VITE_SERVER_API_BASE` — base URL to server API.
-- For server (`server.ts`):
-  - `PORT` / `VITE_PORT` — port for server (default 8787)
-  - `ALLOWED_ORIGINS` — comma-separated allowed origins for CORS (`*` allows all)
-  - `CREDENTIAL_STORE` — `vault` (default), `sqlite`, or `memory` (configure DB connection when set).
-  - `SERVER_ORIGIN` / `VITE_SERVER_ORIGIN` — base origin used to validate WebAuthn/assertion origin (defaults to `http://localhost:8787`)
-  - `RATE_LIMIT_WINDOW` (ms default: 60000) & `RATE_LIMIT_MAX` (e.g., default: 100)
-  - `CLOUDFLARE_API_BASE` — optional Cloudflare base to proxy
-  - `ATTESTATION_POLICY` — attestation policy for WebAuthn registration: `none` | `direct` | `indirect` | `enterprise` (default: `none`).
-  - `ADMIN_TOKEN` — admin token string that allows access to administrative endpoints (e.g., `/api/audit`) when present; fallback to Cloudflare credentials remains supported.
-  - `DEBUG_SERVER`, `DEBUG_SERVER_API`, `DEBUG_CF_API`, `VITE_DEBUG_CF_API` — debug flags
-
-Usage examples:
+### Architecture Overview
 
 ```
-# Run API server
-PORT=8787 DEBUG_SERVER=1 npm run server
-# Run app pointing to server
-VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
+┌─────────────────────────────────────────────────┐
+│         Tauri Desktop Application               │
+├─────────────────────────────────────────────────┤
+│  Frontend (WebView)                             │
+│  ├─ Next.js 16 (Static Export)                  │
+│  ├─ React 19                                     │
+│  ├─ Radix UI + Tailwind CSS                     │
+│  └─ TypeScript                                   │
+├─────────────────────────────────────────────────┤
+│  IPC Layer (Tauri Commands)                     │
+│  ├─ Type-safe invoke() calls                    │
+│  └─ Secure message passing                      │
+├─────────────────────────────────────────────────┤
+│  Backend (Rust)                                  │
+│  ├─ Tauri 2.0 Core                              │
+│  ├─ Tokio async runtime                         │
+│  ├─ Reqwest HTTP client (Cloudflare API)        │
+│  ├─ AES-256-GCM encryption (aes-gcm crate)      │
+│  ├─ PBKDF2 key derivation (pbkdf2 crate)        │
+│  ├─ OS keychain (keyring crate)                 │
+│  ├─ WebAuthn passkeys (passkey manager)         │
+│  └─ Audit logging                               │
+└─────────────────────────────────────────────────┘
+           ↓ HTTPS
+┌─────────────────────────────────────────────────┐
+│      Cloudflare API (api.cloudflare.com)        │
+└─────────────────────────────────────────────────┘
 ```
+
+### Frontend Layer (`src/`, `app/`)
+
+- **Next.js 16**: Static site generation (`output: 'export'`) for Tauri compatibility
+- **React 19**: UI components and state management
+- **Tauri Client** (`src/lib/tauri-client.ts`): TypeScript wrapper for all Tauri IPC commands
+- **UI Components**: Radix UI primitives with Tailwind CSS styling
+- **Local Storage**: Browser localStorage for non-sensitive UI state (last selected zone, preferences)
+
+### IPC Communication Layer
+
+- **Tauri Commands**: 50+ registered commands for all backend operations
+- **Type Safety**: TypeScript definitions match Rust command signatures
+- **Security**: Commands are explicitly allowed in `tauri.conf.json`
+- **Error Handling**: Rust errors are serialized and propagated to frontend
+
+### Backend Layer (`src-tauri/src/`)
+
+**Main Modules:**
+
+1. **`main.rs`**: Tauri app entry point, command registration, app lifecycle management
+
+2. **`commands.rs`** (~350 lines): Command handlers for all IPC operations
+   - Authentication: `verify_token`, `vault_*`, `passkey_*`
+   - DNS: `get_zones`, `get_dns_records`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
+   - Encryption: `encrypt_data`, `decrypt_data`, `derive_key_benchmark`
+   - Audit: `get_audit_logs`
+
+3. **`crypto.rs`** (~180 lines): Cryptographic operations
+   - AES-256-GCM encryption/decryption
+   - PBKDF2-HMAC-SHA256 key derivation (100,000 iterations default)
+   - Base64 encoding/decoding
+   - Comprehensive error handling
+
+4. **`storage.rs`** (~230 lines): OS keychain integration
+   - macOS: Keychain Access
+   - Windows: Credential Manager  
+   - Linux: Secret Service API
+   - Fallback: In-memory storage with encryption
+   - Thread-safe access with `Arc<Mutex<>>`
+
+5. **`cloudflare_api.rs`** (~280 lines): Cloudflare API client
+   - HTTP client using `reqwest`
+   - Zone operations
+   - DNS record CRUD
+   - Bulk operations
+   - Error handling and retries
+
+6. **`passkey.rs`** (~150 lines): WebAuthn passkey manager
+   - Challenge generation and validation
+   - Credential storage and retrieval
+   - Device management
+   - Platform authenticator integration
+
+7. **`audit.rs`**: Audit logging for sensitive operations
+   - Login attempts
+   - Key additions/deletions
+   - DNS modifications
+   - Passkey registrations
+
+### Key Architectural Decisions
+
+**Why Tauri over Electron:**
+- Smaller binary size (~10MB vs ~100MB+)
+- Lower memory footprint (uses system webview)
+- Native performance (Rust backend)
+- Better security model (explicit IPC permissions)
+- No Node.js runtime dependency
+
+**Why Rust Backend:**
+- Memory safety without garbage collection
+- Excellent cryptography ecosystem
+- Native OS integration (keychain, system APIs)
+- Superior performance for CPU-intensive operations (encryption)
+- Strong type system reduces bugs
+
+**Why Static Export (Next.js):**
+- Tauri requires static HTML/JS/CSS files
+- No server-side rendering needed for desktop app
+- Faster initial load times
+- Simpler deployment model
+
+## 4. Runtime requirements & build dependencies
+
+### Development Requirements
+
+**Rust Toolchain:**
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+rustc --version  # Verify installation
+```
+
+**Node.js & NPM:**
+- Node 18+ for frontend build tools
+- NPM for dependency management
+
+**System Dependencies (Platform-Specific):**
+
+- **macOS**: Xcode Command Line Tools
+  ```bash
+  xcode-select --install
+  ```
+
+- **Linux**: WebKit2GTK, GTK, development libraries
+  ```bash
+  # Debian/Ubuntu
+  sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+    libayatana-appindicator3-dev librsvg2-dev
+  
+  # Fedora
+  sudo dnf install webkit2gtk4.1-devel openssl-devel gtk3-devel \
+    libappindicator-gtk3-devel librsvg2-devel
+  ```
+
+- **Windows**: WebView2 (usually pre-installed on Windows 10/11)
+  - Visual Studio Build Tools or MSVC
+
+### Build Configuration
+
+**Tauri Configuration** (`tauri.conf.json`):
+- App identifier: `com.better-cloudflare.app`
+- Window size: 1280x800 (minimum: 800x600)
+- CSP: Strict content security policy
+- Allowed commands: 50+ IPC commands explicitly whitelisted
+
+**Cargo Dependencies** (`src-tauri/Cargo.toml`):
+```toml
+[dependencies]
+tauri = { version = "2.0", features = ["devtools"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+keyring = "2.3"
+base64 = "0.21"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+```
+
+### Development Commands
+
+```bash
+# Install dependencies
+npm install
+
+# Run development build (hot reload enabled)
+npm run tauri:dev
+
+# Build production binary
+npm run tauri:build
+
+# Run Rust tests
+cd src-tauri && cargo test
+
+# Run frontend tests
+npm test
+
+# Check Rust code
+cd src-tauri && cargo check
+
+# Format Rust code
+cd src-tauri && cargo fmt
+
+# Lint Rust code
+cd src-tauri && cargo clippy
+```
+
+### Environment Variables (Development)
+
+**Runtime Configuration** (set in Tauri app context):
+- `RUST_LOG`: Set log level (`debug`, `info`, `warn`, `error`)
+  ```bash
+  RUST_LOG=debug npm run tauri:dev
+  ```
+
+**Build Configuration:**
+- `TAURI_PRIVATE_KEY`: Code signing key (production builds)
+- `TAURI_KEY_PASSWORD`: Key password for signing
+
+### Binary Distribution
+
+**Output Locations:**
+- **macOS**: `src-tauri/target/release/bundle/macos/Better Cloudflare.app`
+- **Windows**: `src-tauri/target/release/bundle/msi/Better Cloudflare_1.0.0_x64_en-US.msi`
+- **Linux**: `src-tauri/target/release/bundle/appimage/better-cloudflare_1.0.0_amd64.AppImage`
+
+**Binary Sizes** (approximate, release mode):
+- macOS: ~8-12 MB
+- Windows: ~10-15 MB
+- Linux: ~12-18 MB
 
 ## 5. Pages & UI sections
 
@@ -235,146 +427,1020 @@ The UI offers specialized inputs for certain record types:
 - SRV: inputs for `priority`, `weight`, `port` and `target` are shown; the UI composes these into the record `content` string.
 - A/AAAA: content must be a valid IPv4/IPv6 address (server-side validation).
 
-## 9. Client-server API specification
+## 9. IPC API specification (Tauri commands)
 
-Base path: {VITE_SERVER_API_BASE}/api
+All communication between frontend and backend uses **Tauri's IPC (Inter-Process Communication)** mechanism via the `invoke()` function. Commands are type-safe and explicitly allowed in `tauri.conf.json`.
 
-Headers: Authorization: Bearer <token> OR X-Auth-Key: <key> + X-Auth-Email: <email>
+### Command Invocation Pattern
 
-Endpoints:
+```typescript
+import { invoke } from '@tauri-apps/api/core';
 
-- POST /api/verify-token
-  - Purpose: Verify a provided token or key.
-  - Request: {} body is not required; credentials from headers.
-  - Response: { success: true }
-  - Errors: 400 missing credentials; 403/401 on invalid creds.
+// Example: Verify token
+const result = await invoke<{ success: boolean }>('verify_token', {
+  token: 'api_token_here',
+  email: null
+});
+```
 
-- GET /api/zones
-  - Purpose: List Cloudflare zones available for credentials.
-  - Response: Array of Zone objects.
+### Authentication & Credential Commands
 
-- GET /api/zones/:zone/dns_records
-  - Purpose: List DNS records for a zone.
-  - Response: Array of DNSRecord objects.
+#### `verify_token`
+- **Purpose**: Verify Cloudflare API token or global key
+- **Parameters**: 
+  - `token: string` - API token or global key
+  - `email: string | null` - Email (required for global key)
+- **Returns**: `{ success: boolean }`
+- **Errors**: `Invalid credentials`, `Network error`
 
-- POST /api/zones/:zone/dns_records
-  - Purpose: Create a new DNS record in a zone.
-  - Request: body must match dnsRecordSchema.
-  - Response: created DNSRecord.
+#### `vault_set`
+- **Purpose**: Store encrypted credential in OS keychain
+- **Parameters**:
+  - `id: string` - Unique identifier for the credential
+  - `secret: string` - Encrypted credential data (JSON string)
+- **Returns**: `{ success: boolean }`
+- **OS Storage**:
+  - macOS: Keychain Access
+  - Windows: Credential Manager
+  - Linux: Secret Service
 
-- PUT /api/zones/:zone/dns_records/:id
-  - Purpose: Update an existing DNS record.
-  - Request: body must match dnsRecordSchema.
-  - Response: updated DNSRecord.
+#### `vault_get`
+- **Purpose**: Retrieve encrypted credential from OS keychain
+- **Parameters**:
+  - `id: string` - Credential identifier
+- **Returns**: `{ secret: string | null }`
+- **Errors**: `Not found`, `OS keychain access denied`
 
-- DELETE /api/zones/:zone/dns_records/:id
-  - Purpose: Delete an existing DNS record.
-  - Response: { success: true }
+#### `vault_delete`
+- **Purpose**: Remove credential from OS keychain
+- **Parameters**:
+  - `id: string` - Credential identifier
+- **Returns**: `{ success: boolean }`
 
-- POST /api/vault/:id
-  - Purpose: Store a secret in the server-side vault (OS keychain when available). Requires valid credentials.
-  - Request: { secret: string }
-  - Response: { success: true }
+#### `vault_list`
+- **Purpose**: List all stored credential IDs
+- **Returns**: `string[]` - Array of credential IDs
 
-- GET /api/vault/:id
-  - Purpose: Retrieve a secret from the server vault.
-  - Response: { secret: string }
+### Encryption Commands
 
-- DELETE /api/vault/:id
-  - Purpose: Remove a secret from the server vault.
-  - Response: { success: true }
+#### `encrypt_data`
+- **Purpose**: Encrypt data using AES-256-GCM
+- **Parameters**:
+  - `data: string` - Plain text to encrypt
+  - `password: string` - Encryption password
+  - `iterations: number` - PBKDF2 iterations (default: 100000)
+  - `key_length: number` - Key length in bits (128, 192, or 256)
+- **Returns**:
+  ```typescript
+  {
+    encrypted: string,  // Base64-encoded ciphertext
+    salt: string,       // Base64-encoded salt
+    nonce: string       // Base64-encoded nonce/IV
+  }
+  ```
+- **Algorithm**: AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation
 
-- GET /api/passkeys/register/options/:id
-  - Purpose: Get registration options (challenge) for passkey registration.
-  - Response: { challenge: string, options: object }
+#### `decrypt_data`
+- **Purpose**: Decrypt AES-256-GCM encrypted data
+- **Parameters**:
+  - `encrypted: string` - Base64-encoded ciphertext
+  - `salt: string` - Base64-encoded salt
+  - `nonce: string` - Base64-encoded nonce
+  - `password: string` - Decryption password
+  - `iterations: number` - PBKDF2 iterations
+  - `key_length: number` - Key length in bits
+- **Returns**: `{ decrypted: string }`
+- **Errors**: `Invalid password`, `Corrupted data`, `Decryption failed`
 
-- POST /api/passkeys/register/:id
-  - Purpose: Register a new passkey credential for an id. Verifies attestation and stores credential(s).
-  - Request: attestation blob (per WebAuthn)
-  - Response: { success: true }
+#### `derive_key_benchmark`
+- **Purpose**: Benchmark PBKDF2 key derivation performance
+- **Parameters**:
+  - `password: string` - Test password
+  - `iterations: number` - Number of iterations to test
+  - `key_length: number` - Key length in bits
+- **Returns**: `{ duration_ms: number }`
+- **Use Case**: Help users choose appropriate iteration count
 
-- GET /api/passkeys/authenticate/options/:id
-  - Purpose: Get authentication options (challenge) for passkey assertion.
-  - Response: { challenge: string, options: object }
+### DNS Management Commands
 
-- POST /api/passkeys/authenticate/:id
-  - Purpose: Verify a passkey assertion; updates credential counters and returns success.
-  - Request: assertion blob (per WebAuthn)
-  - Response: { success: true }
+#### `get_zones`
+- **Purpose**: List all Cloudflare zones for authenticated account
+- **Parameters**:
+  - `token: string` - API token
+  - `email: string | null` - Email for global key
+- **Returns**: `Zone[]`
+  ```typescript
+  interface Zone {
+    id: string;
+    name: string;
+    status: string;
+    paused: boolean;
+    type: string;
+    development_mode: number;
+  }
+  ```
 
-- GET /api/passkeys/:id
-  - Purpose: List registered passkey credentials for the given id.
-  - Response: Array of credential metadata objects containing ids and counters.
+#### `get_dns_records`
+- **Purpose**: List DNS records for a zone
+- **Parameters**:
+  - `token: string` - API token
+  - `email: string | null` - Email for global key
+  - `zone_id: string` - Zone identifier
+- **Returns**: `DnsRecord[]`
+  ```typescript
+  interface DnsRecord {
+    id: string;
+    type: string;
+    name: string;
+    content: string;
+    ttl: number;
+    priority?: number;
+    proxied?: boolean;
+    zone_id: string;
+    zone_name: string;
+    created_on: string;
+    modified_on: string;
+  }
+  ```
 
-- DELETE /api/passkeys/:id/:cid
-  - Purpose: Remove a registered passkey credential by id (revoke) for the given id.
-  - Response: { success: true }
+#### `create_dns_record`
+- **Purpose**: Create new DNS record
+- **Parameters**:
+  - `token: string` - API token
+  - `email: string | null` - Email for global key
+  - `zone_id: string` - Zone identifier
+  - `record: DnsRecordInput` - Record data
+    ```typescript
+    interface DnsRecordInput {
+      type: string;
+      name: string;
+      content: string;
+      ttl?: number | 'auto';
+      priority?: number;
+      proxied?: boolean;
+    }
+    ```
+- **Returns**: `DnsRecord` - Created record with ID
+- **Validation**: Server-side validation for record type, content format
 
-Common Response behavior:
+#### `update_dns_record`
+- **Purpose**: Update existing DNS record
+- **Parameters**:
+  - `token: string`
+  - `email: string | null`
+  - `zone_id: string`
+  - `record_id: string`
+  - `record: DnsRecordInput` - Updated record data
+- **Returns**: `DnsRecord` - Updated record
 
-- HTTP non-2xx returns a JSON payload with `error` or a Cloudflare `errors` array.
-- Rate-limiting returns standard headers and status code per `express-rate-limit`.
+#### `delete_dns_record`
+- **Purpose**: Delete DNS record
+- **Parameters**:
+  - `token: string`
+  - `email: string | null`
+  - `zone_id: string`
+  - `record_id: string`
+- **Returns**: `{ success: boolean }`
 
-Network & Timeout
+#### `bulk_create_dns_records`
+- **Purpose**: Create multiple DNS records (batch operation)
+- **Parameters**:
+  - `token: string`
+  - `email: string | null`
+  - `zone_id: string`
+  - `records: DnsRecordInput[]`
+- **Returns**: `BulkResult`
+  ```typescript
+  interface BulkResult {
+    success: number;
+    failed: number;
+    errors: string[];
+  }
+  ```
 
-- ServerClient uses 10s default timeout; configurable when instantiating the client.
+### Passkey (WebAuthn) Commands
+
+#### `passkey_get_register_options`
+- **Purpose**: Generate WebAuthn registration options
+- **Parameters**:
+  - `id: string` - User/key identifier
+  - `display_name: string` - Device name for credential
+- **Returns**: `PasskeyRegisterOptions`
+  ```typescript
+  interface PasskeyRegisterOptions {
+    challenge: string;
+    rp: { id: string; name: string };
+    user: { id: string; name: string; displayName: string };
+    pubKeyCredParams: Array<{type: string; alg: number}>;
+    authenticatorSelection: {
+      authenticatorAttachment: 'platform';
+      requireResidentKey: boolean;
+      userVerification: 'required';
+    };
+    timeout: number;
+  }
+  ```
+
+#### `passkey_register`
+- **Purpose**: Verify and store passkey credential
+- **Parameters**:
+  - `id: string` - User/key identifier
+  - `credential: PublicKeyCredential` - Registration response from WebAuthn API
+  - `device_name: string` - User-friendly device name
+- **Returns**: `{ success: boolean; credential_id: string }`
+- **Storage**: Credential stored in vault with metadata
+
+#### `passkey_get_auth_options`
+- **Purpose**: Generate WebAuthn authentication options
+- **Parameters**:
+  - `id: string` - User/key identifier
+- **Returns**: `PasskeyAuthOptions`
+  ```typescript
+  interface PasskeyAuthOptions {
+    challenge: string;
+    allowCredentials: Array<{
+      type: 'public-key';
+      id: string;
+    }>;
+    timeout: number;
+    userVerification: 'required';
+  }
+  ```
+
+#### `passkey_authenticate`
+- **Purpose**: Verify passkey authentication assertion
+- **Parameters**:
+  - `id: string` - User/key identifier
+  - `credential: PublicKeyCredential` - Authentication response
+- **Returns**: `{ success: boolean; secret: string }` - Returns decrypted secret on success
+- **Validation**: Verifies signature, updates counter, checks for replay attacks
+
+#### `passkey_list`
+- **Purpose**: List registered passkey credentials
+- **Parameters**:
+  - `id: string` - User/key identifier
+- **Returns**: `PasskeyCredential[]`
+  ```typescript
+  interface PasskeyCredential {
+    id: string;
+    device_name: string;
+    created_at: string;
+    last_used?: string;
+    counter: number;
+  }
+  ```
+
+#### `passkey_delete`
+- **Purpose**: Remove passkey credential
+- **Parameters**:
+  - `id: string` - User/key identifier
+  - `credential_id: string` - Credential to remove
+- **Returns**: `{ success: boolean }`
+
+#### `passkey_rename`
+- **Purpose**: Update passkey device name
+- **Parameters**:
+  - `id: string` - User/key identifier
+  - `credential_id: string` - Credential to rename
+  - `new_name: string` - New device name
+- **Returns**: `{ success: boolean }`
+
+### Audit & Logging Commands
+
+#### `get_audit_logs`
+- **Purpose**: Retrieve audit log entries
+- **Parameters**:
+  - `limit: number` - Max entries to return (default: 100)
+  - `offset: number` - Pagination offset (default: 0)
+- **Returns**: `AuditLog[]`
+  ```typescript
+  interface AuditLog {
+    timestamp: string;
+    event_type: string;
+    user_id: string;
+    details: string;
+    success: boolean;
+  }
+  ```
+- **Logged Events**:
+  - Login attempts (password/passkey)
+  - Key additions/deletions
+  - DNS record modifications
+  - Passkey registrations
+  - Encryption setting changes
+
+#### `clear_audit_logs`
+- **Purpose**: Clear all audit logs
+- **Returns**: `{ success: boolean }`
+
+### Error Handling
+
+All Tauri commands return errors in a consistent format:
+
+```typescript
+try {
+  const result = await invoke('command_name', { params });
+  // Handle success
+} catch (error) {
+  // Error is a string message from Rust
+  console.error('Command failed:', error);
+  toast.error(error as string);
+}
+```
+
+**Common Error Types:**
+- `"Invalid credentials"` - Authentication failed
+- `"Network error"` - Cloudflare API unreachable
+- `"Not found"` - Resource doesn't exist
+- `"Decryption failed"` - Wrong password or corrupted data
+- `"OS keychain access denied"` - User denied keychain access
+- `"Validation error: <details>"` - Input validation failed
+
+### Frontend Client Wrapper
+
+**TauriClient** (`src/lib/tauri-client.ts`) provides a type-safe wrapper:
+
+```typescript
+import { TauriClient } from '@/lib/tauri-client';
+
+const client = new TauriClient();
+
+// Check if running in Tauri
+if (TauriClient.isTauri()) {
+  // Desktop app - use Tauri commands
+  await client.verifyToken(token, email);
+} else {
+  // Web mode - fallback or error
+  throw new Error('Desktop app required');
+}
+```
+
+### Security Considerations
+
+- **Command Allowlist**: Only explicitly allowed commands in `tauri.conf.json` are callable
+- **CSP**: Strict Content Security Policy prevents XSS attacks
+- **No Dynamic Code**: No `eval()` or dynamic script injection allowed
+- **IPC Security**: Messages validated and sanitized on both sides
+- **Credential Handling**: Credentials never logged, always cleared from memory after use
 
 ## 10. Storage & encryption
 
-Local storage keys & formats:
+### Storage Architecture
 
-- STORAGE_KEY `cloudflare-dns-manager`: stores `StorageData` object:
-  - { apiKeys: ApiKey[], currentSession?: string, lastZone?: string }
+Better Cloudflare uses a **two-tier storage model**:
 
-- `ApiKey` metadata includes: `id`, `label`, `encryptedKey` (base64), `salt`, `iv`, `iterations`, `keyLength`, `algorithm`, `createdAt`, and optional `email`.
+1. **Browser localStorage**: Non-sensitive UI state
+   - Last selected zone
+   - UI preferences (theme, language)
+   - Credential metadata (labels, IDs, encryption config)
 
-Encryption:
+2. **OS Keychain**: Sensitive encrypted credentials
+   - macOS: Keychain Access (via Security framework)
+   - Windows: Credential Manager (via Windows Credential API)
+   - Linux: Secret Service API (via libsecret/gnome-keyring)
 
-- Uses Web Crypto API in `CryptoManager`.
-- Key derivation: PBKDF2 with `iterations` and `SHA-256`.
-- Key length options: 128, 192, 256 bits.
-- Cipher: AES-GCM (preferred) or AES-CBC as fallback (though AES-GCM is recommended).
-- `CryptoManager.encrypt` returns base64-encoded encrypted data, salt, and iv.
-- `CryptoManager.decrypt` uses the stored salt/iv & password to derive and decrypt.
+### LocalStorage Schema
 
-Encryption configuration & operations:
+**Storage Key**: `cloudflare-dns-manager`
 
-- Config persisted under `encryption-settings`.
-- Users can upgrade encryption settings; when rotating a key, `updateApiKey` will re-encrypt the key with the new password or algorithm.
+```typescript
+interface StorageData {
+  apiKeys: ApiKeyMetadata[];  // Metadata only, no secrets
+  currentSession?: string;     // Active credential ID
+  lastZone?: string;           // Last selected zone ID
+  preferences?: {
+    theme?: 'light' | 'dark' | 'system';
+    language?: string;
+  };
+}
 
-Security model: The frontend never transmits the plain unencrypted API key except in requests to the server when used as current session. The server only forwards the provided token/key to Cloudflare and does not persist any tokens.
+interface ApiKeyMetadata {
+  id: string;                  // Unique identifier
+  label: string;               // User-friendly label
+  email?: string;              // For global key auth
+  createdAt: string;           // ISO timestamp
+  encryptionConfig: {
+    iterations: number;        // PBKDF2 iterations
+    keyLength: number;         // 128, 192, or 256 bits
+    algorithm: 'AES-GCM';      // Always AES-GCM
+  };
+}
+```
+
+### OS Keychain Storage
+
+**Service Name**: `com.better-cloudflare.app`
+
+**Stored Items**:
+- **API Keys**: Encrypted with AES-256-GCM
+  - Key: `api_key:{id}`
+  - Value: JSON string containing encrypted token + metadata
+  ```json
+  {
+    "encrypted": "base64_ciphertext",
+    "salt": "base64_salt",
+    "nonce": "base64_nonce",
+    "iterations": 100000,
+    "keyLength": 256
+  }
+  ```
+
+- **Passkey Credentials**: WebAuthn credential data
+  - Key: `passkey:{id}`
+  - Value: JSON array of credential objects
+  ```json
+  [
+    {
+      "id": "credential_id",
+      "publicKey": "base64_public_key",
+      "counter": 42,
+      "deviceName": "MacBook Pro Touch ID",
+      "createdAt": "2026-01-23T...",
+      "lastUsed": "2026-01-23T..."
+    }
+  ]
+  ```
+
+**Fallback Mechanism**:
+If OS keychain is unavailable or user denies access:
+- In-memory storage (cleared on app close)
+- Encrypted with same AES-256-GCM algorithm
+- ⚠️ Warning displayed to user about reduced security
+
+### Encryption Specification
+
+**Algorithm**: AES-256-GCM (Galois/Counter Mode)
+- Provides both confidentiality and authenticity
+- Detects tampering via authentication tag
+- Industry-standard AEAD cipher
+
+**Key Derivation**: PBKDF2-HMAC-SHA256
+- Default iterations: 100,000
+- Configurable: 10,000 - 1,000,000
+- Salt: 32 random bytes (256 bits)
+- Output key length: 128, 192, or 256 bits
+
+**Encryption Process**:
+1. Generate random 256-bit salt
+2. Derive encryption key from password + salt using PBKDF2
+3. Generate random 96-bit nonce (recommended for GCM)
+4. Encrypt plaintext with AES-256-GCM
+5. Return: `encrypted || nonce || salt` (all base64-encoded)
+
+**Decryption Process**:
+1. Parse salt and nonce from stored data
+2. Derive decryption key from password + salt using PBKDF2
+3. Decrypt ciphertext with AES-256-GCM
+4. Verify authentication tag (automatic in GCM)
+5. Return plaintext or error if authentication fails
+
+### Rust Crypto Implementation
+
+**Module**: `src-tauri/src/crypto.rs`
+
+**Dependencies**:
+```toml
+aes-gcm = "0.10"       # AES-GCM encryption
+pbkdf2 = "0.12"        # Key derivation
+sha2 = "0.10"          # SHA-256 for PBKDF2
+rand = "0.8"           # Cryptographically secure RNG
+base64 = "0.21"        # Encoding
+```
+
+**Key Functions**:
+```rust
+// Encrypt data with password
+pub fn encrypt(
+    data: &str,
+    password: &str,
+    iterations: u32,
+    key_length: usize,
+) -> Result<EncryptedData> {
+    // 1. Generate salt
+    // 2. Derive key with PBKDF2
+    // 3. Generate nonce
+    // 4. Encrypt with AES-256-GCM
+    // 5. Return encrypted + salt + nonce
+}
+
+// Decrypt data with password
+pub fn decrypt(
+    encrypted: &str,
+    salt: &str,
+    nonce: &str,
+    password: &str,
+    iterations: u32,
+    key_length: usize,
+) -> Result<String> {
+    // 1. Decode base64
+    // 2. Derive key with PBKDF2
+    // 3. Decrypt with AES-256-GCM
+    // 4. Verify authentication tag
+    // 5. Return plaintext
+}
+```
+
+### Encryption Configuration
+
+**User-Configurable Settings**:
+- **Iterations**: Trade-off between security and performance
+  - Low (10,000): Fast, less secure
+  - Default (100,000): Balanced
+  - High (500,000+): Slow, maximum security
+  
+- **Key Length**: 
+  - 128 bits: Fast, sufficient for most use cases
+  - 192 bits: Extra security margin
+  - 256 bits: Maximum security (default)
+
+**Benchmark Tool**:
+Users can run a benchmark to determine optimal iteration count for their hardware:
+```typescript
+const result = await invoke('derive_key_benchmark', {
+  password: 'test',
+  iterations: 100000,
+  keyLength: 256
+});
+console.log(`Time: ${result.duration_ms}ms`);
+```
+
+**Recommendations**:
+- Aim for 100-500ms derivation time on user's hardware
+- Higher iterations for infrequently accessed keys
+- Lower iterations for frequently used keys (with strong passwords)
+
+### Key Rotation
+
+Users can update encryption settings for stored keys:
+
+1. **Password Change**:
+   - Decrypt with old password
+   - Re-encrypt with new password
+   - Update keychain entry
+   - Update metadata in localStorage
+
+2. **Algorithm Upgrade**:
+   - Decrypt with current settings
+   - Re-encrypt with new iteration count/key length
+   - Update configuration
+
+3. **Bulk Re-encryption**:
+   - When changing encryption settings
+   - Re-encrypt all stored API keys
+   - Show progress indicator
+
+### Security Best Practices
+
+✅ **What We Do**:
+- Use OS keychain for sensitive data
+- AES-256-GCM for encryption (AEAD)
+- Strong key derivation (PBKDF2 with high iterations)
+- Random salts and nonces for each encryption
+- Credentials never logged or transmitted unencrypted
+- Memory cleared after use (Rust's ownership ensures this)
+- Authentication tags prevent tampering
+
+✅ **What Users Should Do**:
+- Use strong passwords (12+ characters, mixed case, symbols)
+- Enable passkey authentication (passwordless)
+- Regularly rotate API tokens in Cloudflare dashboard
+- Use scoped API tokens (not global keys)
+- Keep the app updated
+- Don't share encrypted keychain backups
+
+⚠️ **Security Considerations**:
+- If OS keychain is compromised, credentials are at risk
+- Fallback mode (in-memory) provides no persistence security
+- Password strength is critical - weak passwords can be brute-forced
+- Physical access to unlocked machine = access to keychain
+- Backup keychain exports are encrypted but password-dependent
 
 ## 11. Security, privacy and operations
 
-- Local-only key storage: Encrypted API keys persist on the user agent via localStorage; best for one-person usage or local hosting.
-- Credentials formats allowed: Cloudflare API tokens (recommended) or global API key + email.
-- Server API expects credentials in secure headers only; prefer HTTPS when deployed publicly.
-- The server forbids cross-origin requests by default unless ALLOWED_ORIGINS is set to allow a list or wildcard.
-- Rate limiting defaults: RATE_LIMIT_WINDOW=60000 (ms), RATE_LIMIT_MAX=100 requests; configurable.
+### Security Architecture
 
-Security flags:
+**Desktop-First Security Model:**
+- No network server required - eliminates entire class of network attacks
+- No CORS, no HTTP authentication, no server-side vulnerabilities
+- All data stays on user's machine
+- OS-level credential protection via keychain
+- Tauri's security sandbox prevents unauthorized access
 
-- DEBUG flags are available for development only. Avoid enabling in production.
-- The app performs server-side validation for record create/update requests.
-- CryptoManager uses PBKDF2 & AES-GCM. Support for AES-CBC exists but less secure.
+### Threat Model
 
-Operational concerns:
+**Protected Against:**
+- ✅ Network interception (no local server, direct HTTPS to Cloudflare)
+- ✅ XSS attacks (strict CSP, no dynamic code execution)
+- ✅ Credential theft from localStorage (encrypted in OS keychain)
+- ✅ CSRF attacks (no cookies, no web session)
+- ✅ Man-in-the-middle (HTTPS to Cloudflare API only)
+- ✅ Tampering (AES-GCM authentication tags)
+- ✅ Replay attacks (passkey counters, nonce validation)
 
-- The server does not store tokens. If deployed, ensure TLS termination is in place.
-- Users managing production DNS should use API tokens with appropriate restricted permissions.
+**Attack Vectors:**
+- ⚠️ Physical access to unlocked machine
+- ⚠️ OS compromise (malware with keychain access)
+- ⚠️ Weak passwords (mitigated by passkeys)
+- ⚠️ Supply chain attacks (mitigated by code signing)
+- ⚠️ Social engineering
+
+### Tauri Security Features
+
+**Content Security Policy (CSP)**:
+```json
+"csp": "default-src 'self'; connect-src 'self' https://api.cloudflare.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'"
+```
+- Only allows connections to Cloudflare API
+- Blocks inline scripts (except inline styles for Tailwind)
+- Prevents loading external resources
+- WASM allowed for potential future features
+
+**IPC Command Allowlist**:
+- Only explicitly listed commands are callable from frontend
+- Commands defined in `tauri.conf.json`
+- Invalid commands rejected at Tauri core level
+- Type-safe invocation enforced
+
+**Webview Isolation**:
+- Frontend runs in isolated webview context
+- Cannot access filesystem directly
+- Cannot spawn processes
+- Cannot access system APIs without IPC
+- Sandboxed by OS (depends on platform)
+
+### Credential Management
+
+**API Token Storage:**
+1. User enters Cloudflare API token + password
+2. Token encrypted with AES-256-GCM + PBKDF2
+3. Encrypted blob stored in OS keychain
+4. Password never stored
+5. Token only decrypted when needed
+6. Decrypted token cleared from memory after use
+
+**Passkey Storage:**
+1. WebAuthn credential generated on device
+2. Private key stored in platform authenticator (TPM/Secure Enclave)
+3. Public key + metadata stored in OS keychain
+4. Challenge-response prevents credential extraction
+5. Counter prevents replay attacks
+
+**Session Management:**
+- Active session stored in memory only
+- Cleared on logout
+- Cleared on app close
+- No persistent session tokens
+- Re-authentication required on app restart
+
+### Cryptographic Standards
+
+**Encryption:**
+- Algorithm: AES-256-GCM (NIST approved, FIPS 140-2)
+- Mode: Galois/Counter Mode (AEAD)
+- Key derivation: PBKDF2-HMAC-SHA256 (NIST SP 800-132)
+- Iterations: 100,000 default (user configurable)
+- Salt: 256-bit random (per encryption)
+- Nonce: 96-bit random (GCM recommended size)
+
+**Randomness:**
+- OS-provided CSPRNG (Cryptographically Secure Pseudo-Random Number Generator)
+- Rust `rand` crate with `OsRng`
+- Suitable for cryptographic use
+
+**WebAuthn:**
+- ES256 (ECDSA with SHA-256)
+- Platform authenticator required
+- User verification required
+- Resident keys supported
+
+### Privacy Guarantees
+
+**No Telemetry:**
+- Zero data collection
+- No analytics
+- No crash reporting (unless explicitly enabled by user)
+- No phone-home mechanisms
+
+**Local-First:**
+- All data stays on user's device
+- No cloud synchronization (by design)
+- No server-side storage
+- No third-party services (except Cloudflare API)
+
+**Minimal Permissions:**
+- Keychain access (for secure storage)
+- Network access (Cloudflare API only)
+- No file system access (except app data)
+- No camera/microphone access
+- No location access
+
+### Audit Logging
+
+**Logged Events:**
+- Login attempts (success/failure)
+- API key additions/deletions
+- DNS record modifications (create/update/delete)
+- Passkey registrations/authentications
+- Encryption setting changes
+- Vault access (read/write/delete)
+
+**Log Format:**
+```typescript
+interface AuditLog {
+  timestamp: string;      // ISO 8601
+  event_type: string;     // Event category
+  user_id: string;        // Key/credential ID
+  details: string;        // Human-readable description
+  success: boolean;       // Operation result
+  ip_address?: string;    // Not applicable (local app)
+}
+```
+
+**Log Storage:**
+- SQLite database in app data directory
+- Encrypted at rest (OS-level encryption)
+- Rotation: configurable max size/age
+- Export: JSON format for external analysis
+
+**Privacy Note**: Logs contain operation metadata but never passwords or decrypted tokens.
+
+### Code Signing
+
+**Purpose:**
+- Verify app authenticity
+- Prevent tampering
+- Establish trust chain
+- Required for distribution
+
+**Platform-Specific:**
+- **macOS**: Apple Developer certificate, notarization
+- **Windows**: Authenticode certificate
+- **Linux**: GPG signing (optional)
+
+**Configuration** (in `tauri.conf.json`):
+```json
+"bundle": {
+  "macOS": {
+    "signingIdentity": "Developer ID Application: ..."
+  },
+  "windows": {
+    "certificateThumbprint": "...",
+    "timestampUrl": "http://timestamp.digicert.com"
+  }
+}
+```
+
+### Security Best Practices for Users
+
+**Strong Authentication:**
+- Use passkeys (Touch ID, Windows Hello) instead of passwords
+- If using passwords: 12+ characters, mixed case, numbers, symbols
+- Enable platform authenticator if available
+- Don't reuse passwords from other services
+
+**API Token Hygiene:**
+- Use scoped API tokens (not global keys)
+- Minimum required permissions only
+- Rotate tokens periodically
+- Revoke unused tokens in Cloudflare dashboard
+- Monitor token usage in Cloudflare audit logs
+
+**Device Security:**
+- Keep OS updated
+- Use full-disk encryption
+- Lock screen when away
+- Enable firewall
+- Run antivirus/anti-malware
+
+**Backup & Recovery:**
+- Export encrypted keychain backups
+- Store backups securely (encrypted volume)
+- Don't share backup passwords
+- Test recovery procedures
+
+### Operational Security
+
+**Development:**
+- Dependencies audited with `cargo audit` and `npm audit`
+- Static analysis with `cargo clippy`
+- Automated security scanning in CI/CD
+- Dependabot for automated dependency updates
+
+**Distribution:**
+- Signed releases only
+- Checksums published (SHA256)
+- Release integrity verified in CI/CD
+- No pre-built binaries from third parties
+
+**Updates:**
+- Automatic update checks (optional)
+- Signature verification before applying updates
+- Rollback mechanism if update fails
+- User control over update timing
 
 ## 12. Error handling & logging
 
-Server:
+### Error Handling Architecture
 
-- Central error handler returns JSON { error: <message> } and appropriate status codes.
-- Debug mode prints request/response logs to console.
-- Requests are timed out by the ServerClient and client-side operations show toasts for errors.
+**Rust Backend:**
+- Comprehensive error types using `thiserror` crate
+- Errors serialized to strings for IPC transmission
+- Detailed error context with `anyhow` for debugging
+- No stack traces exposed to frontend (security)
 
-Client:
+**Error Types:**
+```rust
+#[derive(Debug, thiserror::Error)]
+enum AppError {
+    #[error("Invalid credentials")]
+    InvalidCredentials,
+    
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    
+    #[error("Encryption failed: {0}")]
+    EncryptionError(String),
+    
+    #[error("Decryption failed: {0}")]
+    DecryptionError(String),
+    
+    #[error("OS keychain error: {0}")]
+    KeychainError(String),
+    
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+    
+    #[error("Not found")]
+    NotFound,
+}
+```
 
-- Standardized error toast: the UI surfaces success or error via `useToast`.
-- When a server returns JSON `errors`, the `ServerClient` attempts to parse and include the detail message.
+**Frontend:**
+- Try-catch blocks around all `invoke()` calls
+- Error messages displayed via toast notifications
+- User-friendly error descriptions
+- Technical details in console (development mode)
+- Retry mechanisms for transient failures
+
+### Error Handling Patterns
+
+**Authentication Errors:**
+```typescript
+try {
+  await TauriClient.verifyToken(token, email);
+  toast.success('Authentication successful');
+} catch (error) {
+  if (error === 'Invalid credentials') {
+    toast.error('Invalid Cloudflare API token. Please check your credentials.');
+  } else if (error.includes('Network error')) {
+    toast.error('Cannot reach Cloudflare API. Check your internet connection.');
+  } else {
+    toast.error('Authentication failed: ' + error);
+  }
+}
+```
+
+**Encryption Errors:**
+```typescript
+try {
+  const encrypted = await invoke('encrypt_data', { data, password, ... });
+} catch (error) {
+  if (error.includes('Invalid password')) {
+    toast.error('Incorrect password');
+  } else if (error.includes('Decryption failed')) {
+    toast.error('Data corrupted or wrong password');
+  } else {
+    toast.error('Encryption error: ' + error);
+  }
+}
+```
+
+**Network Errors:**
+- Automatic retry with exponential backoff (3 attempts)
+- Timeout after 30 seconds
+- Offline detection
+- User notification with retry option
+
+**Validation Errors:**
+- Client-side validation before IPC call
+- Server-side validation in Rust
+- Detailed field-level errors
+- Inline error display in forms
+
+### Logging System
+
+**Rust Backend Logging:**
+
+**Framework**: `tracing` + `tracing-subscriber`
+
+**Log Levels:**
+- `TRACE`: Detailed debugging (IPC messages, crypto operations)
+- `DEBUG`: General debugging (function calls, state changes)
+- `INFO`: Important events (login, DNS operations)
+- `WARN`: Recoverable errors (network timeouts, retries)
+- `ERROR`: Unrecoverable errors (panics, critical failures)
+
+**Configuration:**
+```bash
+# Development: verbose logging
+RUST_LOG=debug npm run tauri:dev
+
+# Production: errors only
+RUST_LOG=error npm run tauri:build
+
+# Module-specific
+RUST_LOG=better_cloudflare::crypto=trace,better_cloudflare=info
+```
+
+**Log Output:**
+- Development: Console (stdout/stderr)
+- Production: Log file in app data directory
+  - macOS: `~/Library/Logs/com.better-cloudflare.app/`
+  - Windows: `%APPDATA%\com.better-cloudflare.app\logs\`
+  - Linux: `~/.local/share/com.better-cloudflare.app/logs/`
+
+**Log Rotation:**
+- Max file size: 10 MB
+- Max files: 5
+- Automatic rotation
+- Compressed old logs
+
+**Frontend Logging:**
+
+**Console Logging:**
+```typescript
+// Development mode
+if (import.meta.env.DEV) {
+  console.log('Debug info:', data);
+}
+
+// Production: errors only
+console.error('Critical error:', error);
+```
+
+**Error Tracking** (optional):
+- Integration point for Sentry/similar
+- Opt-in only (respects privacy)
+- Strips sensitive data (passwords, tokens)
+- Includes stack traces
+
+### User-Facing Error Messages
+
+**Principles:**
+- Clear and actionable
+- Non-technical language
+- Suggest solutions
+- Provide context
+- Never expose sensitive data
+
+**Examples:**
+
+✅ **Good:**
+- "Cannot reach Cloudflare API. Check your internet connection."
+- "Incorrect password. Please try again."
+- "DNS record validation failed: Invalid IP address format."
+
+❌ **Bad:**
+- "Error: NetworkError(reqwest::Error)"
+- "Decryption failed: InvalidTag"
+- "panic at src/crypto.rs:42"
+
+### Debug Mode
+
+**Activation:**
+```bash
+RUST_LOG=debug npm run tauri:dev
+```
+
+**Debug Features:**
+- Verbose IPC logging (all commands and parameters)
+- Crypto operation timing
+- Network request/response details
+- State transitions
+- Performance metrics
+
+**Debug UI** (development only):
+- Command palette with DevTools toggle
+- In-app log viewer
+- State inspector
+- Network monitor
+
+### Error Recovery
+
+**Automatic Recovery:**
+- Network errors: retry with backoff
+- Transient keychain errors: retry once
+- Cloudflare rate limits: respect Retry-After header
+
+**Manual Recovery:**
+- App restart: clears corrupted in-memory state
+- Cache clear: removes corrupted localStorage
+- Keychain repair: delete + re-add credentials
+
+**Graceful Degradation:**
+- OS keychain unavailable → in-memory storage (with warning)
+- Network offline → display last-known state (read-only)
+- Invalid credentials → prompt for re-authentication
 
 ## 13. Performance & benchmarks
 
@@ -389,28 +1455,388 @@ Notes:
 
 ## 14. Testing & QA
 
-Unit Tests currently include tests for:
+### Testing Strategy
 
-- `storageManager` (import/export, update, rotation, clear session)
-- `cryptoManager` (derive, encrypt, decrypt, iteration behavior)
-- `server` utilities: CORS, error handler, express router validation, server-client
-- API client: `ServerClient` request handling and error parsing
+**Multi-Layer Testing:**
+1. **Rust Unit Tests**: Backend logic
+2. **Rust Integration Tests**: Tauri commands
+3. **TypeScript Unit Tests**: Frontend components
+4. **E2E Tests**: Full user workflows
+5. **Manual Testing**: Platform-specific behavior
 
-End-to-end flows tested by unit tests:
+### Rust Backend Tests
 
-- Adding and decrypting keys
-- Verifying token via server
-- Create/update/delete record flows
+**Unit Tests** (`src-tauri/src/`):
 
-Automated testing coverage recommendations:
+**Crypto Module Tests:**
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-- Add Playwright/Cypress E2E tests for full user flows (add key, login, CRUD records, import/export, passkeys, vault integration).
-- Integrate accessibility checks with `axe-core` into CI.
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let data = "secret token";
+        let password = "strong_password";
+        
+        let encrypted = encrypt(data, password, 100000, 256).unwrap();
+        let decrypted = decrypt(
+            &encrypted.encrypted,
+            &encrypted.salt,
+            &encrypted.nonce,
+            password,
+            100000,
+            256,
+        ).unwrap();
+        
+        assert_eq!(data, decrypted);
+    }
 
-Developer testing commands:
+    #[test]
+    fn test_wrong_password_fails() {
+        let encrypted = encrypt("data", "password1", 100000, 256).unwrap();
+        let result = decrypt(
+            &encrypted.encrypted,
+            &encrypted.salt,
+            &encrypted.nonce,
+            "password2",  // Wrong password
+            100000,
+            256,
+        );
+        
+        assert!(result.is_err());
+    }
+}
+```
 
-- Run all tests: `npm test` (or `npm run test` as configured)
-- Generate docs: `npm run docs`
+**Run Tests:**
+```bash
+cd src-tauri
+cargo test                    # All tests
+cargo test crypto::tests      # Specific module
+cargo test -- --nocapture     # With output
+cargo test --release          # Optimized
+```
+
+**Test Coverage:**
+```bash
+# Install tarpaulin
+cargo install cargo-tarpaulin
+
+# Generate coverage report
+cargo tarpaulin --out Html --output-dir coverage
+```
+
+**Target Coverage:**
+- Crypto module: >95%
+- Storage module: >85%
+- Cloudflare API client: >80%
+- Command handlers: >75%
+- Overall: >80%
+
+### Frontend Tests
+
+**Unit Tests** (Vitest + React Testing Library):
+
+**Component Tests:**
+```typescript
+import { render, screen, fireEvent } from '@testing-library/react';
+import { LoginForm } from '@/components/auth/LoginForm';
+
+describe('LoginForm', () => {
+  it('renders login form', () => {
+    render(<LoginForm />);
+    expect(screen.getByLabelText('Password')).toBeInTheDocument();
+  });
+
+  it('validates empty password', async () => {
+    render(<LoginForm />);
+    const button = screen.getByRole('button', { name: 'Login' });
+    fireEvent.click(button);
+    
+    expect(await screen.findByText('Password required')).toBeInTheDocument();
+  });
+});
+```
+
+**Mock Tauri Commands:**
+```typescript
+import { mockIPC } from '@tauri-apps/api/mocks';
+
+beforeEach(() => {
+  mockIPC((cmd, args) => {
+    if (cmd === 'verify_token') {
+      return Promise.resolve({ success: true });
+    }
+    if (cmd === 'get_zones') {
+      return Promise.resolve([
+        { id: 'zone1', name: 'example.com', status: 'active' }
+      ]);
+    }
+  });
+});
+```
+
+**Run Tests:**
+```bash
+npm test                 # All tests
+npm test -- LoginForm    # Specific file
+npm test -- --coverage   # With coverage
+npm test -- --watch      # Watch mode
+```
+
+### Integration Tests
+
+**Tauri Command Integration:**
+```rust
+#[cfg(test)]
+mod integration_tests {
+    use tauri::test::*;
+
+    #[test]
+    fn test_encrypt_decrypt_command() {
+        let app = tauri::test::mock_app();
+        
+        // Test encrypt command
+        let encrypted = app.invoke(
+            "encrypt_data",
+            json!({
+                "data": "test",
+                "password": "pass",
+                "iterations": 10000,
+                "keyLength": 256
+            })
+        ).unwrap();
+        
+        // Test decrypt command
+        let decrypted = app.invoke(
+            "decrypt_data",
+            json!({
+                "encrypted": encrypted.encrypted,
+                "salt": encrypted.salt,
+                "nonce": encrypted.nonce,
+                "password": "pass",
+                "iterations": 10000,
+                "keyLength": 256
+            })
+        ).unwrap();
+        
+        assert_eq!(decrypted.decrypted, "test");
+    }
+}
+```
+
+### E2E Tests (Playwright)
+
+**Configuration** (`playwright.config.ts`):
+```typescript
+export default defineConfig({
+  testDir: './e2e',
+  use: {
+    baseURL: 'tauri://localhost',  // Tauri app URL
+  },
+  projects: [
+    { name: 'macos', use: { platform: 'darwin' } },
+    { name: 'windows', use: { platform: 'win32' } },
+    { name: 'linux', use: { platform: 'linux' } },
+  ],
+});
+```
+
+**Test Examples:**
+```typescript
+test('complete login flow', async ({ page }) => {
+  // Launch Tauri app
+  await page.goto('tauri://localhost');
+  
+  // Add API key
+  await page.click('[data-testid="add-key-button"]');
+  await page.fill('[name="label"]', 'Test Key');
+  await page.fill('[name="token"]', 'test_token');
+  await page.fill('[name="password"]', 'test_pass');
+  await page.click('[data-testid="save-key"]');
+  
+  // Login
+  await page.selectOption('[name="keyId"]', 'test-key-id');
+  await page.fill('[name="password"]', 'test_pass');
+  await page.click('[data-testid="login-button"]');
+  
+  // Verify DNS manager visible
+  await expect(page.locator('[data-testid="dns-manager"]')).toBeVisible();
+});
+
+test('DNS record CRUD', async ({ page }) => {
+  await loginHelper(page);
+  
+  // Select zone
+  await page.selectOption('[name="zone"]', 'zone-id');
+  
+  // Create record
+  await page.click('[data-testid="add-record"]');
+  await page.selectOption('[name="type"]', 'A');
+  await page.fill('[name="name"]', 'test');
+  await page.fill('[name="content"]', '1.2.3.4');
+  await page.click('[data-testid="save-record"]');
+  
+  // Verify record created
+  await expect(page.locator('text=test.example.com')).toBeVisible();
+});
+```
+
+**Run E2E Tests:**
+```bash
+npm run test:e2e              # All tests
+npm run test:e2e -- --headed  # With UI
+npm run test:e2e -- --debug   # Debug mode
+```
+
+### Manual Testing Checklist
+
+**Per Platform (macOS, Windows, Linux):**
+
+☐ **Installation**
+- [ ] Clean install
+- [ ] Upgrade from previous version
+- [ ] Uninstall
+- [ ] App appears in launcher
+- [ ] File associations work
+
+☐ **Authentication**
+- [ ] Add API key (token)
+- [ ] Add API key (global key + email)
+- [ ] Login with password
+- [ ] Login with passkey
+- [ ] Wrong password error
+- [ ] Invalid token error
+- [ ] Logout clears session
+
+☐ **OS Keychain**
+- [ ] Credentials stored in keychain
+- [ ] Credentials retrieved on login
+- [ ] Keychain permission prompt (first time)
+- [ ] Fallback to memory when keychain denied
+- [ ] Multiple keys stored/retrieved
+
+☐ **Passkeys**
+- [ ] Register passkey (platform authenticator)
+- [ ] Authenticate with passkey
+- [ ] Multiple passkeys per key
+- [ ] Rename passkey
+- [ ] Delete passkey
+- [ ] Touch ID works (macOS)
+- [ ] Windows Hello works (Windows)
+
+☐ **DNS Management**
+- [ ] List zones
+- [ ] Select zone
+- [ ] List records
+- [ ] Filter records by type
+- [ ] Search records
+- [ ] Create record (all types)
+- [ ] Update record
+- [ ] Delete record
+- [ ] Bulk import (JSON/CSV/BIND)
+- [ ] Export (all formats)
+
+☐ **Performance**
+- [ ] App startup < 2s
+- [ ] Login < 1s (after decryption)
+- [ ] Zone load < 3s
+- [ ] Record CRUD < 500ms
+- [ ] UI responsive
+- [ ] No memory leaks (check after 1hr use)
+
+☐ **Error Handling**
+- [ ] Network offline handling
+- [ ] Cloudflare API errors displayed
+- [ ] Invalid input validation
+- [ ] Encryption errors handled
+- [ ] App doesn't crash on any error
+
+### CI/CD Pipeline
+
+**GitHub Actions** (`.github/workflows/test.yml`):
+
+```yaml
+name: Test
+
+on: [push, pull_request]
+
+jobs:
+  test-rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Run Rust tests
+        run: cd src-tauri && cargo test --verbose
+      - name: Run Clippy
+        run: cd src-tauri && cargo clippy -- -D warnings
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - run: npm install
+      - run: npm test
+      - run: npm run lint
+
+  test-e2e:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: npm install
+      - name: Run E2E tests
+        run: npm run test:e2e
+```
+
+### Performance Benchmarks
+
+**Rust Benchmarks** (using `criterion`):
+```rust
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+
+fn benchmark_encryption(c: &mut Criterion) {
+    c.bench_function("encrypt 1KB", |b| {
+        b.iter(|| {
+            encrypt(
+                black_box(&"x".repeat(1024)),
+                black_box("password"),
+                100000,
+                256,
+            )
+        });
+    });
+}
+
+criterion_group!(benches, benchmark_encryption);
+criterion_main!(benches);
+```
+
+**Run Benchmarks:**
+```bash
+cd src-tauri
+cargo bench
+```
+
+**Target Metrics:**
+- Encryption (1KB): < 100ms
+- Decryption (1KB): < 100ms
+- PBKDF2 (100k iterations): 50-200ms
+- Zone list API call: < 2s
+- Record CRUD: < 500ms
 
 ## 15. Accessibility & UX considerations
 
@@ -447,7 +1873,355 @@ Suggested extensions:
 - Audit logs: Track sensitive events (key addition, rotation, delete, passkey registration, passkey auth) in server logs or a secure audit store.
 - Trusted attestation and attestation policies: Add configurable attestation verification rules (e.g., require certain attestation formats or authenticators).
 
-## 18. Known limitations & future work
+## 18. Distribution & deployment
+
+### Build Process
+
+**Development Build:**
+```bash
+npm run tauri:dev
+```
+- Fast compilation
+- Hot reload enabled
+- DevTools available
+- Debug logging enabled
+- Unoptimized binary
+
+**Production Build:**
+```bash
+npm run tauri:build
+```
+- Optimized compilation (--release)
+- Minified frontend assets
+- Tree-shaking enabled
+- Debug symbols stripped
+- Code signed (if configured)
+
+### Platform-Specific Builds
+
+**macOS:**
+
+**Artifacts:**
+- `.app` bundle: `src-tauri/target/release/bundle/macos/Better Cloudflare.app`
+- `.dmg` installer: `src-tauri/target/release/bundle/dmg/Better Cloudflare_1.0.0_x64.dmg`
+
+**Requirements:**
+- macOS 10.15+ (Catalina or later)
+- Apple Developer ID certificate (for distribution)
+- Notarization (required for macOS 10.15+)
+
+**Code Signing:**
+```bash
+# Configure in tauri.conf.json
+"macOS": {
+  "signingIdentity": "Developer ID Application: Your Name (TEAM_ID)",
+  "entitlements": "app.entitlements"
+}
+
+# Build signed
+npm run tauri:build
+
+# Notarize
+xcrun notarytool submit "Better Cloudflare.dmg" \
+  --apple-id your@email.com \
+  --team-id TEAM_ID \
+  --password app-specific-password
+
+# Staple notarization ticket
+xcrun stapler staple "Better Cloudflare.dmg"
+```
+
+**Distribution:**
+- Direct download (DMG)
+- Homebrew Cask (optional)
+- Mac App Store (requires additional review)
+
+**Windows:**
+
+**Artifacts:**
+- `.msi` installer: `src-tauri/target/release/bundle/msi/Better Cloudflare_1.0.0_x64_en-US.msi`
+- `.exe` portable: `src-tauri/target/release/Better Cloudflare.exe`
+
+**Requirements:**
+- Windows 10 1809+ or Windows 11
+- WebView2 runtime (pre-installed on Windows 11)
+- Code signing certificate (for SmartScreen trust)
+
+**Code Signing:**
+```bash
+# Configure in tauri.conf.json
+"windows": {
+  "certificateThumbprint": "YOUR_CERT_THUMBPRINT",
+  "timestampUrl": "http://timestamp.digicert.com"
+}
+
+# Build signed
+npm run tauri:build
+```
+
+**Distribution:**
+- Direct download (MSI)
+- Chocolatey package (optional)
+- Microsoft Store (requires additional review)
+- WinGet package (optional)
+
+**Linux:**
+
+**Artifacts:**
+- `.AppImage`: `src-tauri/target/release/bundle/appimage/better-cloudflare_1.0.0_amd64.AppImage`
+- `.deb`: `src-tauri/target/release/bundle/deb/better-cloudflare_1.0.0_amd64.deb`
+- `.rpm`: `src-tauri/target/release/bundle/rpm/better-cloudflare-1.0.0-1.x86_64.rpm`
+
+**Requirements:**
+- Ubuntu 20.04+ / Debian 11+ / Fedora 36+
+- WebKit2GTK 4.1
+- GTK 3.24+
+
+**Distribution:**
+- Direct download (AppImage - universal)
+- APT repository (Debian/Ubuntu)
+- RPM repository (Fedora/RHEL)
+- Flathub (optional)
+- Snap Store (optional)
+
+### Release Process
+
+**1. Version Bump:**
+```bash
+# Update version in:
+# - package.json
+# - src-tauri/Cargo.toml
+# - tauri.conf.json
+
+npm version 1.1.0
+git tag v1.1.0
+```
+
+**2. Build All Platforms:**
+```bash
+# macOS
+npm run tauri:build
+
+# Windows (on Windows machine)
+npm run tauri:build
+
+# Linux (on Linux machine)
+npm run tauri:build
+```
+
+**3. Generate Checksums:**
+```bash
+# macOS/Linux
+shasum -a 256 *.dmg *.AppImage *.deb > SHA256SUMS
+
+# Windows
+CertUtil -hashfile "Better Cloudflare.msi" SHA256
+```
+
+**4. Create GitHub Release:**
+```bash
+gh release create v1.1.0 \
+  --title "v1.1.0 - Feature Release" \
+  --notes-file CHANGELOG.md \
+  *.dmg *.msi *.AppImage *.deb *.rpm SHA256SUMS
+```
+
+**5. Update Distribution Channels:**
+- Homebrew Cask: Submit PR to homebrew-cask
+- Chocolatey: Update package metadata
+- AUR: Update PKGBUILD
+- Flathub: Update manifest
+
+### Auto-Update System
+
+**Configuration** (in `tauri.conf.json`):
+```json
+"updater": {
+  "active": true,
+  "endpoints": [
+    "https://releases.better-cloudflare.com/{{target}}/{{current_version}}"
+  ],
+  "dialog": true,
+  "pubkey": "YOUR_TAURI_PUBLIC_KEY"
+}
+```
+
+**Update Server Response:**
+```json
+{
+  "version": "1.1.0",
+  "notes": "Bug fixes and improvements",
+  "pub_date": "2026-01-23T00:00:00Z",
+  "platforms": {
+    "darwin-x86_64": {
+      "signature": "...",
+      "url": "https://releases.../Better-Cloudflare-1.1.0.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "...",
+      "url": "https://releases.../Better-Cloudflare-1.1.0.msi.zip"
+    },
+    "linux-x86_64": {
+      "signature": "...",
+      "url": "https://releases.../Better-Cloudflare-1.1.0.AppImage.tar.gz"
+    }
+  }
+}
+```
+
+**Update Flow:**
+1. App checks for updates on startup (configurable)
+2. If update available, show dialog
+3. User confirms update
+4. Download update in background
+5. Verify signature
+6. Install and restart
+
+### CI/CD Automation
+
+**GitHub Actions** (`.github/workflows/release.yml`):
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    strategy:
+      matrix:
+        platform: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      
+      - name: Install dependencies (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev
+      
+      - name: Install Node dependencies
+        run: npm install
+      
+      - name: Build Tauri app
+        run: npm run tauri:build
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/**/*
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Installation Instructions
+
+**macOS:**
+```bash
+# Option 1: Direct download
+# Download Better-Cloudflare-1.0.0.dmg from releases
+# Open DMG, drag app to Applications
+
+# Option 2: Homebrew
+brew install --cask better-cloudflare
+```
+
+**Windows:**
+```powershell
+# Option 1: Direct download
+# Download Better-Cloudflare-1.0.0.msi from releases
+# Run installer
+
+# Option 2: Chocolatey
+choco install better-cloudflare
+
+# Option 3: WinGet
+winget install BetterCloudflare.BetterCloudflare
+```
+
+**Linux:**
+```bash
+# Option 1: AppImage (universal)
+chmod +x Better-Cloudflare-1.0.0.AppImage
+./Better-Cloudflare-1.0.0.AppImage
+
+# Option 2: Debian/Ubuntu
+sudo dpkg -i better-cloudflare_1.0.0_amd64.deb
+
+# Option 3: Fedora/RHEL
+sudo rpm -i better-cloudflare-1.0.0-1.x86_64.rpm
+
+# Option 4: Arch Linux (AUR)
+yay -S better-cloudflare
+```
+
+### Uninstallation
+
+**macOS:**
+```bash
+# Remove app
+rm -rf "/Applications/Better Cloudflare.app"
+
+# Remove app data
+rm -rf "~/Library/Application Support/com.better-cloudflare.app"
+rm -rf "~/Library/Logs/com.better-cloudflare.app"
+
+# Remove keychain entries (manual in Keychain Access)
+```
+
+**Windows:**
+```powershell
+# Use Add/Remove Programs or
+msiexec /x {PRODUCT_GUID}
+
+# Remove app data
+Remove-Item -Recurse "$env:APPDATA\com.better-cloudflare.app"
+
+# Remove credentials (manual in Credential Manager)
+```
+
+**Linux:**
+```bash
+# Debian/Ubuntu
+sudo apt remove better-cloudflare
+
+# Fedora/RHEL
+sudo rpm -e better-cloudflare
+
+# Remove app data
+rm -rf "~/.local/share/com.better-cloudflare.app"
+rm -rf "~/.config/com.better-cloudflare.app"
+```
+
+
 
 - Single-user oriented: Local storage-based keys and session model assume a single user per browser.
 - No multi-account server model: the server is a simple proxy and is not meant to be a shared multi-user platform.
