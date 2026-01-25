@@ -13,6 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Better Cloudflare DNS Manager",
         "width": 1280,
         "height": 800,
@@ -21,12 +22,15 @@
         "resizable": true,
         "fullscreen": false,
         "transparent": false,
-        "decorations": true,
+        "decorations": false,
         "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "capabilities": [
+        "capabilities/main.json"
+      ]
     }
   },
   "bundle": {
