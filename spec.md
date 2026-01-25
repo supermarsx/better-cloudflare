@@ -133,7 +133,7 @@ Better Cloudflare uses a **native desktop application architecture** powered by 
 2. **`commands.rs`** (~350 lines): Command handlers for all IPC operations
    - Authentication: `verify_token`, `vault_*`, `passkey_*`
    - DNS: `get_zones`, `get_dns_records`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
-   - Encryption: `encrypt_data`, `decrypt_data`, `derive_key_benchmark`
+   - Encryption: `get_encryption_settings`, `update_encryption_settings`, `benchmark_encryption`
    - Audit: `get_audit_logs`
 
 3. **`crypto.rs`** (~180 lines): Cryptographic operations
@@ -437,8 +437,8 @@ All communication between frontend and backend uses **Tauri's IPC (Inter-Process
 import { invoke } from '@tauri-apps/api/core';
 
 // Example: Verify token
-const result = await invoke<{ success: boolean }>('verify_token', {
-  token: 'api_token_here',
+const ok = await invoke<boolean>('verify_token', {
+  apiKey: 'api_token_here',
   email: null
 });
 ```
@@ -448,85 +448,91 @@ const result = await invoke<{ success: boolean }>('verify_token', {
 #### `verify_token`
 - **Purpose**: Verify Cloudflare API token or global key
 - **Parameters**: 
-  - `token: string` - API token or global key
+  - `apiKey: string` - API token or global key
   - `email: string | null` - Email (required for global key)
-- **Returns**: `{ success: boolean }`
+- **Returns**: `boolean`
 - **Errors**: `Invalid credentials`, `Network error`
 
-#### `vault_set`
-- **Purpose**: Store encrypted credential in OS keychain
-- **Parameters**:
-  - `id: string` - Unique identifier for the credential
-  - `secret: string` - Encrypted credential data (JSON string)
-- **Returns**: `{ success: boolean }`
-- **OS Storage**:
-  - macOS: Keychain Access
-  - Windows: Credential Manager
-  - Linux: Secret Service
+#### `get_api_keys`
+- **Purpose**: List stored API keys
+- **Parameters**: none
+- **Returns**: `ApiKey[]`
 
-#### `vault_get`
-- **Purpose**: Retrieve encrypted credential from OS keychain
+#### `add_api_key`
+- **Purpose**: Store an API key encrypted with the provided password
 - **Parameters**:
-  - `id: string` - Credential identifier
-- **Returns**: `{ secret: string | null }`
-- **Errors**: `Not found`, `OS keychain access denied`
+  - `label: string`
+  - `apiKey: string`
+  - `email?: string`
+  - `password: string`
+- **Returns**: `string` (id)
 
-#### `vault_delete`
-- **Purpose**: Remove credential from OS keychain
+#### `update_api_key`
+- **Purpose**: Update stored key metadata or rotate password
 - **Parameters**:
-  - `id: string` - Credential identifier
-- **Returns**: `{ success: boolean }`
+  - `id: string`
+  - `label?: string`
+  - `email?: string`
+  - `currentPassword?: string`
+  - `newPassword?: string`
+- **Returns**: `void`
 
-#### `vault_list`
-- **Purpose**: List all stored credential IDs
-- **Returns**: `string[]` - Array of credential IDs
+#### `delete_api_key`
+- **Purpose**: Remove a stored key
+- **Parameters**: `id: string`
+- **Returns**: `void`
+
+#### `decrypt_api_key`
+- **Purpose**: Decrypt a stored API key
+- **Parameters**:
+  - `id: string`
+  - `password: string`
+- **Returns**: `string` (decrypted API key)
+
+#### `store_vault_secret`
+- **Purpose**: Store a transient secret for passkey-based login
+- **Parameters**:
+  - `id: string`
+  - `secret: string`
+- **Returns**: `void`
+
+#### `get_vault_secret`
+- **Purpose**: Retrieve a vault secret after passkey auth
+- **Parameters**:
+  - `id: string`
+- **Returns**: `string`
+
+#### `delete_vault_secret`
+- **Purpose**: Remove a vault secret
+- **Parameters**:
+  - `id: string`
+- **Returns**: `void`
 
 ### Encryption Commands
 
-#### `encrypt_data`
-- **Purpose**: Encrypt data using AES-256-GCM
-- **Parameters**:
-  - `data: string` - Plain text to encrypt
-  - `password: string` - Encryption password
-  - `iterations: number` - PBKDF2 iterations (default: 100000)
-  - `key_length: number` - Key length in bits (128, 192, or 256)
-- **Returns**:
-  ```typescript
-  {
-    encrypted: string,  // Base64-encoded ciphertext
-    salt: string,       // Base64-encoded salt
-    nonce: string       // Base64-encoded nonce/IV
-  }
-  ```
-- **Algorithm**: AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation
+#### `get_encryption_settings`
+- **Purpose**: Read current encryption configuration
+- **Parameters**: none
+- **Returns**: `{ iterations: number, keyLength: number, algorithm: string }`
 
-#### `decrypt_data`
-- **Purpose**: Decrypt AES-256-GCM encrypted data
+#### `update_encryption_settings`
+- **Purpose**: Update encryption configuration
 - **Parameters**:
-  - `encrypted: string` - Base64-encoded ciphertext
-  - `salt: string` - Base64-encoded salt
-  - `nonce: string` - Base64-encoded nonce
-  - `password: string` - Decryption password
-  - `iterations: number` - PBKDF2 iterations
-  - `key_length: number` - Key length in bits
-- **Returns**: `{ decrypted: string }`
-- **Errors**: `Invalid password`, `Corrupted data`, `Decryption failed`
+  - `config: { iterations: number, keyLength: number, algorithm: string }`
+- **Returns**: `void`
 
-#### `derive_key_benchmark`
-- **Purpose**: Benchmark PBKDF2 key derivation performance
+#### `benchmark_encryption`
+- **Purpose**: Benchmark key derivation performance
 - **Parameters**:
-  - `password: string` - Test password
-  - `iterations: number` - Number of iterations to test
-  - `key_length: number` - Key length in bits
-- **Returns**: `{ duration_ms: number }`
-- **Use Case**: Help users choose appropriate iteration count
+  - `iterations: number`
+- **Returns**: `number` (duration in ms)
 
 ### DNS Management Commands
 
 #### `get_zones`
 - **Purpose**: List all Cloudflare zones for authenticated account
 - **Parameters**:
-  - `token: string` - API token
+  - `apiKey: string` - API token
   - `email: string | null` - Email for global key
 - **Returns**: `Zone[]`
   ```typescript
@@ -543,9 +549,9 @@ const result = await invoke<{ success: boolean }>('verify_token', {
 #### `get_dns_records`
 - **Purpose**: List DNS records for a zone
 - **Parameters**:
-  - `token: string` - API token
+  - `apiKey: string` - API token
   - `email: string | null` - Email for global key
-  - `zone_id: string` - Zone identifier
+  - `zoneId: string` - Zone identifier
 - **Returns**: `DnsRecord[]`
   ```typescript
   interface DnsRecord {
@@ -566,9 +572,9 @@ const result = await invoke<{ success: boolean }>('verify_token', {
 #### `create_dns_record`
 - **Purpose**: Create new DNS record
 - **Parameters**:
-  - `token: string` - API token
+  - `apiKey: string` - API token
   - `email: string | null` - Email for global key
-  - `zone_id: string` - Zone identifier
+  - `zoneId: string` - Zone identifier
   - `record: DnsRecordInput` - Record data
     ```typescript
     interface DnsRecordInput {
@@ -586,41 +592,40 @@ const result = await invoke<{ success: boolean }>('verify_token', {
 #### `update_dns_record`
 - **Purpose**: Update existing DNS record
 - **Parameters**:
-  - `token: string`
+  - `apiKey: string`
   - `email: string | null`
-  - `zone_id: string`
-  - `record_id: string`
+  - `zoneId: string`
+  - `recordId: string`
   - `record: DnsRecordInput` - Updated record data
 - **Returns**: `DnsRecord` - Updated record
 
 #### `delete_dns_record`
 - **Purpose**: Delete DNS record
 - **Parameters**:
-  - `token: string`
+  - `apiKey: string`
   - `email: string | null`
-  - `zone_id: string`
-  - `record_id: string`
-- **Returns**: `{ success: boolean }`
+  - `zoneId: string`
+  - `recordId: string`
+- **Returns**: `void`
 
-#### `bulk_create_dns_records`
+#### `create_bulk_dns_records`
 - **Purpose**: Create multiple DNS records (batch operation)
 - **Parameters**:
-  - `token: string`
+  - `apiKey: string`
   - `email: string | null`
-  - `zone_id: string`
+  - `zoneId: string`
   - `records: DnsRecordInput[]`
-- **Returns**: `BulkResult`
+- **Returns**: `{ created: DnsRecord[], skipped: unknown[] }`
   ```typescript
   interface BulkResult {
-    success: number;
-    failed: number;
-    errors: string[];
+    created: DnsRecord[];
+    skipped: unknown[];
   }
   ```
 
 ### Passkey (WebAuthn) Commands
 
-#### `passkey_get_register_options`
+#### `get_passkey_registration_options`
 - **Purpose**: Generate WebAuthn registration options
 - **Parameters**:
   - `id: string` - User/key identifier
@@ -641,7 +646,7 @@ const result = await invoke<{ success: boolean }>('verify_token', {
   }
   ```
 
-#### `passkey_register`
+#### `register_passkey`
 - **Purpose**: Verify and store passkey credential
 - **Parameters**:
   - `id: string` - User/key identifier
@@ -956,12 +961,10 @@ pub fn decrypt(
 **Benchmark Tool**:
 Users can run a benchmark to determine optimal iteration count for their hardware:
 ```typescript
-const result = await invoke('derive_key_benchmark', {
-  password: 'test',
-  iterations: 100000,
-  keyLength: 256
+const durationMs = await invoke<number>('benchmark_encryption', {
+  iterations: 100000
 });
-console.log(`Time: ${result.duration_ms}ms`);
+console.log(`Time: ${durationMs}ms`);
 ```
 
 **Recommendations**:
@@ -1303,14 +1306,14 @@ try {
 **Encryption Errors:**
 ```typescript
 try {
-  const encrypted = await invoke('encrypt_data', { data, password, ... });
+  await invoke('decrypt_api_key', { id: 'key_id', password });
 } catch (error) {
   if (error.includes('Invalid password')) {
     toast.error('Incorrect password');
   } else if (error.includes('Decryption failed')) {
     toast.error('Data corrupted or wrong password');
   } else {
-    toast.error('Encryption error: ' + error);
+    toast.error('Decryption error: ' + error);
   }
 }
 ```
@@ -1594,34 +1597,15 @@ mod integration_tests {
     use tauri::test::*;
 
     #[test]
-    fn test_encrypt_decrypt_command() {
+    fn test_benchmark_encryption_command() {
         let app = tauri::test::mock_app();
         
-        // Test encrypt command
-        let encrypted = app.invoke(
-            "encrypt_data",
-            json!({
-                "data": "test",
-                "password": "pass",
-                "iterations": 10000,
-                "keyLength": 256
-            })
+        let duration = app.invoke(
+            "benchmark_encryption",
+            json!({ "iterations": 10000 })
         ).unwrap();
         
-        // Test decrypt command
-        let decrypted = app.invoke(
-            "decrypt_data",
-            json!({
-                "encrypted": encrypted.encrypted,
-                "salt": encrypted.salt,
-                "nonce": encrypted.nonce,
-                "password": "pass",
-                "iterations": 10000,
-                "keyLength": 256
-            })
-        ).unwrap();
-        
-        assert_eq!(decrypted.decrypted, "test");
+        assert!(duration > 0.0);
     }
 }
 ```
@@ -2557,53 +2541,31 @@ const newRecord = await invoke<DnsRecord>('create_dns_record', {
 console.log('Created:', newRecord);
 ```
 
-**Encrypt/Decrypt Data:**
+**Store/Decrypt API Key:**
 ```typescript
-// Encrypt
-const encrypted = await invoke<{
-  encrypted: string;
-  salt: string;
-  nonce: string;
-}>('encrypt_data', {
-  data: 'my_api_token',
-  password: 'user_password',
-  iterations: 100000,
-  key_length: 256
+// Store a key (encrypted in Rust with the provided password)
+const keyId = await invoke<string>('add_api_key', {
+  label: 'My token',
+  apiKey: 'my_api_token',
+  email: null,
+  password: 'user_password'
 });
 
-// Store encrypted data in OS keychain
-await invoke('vault_set', {
-  id: 'api_key_1',
-  secret: JSON.stringify(encrypted)
+// Later: decrypt the stored key
+const decrypted = await invoke<string>('decrypt_api_key', {
+  id: keyId,
+  password: 'user_password'
 });
 
-// Later: retrieve and decrypt
-const stored = await invoke<{ secret: string }>('vault_get', {
-  id: 'api_key_1'
-});
-
-const encryptedData = JSON.parse(stored.secret);
-const decrypted = await invoke<{ decrypted: string }>('decrypt_data', {
-  encrypted: encryptedData.encrypted,
-  salt: encryptedData.salt,
-  nonce: encryptedData.nonce,
-  password: 'user_password',
-  iterations: 100000,
-  key_length: 256
-});
-
-console.log('Decrypted token:', decrypted.decrypted);
+console.log('Decrypted token:', decrypted);
 ```
 
 **Passkey Registration:**
 ```typescript
 // Get registration options
 const options = await invoke<PasskeyRegisterOptions>(
-  'passkey_get_register_options',
-  {
-    id: 'user_key_1',
-    display_name: 'MacBook Pro Touch ID'
-  }
+  'get_passkey_registration_options',
+  { id: 'user_key_1' }
 );
 
 // Use WebAuthn API to create credential
@@ -2612,10 +2574,9 @@ const credential = await navigator.credentials.create({
 });
 
 // Register credential with backend
-await invoke('passkey_register', {
+await invoke('register_passkey', {
   id: 'user_key_1',
-  credential: credential,
-  device_name: 'MacBook Pro Touch ID'
+  attestation: credential
 });
 ```
 
@@ -2627,17 +2588,15 @@ await invoke('passkey_register', {
 3. User fills: label, API token, optional email, encryption password
 4. On save:
    - Frontend validates token via `invoke('verify_token', ...)`
-   - If valid, frontend encrypts token via `invoke('encrypt_data', ...)`
-   - Encrypted data stored in OS keychain via `invoke('vault_set', ...)`
-   - Metadata (label, id, encryption config) saved to localStorage
+   - If valid, frontend stores the key via `invoke('add_api_key', ...)`
+   - Stored key metadata is returned from the backend
 5. Success toast shown, dialog closes
 
 **Login With Stored Key:**
 1. User selects stored key from dropdown
 2. User enters decryption password (or uses passkey)
 3. On login click:
-   - Frontend retrieves encrypted data via `invoke('vault_get', ...)`
-   - Frontend decrypts via `invoke('decrypt_data', ...)`
+   - Frontend decrypts via `invoke('decrypt_api_key', ...)`
    - Frontend verifies token via `invoke('verify_token', ...)`
    - If successful, store active session in memory
    - Navigate to DNS Manager view
@@ -2662,7 +2621,7 @@ await invoke('passkey_register', {
 4. Frontend parses and validates records client-side
 5. Preview shown with skipped duplicates
 6. On confirm:
-   - Frontend calls `invoke('bulk_create_dns_records', ...)`
+   - Frontend calls `invoke('create_bulk_dns_records', ...)`
    - Backend creates records in batch
    - Progress indicator updates
    - Results summary shown (success count, errors)
