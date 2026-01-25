@@ -149,9 +149,15 @@ export function EncryptionSettingsDialog({
               Update
             </Button>
           </div>
-          <div className="flex items-center gap-2">
-            <Label>Enable OS Vault</Label>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+            <div className="space-y-0.5">
+              <Label>Enable OS Vault</Label>
+              <p className="text-xs text-muted-foreground">
+                Store decrypted keys in the system vault for passkey login.
+              </p>
+            </div>
             <Switch
+              className="data-[state=unchecked]:bg-white/15 data-[state=checked]:bg-orange-500/70"
               checked={useVault}
               onCheckedChange={(v: boolean) => {
                 setUseVault(v);

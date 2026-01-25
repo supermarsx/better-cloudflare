@@ -8,7 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import { useI18n } from "@/hooks/use-i18n";
 import type { ApiKey } from "@/types/dns";
 import { useState } from "react";
@@ -17,8 +17,6 @@ interface LoginKeySelectorProps {
   apiKeys: ApiKey[];
   selectedKeyId: string;
   onSelectKey: (id: string) => void;
-  onEditKey: (key: ApiKey) => void;
-  onDeleteKey: (id: string) => void;
   password: string;
   onPasswordChange: (value: string) => void;
   onLogin: () => void;
@@ -29,8 +27,6 @@ export function LoginKeySelector({
   apiKeys,
   selectedKeyId,
   onSelectKey,
-  onEditKey,
-  onDeleteKey,
   password,
   onPasswordChange,
   onLogin,
@@ -59,30 +55,6 @@ export function LoginKeySelector({
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="font-medium">{key.label}</span>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditKey(key);
-                      }}
-                      className="h-7 w-7 p-0 hover:bg-orange-500/20 hover:text-orange-300"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteKey(key.id);
-                      }}
-                      className="h-7 w-7 p-0 hover:bg-red-900/30 hover:text-red-400"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
                 </div>
               </SelectItem>
             ))}
