@@ -127,6 +127,8 @@
   - [ ] Log all sensitive operations (login, key changes, DNS modifications)
   - [x] Log key/vault operations to local audit storage
   - [x] Log DNS, passkey, encryption operations to local audit storage
+  - [x] Log auth token verification attempts
+  - [x] Log login success/failure (password/passkey) with minimal metadata
   - [x] Add audit log export/download (CSV/JSON)
   - [x] Add rotation policy for audit logs (retain last 1000)
   - [x] Implement log viewing UI
@@ -137,6 +139,7 @@
 - [x] **Share storage between PasskeyManager and Tauri Storage state** (avoid split keychains)
 - [ ] **Verify passkey assertions/attestations** (full WebAuthn verification)
 - [x] **Enforce passkey token gating for vault reads** (desktop mode)
+- [x] **Add tests for passkey token enforcement** (invalid/missing token cases)
 
 - [ ] **Add backup/restore functionality**
   - [ ] Export all vaults to encrypted file
@@ -266,9 +269,13 @@
 - [ ] **Update existing tests** (test/ directory)
   - [ ] `cloudflareApi.test.ts` - Mock Tauri invoke
   - [ ] `cryptoManager.test.ts` - Test against Rust crypto
-  - [ ] `serverClient.test.ts` - Update for TauriClient
+  - [x] `serverClient.test.ts` - Update for TauriClient (desktop routing coverage added)
   - [ ] `sqliteCredentialStore.test.ts` - Test Rust storage
-  - [ ] `serverPasskey.test.ts` - Test Rust passkey manager
+  - [x] `serverPasskey.test.ts` - Test Rust passkey manager (Rust module tests added)
+  - [x] Add audit log dialog tests
+  - [x] Add desktop routing tests for `useCloudflareAPI`
+  - [x] Add Login UI component tests (passkey/action/key selector)
+  - [x] Add DNS manager audit UI tests
   - [ ] Review all other tests for needed updates
 
 - [ ] **Add Tauri-specific tests**
@@ -276,6 +283,7 @@
   - [ ] Test error mapping
   - [x] Test environment detection
   - [x] Mock Tauri API in tests
+  - [x] Test desktop routing for SPF and vault token flows
 
 - [ ] **Run test suite**
   ```bash

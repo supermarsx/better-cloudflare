@@ -726,7 +726,9 @@ const ok = await invoke<boolean>('verify_token', {
 - Key additions/updates/deletions
 - Vault store/delete operations
 - DNS record create/update/delete/bulk/export
-- Passkey register/auth/delete
+- Passkey register/auth/delete (success/failure)
+- Login attempts (password/passkey)
+- Auth token verification attempts
 - Encryption setting changes
 - **Retention**: Last 1000 entries kept
 - **Export**: UI supports JSON/CSV download from desktop audit log viewer

@@ -389,4 +389,38 @@ mod tests {
             .expect("list after delete");
         assert!(list.is_empty());
     }
+
+    #[tokio::test]
+    async fn verify_token_rejects_invalid() {
+        let storage = Storage::new(false);
+        let mgr = PasskeyManager::default();
+        let id = "key_4";
+        let options = mgr.get_registration_options(id).await.expect("options");
+        let challenge = options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("challenge");
+        let attestation = serde_json::json!({
+            "id": "cred_token",
+            "response": {
+                "clientDataJSON": encode_client_data(challenge)
+            }
+        });
+        mgr.register_passkey(&storage, id, attestation)
+            .await
+            .expect("register");
+        let assertion = serde_json::json!({
+            "id": "cred_token",
+            "response": {
+                "clientDataJSON": encode_client_data(challenge)
+            }
+        });
+        let result = mgr
+            .authenticate_passkey(&storage, id, assertion)
+            .await
+            .expect("auth");
+        let token = result.get("token").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(!token.is_empty());
+        assert!(!mgr.verify_token(id, "badtoken", false).await.unwrap());
+    }
 }

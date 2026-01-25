@@ -79,10 +79,39 @@ pub struct DNSRecordInput {
 
 // Authentication & Key Management
 #[tauri::command]
-pub async fn verify_token(api_key: String, email: Option<String>) -> Result<bool, String> {
+pub async fn verify_token(
+    storage: State<'_, Storage>,
+    api_key: String,
+    email: Option<String>,
+) -> Result<bool, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.verify_token().await
-        .map_err(|e| e.to_string())
+    match client.verify_token().await {
+        Ok(ok) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "auth:verify_token",
+                    "resource": "api_token",
+                    "success": ok
+                }),
+            )
+            .await;
+            Ok(ok)
+        }
+        Err(err) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "auth:verify_token",
+                    "resource": "api_token",
+                    "success": false,
+                    "error": err.to_string()
+                }),
+            )
+            .await;
+            Err(err.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -474,21 +503,36 @@ pub async fn authenticate_passkey(
     id: String,
     assertion: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let result = passkey_mgr
+    match passkey_mgr
         .authenticate_passkey(&storage, &id, assertion)
         .await
-        .map_err(|e| e.to_string())?;
-    if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-        log_audit(
-            &storage,
-            serde_json::json!({
-                "operation": "passkey:authenticate",
-                "resource": id,
-            }),
-        )
-        .await;
+    {
+        Ok(result) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "passkey:authenticate",
+                    "resource": id,
+                    "success": true
+                }),
+            )
+            .await;
+            Ok(result)
+        }
+        Err(err) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "passkey:authenticate",
+                    "resource": id,
+                    "success": false,
+                    "error": err.to_string()
+                }),
+            )
+            .await;
+            Err(err.to_string())
+        }
     }
-    Ok(result)
 }
 
 #[tauri::command]
