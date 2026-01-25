@@ -1524,62 +1524,67 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                      <Label>Auto refresh</Label>
-                      <Select
-                        value={String(autoRefreshInterval ?? 0)}
-                        onValueChange={(v) =>
-                          setAutoRefreshInterval(v ? Number(v) : null)
-                        }
-                      >
-                        <SelectTrigger className="w-48">
-                          <SelectValue placeholder="Auto-refresh" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="0">Off</SelectItem>
-                          <SelectItem value="60000">1 min</SelectItem>
-                          <SelectItem value="300000">5 min</SelectItem>
-                          <SelectItem value="600000">10 min</SelectItem>
-                          <SelectItem value="1800000">30 min</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <div className="text-xs text-muted-foreground">
-                        Refresh pauses automatically when you are editing a
-                        record or have dialogs open.
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Per-page defaults</Label>
-                      <Select
-                        value={String(activeTab?.perPage ?? 50)}
-                        onValueChange={(v) => {
-                          if (!activeTab) return;
-                          const value = Number(v);
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            perPage: Number.isNaN(value) ? 50 : value,
-                            page: 1,
-                          }));
-                        }}
-                        disabled={!activeTab}
-                      >
-                        <SelectTrigger className="w-48">
-                          <SelectValue placeholder="Per page" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="25">25</SelectItem>
-                          <SelectItem value="50">50</SelectItem>
-                          <SelectItem value="100">100</SelectItem>
-                          <SelectItem value="200">200</SelectItem>
-                          <SelectItem value="500">500</SelectItem>
-                          <SelectItem value="0">All</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!activeTab && (
-                        <div className="text-xs text-muted-foreground">
-                          Open a zone tab to configure per-page defaults.
+                    <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-black/30 text-sm">
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Auto refresh</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={String(autoRefreshInterval ?? 0)}
+                            onValueChange={(v) =>
+                              setAutoRefreshInterval(v ? Number(v) : null)
+                            }
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Auto-refresh" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="0">Off</SelectItem>
+                              <SelectItem value="60000">1 min</SelectItem>
+                              <SelectItem value="300000">5 min</SelectItem>
+                              <SelectItem value="600000">10 min</SelectItem>
+                              <SelectItem value="1800000">30 min</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <div className="text-xs text-muted-foreground">
+                            Pauses while editing records or dialogs are open.
+                          </div>
                         </div>
-                      )}
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Per-page default</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={String(activeTab?.perPage ?? 50)}
+                            onValueChange={(v) => {
+                              if (!activeTab) return;
+                              const value = Number(v);
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                perPage: Number.isNaN(value) ? 50 : value,
+                                page: 1,
+                              }));
+                            }}
+                            disabled={!activeTab}
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Per page" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="25">25</SelectItem>
+                              <SelectItem value="50">50</SelectItem>
+                              <SelectItem value="100">100</SelectItem>
+                              <SelectItem value="200">200</SelectItem>
+                              <SelectItem value="500">500</SelectItem>
+                              <SelectItem value="0">All</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {!activeTab && (
+                            <div className="text-xs text-muted-foreground">
+                              Open a zone tab to configure per-page defaults.
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
