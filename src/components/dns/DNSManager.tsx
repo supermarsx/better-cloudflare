@@ -35,7 +35,6 @@ import {
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
-import { AuditLogDialog } from "@/components/audit/AuditLogDialog";
 import { TauriClient } from "@/lib/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
@@ -181,7 +180,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
-  const [showAuditLog, setShowAuditLog] = useState(false);
+  const [auditEntries, setAuditEntries] = useState<Array<Record<string, unknown>>>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditType, setAuditType] = useState("all");
+  const [auditResource, setAuditResource] = useState("all");
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -317,6 +321,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
   }, []);
 
+  const loadAuditEntries = useCallback(async () => {
+    if (!isDesktop()) {
+      setAuditError("Audit log is only available in the desktop app.");
+      return;
+    }
+    setAuditLoading(true);
+    setAuditError(null);
+    try {
+      const list = await TauriClient.getAuditEntries();
+      const items = Array.isArray(list) ? (list as Array<Record<string, unknown>>) : [];
+      setAuditEntries(items);
+    } catch (err) {
+      setAuditError((err as Error).message);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, []);
+
   const loadRecords = useCallback(
     async (tab: ZoneTab, signal?: AbortSignal) => {
       if (!tab.zoneId) return;
@@ -379,6 +401,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return () => controller.abort();
     }
   }, [activeTab?.zoneId, activeTab?.page, activeTab?.perPage, activeTab?.kind, loadRecords]);
+
+  useEffect(() => {
+    if (activeTab?.kind === "audit") {
+      loadAuditEntries();
+    }
+  }, [activeTab?.kind, loadAuditEntries]);
 
   useEffect(() => {
     if (isDesktop()) {
@@ -501,6 +529,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         activeTab.typeFilter ? record.type === activeTab.typeFilter : true,
     );
   }, [activeTab]);
+
+  const auditTypeOptions = useMemo(() => {
+    const set = new Set<string>();
+    auditEntries.forEach((entry) => {
+      const op = entry.operation;
+      if (typeof op === "string" && op) set.add(op);
+    });
+    return ["all", ...Array.from(set)];
+  }, [auditEntries]);
+
+  const auditResourceOptions = useMemo(() => {
+    const set = new Set<string>();
+    auditEntries.forEach((entry) => {
+      const resource = entry.resource;
+      if (typeof resource === "string" && resource) set.add(resource);
+    });
+    return ["all", ...Array.from(set)];
+  }, [auditEntries]);
+
+  const filteredAuditEntries = useMemo(() => {
+    if (!auditEntries.length) return [];
+    const search = auditSearch.trim().toLowerCase();
+    return auditEntries.filter((entry) => {
+      if (auditType !== "all" && entry.operation !== auditType) return false;
+      if (auditResource !== "all" && entry.resource !== auditResource) return false;
+      if (!search) return true;
+      const payload = JSON.stringify(entry).toLowerCase();
+      return payload.includes(search);
+    });
+  }, [auditEntries, auditSearch, auditType, auditResource]);
   const handleAddRecord = async () => {
     if (!activeTab) return;
     const draft = activeTab.newRecord;
@@ -1612,22 +1670,141 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "audit" && (
                 <Card className="border-white/10 bg-black/40">
                   <CardHeader>
-                    <CardTitle className="text-lg">Audit log</CardTitle>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <CardTitle className="text-lg">Audit log</CardTitle>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => loadAuditEntries()}
+                        >
+                          Refresh
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={async () => {
+                            if (!isDesktop()) return;
+                            const data = await TauriClient.exportAuditEntries("json");
+                            const blob = new Blob([data], { type: "application/json" });
+                            const url = URL.createObjectURL(blob);
+                            const link = document.createElement("a");
+                            link.href = url;
+                            link.download = "audit-log.json";
+                            link.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          disabled={!isDesktop() || auditEntries.length === 0}
+                        >
+                          Export JSON
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={async () => {
+                            if (!isDesktop()) return;
+                            const data = await TauriClient.exportAuditEntries("csv");
+                            const blob = new Blob([data], { type: "text/csv" });
+                            const url = URL.createObjectURL(blob);
+                            const link = document.createElement("a");
+                            link.href = url;
+                            link.download = "audit-log.csv";
+                            link.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          disabled={!isDesktop() || auditEntries.length === 0}
+                        >
+                          Export CSV
+                        </Button>
+                      </div>
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <p className="text-sm text-muted-foreground">
-                      Review sensitive actions recorded by the desktop backend.
-                    </p>
-                    <Button
-                      variant="outline"
-                      onClick={() => setShowAuditLog(true)}
-                      disabled={!isDesktop()}
-                    >
-                      Open audit log
-                    </Button>
+                    <div className="grid gap-3 md:grid-cols-[1fr_200px_200px]">
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          placeholder="Search audit entries"
+                          value={auditSearch}
+                          onChange={(e) => setAuditSearch(e.target.value)}
+                          className="pl-9"
+                        />
+                      </div>
+                      <Select value={auditType} onValueChange={setAuditType}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {auditTypeOptions.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option === "all" ? "All types" : option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={auditResource} onValueChange={setAuditResource}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Resource" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {auditResourceOptions.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option === "all" ? "All resources" : option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     {!isDesktop() && (
                       <div className="text-xs text-muted-foreground">
                         Audit log is only available in the desktop app.
+                      </div>
+                    )}
+                    {auditLoading && (
+                      <div className="text-sm text-muted-foreground">Loading audit entries…</div>
+                    )}
+                    {auditError && (
+                      <div className="text-sm text-destructive">{auditError}</div>
+                    )}
+                    {!auditLoading && !auditError && filteredAuditEntries.length === 0 && (
+                      <div className="text-sm text-muted-foreground">
+                        No audit entries match the current filters.
+                      </div>
+                    )}
+                    {!auditLoading && !auditError && filteredAuditEntries.length > 0 && (
+                      <div className="overflow-auto rounded-lg border border-white/10">
+                        <div className="grid grid-cols-[160px_160px_1fr_80px] gap-3 border-b border-white/10 bg-black/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
+                          <div>Timestamp</div>
+                          <div>Operation</div>
+                          <div>Resource</div>
+                          <div>Details</div>
+                        </div>
+                        <div className="divide-y divide-white/10">
+                          {filteredAuditEntries.map((entry, index) => {
+                            const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "unknown";
+                            const operation = typeof entry.operation === "string" ? entry.operation : "operation";
+                            const resource = typeof entry.resource === "string" ? entry.resource : "resource";
+                            return (
+                              <div
+                                key={`${timestamp}-${index}`}
+                                className="grid grid-cols-[160px_160px_1fr_80px] gap-3 px-4 py-3 text-sm"
+                              >
+                                <div className="text-xs text-muted-foreground">
+                                  {timestamp}
+                                </div>
+                                <div className="font-medium">{operation}</div>
+                                <div className="truncate text-muted-foreground">
+                                  {resource}
+                                </div>
+                                <details className="text-xs text-muted-foreground">
+                                  <summary className="cursor-pointer hover:text-orange-200">
+                                    View
+                                  </summary>
+                                  <pre className="mt-2 whitespace-pre-wrap text-xs">
+                                    {JSON.stringify(entry, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </CardContent>
@@ -1712,7 +1889,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </Card>
         )}
       </div>
-      <AuditLogDialog open={showAuditLog} onOpenChange={setShowAuditLog} />
     </div>
   );
 }
