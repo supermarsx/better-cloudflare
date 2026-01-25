@@ -629,94 +629,53 @@ const ok = await invoke<boolean>('verify_token', {
 - **Purpose**: Generate WebAuthn registration options
 - **Parameters**:
   - `id: string` - User/key identifier
-  - `display_name: string` - Device name for credential
-- **Returns**: `PasskeyRegisterOptions`
-  ```typescript
-  interface PasskeyRegisterOptions {
-    challenge: string;
-    rp: { id: string; name: string };
-    user: { id: string; name: string; displayName: string };
-    pubKeyCredParams: Array<{type: string; alg: number}>;
-    authenticatorSelection: {
-      authenticatorAttachment: 'platform';
-      requireResidentKey: boolean;
-      userVerification: 'required';
-    };
-    timeout: number;
-  }
-  ```
+- **Returns**: `{ challenge: string; options: Record<string, unknown> }`
 
 #### `register_passkey`
-- **Purpose**: Verify and store passkey credential
+- **Purpose**: Store passkey credential
 - **Parameters**:
   - `id: string` - User/key identifier
-  - `credential: PublicKeyCredential` - Registration response from WebAuthn API
-  - `device_name: string` - User-friendly device name
-- **Returns**: `{ success: boolean; credential_id: string }`
+  - `attestation: PublicKeyCredential` - Registration response from WebAuthn API
+- **Returns**: `void`
 - **Storage**: Credential stored in vault with metadata
 
-#### `passkey_get_auth_options`
+#### `get_passkey_auth_options`
 - **Purpose**: Generate WebAuthn authentication options
 - **Parameters**:
   - `id: string` - User/key identifier
-- **Returns**: `PasskeyAuthOptions`
-  ```typescript
-  interface PasskeyAuthOptions {
-    challenge: string;
-    allowCredentials: Array<{
-      type: 'public-key';
-      id: string;
-    }>;
-    timeout: number;
-    userVerification: 'required';
-  }
-  ```
+- **Returns**: `{ challenge: string; options: Record<string, unknown> }`
 
-#### `passkey_authenticate`
+#### `authenticate_passkey`
 - **Purpose**: Verify passkey authentication assertion
 - **Parameters**:
   - `id: string` - User/key identifier
-  - `credential: PublicKeyCredential` - Authentication response
-- **Returns**: `{ success: boolean; secret: string }` - Returns decrypted secret on success
-- **Validation**: Verifies signature, updates counter, checks for replay attacks
+  - `assertion: PublicKeyCredential` - Authentication response
+- **Returns**: `{ success: boolean; token?: string }`
 
-#### `passkey_list`
+#### `list_passkeys`
 - **Purpose**: List registered passkey credentials
 - **Parameters**:
   - `id: string` - User/key identifier
-- **Returns**: `PasskeyCredential[]`
+- **Returns**: `Array<{ id: string; counter?: number }>`
   ```typescript
-  interface PasskeyCredential {
+  interface PasskeyCredentialSummary {
     id: string;
-    device_name: string;
-    created_at: string;
-    last_used?: string;
-    counter: number;
+    counter?: number;
   }
   ```
 
-#### `passkey_delete`
+#### `delete_passkey`
 - **Purpose**: Remove passkey credential
 - **Parameters**:
   - `id: string` - User/key identifier
-  - `credential_id: string` - Credential to remove
-- **Returns**: `{ success: boolean }`
-
-#### `passkey_rename`
-- **Purpose**: Update passkey device name
-- **Parameters**:
-  - `id: string` - User/key identifier
-  - `credential_id: string` - Credential to rename
-  - `new_name: string` - New device name
-- **Returns**: `{ success: boolean }`
+  - `credentialId: string` - Credential to remove
+- **Returns**: `void`
 
 ### Audit & Logging Commands
 
-#### `get_audit_logs`
+#### `get_audit_entries`
 - **Purpose**: Retrieve audit log entries
-- **Parameters**:
-  - `limit: number` - Max entries to return (default: 100)
-  - `offset: number` - Pagination offset (default: 0)
+- **Parameters**: none
 - **Returns**: `AuditLog[]`
   ```typescript
   interface AuditLog {
@@ -734,9 +693,6 @@ const ok = await invoke<boolean>('verify_token', {
   - Passkey registrations
   - Encryption setting changes
 
-#### `clear_audit_logs`
-- **Purpose**: Clear all audit logs
-- **Returns**: `{ success: boolean }`
 
 ### Error Handling
 
