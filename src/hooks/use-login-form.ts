@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { storageManager } from "@/lib/storage";
-import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { storageBackend } from "@/lib/storage-util";
 import { useTranslation } from "react-i18next";
 import { cryptoManager } from "@/lib/crypto";
@@ -21,10 +20,20 @@ export function useLoginForm(
 ) {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { verifyToken } = useCloudflareAPI();
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const backend = storageBackend();
   const desktop = isDesktop();
+  const verifyToken = async (
+    key: string,
+    email?: string,
+    signal?: AbortSignal,
+  ) => {
+    if (!key) {
+      throw new Error("API key not provided");
+    }
+    const client = new ServerClient(key, undefined, email);
+    await client.verifyToken(signal);
+  };
 
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
