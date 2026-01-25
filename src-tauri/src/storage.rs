@@ -218,6 +218,42 @@ impl Storage {
         self.delete_secret(&key).await
     }
 
+    // Passkey storage
+    pub async fn get_passkeys(&self, id: &str) -> Result<Vec<Value>, StorageError> {
+        let key = format!("passkeys:{}", id);
+        match self.get_secret(&key).await {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| StorageError::Error(e.to_string())),
+            Err(StorageError::NotFound) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn store_passkey(&self, id: &str, credential: Value) -> Result<(), StorageError> {
+        let mut list = self.get_passkeys(id).await?;
+        list.push(credential);
+        let key = format!("passkeys:{}", id);
+        let json = serde_json::to_string(&list)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret(&key, &json).await
+    }
+
+    pub async fn delete_passkey(&self, id: &str, credential_id: &str) -> Result<(), StorageError> {
+        let mut list = self.get_passkeys(id).await?;
+        list.retain(|c| {
+            c.get("id").and_then(|v| v.as_str()) != Some(credential_id)
+                && c.get("rawId").and_then(|v| v.as_str()) != Some(credential_id)
+        });
+        let key = format!("passkeys:{}", id);
+        if list.is_empty() {
+            self.delete_secret(&key).await
+        } else {
+            let json = serde_json::to_string(&list)
+                .map_err(|e| StorageError::Error(e.to_string()))?;
+            self.store_secret(&key, &json).await
+        }
+    }
+
     // Audit log
     pub async fn get_audit_entries(&self) -> Result<Vec<Value>, StorageError> {
         match self.get_secret("audit_log").await {
@@ -402,5 +438,28 @@ mod tests {
         assert_eq!(loaded.iterations, 42);
         assert_eq!(loaded.key_length, 16);
         assert_eq!(loaded.algorithm, "AES-256-GCM");
+    }
+
+    #[tokio::test]
+    async fn passkey_storage_roundtrip() {
+        let storage = Storage::new(false);
+        let id = "key_passkey";
+        storage
+            .store_passkey(id, json!({"id":"cred_1"}))
+            .await
+            .expect("store passkey");
+        storage
+            .store_passkey(id, json!({"id":"cred_2"}))
+            .await
+            .expect("store passkey 2");
+        let list = storage.get_passkeys(id).await.expect("get passkeys");
+        assert_eq!(list.len(), 2);
+        storage
+            .delete_passkey(id, "cred_1")
+            .await
+            .expect("delete passkey");
+        let list = storage.get_passkeys(id).await.expect("get passkeys after delete");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "cred_2");
     }
 }

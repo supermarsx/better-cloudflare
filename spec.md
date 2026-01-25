@@ -37,7 +37,7 @@ The application stores Cloudflare credentials locally in the operating system's 
 
 **Key Architecture Features:**
 - **OS Keychain Integration**: Credentials are stored in the operating system's native secure storage using the `keyring` Rust crate (macOS Keychain, Windows Credential Manager, Linux Secret Service). Fallback to encrypted in-memory storage when OS keychain is unavailable.
-- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, attestation verification, and credential storage in the vault.
+- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, attestation verification, and credential storage in secure storage.
   - Multiple credentials: Supports multiple passkey credentials per stored key with device naming and management UI
   - Platform integration: Uses native platform authenticators (Touch ID, Windows Hello, etc.)
   - Registration/Authentication: Rust backend handles WebAuthn challenge generation and verification
@@ -119,9 +119,9 @@ Better Cloudflare uses a **native desktop application architecture** powered by 
 
 ### IPC Communication Layer
 
-- **Tauri Commands**: 50+ registered commands for all backend operations
+- **Tauri Commands**: Registered commands in `src-tauri/src/main.rs` cover all backend operations
 - **Type Safety**: TypeScript definitions match Rust command signatures
-- **Security**: Commands are explicitly allowed in `tauri.conf.json`
+- **Security**: Commands are registered in Rust and exposed through Tauri IPC
 - **Error Handling**: Rust errors are serialized and propagated to frontend
 
 ### Backend Layer (`src-tauri/src/`)
@@ -232,7 +232,7 @@ rustc --version  # Verify installation
 - App identifier: `com.better-cloudflare.app`
 - Window size: 1280x800 (minimum: 800x600)
 - CSP: Strict content security policy
-- Allowed commands: 50+ IPC commands explicitly whitelisted
+- IPC commands: registered in `src-tauri/src/main.rs` (no separate allowlist in config)
 
 **Cargo Dependencies** (`src-tauri/Cargo.toml`):
 ```toml
@@ -623,6 +623,40 @@ const ok = await invoke<boolean>('verify_token', {
   }
   ```
 
+#### `export_dns_records`
+- **Purpose**: Export DNS records for a zone
+- **Parameters**:
+  - `apiKey: string`
+  - `email: string | null`
+  - `zoneId: string`
+  - `format: "json" | "csv" | "bind"`
+  - `page?: number`
+  - `per_page?: number`
+- **Returns**: `string` (formatted export payload)
+
+### SPF Commands
+
+#### `simulate_spf`
+- **Purpose**: Evaluate SPF result for a domain and IP
+- **Parameters**:
+  - `domain: string`
+  - `ip: string`
+- **Returns**: `{ result: string; reasons: string[]; lookups: number }`
+
+#### `spf_graph`
+- **Purpose**: Build SPF include/redirect graph
+- **Parameters**:
+  - `domain: string`
+- **Returns**: `SPFGraph`
+  ```typescript
+  interface SPFGraph {
+    nodes: Array<{ domain: string; txt?: string | null }>;
+    edges: Array<{ from: string; to: string; edge_type: string }>;
+    lookups: number;
+    cyclic: boolean;
+  }
+  ```
+
 ### Passkey (WebAuthn) Commands
 
 #### `get_passkey_registration_options`
@@ -637,7 +671,7 @@ const ok = await invoke<boolean>('verify_token', {
   - `id: string` - User/key identifier
   - `attestation: PublicKeyCredential` - Registration response from WebAuthn API
 - **Returns**: `void`
-- **Storage**: Credential stored in vault with metadata
+- **Storage**: In-memory credential store (non-persistent) in Rust backend
 
 #### `get_passkey_auth_options`
 - **Purpose**: Generate WebAuthn authentication options
@@ -680,18 +714,17 @@ const ok = await invoke<boolean>('verify_token', {
   ```typescript
   interface AuditLog {
     timestamp: string;
-    event_type: string;
-    user_id: string;
-    details: string;
-    success: boolean;
+    operation: string;
+    resource?: string;
+    [key: string]: unknown;
   }
   ```
 - **Logged Events**:
-  - Login attempts (password/passkey)
-  - Key additions/deletions
-  - DNS record modifications
-  - Passkey registrations
-  - Encryption setting changes
+- Key additions/updates/deletions
+- Vault store/delete operations
+- DNS record create/update/delete/bulk/export
+- Passkey register/auth/delete
+- Encryption setting changes
 
 
 ### Error Handling
@@ -812,7 +845,8 @@ interface ApiKeyMetadata {
   - Value: decrypted API token
 
 - **Passkey Credentials**: Stored in-memory in the current implementation
-  - Persistence is a follow-up task
+  - Key: `passkeys:{id}`
+  - Value: JSON array of WebAuthn credential metadata (stored in keychain)
 
 **Fallback Mechanism**:
 If OS keychain is unavailable or user denies access:
@@ -1032,7 +1066,7 @@ Users can update encryption settings for stored keys:
 **Passkey Storage:**
 1. WebAuthn credential generated on device
 2. Private key stored in platform authenticator (TPM/Secure Enclave)
-3. Public key + metadata stored in backend memory (persistence TBD)
+3. Public key + metadata stored in OS keychain (fallback to in-memory when unavailable)
 4. Challenge-response prevents credential extraction
 5. Counter prevents replay attacks
 

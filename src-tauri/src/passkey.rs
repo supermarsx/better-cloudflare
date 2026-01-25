@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use thiserror::Error;
+use crate::storage::Storage;
 
 #[derive(Error, Debug)]
 pub enum PasskeyError {
@@ -14,19 +15,26 @@ pub enum PasskeyError {
 
 pub struct PasskeyManager {
     challenges: Mutex<HashMap<String, String>>,
-    credentials: Mutex<HashMap<String, Vec<Value>>>,
+    storage: Storage,
 }
 
 impl Default for PasskeyManager {
     fn default() -> Self {
         Self {
             challenges: Mutex::new(HashMap::new()),
-            credentials: Mutex::new(HashMap::new()),
+            storage: Storage::new(true),
         }
     }
 }
 
 impl PasskeyManager {
+    pub fn new(storage: Storage) -> Self {
+        Self {
+            challenges: Mutex::new(HashMap::new()),
+            storage,
+        }
+    }
+
     fn extract_client_challenge(payload: &Value) -> Result<String, PasskeyError> {
         let client_data_b64 = payload
             .get("response")
@@ -96,11 +104,10 @@ impl PasskeyManager {
         if challenge != expected {
             return Err(PasskeyError::Error("Challenge mismatch".to_string()));
         }
-        let mut credentials = self.credentials.lock()
+        self.storage
+            .store_passkey(id, attestation)
+            .await
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
-
-        let cred_list = credentials.entry(id.to_string()).or_insert_with(Vec::new);
-        cred_list.push(attestation);
 
         // Clear the challenge
         let mut challenges = self.challenges.lock()
@@ -120,12 +127,11 @@ impl PasskeyManager {
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
         challenges.insert(id.to_string(), challenge.clone());
 
-        let credentials = self.credentials.lock()
-            .map_err(|e| PasskeyError::Error(e.to_string()))?;
-        let allow_credentials = credentials
-            .get(id)
-            .cloned()
-            .unwrap_or_default()
+        let allow_credentials = self
+            .storage
+            .get_passkeys(id)
+            .await
+            .map_err(|e| PasskeyError::Error(e.to_string()))?
             .into_iter()
             .filter_map(|c| {
                 let cred_id = c["id"].as_str().map(|s| s.to_string())
@@ -158,22 +164,22 @@ impl PasskeyManager {
         if challenge != expected {
             return Err(PasskeyError::Error("Challenge mismatch".to_string()));
         }
-        let credentials = self.credentials.lock()
+        let list = self
+            .storage
+            .get_passkeys(id)
+            .await
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
-
-        if credentials.contains_key(id) {
-            if let Some(list) = credentials.get(id) {
-                let assertion_id = _assertion.get("rawId")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| _assertion.get("id").and_then(|v| v.as_str()));
-                if let Some(assertion_id) = assertion_id {
-                    let matched = list.iter().any(|c| {
-                        c.get("rawId").and_then(|v| v.as_str()) == Some(assertion_id)
-                            || c.get("id").and_then(|v| v.as_str()) == Some(assertion_id)
-                    });
-                    if !matched {
-                        return Err(PasskeyError::NotFound);
-                    }
+        if !list.is_empty() {
+            let assertion_id = _assertion.get("rawId")
+                .and_then(|v| v.as_str())
+                .or_else(|| _assertion.get("id").and_then(|v| v.as_str()));
+            if let Some(assertion_id) = assertion_id {
+                let matched = list.iter().any(|c| {
+                    c.get("rawId").and_then(|v| v.as_str()) == Some(assertion_id)
+                        || c.get("id").and_then(|v| v.as_str()) == Some(assertion_id)
+                });
+                if !matched {
+                    return Err(PasskeyError::NotFound);
                 }
             }
             // Generate a token for vault access
@@ -194,12 +200,13 @@ impl PasskeyManager {
     }
 
     pub async fn list_passkeys(&self, id: &str) -> Result<Vec<Value>, PasskeyError> {
-        let credentials = self.credentials.lock()
+        let list = self
+            .storage
+            .get_passkeys(id)
+            .await
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
 
-        Ok(credentials.get(id)
-            .cloned()
-            .unwrap_or_default()
+        Ok(list
             .into_iter()
             .enumerate()
             .map(|(i, c)| {
@@ -212,23 +219,17 @@ impl PasskeyManager {
     }
 
     pub async fn delete_passkey(&self, id: &str, credential_id: &str) -> Result<(), PasskeyError> {
-        let mut credentials = self.credentials.lock()
-            .map_err(|e| PasskeyError::Error(e.to_string()))?;
-
-        if let Some(cred_list) = credentials.get_mut(id) {
-            cred_list.retain(|c| {
-                c["id"].as_str() != Some(credential_id)
-                    && c["rawId"].as_str() != Some(credential_id)
-            });
-        }
-
-        Ok(())
+        self.storage
+            .delete_passkey(id, credential_id)
+            .await
+            .map_err(|e| PasskeyError::Error(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::Storage;
 
     fn encode_client_data(challenge: &str) -> String {
         let payload = serde_json::json!({ "challenge": challenge });
@@ -237,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn registration_and_authentication_flow() {
-        let mgr = PasskeyManager::default();
+        let mgr = PasskeyManager::new(Storage::new(false));
         let id = "key_1";
 
         let options = mgr.get_registration_options(id).await.expect("options");
@@ -286,7 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_mismatch_rejected() {
-        let mgr = PasskeyManager::default();
+        let mgr = PasskeyManager::new(Storage::new(false));
         let id = "key_2";
         let options = mgr.get_registration_options(id).await.expect("options");
         let challenge = options
@@ -307,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_and_delete_passkeys() {
-        let mgr = PasskeyManager::default();
+        let mgr = PasskeyManager::new(Storage::new(false));
         let id = "key_3";
         let options = mgr.get_registration_options(id).await.expect("options");
         let challenge = options

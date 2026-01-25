@@ -21,6 +21,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "react-i18next";
 import { storageManager } from "@/lib/storage";
 import { LogOut } from "lucide-react";
+import { isDesktop } from "@/lib/environment";
+import { AuditLogDialog } from "@/components/audit/AuditLogDialog";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
@@ -81,6 +83,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
+  const [showAuditLog, setShowAuditLog] = useState(false);
 
   const { toast } = useToast();
   const {
@@ -497,6 +500,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
               </Button>
+              {isDesktop() && (
+                <Button
+                  onClick={() => setShowAuditLog(true)}
+                  variant="outline"
+                  className="ml-2"
+                >
+                  Audit Log
+                </Button>
+              )}
             </div>
           </CardHeader>
           <CardContent>
@@ -710,6 +722,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </Card>
         )}
       </div>
+      <AuditLogDialog open={showAuditLog} onOpenChange={setShowAuditLog} />
     </div>
   );
 }

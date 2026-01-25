@@ -103,6 +103,9 @@
   - [ ] Test error conditions
   - [ ] Add integration tests for command handlers
 
+### Storage & Encryption Parity
+- [x] **Persist encryption settings in Rust storage** (Tauri)
+
 - [ ] **Security audit**
   - [ ] Review all crypto implementations
   - [ ] Audit password handling (no logging, secure memory)
@@ -122,9 +125,14 @@
 - [ ] **Implement audit logging** (`src-tauri/src/audit.rs`)
   - [ ] Design audit log format (JSON lines?)
   - [ ] Log all sensitive operations (login, key changes, DNS modifications)
+  - [x] Log key/vault operations to local audit storage
+  - [x] Log DNS, passkey, encryption operations to local audit storage
   - [ ] Add rotation policy for audit logs
-  - [ ] Implement log viewing UI
+  - [x] Implement log viewing UI
   - [ ] Add export functionality
+
+### Passkey Storage
+- [x] **Persist passkey credentials in secure storage** (keychain with memory fallback)
 
 - [ ] **Add backup/restore functionality**
   - [ ] Export all vaults to encrypted file

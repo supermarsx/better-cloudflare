@@ -93,6 +93,9 @@ export function useLoginForm(
             label?: string;
             email?: string | null;
             encrypted_key?: string;
+            iterations?: number;
+            key_length?: number;
+            algorithm?: string;
           };
           return {
             id: String(item.id ?? ""),
@@ -100,9 +103,9 @@ export function useLoginForm(
             encryptedKey: item.encrypted_key ?? "",
             salt: "",
             iv: "",
-            iterations: config.iterations,
-            keyLength: config.keyLength,
-            algorithm: config.algorithm,
+            iterations: item.iterations ?? config.iterations,
+            keyLength: item.key_length ?? config.keyLength,
+            algorithm: item.algorithm ?? config.algorithm,
             createdAt: new Date().toISOString(),
             email: item.email ?? undefined,
           } as ApiKey;
@@ -216,6 +219,9 @@ export function useLoginForm(
               label?: string;
               email?: string | null;
               encrypted_key?: string;
+              iterations?: number;
+              key_length?: number;
+              algorithm?: string;
             };
             return {
               id: String(item.id ?? ""),
@@ -223,9 +229,9 @@ export function useLoginForm(
               encryptedKey: item.encrypted_key ?? "",
               salt: "",
               iv: "",
-              iterations: config.iterations,
-              keyLength: config.keyLength,
-              algorithm: config.algorithm,
+              iterations: item.iterations ?? config.iterations,
+              keyLength: item.key_length ?? config.keyLength,
+              algorithm: item.algorithm ?? config.algorithm,
               createdAt: new Date().toISOString(),
               email: item.email ?? undefined,
             } as ApiKey;
@@ -501,6 +507,9 @@ export function useLoginForm(
               label?: string;
               email?: string | null;
               encrypted_key?: string;
+              iterations?: number;
+              key_length?: number;
+              algorithm?: string;
             };
             return {
               id: String(item.id ?? ""),
@@ -508,9 +517,9 @@ export function useLoginForm(
               encryptedKey: item.encrypted_key ?? "",
               salt: "",
               iv: "",
-              iterations: config.iterations,
-              keyLength: config.keyLength,
-              algorithm: config.algorithm,
+              iterations: item.iterations ?? config.iterations,
+              keyLength: item.key_length ?? config.keyLength,
+              algorithm: item.algorithm ?? config.algorithm,
               createdAt: new Date().toISOString(),
               email: item.email ?? undefined,
             } as ApiKey;
@@ -551,6 +560,9 @@ export function useLoginForm(
             label?: string;
             email?: string | null;
             encrypted_key?: string;
+            iterations?: number;
+            key_length?: number;
+            algorithm?: string;
           };
           return {
             id: String(item.id ?? ""),
@@ -558,9 +570,9 @@ export function useLoginForm(
             encryptedKey: item.encrypted_key ?? "",
             salt: "",
             iv: "",
-            iterations: config.iterations,
-            keyLength: config.keyLength,
-            algorithm: config.algorithm,
+            iterations: item.iterations ?? config.iterations,
+            keyLength: item.key_length ?? config.keyLength,
+            algorithm: item.algorithm ?? config.algorithm,
             createdAt: new Date().toISOString(),
             email: item.email ?? undefined,
           } as ApiKey;

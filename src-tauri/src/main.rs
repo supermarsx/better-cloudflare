@@ -10,10 +10,14 @@ mod audit;
 mod spf;
 
 use tauri::Manager;
+use crate::storage::Storage;
+use crate::passkey::PasskeyManager;
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(Storage::default())
+        .manage(PasskeyManager::default())
         .invoke_handler(tauri::generate_handler![
             // Authentication & Key Management
             commands::verify_token,

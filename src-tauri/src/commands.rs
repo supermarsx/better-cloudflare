@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use chrono::Utc;
 use tauri::State;
 use crate::storage::Storage;
 use crate::cloudflare_api::CloudflareClient;
@@ -6,15 +7,39 @@ use crate::crypto::{CryptoManager, EncryptionConfig};
 use crate::passkey::PasskeyManager;
 use crate::spf;
 
+async fn log_audit(storage: &Storage, entry: serde_json::Value) {
+    let mut entry = entry;
+    if let serde_json::Value::Object(ref mut map) = entry {
+        map.entry("timestamp".to_string())
+            .or_insert_with(|| serde_json::Value::String(Utc::now().to_rfc3339()));
+    }
+    let _ = storage.add_audit_entry(entry).await;
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: String,
     pub label: String,
     pub email: Option<String>,
     pub encrypted_key: String,
+    #[serde(default = "default_iterations")]
     pub iterations: u32,
+    #[serde(default = "default_key_length")]
     pub key_length: usize,
+    #[serde(default = "default_algorithm")]
     pub algorithm: String,
+}
+
+fn default_iterations() -> u32 {
+    EncryptionConfig::default().iterations
+}
+
+fn default_key_length() -> usize {
+    EncryptionConfig::default().key_length
+}
+
+fn default_algorithm() -> String {
+    EncryptionConfig::default().algorithm
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,8 +108,21 @@ pub async fn add_api_key(
     let encrypted = crypto.encrypt(&api_key, &password)
         .map_err(|e| e.to_string())?;
     
-    storage.add_api_key(label, encrypted, email, config).await
-        .map_err(|e| e.to_string())
+    let id = storage
+        .add_api_key(label.clone(), encrypted, email.clone(), config)
+        .await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "api_key:add",
+            "resource": id,
+            "label": label,
+            "email": email,
+        }),
+    )
+    .await;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -127,15 +165,35 @@ pub async fn update_api_key(
         algorithm = Some(updated_config.algorithm);
     }
     storage
-        .update_api_key(id, label, email, encrypted_key, iterations, key_length, algorithm)
+        .update_api_key(id.clone(), label.clone(), email.clone(), encrypted_key, iterations, key_length, algorithm)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "api_key:update",
+            "resource": id,
+            "label": label,
+            "email": email,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_api_key(storage: State<'_, Storage>, id: String) -> Result<(), String> {
-    storage.delete_api_key(id).await
-        .map_err(|e| e.to_string())
+    storage.delete_api_key(id.clone()).await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "api_key:delete",
+            "resource": id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -178,18 +236,32 @@ pub async fn get_dns_records(
 
 #[tauri::command]
 pub async fn create_dns_record(
+    storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
     zone_id: String,
     record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.create_dns_record(&zone_id, record).await
-        .map_err(|e| e.to_string())
+    let created = client.create_dns_record(&zone_id, record).await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dns:create",
+            "resource": created.id.clone().unwrap_or_default(),
+            "zone_id": zone_id,
+            "record_type": created.r#type,
+            "record_name": created.name,
+        }),
+    )
+    .await;
+    Ok(created)
 }
 
 #[tauri::command]
 pub async fn update_dns_record(
+    storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
     zone_id: String,
@@ -197,12 +269,25 @@ pub async fn update_dns_record(
     record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.update_dns_record(&zone_id, &record_id, record).await
-        .map_err(|e| e.to_string())
+    let updated = client.update_dns_record(&zone_id, &record_id, record).await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dns:update",
+            "resource": record_id,
+            "zone_id": zone_id,
+            "record_type": updated.r#type,
+            "record_name": updated.name,
+        }),
+    )
+    .await;
+    Ok(updated)
 }
 
 #[tauri::command]
 pub async fn delete_dns_record(
+    storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
     zone_id: String,
@@ -210,11 +295,22 @@ pub async fn delete_dns_record(
 ) -> Result<(), String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client.delete_dns_record(&zone_id, &record_id).await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dns:delete",
+            "resource": record_id,
+            "zone_id": zone_id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn create_bulk_dns_records(
+    storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
     zone_id: String,
@@ -222,14 +318,27 @@ pub async fn create_bulk_dns_records(
     dryrun: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client
+    let result = client
         .create_bulk_dns_records(&zone_id, records, dryrun.unwrap_or(false))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dns:bulk_create",
+            "resource": zone_id,
+            "dry_run": dryrun.unwrap_or(false),
+            "created": result.get("created").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
+            "skipped": result.get("skipped").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
+        }),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn export_dns_records(
+    storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
     zone_id: String,
@@ -238,10 +347,22 @@ pub async fn export_dns_records(
     per_page: Option<u32>,
 ) -> Result<String, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client
+    let data = client
         .export_dns_records(&zone_id, &format, page, per_page)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dns:export",
+            "resource": zone_id,
+            "format": format,
+            "page": page,
+            "per_page": per_page,
+        }),
+    )
+    .await;
+    Ok(data)
 }
 
 // Vault Operations
@@ -252,7 +373,16 @@ pub async fn store_vault_secret(
     secret: String,
 ) -> Result<(), String> {
     storage.store_vault_secret(&id, &secret).await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "vault:store",
+            "resource": id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -270,7 +400,16 @@ pub async fn delete_vault_secret(
     id: String,
 ) -> Result<(), String> {
     storage.delete_vault_secret(&id).await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "vault:delete",
+            "resource": id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 // Passkey Operations
@@ -285,12 +424,22 @@ pub async fn get_passkey_registration_options(
 
 #[tauri::command]
 pub async fn register_passkey(
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
     attestation: serde_json::Value,
 ) -> Result<(), String> {
     passkey_mgr.register_passkey(&id, attestation).await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "passkey:register",
+            "resource": id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -304,12 +453,24 @@ pub async fn get_passkey_auth_options(
 
 #[tauri::command]
 pub async fn authenticate_passkey(
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
     assertion: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    passkey_mgr.authenticate_passkey(&id, assertion).await
-        .map_err(|e| e.to_string())
+    let result = passkey_mgr.authenticate_passkey(&id, assertion).await
+        .map_err(|e| e.to_string())?;
+    if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        log_audit(
+            &storage,
+            serde_json::json!({
+                "operation": "passkey:authenticate",
+                "resource": id,
+            }),
+        )
+        .await;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -323,12 +484,23 @@ pub async fn list_passkeys(
 
 #[tauri::command]
 pub async fn delete_passkey(
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
     credential_id: String,
 ) -> Result<(), String> {
     passkey_mgr.delete_passkey(&id, &credential_id).await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "passkey:delete",
+            "resource": id,
+            "credential_id": credential_id,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 // Encryption Settings
@@ -351,7 +523,19 @@ pub async fn update_encryption_settings(
     storage
         .set_encryption_settings(&config)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "encryption:update",
+            "resource": "encryption_settings",
+            "iterations": config.iterations,
+            "key_length": config.key_length,
+            "algorithm": config.algorithm,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]

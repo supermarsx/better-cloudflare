@@ -14,7 +14,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:fix": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "preview": "npx serve out",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test test/*.test.ts test/*.test.tsx",
     "test:e2e": "playwright test",
     "migrate:vault-to-sqlite": "tsx ./scripts/migrate-vault-to-sqlite.ts",
     "clean": "rm -rf ./dist && find ./src -name '*.js' -delete",
