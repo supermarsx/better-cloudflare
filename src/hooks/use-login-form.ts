@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import { cryptoManager } from "@/lib/crypto";
 import { ServerClient } from "@/lib/server-client";
 import type { ApiKey } from "@/types/dns";
+import { isDesktop } from "@/lib/environment";
+import { TauriClient } from "@/lib/tauri-client";
 import {
   serializeAuthenticationCredential,
   serializeRegistrationCredential,
@@ -20,8 +22,9 @@ export function useLoginForm(
   const { t } = useTranslation();
   const { toast } = useToast();
   const { verifyToken } = useCloudflareAPI();
-  const [apiKeys, setApiKeys] = useState(storageManager.getApiKeys());
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const backend = storageBackend();
+  const desktop = isDesktop();
 
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
@@ -63,9 +66,57 @@ export function useLoginForm(
   }, [backend, toast, t]);
 
   useEffect(() => {
+    if (desktop) {
+      TauriClient.getEncryptionSettings()
+        .then((settings) => {
+          if (settings && typeof settings === "object") {
+            setEncryptionSettings(settings as typeof encryptionSettings);
+          }
+        })
+        .catch(() => {
+          // Keep default config if Tauri settings are unavailable.
+        });
+      return;
+    }
     cryptoManager.reloadConfig();
     setEncryptionSettings(cryptoManager.getConfig());
-  }, []);
+  }, [desktop]);
+
+  useEffect(() => {
+    const loadKeys = async () => {
+      if (desktop) {
+        const config = cryptoManager.getConfig();
+        const keys = await TauriClient.getApiKeys();
+        const mapped = (Array.isArray(keys) ? keys : []).map((k) => {
+          const item = k as {
+            id?: string;
+            label?: string;
+            email?: string | null;
+            encrypted_key?: string;
+          };
+          return {
+            id: String(item.id ?? ""),
+            label: String(item.label ?? item.id ?? ""),
+            encryptedKey: item.encrypted_key ?? "",
+            salt: "",
+            iv: "",
+            iterations: config.iterations,
+            keyLength: config.keyLength,
+            algorithm: config.algorithm,
+            createdAt: new Date().toISOString(),
+            email: item.email ?? undefined,
+          } as ApiKey;
+        });
+        setApiKeys(mapped);
+        return;
+      }
+      setApiKeys(storageManager.getApiKeys());
+    };
+    loadKeys().catch((err) => {
+      console.error("Failed to load API keys:", err);
+      setApiKeys([]);
+    });
+  }, [desktop]);
 
   const handleLogin = async () => {
     if (!selectedKeyId || !password) {
@@ -79,12 +130,14 @@ export function useLoginForm(
 
     setIsLoading(true);
     try {
-      const decrypted = await storageManager.getDecryptedApiKey(
-        selectedKeyId,
-        password,
-      );
-      const decryptedKey = decrypted?.key;
-      const email = decrypted?.email;
+      const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+      const decrypted = desktop
+        ? await TauriClient.decryptApiKey(selectedKeyId, password)
+        : await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey =
+        typeof decrypted === "string" ? decrypted : decrypted?.key;
+      const email =
+        typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
       if (!decryptedKey) {
         toast({
           title: "Error",
@@ -147,13 +200,46 @@ export function useLoginForm(
         return;
       }
 
-      await storageManager.addApiKey(
-        newKeyLabel,
-        newApiKey,
-        newPassword,
-        newEmail || undefined,
-      );
-      setApiKeys(storageManager.getApiKeys());
+      if (desktop) {
+        await TauriClient.addApiKey(
+          newKeyLabel,
+          newApiKey,
+          newEmail || undefined,
+          newPassword,
+        );
+        const keys = await TauriClient.getApiKeys();
+        const config = cryptoManager.getConfig();
+        setApiKeys(
+          (Array.isArray(keys) ? keys : []).map((k) => {
+            const item = k as {
+              id?: string;
+              label?: string;
+              email?: string | null;
+              encrypted_key?: string;
+            };
+            return {
+              id: String(item.id ?? ""),
+              label: String(item.label ?? item.id ?? ""),
+              encryptedKey: item.encrypted_key ?? "",
+              salt: "",
+              iv: "",
+              iterations: config.iterations,
+              keyLength: config.keyLength,
+              algorithm: config.algorithm,
+              createdAt: new Date().toISOString(),
+              email: item.email ?? undefined,
+            } as ApiKey;
+          }),
+        );
+      } else {
+        await storageManager.addApiKey(
+          newKeyLabel,
+          newApiKey,
+          newPassword,
+          newEmail || undefined,
+        );
+        setApiKeys(storageManager.getApiKeys());
+      }
       setNewKeyLabel("");
       setNewApiKey("");
       setNewEmail("");
@@ -201,11 +287,15 @@ export function useLoginForm(
     });
 
     try {
-      const decrypted = await storageManager.getDecryptedApiKey(
-        selectedKeyId,
-        password,
-      );
-      if (!decrypted?.key) {
+      const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+      const decrypted = desktop
+        ? await TauriClient.decryptApiKey(selectedKeyId, password)
+        : await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey =
+        typeof decrypted === "string" ? decrypted : decrypted?.key;
+      const decryptedEmail =
+        typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
+      if (!decryptedKey) {
         toast({
           title: "Error",
           description: "Invalid password or corrupted key",
@@ -215,14 +305,18 @@ export function useLoginForm(
       }
 
       try {
-        const sc = new ServerClient(decrypted.key, undefined, decrypted.email);
-        await sc.storeVaultSecret(selectedKeyId, decrypted.key);
+        const sc = new ServerClient(
+          decryptedKey,
+          undefined,
+          decryptedEmail,
+        );
+        await sc.storeVaultSecret(selectedKeyId, decryptedKey);
       } catch (err) {
         console.warn("Failed to store key to OS vault:", err);
         // Don't show toast for vault failures as it's optional
       }
       
-      const sc2 = new ServerClient(decrypted.key, undefined, decrypted.email);
+      const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
       const registrationOptions =
         (options as { options?: PublicKeyCredentialCreationOptions }).options ??
@@ -390,13 +484,47 @@ export function useLoginForm(
   const handleUpdateKey = async () => {
     if (!editingKeyId) return;
     try {
-      await storageManager.updateApiKey(editingKeyId, {
-        label: editLabel,
-        email: editEmail || undefined,
-        currentPassword: currentPassword || undefined,
-        newPassword: editPassword || undefined,
-      });
-      setApiKeys(storageManager.getApiKeys());
+      if (desktop) {
+        await TauriClient.updateApiKey(
+          editingKeyId,
+          editLabel,
+          editEmail || undefined,
+          currentPassword || undefined,
+          editPassword || undefined,
+        );
+        const keys = await TauriClient.getApiKeys();
+        const config = cryptoManager.getConfig();
+        setApiKeys(
+          (Array.isArray(keys) ? keys : []).map((k) => {
+            const item = k as {
+              id?: string;
+              label?: string;
+              email?: string | null;
+              encrypted_key?: string;
+            };
+            return {
+              id: String(item.id ?? ""),
+              label: String(item.label ?? item.id ?? ""),
+              encryptedKey: item.encrypted_key ?? "",
+              salt: "",
+              iv: "",
+              iterations: config.iterations,
+              keyLength: config.keyLength,
+              algorithm: config.algorithm,
+              createdAt: new Date().toISOString(),
+              email: item.email ?? undefined,
+            } as ApiKey;
+          }),
+        );
+      } else {
+        await storageManager.updateApiKey(editingKeyId, {
+          label: editLabel,
+          email: editEmail || undefined,
+          currentPassword: currentPassword || undefined,
+          newPassword: editPassword || undefined,
+        });
+        setApiKeys(storageManager.getApiKeys());
+      }
       setShowEditKey(false);
       toast({
         title: "Success",
@@ -411,9 +539,37 @@ export function useLoginForm(
     }
   };
 
-  const handleDeleteKey = (keyId: string) => {
-    storageManager.removeApiKey(keyId);
-    setApiKeys(storageManager.getApiKeys());
+  const handleDeleteKey = async (keyId: string) => {
+    if (desktop) {
+      await TauriClient.deleteApiKey(keyId);
+      const keys = await TauriClient.getApiKeys();
+      const config = cryptoManager.getConfig();
+      setApiKeys(
+        (Array.isArray(keys) ? keys : []).map((k) => {
+          const item = k as {
+            id?: string;
+            label?: string;
+            email?: string | null;
+            encrypted_key?: string;
+          };
+          return {
+            id: String(item.id ?? ""),
+            label: String(item.label ?? item.id ?? ""),
+            encryptedKey: item.encrypted_key ?? "",
+            salt: "",
+            iv: "",
+            iterations: config.iterations,
+            keyLength: config.keyLength,
+            algorithm: config.algorithm,
+            createdAt: new Date().toISOString(),
+            email: item.email ?? undefined,
+          } as ApiKey;
+        }),
+      );
+    } else {
+      storageManager.removeApiKey(keyId);
+      setApiKeys(storageManager.getApiKeys());
+    }
     if (selectedKeyId === keyId) {
       setSelectedKeyId("");
     }
@@ -425,8 +581,11 @@ export function useLoginForm(
 
   const handleBenchmark = async () => {
     try {
-      const { benchmark } = await import("@/lib/crypto-benchmark");
-      const result = await benchmark(encryptionSettings.iterations);
+      const result = desktop
+        ? await TauriClient.benchmarkEncryption(encryptionSettings.iterations)
+        : await (await import("@/lib/crypto-benchmark")).benchmark(
+            encryptionSettings.iterations,
+          );
       setBenchmarkResult(result);
       toast({
         title: "Benchmark Complete",
@@ -442,7 +601,11 @@ export function useLoginForm(
   };
 
   const handleUpdateSettings = () => {
-    cryptoManager.updateConfig(encryptionSettings);
+    if (desktop) {
+      TauriClient.updateEncryptionSettings(encryptionSettings).catch(() => {});
+    } else {
+      cryptoManager.updateConfig(encryptionSettings);
+    }
     toast({
       title: "Success",
       description: "Encryption settings updated",
@@ -453,11 +616,15 @@ export function useLoginForm(
   const handleManagePasskeys = async () => {
     if (!selectedKeyId || !password) return;
     try {
-      const decrypted = await storageManager.getDecryptedApiKey(
-        selectedKeyId,
-        password,
-      );
-      if (!decrypted?.key) {
+      const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+      const decrypted = desktop
+        ? await TauriClient.decryptApiKey(selectedKeyId, password)
+        : await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey =
+        typeof decrypted === "string" ? decrypted : decrypted?.key;
+      const decryptedEmail =
+        typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
+      if (!decryptedKey) {
         toast({
           title: "Error",
           description: "Invalid password",
@@ -465,8 +632,8 @@ export function useLoginForm(
         });
         return;
       }
-      setPasskeyViewKey(decrypted.key);
-      setPasskeyViewEmail(decrypted.email);
+      setPasskeyViewKey(decryptedKey);
+      setPasskeyViewEmail(decryptedEmail);
       setShowManagePasskeys(true);
     } catch (err) {
       toast({
@@ -490,11 +657,14 @@ export function useLoginForm(
       return;
     }
     try {
-      const dec = await storageManager.getDecryptedApiKey(
-        selectedKeyId,
-        password,
-      );
-      if (!dec?.key) {
+      const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+      const dec = desktop
+        ? await TauriClient.decryptApiKey(selectedKeyId, password)
+        : await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey = typeof dec === "string" ? dec : dec?.key;
+      const decryptedEmail =
+        typeof dec === "string" ? selectedKey?.email : dec?.email;
+      if (!decryptedKey) {
         toast({
           title: t("Error"),
           description: t("Invalid password"),
@@ -502,7 +672,7 @@ export function useLoginForm(
         });
         return;
       }
-      const sc = new ServerClient(dec.key, undefined, dec.email);
+      const sc = new ServerClient(decryptedKey, undefined, decryptedEmail);
       await sc.deleteVaultSecret(selectedKeyId);
       toast({
         title: t("Success"),

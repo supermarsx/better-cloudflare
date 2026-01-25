@@ -161,7 +161,7 @@
 
 #### Authentication Components
 - [ ] **`src/components/auth/LoginForm.tsx`**
-  - [ ] Replace `serverClient` with `TauriClient` or abstraction
+  - [x] Replace `serverClient` with `TauriClient` or abstraction
   - [ ] Test login with password flow
   - [ ] Test login with API key flow
   - [ ] Test error scenarios
@@ -173,7 +173,7 @@
   - [ ] Test device management dialog
 
 - [ ] **`src/components/auth/AddKeyDialog.tsx`**
-  - [ ] Update API key storage calls
+  - [x] Update API key storage calls
   - [ ] Test encryption settings
   - [ ] Verify OS keychain integration
 
