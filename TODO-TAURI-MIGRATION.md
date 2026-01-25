@@ -386,7 +386,7 @@
 - [ ] **Update `spec.md`** ⚠️ **CRITICAL**
   - [ ] Change architecture from web app to desktop app
   - [ ] Replace Express.js backend with Tauri/Rust backend
-  - [ ] Update API section (HTTP REST → Tauri Commands/IPC)
+  - [x] Update API section (HTTP REST → Tauri Commands/IPC)
   - [ ] Update authentication flow diagrams
   - [ ] Update encryption implementation details
   - [ ] Update storage architecture (keyring vs keytar)
