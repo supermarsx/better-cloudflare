@@ -81,6 +81,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [typeFilter, setTypeFilter] = useState<RecordType | "">("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(50);
+  const [listHeight, setListHeight] = useState(600);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
@@ -122,13 +123,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
       try {
         setIsLoading(true);
-        const recordsData = await getDNSRecords(
-          selectedZone,
-          page,
-          perPage,
-          signal,
-        );
-        setRecords(recordsData);
+        if (perPage === 0) {
+          const pageSize = 500;
+          let currentPage = 1;
+          let combined: DNSRecord[] = [];
+          while (true) {
+            const batch = await getDNSRecords(
+              selectedZone,
+              currentPage,
+              pageSize,
+              signal,
+            );
+            combined = combined.concat(batch);
+            if (batch.length < pageSize) break;
+            currentPage += 1;
+          }
+          setRecords(combined);
+        } else {
+          const recordsData = await getDNSRecords(
+            selectedZone,
+            page,
+            perPage,
+            signal,
+          );
+          setRecords(recordsData);
+        }
       } catch (error) {
         toast({
           title: "Error",
@@ -224,6 +243,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     loadRecords,
   ]);
 
+  useEffect(() => {
+    const updateHeight = () => {
+      if (typeof window === "undefined") return;
+      const height = Math.max(420, window.innerHeight - 380);
+      setListHeight(height);
+    };
+    updateHeight();
+    window.addEventListener("resize", updateHeight);
+    return () => window.removeEventListener("resize", updateHeight);
+  }, []);
+
   const handleAddRecord = async () => {
     if (
       !selectedZone ||
@@ -284,6 +314,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       toast({
         title: "Error",
         description: "Failed to update DNS record: " + (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
+    try {
+      const updatedRecord = await updateDNSRecord(
+        selectedZone,
+        record.id,
+        {
+          ...record,
+          proxied,
+        },
+      );
+      setRecords(
+        records.map((r: DNSRecord) => (r.id === record.id ? updatedRecord : r)),
+      );
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to update proxy: " + (error as Error).message,
         variant: "destructive",
       });
     }
@@ -642,7 +694,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
         {/* DNS Records */}
         {selectedZone && (
-          <Card className="border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
+          <Card className="min-h-[70vh] border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
             <CardHeader className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -701,7 +753,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Select>
                 <Select
                   value={String(perPage)}
-                  onValueChange={(v) => setPerPage(Number(v))}
+                  onValueChange={(v) => {
+                    const value = Number(v);
+                    setPerPage(Number.isNaN(value) ? 50 : value);
+                    setPage(1);
+                  }}
                 >
                   <SelectTrigger className="w-32">
                     <SelectValue placeholder="Per page" />
@@ -710,6 +766,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <SelectItem value="25">25</SelectItem>
                     <SelectItem value="50">50</SelectItem>
                     <SelectItem value="100">100</SelectItem>
+                    <SelectItem value="200">200</SelectItem>
+                    <SelectItem value="500">500</SelectItem>
+                    <SelectItem value="0">All</SelectItem>
                   </SelectContent>
                 </Select>
                 <div className="flex items-center gap-2 justify-start md:justify-end">
@@ -757,9 +816,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               ) : (
                 <div className="space-y-2">
                   <VirtualList
-                    height={Math.min(600, filteredRecords.length * 72)}
+                    height={Math.min(listHeight, filteredRecords.length * 88)}
                     itemCount={filteredRecords.length}
-                    itemSize={72}
+                    itemSize={88}
                     width={"100%"}
                   >
                     {({
@@ -781,6 +840,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }
                             onCancel={() => setEditingRecord(null)}
                             onDelete={() => handleDeleteRecord(record.id)}
+                            onToggleProxy={(next) =>
+                              handleToggleProxy(record, next)
+                            }
                           />
                         </div>
                       );

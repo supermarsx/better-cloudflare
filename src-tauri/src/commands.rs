@@ -52,7 +52,7 @@ pub struct Zone {
     pub development_mode: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DNSRecord {
     pub id: Option<String>,
     pub r#type: String,
@@ -65,6 +65,22 @@ pub struct DNSRecord {
     pub zone_name: String,
     pub created_on: String,
     pub modified_on: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DNSRecordPage {
+    pub records: Vec<DNSRecord>,
+    pub page: u32,
+    pub per_page: u32,
+    pub total_count: u32,
+    pub total_pages: u32,
+    pub cached: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CacheControl {
+    pub mode: Option<String>,
+    pub ttl_seconds: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

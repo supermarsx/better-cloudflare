@@ -47,6 +47,8 @@ export interface RecordRowProps {
   onCancel: () => void;
   /** Remove the record. May return a promise. */
   onDelete: () => void | Promise<void>;
+  /** Toggle Cloudflare proxy status for supported types. */
+  onToggleProxy?: (next: boolean) => void | Promise<void>;
 }
 
 /**
@@ -61,6 +63,7 @@ export function RecordRow({
   onSave,
   onCancel,
   onDelete,
+  onToggleProxy,
 }: RecordRowProps) {
   const [editedRecord, setEditedRecord] = useState(record);
   
@@ -772,7 +775,17 @@ export function RecordRow({
   }
 
   return (
-    <div className="group rounded-xl border border-white/10 bg-black/20 p-4 transition-colors hover:bg-black/30">
+    <div
+      className="group rounded-xl border border-white/10 bg-black/20 p-4 transition-colors hover:bg-black/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/60"
+      role="button"
+      tabIndex={0}
+      onClick={() => onEdit()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          onEdit();
+        }
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3">
           <span
@@ -802,11 +815,29 @@ export function RecordRow({
               Proxied
             </span>
           )}
+          {(record.type === "A" ||
+            record.type === "AAAA" ||
+            record.type === "CNAME") && (
+            <div className="flex items-center gap-2 rounded-md border border-white/10 bg-black/30 px-2 py-1">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                Proxy
+              </span>
+              <Switch
+                checked={record.proxied || false}
+                onCheckedChange={(checked: boolean) => {
+                  onToggleProxy?.(checked);
+                }}
+              />
+            </div>
+          )}
           <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             <Button
               size="sm"
               variant="ghost"
-              onClick={onEdit}
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdit();
+              }}
               className="h-8 w-8 p-0"
             >
               <Edit2 className="h-3 w-3" />
@@ -814,7 +845,10 @@ export function RecordRow({
             <Button
               size="sm"
               variant="ghost"
-              onClick={onDelete}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
               className="h-8 w-8 p-0 text-destructive hover:text-destructive"
             >
               <Trash2 className="h-3 w-3" />
