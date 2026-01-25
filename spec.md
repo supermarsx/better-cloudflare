@@ -131,7 +131,7 @@ Better Cloudflare uses a **native desktop application architecture** powered by 
 1. **`main.rs`**: Tauri app entry point, command registration, app lifecycle management
 
 2. **`commands.rs`** (~350 lines): Command handlers for all IPC operations
-   - Authentication: `verify_token`, `vault_*`, `passkey_*`
+   - Authentication: `verify_token`, `store_vault_secret`, `get_vault_secret`, `delete_vault_secret`, `passkey_*`
    - DNS: `get_zones`, `get_dns_records`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
    - Encryption: `get_encryption_settings`, `update_encryption_settings`, `benchmark_encryption`
    - Audit: `get_audit_logs`
@@ -1525,7 +1525,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 beforeEach(() => {
   mockIPC((cmd, args) => {
     if (cmd === 'verify_token') {
-      return Promise.resolve({ success: true });
+      return Promise.resolve(true);
     }
     if (cmd === 'get_zones') {
       return Promise.resolve([
