@@ -47,6 +47,8 @@ test("AuditLogDialog loads entries in desktop mode", async () => {
     const json = JSON.stringify(renderer!.toJSON());
     assert.match(json, /dns:create/);
     assert.match(json, /2026-01-01/);
+    assert.match(json, /Export JSON/);
+    assert.match(json, /Export CSV/);
   } finally {
     TauriClient.getAuditEntries = original;
   }

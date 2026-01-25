@@ -127,10 +127,10 @@
   - [ ] Log all sensitive operations (login, key changes, DNS modifications)
   - [x] Log key/vault operations to local audit storage
   - [x] Log DNS, passkey, encryption operations to local audit storage
-  - [ ] Add audit log export/download (CSV/JSON)
-  - [ ] Add rotation policy for audit logs
+  - [x] Add audit log export/download (CSV/JSON)
+  - [x] Add rotation policy for audit logs (retain last 1000)
   - [x] Implement log viewing UI
-  - [ ] Add export functionality
+  - [x] Add export functionality
 
 ### Passkey Storage
 - [x] **Persist passkey credentials in secure storage** (keychain with memory fallback)
@@ -188,7 +188,7 @@
   - [ ] Test passkey registration in Tauri
   - [ ] Test passkey authentication in Tauri
   - [ ] Verify platform authenticator detection works
-  - [ ] Test device management dialog
+  - [x] Test device management dialog
 
 - [ ] **`src/components/auth/AddKeyDialog.tsx`**
   - [x] Update API key storage calls
@@ -275,7 +275,7 @@
   - [x] Test TauriClient wrapper functions
   - [ ] Test error mapping
   - [x] Test environment detection
-  - [ ] Mock Tauri API in tests
+  - [x] Mock Tauri API in tests
 
 - [ ] **Run test suite**
   ```bash

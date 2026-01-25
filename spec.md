@@ -728,6 +728,8 @@ const ok = await invoke<boolean>('verify_token', {
 - DNS record create/update/delete/bulk/export
 - Passkey register/auth/delete
 - Encryption setting changes
+- **Retention**: Last 1000 entries kept
+- **Export**: UI supports JSON/CSV download from desktop audit log viewer
 
 
 ### Error Handling

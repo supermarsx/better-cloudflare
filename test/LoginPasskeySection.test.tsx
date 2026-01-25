@@ -59,3 +59,21 @@ test("LoginPasskeySection enables actions when key selected", () => {
   assert.equal(buttons[1].props.disabled, false);
   assert.equal(buttons[2].props.disabled, false);
 });
+
+test("LoginPasskeySection shows loading labels", () => {
+  const r = create(
+    React.createElement(LoginPasskeySection, {
+      onRegister: () => {},
+      onUsePasskey: () => {},
+      onManagePasskeys: () => {},
+      selectedKeyId: "key1",
+      password: "pw",
+      registerLoading: true,
+      authLoading: true,
+      hasKeys: true,
+    }),
+  );
+  const json = JSON.stringify(r.toJSON());
+  assert.match(json, /Registering/);
+  assert.match(json, /Authenticating/);
+});
