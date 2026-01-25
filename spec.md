@@ -2446,11 +2446,11 @@ See `CONTRIBUTING.md` for guidelines.
 import { invoke } from '@tauri-apps/api/core';
 
 try {
-  const result = await invoke<{ success: boolean }>('verify_token', {
-    token: 'cf_api_token_here',
+  const ok = await invoke<boolean>('verify_token', {
+    apiKey: 'cf_api_token_here',
     email: null  // null for API token, email for global key
   });
-  console.log('Token valid:', result.success);
+  console.log('Token valid:', ok);
 } catch (error) {
   console.error('Verification failed:', error);
 }
@@ -2459,7 +2459,7 @@ try {
 **List Zones:**
 ```typescript
 const zones = await invoke<Zone[]>('get_zones', {
-  token: currentToken,
+  apiKey: currentToken,
   email: null
 });
 
@@ -2470,9 +2470,9 @@ console.log('Zones:', zones);
 **Get DNS Records:**
 ```typescript
 const records = await invoke<DnsRecord[]>('get_dns_records', {
-  token: currentToken,
+  apiKey: currentToken,
   email: null,
-  zone_id: selectedZoneId
+  zoneId: selectedZoneId
 });
 
 console.log('Records:', records);
@@ -2482,9 +2482,9 @@ console.log('Records:', records);
 **Create DNS Record:**
 ```typescript
 const newRecord = await invoke<DnsRecord>('create_dns_record', {
-  token: currentToken,
+  apiKey: currentToken,
   email: null,
-  zone_id: selectedZoneId,
+  zoneId: selectedZoneId,
   record: {
     type: 'A',
     name: 'test',
@@ -2526,7 +2526,7 @@ const options = await invoke<PasskeyRegisterOptions>(
 
 // Use WebAuthn API to create credential
 const credential = await navigator.credentials.create({
-  publicKey: options
+  publicKey: (options as any).options ?? options
 });
 
 // Register credential with backend
