@@ -12,16 +12,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/Dialog";
-import { Button } from "@/components/ui/Button";
-import { Label } from "@/components/ui/Label";
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/Select";
+} from "@/components/ui/select";
 import { Upload, Download } from "lucide-react";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { ImportPreviewDialog } from "./ImportPreviewDialog";

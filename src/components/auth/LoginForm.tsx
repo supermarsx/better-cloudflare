@@ -2,7 +2,7 @@
  * Login / Key selection UI used to open a session by decrypting a stored
  * API key and verifying it with the server.
  */
-import { Card, CardContent } from "@/components/ui/Card";
+import { Card, CardContent } from "@/components/ui/card";
 import { LoginHeader } from "./login-form/LoginHeader";
 import { LoginKeySelector } from "./login-form/LoginKeySelector";
 import { LoginActionButtons } from "./login-form/LoginActionButtons";

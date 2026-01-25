@@ -5,9 +5,9 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/Dialog";
-import { Label } from "@/components/ui/Label";
-import { Button } from "@/components/ui/Button";
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 import type { DNSRecord } from "@/types/dns";
 
 interface ImportPreviewDialogProps {

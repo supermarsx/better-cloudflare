@@ -89,7 +89,7 @@ impl Storage {
     pub async fn delete_secret(&self, key: &str) -> Result<(), StorageError> {
         if self.use_keyring {
             if let Ok(entry) = self.get_entry(key) {
-                let _ = entry.delete_credential();
+                let _ = entry.delete_password();
             }
         }
 
@@ -278,8 +278,10 @@ impl Storage {
         entries.push(entry);
 
         // Keep only last 1000 entries
-        if entries.len() > 1000 {
-            entries = entries.into_iter().skip(entries.len() - 1000).collect();
+        let len = entries.len();
+        if len > 1000 {
+            let skip = len - 1000;
+            entries = entries.into_iter().skip(skip).collect();
         }
 
         let json = serde_json::to_string(&entries)

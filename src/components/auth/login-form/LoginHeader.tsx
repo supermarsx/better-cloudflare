@@ -1,5 +1,5 @@
 import { Key } from "lucide-react";
-import { CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTranslation } from "react-i18next";
 
 export function LoginHeader() {

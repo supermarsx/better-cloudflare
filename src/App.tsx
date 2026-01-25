@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { DNSManager } from "@/components/dns/DNSManager";
-import { Toaster } from "@/components/ui/Toaster";
+import { Toaster } from "@/components/ui/toaster";
 import { storageManager } from "@/lib/storage";
 import { LanguageSelector } from "@/components/ui/LanguageSelector";
 

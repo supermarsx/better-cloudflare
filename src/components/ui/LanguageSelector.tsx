@@ -14,7 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui/button";
 
 export function LanguageSelector() {
   const { t } = useTranslation();

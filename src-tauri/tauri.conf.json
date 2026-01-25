@@ -44,8 +44,10 @@
     "category": "DeveloperTool",
     "shortDescription": "Cloudflare DNS Manager",
     "longDescription": "A secure desktop application for managing Cloudflare DNS records with passkey support",
-    "deb": {
-      "depends": []
+    "linux": {
+      "deb": {
+        "depends": []
+      }
     },
     "macOS": {
       "frameworks": [],

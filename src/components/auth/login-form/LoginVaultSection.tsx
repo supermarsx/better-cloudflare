@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 
 interface LoginVaultSectionProps {

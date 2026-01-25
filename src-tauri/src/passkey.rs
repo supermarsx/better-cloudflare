@@ -59,9 +59,11 @@ impl PasskeyManager {
             .encode(id.as_bytes());
 
         // Store challenge
-        let mut challenges = self.challenges.lock()
-            .map_err(|e| PasskeyError::Error(e.to_string()))?;
-        challenges.insert(id.to_string(), challenge.clone());
+        {
+            let mut challenges = self.challenges.lock()
+                .map_err(|e| PasskeyError::Error(e.to_string()))?;
+            challenges.insert(id.to_string(), challenge.clone());
+        }
 
         Ok(serde_json::json!({
             "challenge": challenge,
@@ -125,9 +127,11 @@ impl PasskeyManager {
             .encode(rand::random::<[u8; 32]>());
 
         // Store challenge
-        let mut challenges = self.challenges.lock()
-            .map_err(|e| PasskeyError::Error(e.to_string()))?;
-        challenges.insert(id.to_string(), challenge.clone());
+        {
+            let mut challenges = self.challenges.lock()
+                .map_err(|e| PasskeyError::Error(e.to_string()))?;
+            challenges.insert(id.to_string(), challenge.clone());
+        }
 
         let allow_credentials = storage
             .get_passkeys(id)

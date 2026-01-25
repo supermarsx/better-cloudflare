@@ -258,7 +258,7 @@ pub async fn simulate_spf(domain: &str, ip: &str) -> Result<SPFSimulation, Strin
                     return Err("lookup limit".to_string());
                 }
                 let inc_domain = m.value.as_deref().unwrap_or("");
-                let res = simulate_spf(inc_domain, &ip.to_string()).await?;
+                let res = Box::pin(simulate_spf(inc_domain, &ip.to_string())).await?;
                 *lookups += res.lookups;
                 Ok(Some(res.result == "pass"))
             }
@@ -310,7 +310,7 @@ pub async fn simulate_spf(domain: &str, ip: &str) -> Result<SPFSimulation, Strin
         .find(|m| m.key == "redirect")
         .map(|m| m.value.clone())
     {
-        let res = simulate_spf(&redirect, ip).await?;
+        let res = Box::pin(simulate_spf(&redirect, ip)).await?;
         return Ok(SPFSimulation {
             result: res.result,
             reasons: res.reasons,
@@ -367,7 +367,7 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
                             to: target.clone(),
                             edge_type: "include".to_string(),
                         });
-                        walk(
+                        Box::pin(walk(
                             resolver,
                             target,
                             nodes,
@@ -377,7 +377,7 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
                             cyclic,
                             depth + 1,
                             max_depth,
-                        )
+                        ))
                         .await?;
                     }
                 }
@@ -389,7 +389,7 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
                         to: modif.value.clone(),
                         edge_type: "redirect".to_string(),
                     });
-                    walk(
+                    Box::pin(walk(
                         resolver,
                         &modif.value,
                         nodes,
@@ -399,7 +399,7 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
                         cyclic,
                         depth + 1,
                         max_depth,
-                    )
+                    ))
                     .await?;
                 }
             }

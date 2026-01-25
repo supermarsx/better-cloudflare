@@ -2,6 +2,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
+use base64::Engine;
 use pbkdf2::pbkdf2_hmac;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
