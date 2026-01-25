@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -213,9 +214,32 @@ export function RecordRow({
 
   if (isEditing) {
     return (
-      <div className="p-4 border rounded-lg bg-muted/50">
-        <div className="grid grid-cols-12 gap-4 items-center">
-          <div className="col-span-2">
+      <div className="rounded-xl border border-orange-500/20 bg-black/40 p-4 shadow-[0_12px_30px_rgba(0,0,0,0.25)]">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Editing
+            </div>
+            <div className="text-sm text-foreground/90">
+              {record.name || "Unnamed record"}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => onSave(editedRecord)}>
+              <Save className="h-3.5 w-3.5 mr-1" />
+              Save
+            </Button>
+            <Button size="sm" variant="outline" onClick={onCancel}>
+              <X className="h-3.5 w-3.5 mr-1" />
+              Cancel
+            </Button>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-12 gap-4 items-start">
+          <div className="col-span-2 space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Type
+            </Label>
             <Select
               value={editedRecord.type}
               onValueChange={(value: RecordType) =>
@@ -241,7 +265,10 @@ export function RecordRow({
               </SelectContent>
             </Select>
           </div>
-          <div className="col-span-3">
+          <div className="col-span-3 space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Name
+            </Label>
             <Input
               value={editedRecord.name}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
@@ -250,10 +277,14 @@ export function RecordRow({
                   name: e.target.value,
                 })
               }
+              placeholder="e.g. www"
               className="h-8"
             />
           </div>
-          <div className="col-span-4">
+          <div className="col-span-4 space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Content
+            </Label>
             {editedRecord.type === "SRV" ? (
               <div className="grid grid-cols-4 gap-2">
                 <Input
@@ -592,9 +623,9 @@ export function RecordRow({
                   }
                   className="h-8"
                 />
-                <div className="flex space-x-2">
+                <div className="flex flex-wrap gap-2">
                   <select
-                    className="h-8 p-2"
+                    className="h-8 rounded-md border border-white/10 bg-black/30 px-2 text-sm"
                     value={spfQualifier}
                     onChange={(e) => setSpfQualifier(e.target.value)}
                   >
@@ -604,7 +635,7 @@ export function RecordRow({
                     <option value="?">?</option>
                   </select>
                   <select
-                    className="h-8 p-2"
+                    className="h-8 rounded-md border border-white/10 bg-black/30 px-2 text-sm"
                     value={spfMechanism}
                     onChange={(e) => setSpfMechanism(e.target.value)}
                   >
@@ -658,6 +689,9 @@ export function RecordRow({
             )}
           </div>
           <div className="col-span-1 space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              TTL
+            </Label>
             <Select
               value={isCustomTTL ? "custom" : String(ttlValue)}
               onValueChange={(value: string) => {
@@ -714,7 +748,10 @@ export function RecordRow({
               />
             )}
           </div>
-          <div className="col-span-1">
+          <div className="col-span-1 space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Proxy
+            </Label>
             {(editedRecord.type === "A" ||
               editedRecord.type === "AAAA" ||
               editedRecord.type === "CNAME") && (
@@ -729,74 +766,60 @@ export function RecordRow({
               />
             )}
           </div>
-          <div className="col-span-1 flex gap-1">
-            <Button
-              size="sm"
-              onClick={() => onSave(editedRecord)}
-              className="h-8 w-8 p-0"
-            >
-              <Save className="h-3 w-3" />
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onCancel}
-              className="h-8 w-8 p-0"
-            >
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
-      <div className="grid grid-cols-12 gap-4 items-center">
-        <div className="col-span-2">
+    <div className="group rounded-xl border border-white/10 bg-black/20 p-4 transition-colors hover:bg-black/30">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 items-start gap-3">
           <span
             title={getRecordTypeLabel(record.type as RecordType)}
-            className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-primary/10 text-primary"
+            className="inline-flex items-center rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs font-semibold text-foreground/80"
           >
             {record.type}
           </span>
+          <div className="min-w-0">
+            <div className="truncate font-mono text-sm">{record.name}</div>
+            <div className="truncate text-xs text-muted-foreground">
+              {record.content}
+            </div>
+          </div>
         </div>
-        <div className="col-span-3">
-          <span className="font-mono text-sm">{record.name}</span>
-        </div>
-        <div className="col-span-4">
-          <span className="font-mono text-sm break-all">{record.content}</span>
-        </div>
-        <div className="col-span-1">
-          <span className="text-sm text-muted-foreground">
-            {record.ttl === 1 ? "Auto" : record.ttl}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-muted-foreground">
+            TTL {record.ttl === 1 ? "Auto" : record.ttl}
           </span>
-        </div>
-        <div className="col-span-1">
+          {typeof record.priority === "number" && (
+            <span className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-muted-foreground">
+              Priority {record.priority}
+            </span>
+          )}
           {record.proxied && (
-            <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+            <span className="rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-orange-200">
               Proxied
             </span>
           )}
-        </div>
-        <div className="col-span-1 flex gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onEdit}
-            className="h-8 w-8 p-0"
-          >
-            <Edit2 className="h-3 w-3" />
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onDelete}
-            className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
+          <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onEdit}
+              className="h-8 w-8 p-0"
+            >
+              <Edit2 className="h-3 w-3" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onDelete}
+              className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>
