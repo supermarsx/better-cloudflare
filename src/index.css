@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Space+Grotesk:wght@500;600&display=swap");
 @import "tailwindcss";
 
 @layer base {
@@ -44,6 +45,30 @@
     --border: 15 50% 20%;
     --input: 15 30% 15%;
     --ring: 15 90% 55%;
+  }
+}
+
+@layer utilities {
+  .titlebar {
+    background: linear-gradient(
+        120deg,
+        rgba(255, 120, 64, 0.14),
+        rgba(255, 70, 40, 0.06)
+      ),
+      rgba(8, 6, 5, 0.75);
+    box-shadow:
+      0 12px 30px rgba(0, 0, 0, 0.35),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .titlebar-title {
+    font-family: "Fraunces", "Space Grotesk", "Segoe UI", sans-serif;
+    letter-spacing: 0.32em;
+  }
+
+  .titlebar-actions {
+    font-family: "Space Grotesk", "Segoe UI", sans-serif;
+    letter-spacing: 0.18em;
   }
 }
 

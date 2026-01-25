@@ -46,20 +46,20 @@ export function WindowTitleBar() {
 
   return (
     <div
-      className="fixed inset-x-0 top-0 z-30 flex h-9 items-center justify-between border-b border-border bg-background/80 backdrop-blur"
+      className="titlebar fixed inset-x-0 top-0 z-30 flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
       style={{ height: TITLEBAR_HEIGHT_PX }}
     >
       <div
-        className="flex h-full flex-1 items-center px-3 text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground select-none cursor-default"
+        className="titlebar-title flex h-full flex-1 items-center px-4 text-[11px] font-semibold uppercase text-muted-foreground/90 select-none cursor-default"
         data-tauri-drag-region
         onPointerDown={handleDragStart}
         onDoubleClick={handleToggleMaximize}
       >
-        Better Cloudflare
+        Better Cloudflare Console
       </div>
-      <div className="flex h-full items-center gap-1 pr-2">
+      <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
         <button
-          className="h-7 w-9 rounded-sm text-xs text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
+          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-muted/60 hover:text-foreground"
           onClick={() => void withWindow("minimize")}
           type="button"
           aria-label="Minimize window"
@@ -68,7 +68,7 @@ export function WindowTitleBar() {
           -
         </button>
         <button
-          className="h-7 w-9 rounded-sm text-xs text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
+          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-muted/60 hover:text-foreground"
           onClick={() => void withWindow("toggle-maximize")}
           type="button"
           aria-label="Toggle maximize"
@@ -77,7 +77,7 @@ export function WindowTitleBar() {
           []
         </button>
         <button
-          className="h-7 w-9 rounded-sm text-xs text-muted-foreground transition hover:bg-destructive/70 hover:text-destructive-foreground"
+          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-destructive/70 hover:text-destructive-foreground"
           onClick={() => void withWindow("close")}
           type="button"
           aria-label="Close window"
