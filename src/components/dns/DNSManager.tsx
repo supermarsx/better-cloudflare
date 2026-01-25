@@ -50,9 +50,11 @@ const VirtualList = (props: any) => {
   return <List {...rest}>{children}</List>;
 };
 
-type ActionTab = "records" | "import" | "audit" | "settings";
+type ActionTab = "records" | "import";
+type TabKind = "zone" | "settings" | "audit";
 
 type ZoneTab = {
+  kind: TabKind;
   id: string;
   zoneId: string;
   zoneName: string;
@@ -95,12 +97,12 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     label: "Import/Export",
     hint: "Move records across zones and formats",
   },
-  {
-    id: "audit",
-    label: "Audit",
-    hint: "Review sensitive activity from the desktop backend",
-  },
 ];
+const ACTION_TAB_LABELS: Record<TabKind, string> = {
+  zone: "Zone",
+  settings: "Settings",
+  audit: "Audit",
+};
 
 const createEmptyRecord = (): Partial<DNSRecord> => ({
   type: "A",
@@ -111,10 +113,31 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
 });
 
 const createZoneTab = (zone: Zone): ZoneTab => ({
+  kind: "zone",
   id: zone.id,
   zoneId: zone.id,
   zoneName: zone.name,
   status: zone.status,
+  records: [],
+  isLoading: false,
+  editingRecord: null,
+  searchTerm: "",
+  typeFilter: "",
+  page: 1,
+  perPage: 50,
+  selectedIds: [],
+  showAddRecord: false,
+  showImport: false,
+  newRecord: createEmptyRecord(),
+  importData: "",
+  importFormat: "json",
+});
+const createActionTab = (kind: Exclude<TabKind, "zone">): ZoneTab => ({
+  kind,
+  id: `__${kind}`,
+  zoneId: "",
+  zoneName: ACTION_TAB_LABELS[kind],
+  status: undefined,
   records: [],
   isLoading: false,
   editingRecord: null,
@@ -201,11 +224,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [availableZones],
   );
 
-  const activateTab = useCallback((tabId: string) => {
-    setActiveTabId(tabId);
-    setSelectedZoneId(tabId);
-    setActionTab("records");
-  }, []);
+  const activateTab = useCallback(
+    (tabId: string) => {
+      const nextTab = tabs.find((tab) => tab.id === tabId);
+      setActiveTabId(tabId);
+      if (nextTab?.kind === "zone") {
+        setSelectedZoneId(tabId);
+        setActionTab("records");
+      } else {
+        setSelectedZoneId("");
+      }
+    },
+    [tabs],
+  );
 
   const closeTab = useCallback(
     (tabId: string) => {
@@ -214,12 +245,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (activeTabId === tabId) {
           const nextActive = nextTabs[nextTabs.length - 1];
           setActiveTabId(nextActive?.id ?? null);
-          setSelectedZoneId(nextActive?.zoneId ?? "");
+          if (nextActive?.kind === "zone") {
+            setSelectedZoneId(nextActive.zoneId);
+            setActionTab("records");
+          } else {
+            setSelectedZoneId("");
+          }
         }
         return nextTabs;
       });
     },
     [activeTabId],
+  );
+  const openActionTab = useCallback(
+    (kind: Exclude<TabKind, "zone">) => {
+      const id = `__${kind}`;
+      setTabs((prev) => {
+        if (prev.some((tab) => tab.id === id)) return prev;
+        return [...prev, createActionTab(kind)];
+      });
+      setActiveTabId(id);
+      setSelectedZoneId("");
+    },
+    [],
   );
   const loadZones = useCallback(
     async (signal?: AbortSignal) => {
@@ -317,12 +365,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [selectedZoneId, openZoneTab]);
 
   useEffect(() => {
-    if (activeTab) {
+    if (activeTab?.kind === "zone") {
       const controller = new AbortController();
       loadRecords(activeTab, controller.signal);
       return () => controller.abort();
     }
-  }, [activeTab?.zoneId, activeTab?.page, activeTab?.perPage, loadRecords]);
+  }, [activeTab?.zoneId, activeTab?.page, activeTab?.perPage, activeTab?.kind, loadRecords]);
 
   useEffect(() => {
     if (isDesktop()) {
@@ -345,7 +393,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   useEffect(() => {
-    if (!activeTab?.zoneId) return;
+    if (!activeTab?.zoneId || activeTab.kind !== "zone") return;
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) =>
@@ -375,7 +423,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
     const id = setInterval(async () => {
-      if (!activeTab) return;
+      if (!activeTab || activeTab.kind !== "zone") return;
       if (
         activeTab.editingRecord ||
         activeTab.showAddRecord ||
@@ -401,7 +449,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   const filteredRecords = useMemo(() => {
-    if (!activeTab) return [];
+    if (!activeTab || activeTab.kind !== "zone") return [];
     return filterRecords(activeTab.records, activeTab.searchTerm).filter(
       (record: DNSRecord) =>
         activeTab.typeFilter ? record.type === activeTab.typeFilter : true,
@@ -817,10 +865,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const selectedZoneData = activeTab
     ? availableZones.find((z) => z.id === activeTab.zoneId)
     : undefined;
-  const actionHint =
-    actionTab === "settings"
-      ? "Tune refresh, per-page defaults, and UI options"
-      : ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
+  const actionHint = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
@@ -843,7 +888,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               <div className="flex flex-wrap items-center gap-2">
                 {isDesktop() && (
                   <Button
-                    onClick={() => setShowAuditLog(true)}
+                    onClick={() => openActionTab("audit")}
                     variant="outline"
                     size="icon"
                     className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
@@ -853,6 +898,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <Shield className="h-4 w-4" />
                   </Button>
                 )}
+                <Button
+                  onClick={() => openActionTab("settings")}
+                  variant="outline"
+                  size="icon"
+                  className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                  aria-label="Settings"
+                  title="Settings"
+                >
+                  <Settings className="h-4 w-4" />
+                </Button>
                 <Button
                   onClick={handleLogout}
                   variant="outline"
@@ -907,7 +962,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </div>
                 )}
               </div>
-              {(tabs.length > 0 || actionTab === "settings") && (
+              {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit") && (
                 <div
                   className="flex flex-wrap gap-2 fade-in"
                   onDragOver={(event) => {
@@ -926,7 +981,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   }}
                 >
                   {tabs.map((tab) => {
-                    const isActive = tab.id === activeTabId && actionTab !== "settings";
+                    const isActive = tab.id === activeTabId;
                     return (
                       <div
                         key={tab.id}
@@ -975,9 +1030,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <span className="max-w-[140px] truncate">
                           {tab.zoneName}
                         </span>
-                        <span className="text-[10px] uppercase tracking-widest opacity-60">
-                          {tab.status ?? "zone"}
-                        </span>
+                        {tab.kind === "zone" && (
+                          <span className="text-[10px] uppercase tracking-widest opacity-60">
+                            {tab.status ?? "zone"}
+                          </span>
+                        )}
                         <button
                           onClick={(event) => {
                             event.stopPropagation();
@@ -991,18 +1048,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     );
                   })}
-                  <button
-                    type="button"
-                    onClick={() => setActionTab("settings")}
-                    className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
-                      actionTab === "settings"
-                        ? "border-orange-400/40 bg-orange-500/15 text-orange-100 shadow-[0_0_18px_rgba(255,120,60,0.18)]"
-                        : "border-white/10 bg-black/20 text-muted-foreground hover:border-orange-400/30 hover:text-orange-100"
-                    }`}
-                  >
-                    <Settings className="h-3.5 w-3.5" />
-                    Settings
-                  </button>
                 </div>
               )}
             </CardContent>
@@ -1016,29 +1061,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardTitle className="text-xl">
                     {activeTab.zoneName}
                   </CardTitle>
-                  <p className="text-xs text-muted-foreground">{actionHint}</p>
+                  {activeTab.kind === "zone" && (
+                    <p className="text-xs text-muted-foreground">{actionHint}</p>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Select
-                    value={String(autoRefreshInterval ?? 0)}
-                    onValueChange={(v) =>
-                      setAutoRefreshInterval(v ? Number(v) : null)
-                    }
-                  >
-                    <SelectTrigger className="w-36">
-                      <SelectValue placeholder="Auto-refresh" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="0">Off</SelectItem>
-                      <SelectItem value="60000">1 min</SelectItem>
-                      <SelectItem value="300000">5 min</SelectItem>
-                      <SelectItem value="600000">10 min</SelectItem>
-                      <SelectItem value="1800000">30 min</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  {activeTab.kind === "zone" && (
+                    <Select
+                      value={String(autoRefreshInterval ?? 0)}
+                      onValueChange={(v) =>
+                        setAutoRefreshInterval(v ? Number(v) : null)
+                      }
+                    >
+                      <SelectTrigger className="w-36">
+                        <SelectValue placeholder="Auto-refresh" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">Off</SelectItem>
+                        <SelectItem value="60000">1 min</SelectItem>
+                        <SelectItem value="300000">5 min</SelectItem>
+                        <SelectItem value="600000">10 min</SelectItem>
+                        <SelectItem value="1800000">30 min</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
               </div>
-              {actionTab !== "settings" && (
+              {activeTab.kind === "zone" && (
                 <div className="flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/40 p-1 fade-in">
                   {ACTION_TABS.map((tab) => (
                     <button
@@ -1057,7 +1106,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               )}
             </CardHeader>
             <CardContent>
-              {actionTab === "records" && (
+              {activeTab.kind === "zone" && actionTab === "records" && (
                 <div className="space-y-4 fade-in">
                   {activeTab.isLoading && (
                     <div className="space-y-3">
@@ -1320,7 +1369,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   )}
                 </div>
               )}
-              {actionTab === "import" && (
+              {activeTab.kind === "zone" && actionTab === "import" && (
                 <div className="grid gap-4 md:grid-cols-2">
                   <Card className="border-white/10 bg-black/40">
                     <CardHeader>
@@ -1443,7 +1492,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </Card>
                 </div>
               )}
-              {actionTab === "audit" && (
+              {activeTab.kind === "audit" && (
                 <Card className="border-white/10 bg-black/40">
                   <CardHeader>
                     <CardTitle className="text-lg">Audit log</CardTitle>
@@ -1467,7 +1516,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
-              {actionTab === "settings" && (
+              {activeTab.kind === "settings" && (
                 <Card className="border-white/10 bg-black/40">
                   <CardHeader>
                     <CardTitle className="text-lg">
