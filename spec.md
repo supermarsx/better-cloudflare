@@ -339,16 +339,16 @@ Authentication & Key Management
 - New keys are added using `AddKeyDialog` and encrypted with a password.
 - Encryption metadata (salt, iv, iterations, keyLength, algorithm) are stored locally.
 - The user selects an API key, enters the password to decrypt the token.
-- The decrypted token is verified against the server (`POST /api/verify-token`), then stored as the current session in storage.
+- The decrypted token is verified via the Tauri `verify_token` command (IPC to Rust), then stored as the current session in storage.
 - Logging out clears the session from local storage.
 
 Zone & Record Management
 
-- Zones list is fetched via `GET /api/zones` after login.
-- Selecting a zone fetches DNS records via `GET /api/zones/:zone/dns_records`.
-- Add a new record via `POST /api/zones/:zone/dns_records` with client-side validation.
-- Update a record via `PUT /api/zones/:zone/dns_records/:id`.
-- Delete a record via `DELETE /api/zones/:zone/dns_records/:id`.
+- Zones list is fetched via the `get_zones` Tauri command after login.
+- Selecting a zone fetches DNS records via the `get_dns_records` Tauri command.
+- Add a new record via the `create_dns_record` Tauri command with client-side validation.
+- Update a record via the `update_dns_record` Tauri command.
+- Delete a record via the `delete_dns_record` Tauri command.
 - Inline record editing with preset TTL choices, custom TTL, and MX priority editing.
 - Search & filter operations operate client-side on fetched records.
 
@@ -366,7 +366,7 @@ Encryption configuration & Benchmarking
 Server Features
 
 - Rate limiting via `express-rate-limit`.
-- CORS allowed origins via `getCorsMiddleware`.
+- CORS is only relevant for optional local HTTP endpoints; Tauri IPC does not use CORS.
 - Centralized error handler returns JSON and hides stack in production.
 
 ## 7. Detailed UI components
