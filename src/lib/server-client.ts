@@ -9,6 +9,7 @@ import type { DNSRecord, Zone } from "@/types/dns";
 import { getEnv } from "./env";
 import { isDesktop } from "./environment";
 import { TauriClient } from "./tauri-client";
+import type { TauriDNSRecordInput } from "./tauri-client";
 
 const DEFAULT_BASE = getEnv(
   "SERVER_API_BASE",
@@ -19,11 +20,13 @@ const DEFAULT_TIMEOUT = 10_000;
 
 function normalizeTauriRecordInput(
   record: Partial<DNSRecord>,
-): Partial<DNSRecord> {
-  if (record.ttl === "auto") {
-    return { ...record, ttl: 1 };
-  }
-  return record;
+): TauriDNSRecordInput {
+  const { ttl, ...rest } = record;
+  const normalizedTtl = ttl === "auto" ? 1 : ttl;
+  return {
+    ...rest,
+    ...(typeof normalizedTtl === "number" ? { ttl: normalizedTtl } : {}),
+  } as TauriDNSRecordInput;
 }
 
 /**
@@ -398,9 +401,7 @@ export class ServerClient {
     await this.request(`/vault/${id}`, { method: "DELETE" });
   }
 
-  async getPasskeyRegistrationOptions(
-    id: string,
-  ): Promise<{ challenge?: string; options?: unknown }> {
+  async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
     /**
      * Request passkey registration options (a challenge) from the server.
      */
@@ -427,9 +428,7 @@ export class ServerClient {
     });
   }
 
-  async getPasskeyAuthOptions(
-    id: string,
-  ): Promise<{ challenge?: string; options?: unknown }> {
+  async getPasskeyAuthOptions(id: string): Promise<unknown> {
     /**
      * Request passkey authentication options (a challenge) from the server.
      */
@@ -474,7 +473,10 @@ export class ServerClient {
      * verification before production use.
      */
     if (isDesktop()) {
-      return TauriClient.authenticatePasskey(id, assertion);
+      return (await TauriClient.authenticatePasskey(id, assertion)) as {
+        success: boolean;
+        token?: string;
+      };
     }
     return this.request(`/passkeys/authenticate/${id}`, {
       method: "POST",

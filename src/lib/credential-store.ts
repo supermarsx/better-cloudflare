@@ -1,6 +1,6 @@
 import { promises as fs, mkdirSync } from "fs";
 import path from "path";
-import { vaultManager } from "../server/vault";
+import { vaultManager } from "./vault-manager";
 import { getEnv } from "./env";
 import openSqlite from "./sqlite-driver";
 import type { SqliteWrapper } from "./sqlite-driver";

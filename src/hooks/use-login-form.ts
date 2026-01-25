@@ -347,18 +347,21 @@ export function useLoginForm(
       
       const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
-      const registrationOptions =
-        (options as { options?: PublicKeyCredentialCreationOptions }).options ??
-        (options as PublicKeyCredentialCreationOptions);
+      const registrationOptionsRaw =
+        (options as { options?: unknown }).options ?? options;
       const mergedRegistrationOptions =
-        "challenge" in registrationOptions
-          ? registrationOptions
+        typeof registrationOptionsRaw === "object" &&
+        registrationOptionsRaw !== null &&
+        "challenge" in (registrationOptionsRaw as Record<string, unknown>)
+          ? registrationOptionsRaw
           : {
-              ...registrationOptions,
+              ...(registrationOptionsRaw as Record<string, unknown>),
               challenge: (options as { challenge?: unknown }).challenge,
             };
       const publicKey = toCredentialCreationOptions(
-        mergedRegistrationOptions as PublicKeyCredentialCreationOptions,
+        mergedRegistrationOptions as Parameters<
+          typeof toCredentialCreationOptions
+        >[0],
       );
 
       const credential = await navigator.credentials.create({ publicKey });
@@ -422,18 +425,18 @@ export function useLoginForm(
     try {
       const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
-      const authOptions =
-        (opts as { options?: PublicKeyCredentialRequestOptions }).options ??
-        (opts as PublicKeyCredentialRequestOptions);
+      const authOptionsRaw = (opts as { options?: unknown }).options ?? opts;
       const mergedAuthOptions =
-        "challenge" in authOptions
-          ? authOptions
+        typeof authOptionsRaw === "object" &&
+        authOptionsRaw !== null &&
+        "challenge" in (authOptionsRaw as Record<string, unknown>)
+          ? authOptionsRaw
           : {
-              ...authOptions,
+              ...(authOptionsRaw as Record<string, unknown>),
               challenge: (opts as { challenge?: unknown }).challenge,
             };
       const publicKey = toCredentialRequestOptions(
-        mergedAuthOptions as PublicKeyCredentialRequestOptions,
+        mergedAuthOptions as Parameters<typeof toCredentialRequestOptions>[0],
       );
 
       const assertion = await navigator.credentials.get({ publicKey });

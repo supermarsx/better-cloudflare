@@ -1,5 +1,5 @@
 type Base64urlString = string;
-type BinaryLike = Base64urlString | ArrayBuffer | Uint8Array;
+type BinaryLike = Base64urlString | ArrayBuffer | Uint8Array | ArrayBufferView;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -33,7 +33,9 @@ type AuthenticationOptions = PublicKeyCredentialRequestOptions & {
   allowCredentials?: { id: BinaryLike; type: PublicKeyCredentialType }[];
 };
 
-function normalizeBinary(data: BinaryLike): Uint8Array | ArrayBuffer {
+function normalizeBinary(
+  data: BinaryLike,
+): Uint8Array | ArrayBuffer | ArrayBufferView {
   if (typeof data === "string") {
     try {
       return base64urlToUint8Array(data);
