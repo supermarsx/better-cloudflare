@@ -225,3 +225,111 @@ impl PasskeyManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode_client_data(challenge: &str) -> String {
+        let payload = serde_json::json!({ "challenge": challenge });
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes())
+    }
+
+    #[tokio::test]
+    async fn registration_and_authentication_flow() {
+        let mgr = PasskeyManager::default();
+        let id = "key_1";
+
+        let options = mgr.get_registration_options(id).await.expect("options");
+        let challenge = options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("challenge");
+
+        let attestation = serde_json::json!({
+            "id": "cred_1",
+            "rawId": "cred_1_raw",
+            "response": {
+                "clientDataJSON": encode_client_data(challenge)
+            }
+        });
+
+        mgr.register_passkey(id, attestation)
+            .await
+            .expect("register passkey");
+
+        let auth_options = mgr.get_auth_options(id).await.expect("auth opts");
+        let auth_challenge = auth_options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("auth challenge");
+        let allow_creds = auth_options
+            .get("options")
+            .and_then(|v| v.get("allowCredentials"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(allow_creds.iter().any(|c| c.get("id").and_then(|v| v.as_str()) == Some("cred_1")));
+
+        let assertion = serde_json::json!({
+            "id": "cred_1",
+            "rawId": "cred_1_raw",
+            "response": {
+                "clientDataJSON": encode_client_data(auth_challenge)
+            }
+        });
+
+        let result = mgr.authenticate_passkey(id, assertion).await.expect("auth");
+        assert!(result.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+        assert!(result.get("token").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn challenge_mismatch_rejected() {
+        let mgr = PasskeyManager::default();
+        let id = "key_2";
+        let options = mgr.get_registration_options(id).await.expect("options");
+        let challenge = options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("challenge");
+
+        let attestation = serde_json::json!({
+            "id": "cred_bad",
+            "response": {
+                "clientDataJSON": encode_client_data(&format!("{challenge}-wrong"))
+            }
+        });
+
+        let result = mgr.register_passkey(id, attestation).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_and_delete_passkeys() {
+        let mgr = PasskeyManager::default();
+        let id = "key_3";
+        let options = mgr.get_registration_options(id).await.expect("options");
+        let challenge = options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("challenge");
+        let attestation = serde_json::json!({
+            "id": "cred_list",
+            "response": {
+                "clientDataJSON": encode_client_data(challenge)
+            }
+        });
+        mgr.register_passkey(id, attestation)
+            .await
+            .expect("register passkey");
+
+        let list = mgr.list_passkeys(id).await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].get("id").and_then(|v| v.as_str()), Some("cred_list"));
+
+        mgr.delete_passkey(id, "cred_list").await.expect("delete");
+        let list = mgr.list_passkeys(id).await.expect("list after delete");
+        assert!(list.is_empty());
+    }
+}

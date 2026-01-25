@@ -76,10 +76,10 @@
   - [ ] Test pagination for large zone lists
 
 - [ ] **Test passkey module** (`src-tauri/src/passkey.rs`)
-  - [ ] Test challenge generation/validation
-  - [ ] Test passkey registration flow
-  - [ ] Test passkey authentication flow
-  - [ ] Test device management (list, rename, delete)
+  - [x] Test challenge generation/validation
+  - [x] Test passkey registration flow
+  - [x] Test passkey authentication flow
+  - [x] Test device management (list, delete)
   - [ ] Cross-platform passkey compatibility
 
 ### Code Quality
