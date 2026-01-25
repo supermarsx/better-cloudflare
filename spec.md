@@ -37,10 +37,10 @@ The application stores Cloudflare credentials locally in the operating system's 
 
 **Key Architecture Features:**
 - **OS Keychain Integration**: Credentials are stored in the operating system's native secure storage using the `keyring` Rust crate (macOS Keychain, Windows Credential Manager, Linux Secret Service). Fallback to encrypted in-memory storage when OS keychain is unavailable.
-- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, attestation verification, and credential storage in secure storage.
+- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, challenge validation, and credential storage in secure storage (attestation/assertion verification planned).
   - Multiple credentials: Supports multiple passkey credentials per stored key with device naming and management UI
   - Platform integration: Uses native platform authenticators (Touch ID, Windows Hello, etc.)
-  - Registration/Authentication: Rust backend handles WebAuthn challenge generation and verification
+  - Registration/Authentication: Rust backend handles WebAuthn challenge generation and validation (full verification planned)
 - **Tauri IPC**: All communication between frontend (Next.js/React) and backend (Rust) uses Tauri's secure IPC mechanism instead of HTTP
 - **Rust Backend**: Complete rewrite of backend logic in Rust for performance, security, and native compilation
 
@@ -672,7 +672,8 @@ const ok = await invoke<boolean>('verify_token', {
   - `id: string` - User/key identifier
   - `attestation: PublicKeyCredential` - Registration response from WebAuthn API
 - **Returns**: `void`
-- **Storage**: In-memory credential store (non-persistent) in Rust backend
+- **Storage**: Stored in OS keychain (fallback to in-memory when unavailable)
+ - **Verification**: Challenge validation only (attestation verification planned)
 
 #### `get_passkey_auth_options`
 - **Purpose**: Generate WebAuthn authentication options
@@ -686,6 +687,7 @@ const ok = await invoke<boolean>('verify_token', {
   - `id: string` - User/key identifier
   - `assertion: PublicKeyCredential` - Authentication response
 - **Returns**: `{ success: boolean; token?: string }`
+ - **Verification**: Challenge + credential id check only (signature verification planned)
 
 #### `list_passkeys`
 - **Purpose**: List registered passkey credentials
