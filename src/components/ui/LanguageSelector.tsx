@@ -1,6 +1,6 @@
 import * as React from "react";
 import i18n, { availableLanguages } from "@/i18n";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 
 const languageNames: Record<string, string> = {
   "en-US": "English",
@@ -17,7 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 
 export function LanguageSelector() {
-  const { t } = useTranslation();
+  const { t } = useI18n();
 
   const changeLanguage = (lng: string) => {
     i18n.changeLanguage(lng);
