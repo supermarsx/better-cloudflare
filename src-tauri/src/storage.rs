@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use thiserror::Error;
+use crate::crypto::EncryptionConfig;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -108,6 +109,7 @@ impl Storage {
         label: String,
         encrypted_key: String,
         email: Option<String>,
+        config: EncryptionConfig,
     ) -> Result<String, StorageError> {
         let mut keys = self.get_api_keys().await?;
         let id = format!("key_{}", uuid::Uuid::new_v4());
@@ -117,6 +119,9 @@ impl Storage {
             label,
             email,
             encrypted_key,
+            iterations: config.iterations,
+            key_length: config.key_length,
+            algorithm: config.algorithm,
         });
 
         let json = serde_json::to_string(&keys)
@@ -134,12 +139,25 @@ impl Storage {
             .ok_or(StorageError::NotFound)
     }
 
+    pub async fn get_api_key(
+        &self,
+        id: &str,
+    ) -> Result<crate::commands::ApiKey, StorageError> {
+        let keys = self.get_api_keys().await?;
+        keys.into_iter()
+            .find(|k| k.id == id)
+            .ok_or(StorageError::NotFound)
+    }
+
     pub async fn update_api_key(
         &self,
         id: String,
         label: Option<String>,
         email: Option<String>,
         encrypted_key: Option<String>,
+        iterations: Option<u32>,
+        key_length: Option<usize>,
+        algorithm: Option<String>,
     ) -> Result<(), StorageError> {
         let mut keys = self.get_api_keys().await?;
         
@@ -152,6 +170,15 @@ impl Storage {
             }
             if let Some(encrypted_key) = encrypted_key {
                 key.encrypted_key = encrypted_key;
+            }
+            if let Some(iterations) = iterations {
+                key.iterations = iterations;
+            }
+            if let Some(key_length) = key_length {
+                key.key_length = key_length;
+            }
+            if let Some(algorithm) = algorithm {
+                key.algorithm = algorithm;
             }
         } else {
             return Err(StorageError::NotFound);
@@ -216,6 +243,24 @@ impl Storage {
             .map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("audit_log", &json).await
     }
+
+    pub async fn get_encryption_settings(&self) -> Result<EncryptionConfig, StorageError> {
+        match self.get_secret("encryption_settings").await {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| StorageError::Error(e.to_string())),
+            Err(StorageError::NotFound) => Err(StorageError::NotFound),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn set_encryption_settings(
+        &self,
+        config: &EncryptionConfig,
+    ) -> Result<(), StorageError> {
+        let json = serde_json::to_string(config)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret("encryption_settings", &json).await
+    }
 }
 
 #[cfg(test)]
@@ -226,11 +271,13 @@ mod tests {
     #[tokio::test]
     async fn api_key_lifecycle() {
         let storage = Storage::new(false);
+        let config = EncryptionConfig::default();
         let id = storage
             .add_api_key(
                 "primary".to_string(),
                 "enc_v1".to_string(),
                 Some("user@example.com".to_string()),
+                config.clone(),
             )
             .await
             .expect("add api key");
@@ -241,6 +288,9 @@ mod tests {
         assert_eq!(keys[0].label, "primary");
         assert_eq!(keys[0].encrypted_key, "enc_v1");
         assert_eq!(keys[0].email.as_deref(), Some("user@example.com"));
+        assert_eq!(keys[0].iterations, config.iterations);
+        assert_eq!(keys[0].key_length, config.key_length);
+        assert_eq!(keys[0].algorithm, config.algorithm);
 
         let encrypted = storage
             .get_encrypted_key(&id)
@@ -254,6 +304,9 @@ mod tests {
                 Some("updated".to_string()),
                 Some("new@example.com".to_string()),
                 Some("enc_v2".to_string()),
+                Some(1234),
+                Some(16),
+                Some("AES-256-GCM".to_string()),
             )
             .await
             .expect("update api key");
@@ -263,6 +316,9 @@ mod tests {
         assert_eq!(keys[0].label, "updated");
         assert_eq!(keys[0].email.as_deref(), Some("new@example.com"));
         assert_eq!(keys[0].encrypted_key, "enc_v2");
+        assert_eq!(keys[0].iterations, 1234);
+        assert_eq!(keys[0].key_length, 16);
+        assert_eq!(keys[0].algorithm, "AES-256-GCM");
 
         storage
             .delete_api_key(id.clone())
@@ -325,5 +381,26 @@ mod tests {
         assert_eq!(entries.len(), 1000);
         assert_eq!(entries[0]["idx"], 5);
         assert_eq!(entries[999]["idx"], 1004);
+    }
+
+    #[tokio::test]
+    async fn encryption_settings_roundtrip() {
+        let storage = Storage::new(false);
+        let config = EncryptionConfig {
+            iterations: 42,
+            key_length: 16,
+            algorithm: "AES-256-GCM".to_string(),
+        };
+        storage
+            .set_encryption_settings(&config)
+            .await
+            .expect("set encryption settings");
+        let loaded = storage
+            .get_encryption_settings()
+            .await
+            .expect("get encryption settings");
+        assert_eq!(loaded.iterations, 42);
+        assert_eq!(loaded.key_length, 16);
+        assert_eq!(loaded.algorithm, "AES-256-GCM");
     }
 }

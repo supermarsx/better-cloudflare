@@ -12,6 +12,9 @@ pub struct ApiKey {
     pub label: String,
     pub email: Option<String>,
     pub encrypted_key: String,
+    pub iterations: u32,
+    pub key_length: usize,
+    pub algorithm: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,11 +74,16 @@ pub async fn add_api_key(
     email: Option<String>,
     password: String,
 ) -> Result<String, String> {
-    let crypto = CryptoManager::default();
+    let config = match storage.get_encryption_settings().await {
+        Ok(config) => config,
+        Err(crate::storage::StorageError::NotFound) => CryptoManager::default().get_config(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let crypto = CryptoManager::new(config.clone());
     let encrypted = crypto.encrypt(&api_key, &password)
         .map_err(|e| e.to_string())?;
     
-    storage.add_api_key(label, encrypted, email).await
+    storage.add_api_key(label, encrypted, email, config).await
         .map_err(|e| e.to_string())
 }
 
@@ -89,24 +97,37 @@ pub async fn update_api_key(
     new_password: Option<String>,
 ) -> Result<(), String> {
     let mut encrypted_key: Option<String> = None;
+    let mut iterations: Option<u32> = None;
+    let mut key_length: Option<usize> = None;
+    let mut algorithm: Option<String> = None;
     if let Some(new_password) = new_password {
         let current_password = current_password.ok_or("Current password required")?;
-        let crypto = CryptoManager::default();
-        let existing = storage
-            .get_encrypted_key(&id)
-            .await
-            .map_err(|e| e.to_string())?;
+        let existing = storage.get_api_key(&id).await.map_err(|e| e.to_string())?;
+        let crypto = CryptoManager::new(EncryptionConfig {
+            iterations: existing.iterations,
+            key_length: existing.key_length,
+            algorithm: existing.algorithm.clone(),
+        });
         let decrypted = crypto
-            .decrypt(&existing, &current_password)
+            .decrypt(&existing.encrypted_key, &current_password)
             .map_err(|e| e.to_string())?;
+        let updated_config = match storage.get_encryption_settings().await {
+            Ok(config) => config,
+            Err(crate::storage::StorageError::NotFound) => crypto.get_config(),
+            Err(e) => return Err(e.to_string()),
+        };
+        let updated_crypto = CryptoManager::new(updated_config.clone());
         encrypted_key = Some(
-            crypto
+            updated_crypto
                 .encrypt(&decrypted, &new_password)
                 .map_err(|e| e.to_string())?,
         );
+        iterations = Some(updated_config.iterations);
+        key_length = Some(updated_config.key_length);
+        algorithm = Some(updated_config.algorithm);
     }
     storage
-        .update_api_key(id, label, email, encrypted_key)
+        .update_api_key(id, label, email, encrypted_key, iterations, key_length, algorithm)
         .await
         .map_err(|e| e.to_string())
 }
@@ -123,11 +144,14 @@ pub async fn decrypt_api_key(
     id: String,
     password: String,
 ) -> Result<String, String> {
-    let crypto = CryptoManager::default();
-    let encrypted = storage.get_encrypted_key(&id).await
+    let encrypted = storage.get_api_key(&id).await
         .map_err(|e| e.to_string())?;
-    
-    crypto.decrypt(&encrypted, &password)
+    let crypto = CryptoManager::new(EncryptionConfig {
+        iterations: encrypted.iterations,
+        key_length: encrypted.key_length,
+        algorithm: encrypted.algorithm,
+    });
+    crypto.decrypt(&encrypted.encrypted_key, &password)
         .map_err(|e| e.to_string())
 }
 
@@ -309,14 +333,25 @@ pub async fn delete_passkey(
 
 // Encryption Settings
 #[tauri::command]
-pub fn get_encryption_settings() -> Result<EncryptionConfig, String> {
-    Ok(CryptoManager::default().get_config())
+pub async fn get_encryption_settings(
+    storage: State<'_, Storage>,
+) -> Result<EncryptionConfig, String> {
+    match storage.get_encryption_settings().await {
+        Ok(config) => Ok(config),
+        Err(crate::storage::StorageError::NotFound) => Ok(CryptoManager::default().get_config()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
-pub fn update_encryption_settings(config: EncryptionConfig) -> Result<(), String> {
-    CryptoManager::default().update_config(config);
-    Ok(())
+pub async fn update_encryption_settings(
+    storage: State<'_, Storage>,
+    config: EncryptionConfig,
+) -> Result<(), String> {
+    storage
+        .set_encryption_settings(&config)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
