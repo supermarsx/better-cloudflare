@@ -20,6 +20,8 @@ interface StorageData {
   lastZone?: string;
   vaultEnabled?: boolean;
   autoRefreshInterval?: number;
+  defaultPerPage?: number;
+  zonePerPage?: Record<string, number>;
 }
 
 /**
@@ -345,6 +347,31 @@ export class StorageManager {
 
   getAutoRefreshInterval(): number | null {
     return this.data.autoRefreshInterval ?? null;
+  }
+
+  setDefaultPerPage(value: number | null): void {
+    this.data.defaultPerPage = value ?? undefined;
+    this.save();
+  }
+
+  getDefaultPerPage(): number {
+    return this.data.defaultPerPage ?? 50;
+  }
+
+  setZonePerPage(zoneId: string, value: number | null): void {
+    if (!this.data.zonePerPage) {
+      this.data.zonePerPage = {};
+    }
+    if (value === null) {
+      delete this.data.zonePerPage[zoneId];
+    } else {
+      this.data.zonePerPage[zoneId] = value;
+    }
+    this.save();
+  }
+
+  getZonePerPageMap(): Record<string, number> {
+    return { ...(this.data.zonePerPage ?? {}) };
   }
 
   /**

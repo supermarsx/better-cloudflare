@@ -50,7 +50,7 @@ const VirtualList = (props: any) => {
   return <List {...rest}>{children}</List>;
 };
 
-type ActionTab = "records" | "import";
+type ActionTab = "records" | "import" | "zone-settings";
 type TabKind = "zone" | "settings" | "audit";
 
 type ZoneTab = {
@@ -86,7 +86,7 @@ interface DNSManagerProps {
   onLogout: () => void;
 }
 
-const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
+const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: string }[] = [
   {
     id: "records",
     label: "Records",
@@ -96,6 +96,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "import",
     label: "Import/Export",
     hint: "Move records across zones and formats",
+  },
+  {
+    id: "zone-settings",
+    label: "Zone Settings",
+    hint: "Override defaults for this zone",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -112,7 +117,7 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
   proxied: false,
 });
 
-const createZoneTab = (zone: Zone): ZoneTab => ({
+const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   kind: "zone",
   id: zone.id,
   zoneId: zone.id,
@@ -124,7 +129,7 @@ const createZoneTab = (zone: Zone): ZoneTab => ({
   searchTerm: "",
   typeFilter: "",
   page: 1,
-  perPage: 50,
+  perPage,
   selectedIds: [],
   showAddRecord: false,
   showImport: false,
@@ -171,6 +176,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [listHeight, setListHeight] = useState(600);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [globalPerPage, setGlobalPerPage] = useState(50);
+  const [zonePerPage, setZonePerPage] = useState<Record<string, number>>({});
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
@@ -217,11 +224,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (!zone) return;
       setTabs((prev) => {
         if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
-        return [...prev, createZoneTab(zone)];
+        const perPage = zonePerPage[zoneId] ?? globalPerPage;
+        return [...prev, createZoneTab(zone, perPage)];
       });
       setActiveTabId(zoneId);
     },
-    [availableZones],
+    [availableZones, globalPerPage, zonePerPage],
   );
 
   const activateTab = useCallback(

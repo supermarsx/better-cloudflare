@@ -10,6 +10,8 @@ pub struct Preferences {
     pub vault_enabled: Option<bool>,
     pub auto_refresh_interval: Option<u32>,
     pub last_zone: Option<String>,
+    pub default_per_page: Option<u32>,
+    pub zone_per_page: Option<HashMap<String, u32>>,
 }
 
 #[derive(Error, Debug)]
@@ -315,6 +317,8 @@ impl Storage {
                 vault_enabled: None,
                 auto_refresh_interval: None,
                 last_zone: None,
+                default_per_page: None,
+                zone_per_page: None,
             }),
             Err(e) => Err(e),
         }
