@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -26,6 +27,29 @@ impl Default for PasskeyManager {
 }
 
 impl PasskeyManager {
+    fn extract_client_challenge(payload: &Value) -> Result<String, PasskeyError> {
+        let client_data_b64 = payload
+            .get("response")
+            .and_then(|v| v.get("clientDataJSON"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| PasskeyError::Error("Missing clientDataJSON".to_string()))?;
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(client_data_b64)
+            .or_else(|_| {
+                base64::engine::general_purpose::URL_SAFE.decode(client_data_b64)
+            })
+            .or_else(|_| {
+                base64::engine::general_purpose::STANDARD.decode(client_data_b64)
+            })
+            .map_err(|e| PasskeyError::Error(e.to_string()))?;
+        let parsed: Value = serde_json::from_slice(&decoded)
+            .map_err(|e| PasskeyError::Error(e.to_string()))?;
+        parsed
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| PasskeyError::Error("Missing challenge".to_string()))
+    }
     pub async fn get_registration_options(&self, id: &str) -> Result<Value, PasskeyError> {
         // Generate a random challenge
         let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -62,6 +86,16 @@ impl PasskeyManager {
     pub async fn register_passkey(&self, id: &str, attestation: Value) -> Result<(), PasskeyError> {
         // In a full implementation, this would verify the attestation
         // For now, we'll just store the credential
+        let expected = {
+            let challenges = self.challenges.lock()
+                .map_err(|e| PasskeyError::Error(e.to_string()))?;
+            challenges.get(id).cloned()
+        };
+        let expected = expected.ok_or(PasskeyError::NotFound)?;
+        let challenge = Self::extract_client_challenge(&attestation)?;
+        if challenge != expected {
+            return Err(PasskeyError::Error("Challenge mismatch".to_string()));
+        }
         let mut credentials = self.credentials.lock()
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
 
@@ -114,13 +148,41 @@ impl PasskeyManager {
     pub async fn authenticate_passkey(&self, id: &str, _assertion: Value) -> Result<Value, PasskeyError> {
         // In a full implementation, this would verify the assertion
         // For now, we'll just return success
+        let expected = {
+            let challenges = self.challenges.lock()
+                .map_err(|e| PasskeyError::Error(e.to_string()))?;
+            challenges.get(id).cloned()
+        };
+        let expected = expected.ok_or(PasskeyError::NotFound)?;
+        let challenge = Self::extract_client_challenge(&_assertion)?;
+        if challenge != expected {
+            return Err(PasskeyError::Error("Challenge mismatch".to_string()));
+        }
         let credentials = self.credentials.lock()
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
 
         if credentials.contains_key(id) {
+            if let Some(list) = credentials.get(id) {
+                let assertion_id = _assertion.get("rawId")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| _assertion.get("id").and_then(|v| v.as_str()));
+                if let Some(assertion_id) = assertion_id {
+                    let matched = list.iter().any(|c| {
+                        c.get("rawId").and_then(|v| v.as_str()) == Some(assertion_id)
+                            || c.get("id").and_then(|v| v.as_str()) == Some(assertion_id)
+                    });
+                    if !matched {
+                        return Err(PasskeyError::NotFound);
+                    }
+                }
+            }
             // Generate a token for vault access
             let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(rand::random::<[u8; 32]>());
+
+            let mut challenges = self.challenges.lock()
+                .map_err(|e| PasskeyError::Error(e.to_string()))?;
+            challenges.remove(id);
 
             Ok(serde_json::json!({
                 "success": true,
