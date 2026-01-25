@@ -528,11 +528,11 @@
 
 ### Remove Obsolete Code
 - [ ] **Remove server-only code**
-  - [ ] Remove `server.ts` (Express server)
-  - [ ] Remove `src/server/*` directory
+  - [x] Remove `server.ts` (Express server)
+  - [x] Remove `src/server/*` directory
   - [ ] Remove server-side encryption code (Node.js)
   - [ ] Remove keytar integration
-  - [ ] Remove server-side WebAuthn code
+  - [x] Remove server-side WebAuthn code
 
 - [ ] **Remove Docker artifacts**
   - [ ] Remove `Dockerfile`
@@ -541,9 +541,9 @@
   - [ ] Remove Docker-related scripts
 
 - [ ] **Clean up npm dependencies**
-  - [ ] Remove Express and related middleware
+  - [x] Remove Express and related middleware
   - [ ] Remove keytar
-  - [ ] Remove server-only dependencies
+  - [x] Remove server-only dependencies
   - [ ] Remove unused packages
   - [ ] Run `npm prune`
 

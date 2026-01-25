@@ -22,7 +22,6 @@ This file lists suggested improvements, enhancements, and higher-priority next s
 
 ### Security & Hardening
 
-- Add `@types/*` type dependencies for express & third-party libs to avoid ambient shims.
 - Add CI secrets scanning to prevent accidental leakage of API keys in PRs.
 
 ### Observability & Audit
