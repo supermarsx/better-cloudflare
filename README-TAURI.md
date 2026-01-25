@@ -88,7 +88,7 @@ better-cloudflare/
 ```bash
 # Development
 npm run tauri:dev          # Run desktop app in dev mode
-npm run dev                # Run Next.js only (web mode)
+npm run dev                # Run Next.js only (UI-only, no backend)
 
 # Building
 npm run tauri:build        # Build desktop app

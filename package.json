@@ -31,8 +31,7 @@
     "ci": "npm run check",
     "clean:src": "tsx ./scripts/cleanup-src-js.ts",
     "check-spf": "tsx ./scripts/check-spf.ts",
-    "docs": "typedoc --out docs src --excludePrivate --excludeExternals",
-    "server": "tsx server.ts"
+    "docs": "typedoc --out docs src --excludePrivate --excludeExternals"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.14",
@@ -42,13 +41,10 @@
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-switch": "^1.2.5",
     "@radix-ui/react-toast": "^1.2.14",
-    "@simplewebauthn/server": "^6.0.0",
     "@tailwindcss/postcss": "^4.1.11",
     "class-variance-authority": "^0.7.1",
     "cloudflare": "^4.5.0",
     "clsx": "^2.1.1",
-    "express": "^4.19.2",
-    "express-rate-limit": "^6.11.2",
     "i18next": "^23.0.1",
     "idb": "^7.1.1",
     "lucide-react": "^0.525.0",

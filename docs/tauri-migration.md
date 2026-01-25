@@ -161,9 +161,6 @@ import { TauriClient } from '@/lib/tauri-client';
 if (TauriClient.isTauri()) {
   // Use Tauri IPC
   const keys = await TauriClient.getApiKeys();
-} else {
-  // Fall back to HTTP (for web version)
-  const response = await fetch('/api/keys');
 }
 ```
 
@@ -188,7 +185,7 @@ if (TauriClient.isTauri()) {
 
 **Vault & Passkeys**
 - `store_vault_secret(id, secret)` - Store in OS keychain
-- `get_vault_secret(id)` - Retrieve from keychain
+- `get_vault_secret(id, passkey_token)` - Retrieve from keychain (requires passkey token)
 - `delete_vault_secret(id)` - Delete from keychain
 - `get_passkey_registration_options(id)` - Start passkey registration
 - `register_passkey(id, attestation)` - Complete registration
@@ -203,6 +200,11 @@ if (TauriClient.isTauri()) {
 
 **Audit**
 - `get_audit_entries()` - Get audit log
+- `export_audit_entries(format)` - Export audit log as JSON or CSV
+
+**Preferences**
+- `get_preferences()` - Load desktop preferences
+- `update_preferences(preferences)` - Persist desktop preferences
 
 ## Security Improvements
 

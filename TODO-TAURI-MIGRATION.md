@@ -1,7 +1,7 @@
 # Tauri Migration TODO List
 
 > **Status**: Tauri architecture implemented, frontend migration in progress
-> **Last Updated**: January 23, 2026
+> **Last Updated**: January 25, 2026
 
 ## 🚀 Phase 1: Development Environment Setup
 
@@ -122,9 +122,9 @@
   - [ ] Benchmark vs Node.js backend
 
 ### Additional Features
-- [ ] **Implement audit logging** (`src-tauri/src/audit.rs`)
-  - [ ] Design audit log format (JSON lines?)
-  - [ ] Log all sensitive operations (login, key changes, DNS modifications)
+- [x] **Implement audit logging** (`src-tauri/src/commands.rs`, `src-tauri/src/storage.rs`)
+  - [x] Design audit log format (JSON array stored in `audit_log`)
+  - [x] Log all sensitive operations (login, key changes, DNS modifications)
   - [x] Log key/vault operations to local audit storage
   - [x] Log DNS, passkey, encryption operations to local audit storage
   - [x] Log auth token verification attempts
@@ -159,7 +159,7 @@
 ## 💻 Phase 3: Frontend Migration
 
 ### Core Infrastructure
-- [ ] **Update `src/lib/server-client.ts`**
+- [x] **Update `src/lib/server-client.ts`**
   - [x] Detect Tauri environment vs web environment
   - [x] Route requests to TauriClient when in desktop mode
   - [x] Fallback to HTTP client for web mode (if needed)
@@ -234,7 +234,8 @@
   - [ ] Verify encryption status indicators
 
 - [ ] **Settings/Preferences**
-  - [ ] Update storage calls for preferences
+  - [x] Update storage calls for desktop preferences (vaultEnabled, last zone, auto-refresh)
+  - [ ] Update storage calls for remaining preferences (theme, language, other)
   - [ ] Test language selection persistence
   - [ ] Test theme persistence
   - [ ] Test other user preferences
@@ -258,17 +259,19 @@
 ### Tauri-Only Parity Checklist
 - [ ] **Decide final support for web/server mode** (dual-mode vs desktop-only)
 - [ ] **Remove server runtime entrypoints if desktop-only**
-  - [ ] Remove `server.ts`
-  - [ ] Remove `src/server/*`
-  - [ ] Remove server-only middleware and config
-- [ ] **Remove server-only dependencies if desktop-only**
-  - [ ] Drop Express and middleware packages
+  - [x] Remove `server.ts`
+  - [x] Remove `src/server/*`
+  - [x] Remove server-only middleware and config
+- [x] **Remove server-only dependencies if desktop-only**
+  - [x] Drop Express and middleware packages
   - [ ] Remove keytar types and optional keytar usage
   - [ ] `npm prune` to clean unused packages
 - [ ] **Update spec/docs to remove optional HTTP server references** if desktop-only
+  - [x] Update `spec.md` to remove optional HTTP server references
+  - [x] Update README/docs as needed
 - [ ] **Audit CSP settings in `tauri.conf.json`** (remove `unsafe-eval`/`unsafe-inline` if possible)
 - [ ] **Add desktop error mapping** (map Tauri errors to user-friendly messages)
-- [ ] **Add login audit events** for password-based login success/failure
+- [x] **Add login audit events** for password-based login success/failure
 - [ ] **Add passkey verification** (attestation + assertion signature validation in Rust)
 - [ ] **Gate vault store/delete with passkey tokens** (desktop mode) if required
 - [x] **Persist `vaultEnabled` preference in Rust storage** (desktop mode)
