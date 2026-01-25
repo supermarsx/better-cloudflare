@@ -92,7 +92,13 @@ export class TauriClient {
     _page?: number,
     _perPage?: number
   ): Promise<TauriDNSRecord[]> {
-    return invoke("get_dns_records", { apiKey, email, zoneId });
+    return invoke("get_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      page: _page,
+      per_page: _perPage,
+    });
   }
 
   static async createDNSRecord(
@@ -148,9 +154,18 @@ export class TauriClient {
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    format: string
+    format: string,
+    page?: number,
+    perPage?: number
   ): Promise<string> {
-    return invoke("export_dns_records", { apiKey, email, zoneId, format });
+    return invoke("export_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      format,
+      page,
+      per_page: perPage,
+    });
   }
 
   // Vault Operations

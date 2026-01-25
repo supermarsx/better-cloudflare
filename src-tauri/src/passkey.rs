@@ -28,8 +28,10 @@ impl Default for PasskeyManager {
 impl PasskeyManager {
     pub async fn get_registration_options(&self, id: &str) -> Result<Value, PasskeyError> {
         // Generate a random challenge
-        let challenge = base64::engine::general_purpose::STANDARD
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(rand::random::<[u8; 32]>());
+        let user_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(id.as_bytes());
 
         // Store challenge
         let mut challenges = self.challenges.lock()
@@ -39,16 +41,20 @@ impl PasskeyManager {
         Ok(serde_json::json!({
             "challenge": challenge,
             "options": {
-                "rp": { "name": "Better Cloudflare" },
+                "rp": { "name": "Better Cloudflare", "id": "localhost" },
                 "user": {
-                    "id": id,
+                    "id": user_id,
                     "name": id,
                     "displayName": id
                 },
                 "pubKeyCredParams": [
                     { "alg": -7, "type": "public-key" },
                     { "alg": -257, "type": "public-key" }
-                ]
+                ],
+                "timeout": 60000,
+                "authenticatorSelection": {
+                    "userVerification": "preferred"
+                }
             }
         }))
     }
@@ -72,7 +78,7 @@ impl PasskeyManager {
 
     pub async fn get_auth_options(&self, id: &str) -> Result<Value, PasskeyError> {
         // Generate a random challenge
-        let challenge = base64::engine::general_purpose::STANDARD
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(rand::random::<[u8; 32]>());
 
         // Store challenge
@@ -80,10 +86,27 @@ impl PasskeyManager {
             .map_err(|e| PasskeyError::Error(e.to_string()))?;
         challenges.insert(id.to_string(), challenge.clone());
 
+        let credentials = self.credentials.lock()
+            .map_err(|e| PasskeyError::Error(e.to_string()))?;
+        let allow_credentials = credentials
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|c| {
+                let cred_id = c["id"].as_str().map(|s| s.to_string())
+                    .or_else(|| c["rawId"].as_str().map(|s| s.to_string()));
+                cred_id.map(|id| serde_json::json!({ "id": id, "type": "public-key" }))
+            })
+            .collect::<Vec<_>>();
+
         Ok(serde_json::json!({
             "challenge": challenge,
             "options": {
-                "allowCredentials": []
+                "rpId": "localhost",
+                "allowCredentials": allow_credentials,
+                "timeout": 60000,
+                "userVerification": "preferred"
             }
         }))
     }
@@ -96,7 +119,7 @@ impl PasskeyManager {
 
         if credentials.contains_key(id) {
             // Generate a token for vault access
-            let token = base64::engine::general_purpose::STANDARD
+            let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(rand::random::<[u8; 32]>());
 
             Ok(serde_json::json!({

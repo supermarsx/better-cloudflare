@@ -505,6 +505,8 @@ export class ServerClient {
         this.email,
         zoneId,
         format,
+        page,
+        perPage,
       );
     }
     const q: string[] = [];

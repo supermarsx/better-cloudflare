@@ -124,9 +124,11 @@ pub async fn get_dns_records(
     api_key: String,
     email: Option<String>,
     zone_id: String,
+    page: Option<u32>,
+    per_page: Option<u32>,
 ) -> Result<Vec<DNSRecord>, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.get_dns_records(&zone_id).await
+    client.get_dns_records(&zone_id, page, per_page).await
         .map_err(|e| e.to_string())
 }
 
@@ -185,9 +187,13 @@ pub async fn export_dns_records(
     email: Option<String>,
     zone_id: String,
     format: String,
+    page: Option<u32>,
+    per_page: Option<u32>,
 ) -> Result<String, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.export_dns_records(&zone_id, &format).await
+    client
+        .export_dns_records(&zone_id, &format, page, per_page)
+        .await
         .map_err(|e| e.to_string())
 }
 

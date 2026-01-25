@@ -83,8 +83,24 @@ impl CloudflareClient {
     pub async fn get_dns_records(
         &self,
         zone_id: &str,
+        page: Option<u32>,
+        per_page: Option<u32>,
     ) -> Result<Vec<crate::commands::DNSRecord>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
+        let mut url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records",
+            zone_id
+        );
+        let mut params = Vec::new();
+        if let Some(page) = page {
+            params.push(format!("page={}", page));
+        }
+        if let Some(per_page) = per_page {
+            params.push(format!("per_page={}", per_page));
+        }
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
         
         let mut req = self.client.get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key));
@@ -203,8 +219,14 @@ impl CloudflareClient {
         }))
     }
 
-    pub async fn export_dns_records(&self, zone_id: &str, format: &str) -> Result<String, CloudflareError> {
-        let records = self.get_dns_records(zone_id).await?;
+    pub async fn export_dns_records(
+        &self,
+        zone_id: &str,
+        format: &str,
+        page: Option<u32>,
+        per_page: Option<u32>,
+    ) -> Result<String, CloudflareError> {
+        let records = self.get_dns_records(zone_id, page, per_page).await?;
 
         match format {
             "json" => serde_json::to_string_pretty(&records)
@@ -223,6 +245,26 @@ impl CloudflareClient {
                     ));
                 }
                 Ok(csv)
+            }
+            "bind" => {
+                let mut bind = String::new();
+                for record in records {
+                    let ttl = record.ttl.unwrap_or(1);
+                    let ttl = if ttl == 1 { 300 } else { ttl };
+                    let priority = record
+                        .priority
+                        .map(|p| format!("{} ", p))
+                        .unwrap_or_default();
+                    bind.push_str(&format!(
+                        "{}\t{}\tIN\t{}\t{}{}\n",
+                        record.name,
+                        ttl,
+                        record.r#type,
+                        priority,
+                        record.content
+                    ));
+                }
+                Ok(bind)
             }
             _ => Err(CloudflareError::ApiError("Unsupported format".to_string())),
         }
