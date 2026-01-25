@@ -797,13 +797,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
       <div className="max-w-6xl mx-auto space-y-6 pb-10">
-        <Card className="border-white/10 bg-gradient-to-br from-slate-950/80 via-slate-900/60 to-orange-950/30 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
-          <CardHeader>
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="space-y-2">
-                <CardTitle className="text-3xl tracking-tight">
-                  {t("DNS Manager", "DNS Manager")}
-                </CardTitle>
+        <div className="sticky top-0 z-20">
+          <Card className="border-white/10 bg-gradient-to-br from-slate-950/85 via-slate-900/70 to-orange-950/35 shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur">
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <CardTitle className="text-xl tracking-tight">
+                    {t("DNS Manager", "DNS Manager")}
+                  </CardTitle>
                 <p className="text-sm text-muted-foreground">
                   {t(
                     "Manage your Cloudflare DNS records",
@@ -811,88 +812,96 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   )}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button onClick={handleLogout} variant="outline">
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Logout
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={handleLogout} variant="outline">
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Logout
+                  </Button>
+                </div>
               </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-              <div className="space-y-2">
-                <Label htmlFor="zone-select">Domain/Zone</Label>
-                <Select
-                  value={selectedZoneId || undefined}
-                  onValueChange={(value) => {
-                    setSelectedZoneId(value);
-                    openZoneTab(value);
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a domain" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableZones.map((zone: Zone) => (
-                      <SelectItem key={zone.id} value={zone.id}>
-                        {zone.name} ({zone.status})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="zone-select">Domain/Zone</Label>
+                  <Select
+                    value={selectedZoneId || undefined}
+                    onValueChange={(value) => {
+                      setSelectedZoneId(value);
+                      openZoneTab(value);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a domain" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableZones.map((zone: Zone) => (
+                        <SelectItem key={zone.id} value={zone.id}>
+                          {zone.name} ({zone.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {activeTab && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                      {activeTab.records.length} records
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                      {filteredRecords.length} visible
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                      Zone: {selectedZoneData?.name ?? activeTab.zoneName}
+                    </div>
+                  </div>
+                )}
               </div>
-              {activeTab && (
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                    {activeTab.records.length} records
-                  </div>
-                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                    {filteredRecords.length} visible
-                  </div>
-                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                    Zone: {selectedZoneData?.name ?? activeTab.zoneName}
-                  </div>
+              {tabs.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {tabs.map((tab) => {
+                    const isActive = tab.id === activeTabId;
+                    return (
+                      <div
+                        key={tab.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => activateTab(tab.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            activateTab(tab.id);
+                          }
+                        }}
+                        className={`group flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition ${
+                          isActive
+                            ? "border-orange-500/40 bg-orange-500/10 text-orange-100"
+                            : "border-white/10 bg-black/30 text-muted-foreground hover:border-orange-500/30 hover:text-orange-100"
+                        }`}
+                      >
+                        <span className="max-w-[140px] truncate">
+                          {tab.zoneName}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-widest opacity-60">
+                          {tab.status ?? "zone"}
+                        </span>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeTab(tab.id);
+                          }}
+                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-orange-200"
+                          aria-label="Close tab"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-            </div>
-            {tabs.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {tabs.map((tab) => {
-                  const isActive = tab.id === activeTabId;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => activateTab(tab.id)}
-                      className={`group flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition ${
-                        isActive
-                          ? "border-orange-500/40 bg-orange-500/10 text-orange-100"
-                          : "border-white/10 bg-black/30 text-muted-foreground hover:border-orange-500/30 hover:text-orange-100"
-                      }`}
-                    >
-                      <span className="max-w-[140px] truncate">
-                        {tab.zoneName}
-                      </span>
-                      <span className="text-[10px] uppercase tracking-widest opacity-60">
-                        {tab.status ?? "zone"}
-                      </span>
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          closeTab(tab.id);
-                        }}
-                        className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-orange-200"
-                        aria-label="Close tab"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
         {activeTab ? (
           <Card className="min-h-[70vh] border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
             <CardHeader className="space-y-4">

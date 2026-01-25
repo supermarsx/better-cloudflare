@@ -66,7 +66,7 @@ export function ImportPreviewDialog({
                   type="checkbox"
                   checked={!!selected[idx]}
                   onChange={() => toggle(idx)}
-                  className="mr-2"
+                  className="checkbox-themed mr-2"
                 />
                 <div className="flex-1">
                   <div className="font-mono text-sm">
@@ -91,6 +91,7 @@ export function ImportPreviewDialog({
                 type="checkbox"
                 checked={dryRun}
                 onChange={() => setDryRun(!dryRun)}
+                className="checkbox-themed"
               />
             </div>
             <Button

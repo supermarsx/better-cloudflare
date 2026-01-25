@@ -802,7 +802,7 @@ export function RecordRow({
             checked={isSelected}
             onChange={(event) => onSelectChange?.(event.target.checked)}
             onClick={(event) => event.stopPropagation()}
-            className="mt-1 h-4 w-4 rounded border-white/20 bg-black/30 text-orange-400 focus:ring-orange-500/40"
+            className="checkbox-themed mt-1"
             aria-label="Select record"
           />
           <span

@@ -39,19 +39,25 @@ function App() {
 
   const languageSelectorTop = isDesktopEnv ? "top-12" : "top-3";
 
+  const mainOffset = isDesktopEnv ? "top-9" : "top-0";
+
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-screen bg-background text-foreground">
       {isDesktopEnv ? <WindowTitleBar /> : null}
-      <div className={`absolute right-3 z-20 ${languageSelectorTop}`}>
-        <LanguageSelector />
+      <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
+        <div className="rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-60 backdrop-blur-sm transition hover:opacity-90">
+          <LanguageSelector />
+        </div>
       </div>
-      <div className={isDesktopEnv ? "pt-9" : ""}>
+      <main
+        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed`}
+      >
         {isAuthenticated ? (
           <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
         ) : (
           <LoginForm onLogin={handleLogin} />
         )}
-      </div>
+      </main>
       <Toaster />
     </div>
   );

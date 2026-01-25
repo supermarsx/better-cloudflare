@@ -59,7 +59,7 @@ export function WindowTitleBar() {
       </div>
       <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
         <button
-          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-muted/60 hover:text-foreground"
+          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
           onClick={() => void withWindow("minimize")}
           type="button"
           aria-label="Minimize window"
@@ -68,7 +68,7 @@ export function WindowTitleBar() {
           -
         </button>
         <button
-          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-muted/60 hover:text-foreground"
+          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
           onClick={() => void withWindow("toggle-maximize")}
           type="button"
           aria-label="Toggle maximize"
@@ -77,7 +77,7 @@ export function WindowTitleBar() {
           []
         </button>
         <button
-          className="h-7 w-9 rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:bg-destructive/70 hover:text-destructive-foreground"
+          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-destructive/70 hover:text-destructive-foreground hover:shadow-[0_0_18px_rgba(255,90,50,0.4)] active:scale-[0.98]"
           onClick={() => void withWindow("close")}
           type="button"
           aria-label="Close window"

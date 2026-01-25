@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Space+Grotesk:wght@500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&display=swap");
 @import "tailwindcss";
 
 @layer base {
@@ -62,13 +62,45 @@
   }
 
   .titlebar-title {
-    font-family: "Fraunces", "Space Grotesk", "Segoe UI", sans-serif;
-    letter-spacing: 0.32em;
+    font-family: "Space Grotesk", "Segoe UI", sans-serif;
+    letter-spacing: 0.24em;
   }
 
   .titlebar-actions {
     font-family: "Space Grotesk", "Segoe UI", sans-serif;
     letter-spacing: 0.18em;
+  }
+
+  .scrollbar-themed {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .scrollbar-themed::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .scrollbar-themed::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-themed::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 140, 90, 0.4),
+      rgba(255, 80, 40, 0.2)
+    );
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .scrollbar-themed::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 160, 110, 0.6),
+      rgba(255, 100, 60, 0.35)
+    );
   }
 }
 
