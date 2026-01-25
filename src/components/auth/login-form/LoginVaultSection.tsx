@@ -1,12 +1,12 @@
 import { Button } from "@/components/ui/button";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 
 interface LoginVaultSectionProps {
   onRemoveVaultSecret: () => void;
 }
 
 export function LoginVaultSection({ onRemoveVaultSecret }: LoginVaultSectionProps) {
-  const { t } = useTranslation();
+  const { t } = useI18n();
 
   return (
     <div className="pt-2">
