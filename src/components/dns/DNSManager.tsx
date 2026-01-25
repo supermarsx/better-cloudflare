@@ -18,7 +18,7 @@ import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import type { DNSRecord, Zone, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 import { storageManager } from "@/lib/storage";
 import { LogOut } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
@@ -58,7 +58,7 @@ interface DNSManagerProps {
  * @param onLogout - callback invoked when the user logs out
  */
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
-  const { t } = useTranslation();
+  const { t } = useI18n();
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZone, setSelectedZone] = useState<string>("");
   const [records, setRecords] = useState<DNSRecord[]>([]);
