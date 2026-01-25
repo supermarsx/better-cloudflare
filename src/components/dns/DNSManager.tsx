@@ -20,7 +20,7 @@ import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
 import { storageManager } from "@/lib/storage";
-import { LogOut } from "lucide-react";
+import { Filter, LogOut, Search, X } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
 import { AuditLogDialog } from "@/components/audit/AuditLogDialog";
 import { TauriClient } from "@/lib/tauri-client";
@@ -515,41 +515,100 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 
   return (
-    <div className="min-h-screen bg-background p-4">
-      <div className="max-w-6xl mx-auto space-y-6">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
+      <div className="max-w-6xl mx-auto space-y-6 pb-10">
         {/* Header */}
-        <Card>
+        <Card className="border-white/10 bg-gradient-to-br from-slate-950/80 via-slate-900/60 to-orange-950/30 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-2xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="space-y-2">
+                <CardTitle className="text-3xl tracking-tight">
                   {t("DNS Manager", "DNS Manager")}
                 </CardTitle>
-                <p className="text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   {t(
                     "Manage your Cloudflare DNS records",
                     "Manage your Cloudflare DNS records",
                   )}
                 </p>
               </div>
-              <Button onClick={handleLogout} variant="outline">
-                <LogOut className="h-4 w-4 mr-2" />
-                Logout
-              </Button>
-              {isDesktop() && (
-                <Button
-                  onClick={() => setShowAuditLog(true)}
-                  variant="outline"
-                  className="ml-2"
-                >
-                  Audit Log
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedZone && (
+                  <AddRecordDialog
+                    open={showAddRecord}
+                    onOpenChange={setShowAddRecord}
+                    record={newRecord}
+                    onRecordChange={setNewRecord}
+                    onAdd={handleAddRecord}
+                    zoneName={selectedZoneData?.name}
+                    apiKey={apiKey}
+                    email={email}
+                  />
+                )}
+                <ImportExportDialog
+                  open={showImport}
+                  onOpenChange={setShowImport}
+                  importData={importData}
+                  importFormat={importFormat}
+                  onImportDataChange={setImportData}
+                  onImportFormatChange={setImportFormat}
+                  onImport={handleImport}
+                  serverExport={async (format) => {
+                    if (!selectedZone) return;
+                    try {
+                      const res = await exportDNSRecords(
+                        selectedZone,
+                        format,
+                        page,
+                        perPage,
+                      );
+                      const blob = new Blob([res], {
+                        type:
+                          format === "json"
+                            ? "application/json"
+                            : format === "csv"
+                              ? "text/csv"
+                              : "text/plain",
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `${selectedZone}-records.${format === "json" ? "json" : format === "csv" ? "csv" : "zone"}`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      toast({
+                        title: "Success",
+                        description: `Server export ${format.toUpperCase()} completed`,
+                      });
+                    } catch (err) {
+                      toast({
+                        title: "Error",
+                        description:
+                          "Server export failed: " + (err as Error).message,
+                        variant: "destructive",
+                      });
+                    }
+                  }}
+                  onExport={handleExport}
+                />
+                {isDesktop() && (
+                  <Button
+                    onClick={() => setShowAuditLog(true)}
+                    variant="outline"
+                  >
+                    Audit Log
+                  </Button>
+                )}
+                <Button onClick={handleLogout} variant="outline">
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Logout
                 </Button>
-              )}
+              </div>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="flex gap-4 items-end">
-              <div className="flex-1">
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div className="space-y-2">
                 <Label htmlFor="zone-select">Domain/Zone</Label>
                 <Select value={selectedZone} onValueChange={setSelectedZone}>
                   <SelectTrigger>
@@ -565,17 +624,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Select>
               </div>
               {selectedZone && (
-                <div className="flex gap-2">
-                  <AddRecordDialog
-                    open={showAddRecord}
-                    onOpenChange={setShowAddRecord}
-                    record={newRecord}
-                    onRecordChange={setNewRecord}
-                    onAdd={handleAddRecord}
-                    zoneName={selectedZoneData?.name}
-                    apiKey={apiKey}
-                    email={email}
-                  />
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                    {records.length} records
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                    {filteredRecords.length} visible
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
+                    Zone: {selectedZoneData?.name ?? selectedZone}
+                  </div>
                 </div>
               )}
             </div>
@@ -584,95 +642,54 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
         {/* DNS Records */}
         {selectedZone && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>DNS Records</CardTitle>
-                <div className="flex gap-2 items-center">
+          <Card className="border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
+            <CardHeader className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <CardTitle className="text-xl">DNS Records</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    {t("Edit inline, filter fast, and export with one click", "Edit inline, filter fast, and export with one click")}
+                  </p>
+                </div>
+                <Select
+                  value={String(autoRefreshInterval ?? 0)}
+                  onValueChange={(v) =>
+                    setAutoRefreshInterval(v ? Number(v) : null)
+                  }
+                >
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="Auto-refresh" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Off</SelectItem>
+                    <SelectItem value="60000">1 min</SelectItem>
+                    <SelectItem value="300000">5 min</SelectItem>
+                    <SelectItem value="600000">10 min</SelectItem>
+                    <SelectItem value="1800000">30 min</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder={t("Search records", "Search records")}
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-[200px]"
+                    className="pl-9"
                   />
-                  <ImportExportDialog
-                    open={showImport}
-                    onOpenChange={setShowImport}
-                    importData={importData}
-                    importFormat={importFormat}
-                    onImportDataChange={setImportData}
-                    onImportFormatChange={setImportFormat}
-                    onImport={handleImport}
-                    serverExport={async (format) => {
-                      if (!selectedZone) return;
-                      try {
-                        const res = await exportDNSRecords(
-                          selectedZone,
-                          format,
-                          page,
-                          perPage,
-                        );
-                        // create a blob and download
-                        const blob = new Blob([res], {
-                          type:
-                            format === "json"
-                              ? "application/json"
-                              : format === "csv"
-                                ? "text/csv"
-                                : "text/plain",
-                        });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `${selectedZone}-records.${format === "json" ? "json" : format === "csv" ? "csv" : "zone"}`;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                        toast({
-                          title: "Success",
-                          description: `Server export ${format.toUpperCase()} completed`,
-                        });
-                      } catch (err) {
-                        toast({
-                          title: "Error",
-                          description:
-                            "Server export failed: " + (err as Error).message,
-                          variant: "destructive",
-                        });
-                      }
-                    }}
-                    onExport={handleExport}
-                  />
-                  <Select
-                    value={String(autoRefreshInterval ?? 0)}
-                    onValueChange={(v) =>
-                      setAutoRefreshInterval(v ? Number(v) : null)
-                    }
-                  >
-                    <SelectTrigger className="w-32">
-                      <SelectValue placeholder="Auto-refresh" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="0">Off</SelectItem>
-                      <SelectItem value="60000">1 min</SelectItem>
-                      <SelectItem value="300000">5 min</SelectItem>
-                      <SelectItem value="600000">10 min</SelectItem>
-                      <SelectItem value="1800000">30 min</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex justify-end mb-4">
                 <Select
-                  value={typeFilter}
-                  onValueChange={(v) => setTypeFilter(v as RecordType | "")}
+                  value={typeFilter || "all"}
+                  onValueChange={(v) =>
+                    setTypeFilter(v === "all" ? "" : (v as RecordType))
+                  }
                 >
                   <SelectTrigger className="w-[180px]">
                     <SelectValue placeholder="All types" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">
+                    <SelectItem value="all">
                       {t("All types", "All types")}
                     </SelectItem>
                     {RECORD_TYPES.map((type) => (
@@ -682,7 +699,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     ))}
                   </SelectContent>
                 </Select>
-                <div className="ml-4 flex items-center gap-2">
+                <Select
+                  value={String(perPage)}
+                  onValueChange={(v) => setPerPage(Number(v))}
+                >
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Per page" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25">25</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-2 justify-start md:justify-end">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSearchTerm("");
+                      setTypeFilter("");
+                      setPage(1);
+                    }}
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Clear
+                  </Button>
+                  <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                    <Filter className="h-3 w-3" />
+                    Page {page}
+                  </div>
                   <Button
                     size="sm"
                     variant="outline"
@@ -691,7 +737,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   >
                     Prev
                   </Button>
-                  <div className="text-sm">Page {page}</div>
                   <Button
                     size="sm"
                     variant="outline"
@@ -699,21 +744,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   >
                     Next
                   </Button>
-                  <Select
-                    value={String(perPage)}
-                    onValueChange={(v) => setPerPage(Number(v))}
-                  >
-                    <SelectTrigger className="w-28 ml-2">
-                      <SelectValue placeholder="Per page" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="25">25</SelectItem>
-                      <SelectItem value="50">50</SelectItem>
-                      <SelectItem value="100">100</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
               </div>
+            </CardHeader>
+            <CardContent>
               {isLoading ? (
                 <div className="text-center py-8">Loading...</div>
               ) : filteredRecords.length === 0 ? (

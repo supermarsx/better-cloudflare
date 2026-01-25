@@ -1,5 +1,4 @@
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -28,16 +27,23 @@ impl CloudflareClient {
         }
     }
 
-    pub async fn verify_token(&self) -> Result<bool, CloudflareError> {
-        let url = "https://api.cloudflare.com/client/v4/user/tokens/verify";
-        
-        let mut req = self.client.get(url)
-            .header("Authorization", format!("Bearer {}", self.api_key));
-
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
+            req.header("X-Auth-Email", email)
+                .header("X-Auth-Key", &self.api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {}", self.api_key))
         }
+    }
 
+    pub async fn verify_token(&self) -> Result<bool, CloudflareError> {
+        let url = if self.email.is_some() {
+            "https://api.cloudflare.com/client/v4/user"
+        } else {
+            "https://api.cloudflare.com/client/v4/user/tokens/verify"
+        };
+
+        let req = self.apply_auth(self.client.get(url));
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
@@ -46,14 +52,7 @@ impl CloudflareClient {
 
     pub async fn get_zones(&self) -> Result<Vec<crate::commands::Zone>, CloudflareError> {
         let url = "https://api.cloudflare.com/client/v4/zones";
-        
-        let mut req = self.client.get(url)
-            .header("Authorization", format!("Bearer {}", self.api_key));
-
-        if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
-        }
-
+        let req = self.apply_auth(self.client.get(url));
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
@@ -103,12 +102,8 @@ impl CloudflareClient {
         }
         
         let mut req = self.client.get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key));
-
-        if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
-        }
-
+            ;
+        let req = self.apply_auth(req);
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
@@ -131,14 +126,7 @@ impl CloudflareClient {
     ) -> Result<crate::commands::DNSRecord, CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
         
-        let mut req = self.client.post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&record);
-
-        if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
-        }
-
+        let req = self.apply_auth(self.client.post(&url).json(&record));
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
@@ -159,14 +147,7 @@ impl CloudflareClient {
     ) -> Result<crate::commands::DNSRecord, CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
         
-        let mut req = self.client.put(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&record);
-
-        if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
-        }
-
+        let req = self.apply_auth(self.client.put(&url).json(&record));
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
@@ -182,13 +163,7 @@ impl CloudflareClient {
     pub async fn delete_dns_record(&self, zone_id: &str, record_id: &str) -> Result<(), CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
         
-        let mut req = self.client.delete(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key));
-
-        if let Some(email) = &self.email {
-            req = req.header("X-Auth-Email", email);
-        }
-
+        let req = self.apply_auth(self.client.delete(&url));
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
