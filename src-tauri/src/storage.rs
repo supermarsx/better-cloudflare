@@ -5,6 +5,13 @@ use std::sync::Mutex;
 use thiserror::Error;
 use crate::crypto::EncryptionConfig;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Preferences {
+    pub vault_enabled: Option<bool>,
+    pub auto_refresh_interval: Option<u32>,
+    pub last_zone: Option<String>,
+}
+
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("Storage error: {0}")]
@@ -297,6 +304,25 @@ impl Storage {
             .map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("encryption_settings", &json).await
     }
+
+    pub async fn get_preferences(&self) -> Result<Preferences, StorageError> {
+        match self.get_secret("preferences").await {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| StorageError::Error(e.to_string())),
+            Err(StorageError::NotFound) => Ok(Preferences {
+                vault_enabled: None,
+                auto_refresh_interval: None,
+                last_zone: None,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn set_preferences(&self, prefs: &Preferences) -> Result<(), StorageError> {
+        let json = serde_json::to_string(prefs)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret("preferences", &json).await
+    }
 }
 
 #[cfg(test)]
@@ -461,5 +487,23 @@ mod tests {
         let list = storage.get_passkeys(id).await.expect("get passkeys after delete");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["id"], "cred_2");
+    }
+
+    #[tokio::test]
+    async fn preferences_roundtrip() {
+        let storage = Storage::new(false);
+        let prefs = Preferences {
+            vault_enabled: Some(true),
+            auto_refresh_interval: Some(60000),
+            last_zone: Some("zone1".to_string()),
+        };
+        storage
+            .set_preferences(&prefs)
+            .await
+            .expect("set preferences");
+        let loaded = storage.get_preferences().await.expect("get preferences");
+        assert_eq!(loaded.vault_enabled, Some(true));
+        assert_eq!(loaded.auto_refresh_interval, Some(60000));
+        assert_eq!(loaded.last_zone.as_deref(), Some("zone1"));
     }
 }

@@ -23,6 +23,7 @@ import { storageManager } from "@/lib/storage";
 import { LogOut } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
 import { AuditLogDialog } from "@/components/audit/AuditLogDialog";
+import { TauriClient } from "@/lib/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
@@ -149,10 +150,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [loadZones]);
 
   useEffect(() => {
-    const last = storageManager.getLastZone();
-    if (last) {
-      setSelectedZone(last);
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) => {
+          const prefObj = prefs as {
+            last_zone?: string;
+            auto_refresh_interval?: number;
+          };
+          if (prefObj.last_zone) setSelectedZone(prefObj.last_zone);
+          if (typeof prefObj.auto_refresh_interval === "number") {
+            setAutoRefreshInterval(prefObj.auto_refresh_interval);
+          }
+        })
+        .catch(() => {});
+      return;
     }
+    const last = storageManager.getLastZone();
+    if (last) setSelectedZone(last);
   }, []);
 
   useEffect(() => {
@@ -165,14 +179,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     if (selectedZone) {
-      storageManager.setLastZone(selectedZone);
+      if (isDesktop()) {
+        TauriClient.getPreferences()
+          .then((prefs) =>
+            TauriClient.updatePreferences({
+              ...(prefs as Record<string, unknown>),
+              last_zone: selectedZone,
+            }),
+          )
+          .catch(() => {});
+      } else {
+        storageManager.setLastZone(selectedZone);
+      }
     }
   }, [selectedZone]);
 
   // Auto refresh: refresh records at the selected interval unless the user is
   // currently editing or has modal dialogs open to avoid disrupting work.
   useEffect(() => {
-    storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            auto_refresh_interval: autoRefreshInterval ?? undefined,
+          }),
+        )
+        .catch(() => {});
+    } else {
+      storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
+    }
     if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
     const id = setInterval(async () => {
       if (editingRecord || showAddRecord || showImport) return;

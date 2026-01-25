@@ -56,6 +56,9 @@ fn main() {
             
             // Audit
             commands::get_audit_entries,
+            commands::export_audit_entries,
+            commands::get_preferences,
+            commands::update_preferences,
             // SPF
             commands::simulate_spf,
             commands::spf_graph,

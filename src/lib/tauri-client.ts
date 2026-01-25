@@ -231,6 +231,12 @@ export class TauriClient {
     return invoke("get_audit_entries");
   }
 
+  static async exportAuditEntries(
+    format: "json" | "csv" = "json"
+  ): Promise<string> {
+    return invoke("export_audit_entries", { format });
+  }
+
   // SPF
   static async simulateSPF(
     domain: string,
@@ -241,5 +247,14 @@ export class TauriClient {
 
   static async getSPFGraph(domain: string): Promise<unknown> {
     return invoke("spf_graph", { domain });
+  }
+
+  // Preferences
+  static async getPreferences(): Promise<unknown> {
+    return invoke("get_preferences");
+  }
+
+  static async updatePreferences(prefs: unknown): Promise<void> {
+    return invoke("update_preferences", { prefs });
   }
 }

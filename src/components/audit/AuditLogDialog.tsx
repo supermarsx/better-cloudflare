@@ -27,42 +27,14 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(entries, null, 2)], {
-      type: "application/json",
-    });
+  const exportAudit = async (format: "json" | "csv") => {
+    const data = await TauriClient.exportAuditEntries(format);
+    const mime = format === "json" ? "application/json" : "text/csv";
+    const blob = new Blob([data], { type: mime });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "audit-log.json";
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const exportCsv = () => {
-    const headers = ["timestamp", "operation", "resource", "details"];
-    const rows = entries.map((entry) => {
-      const details = { ...entry };
-      delete details.timestamp;
-      delete details.operation;
-      delete details.resource;
-      return [
-        entry.timestamp ?? "",
-        entry.operation ?? "",
-        entry.resource ?? "",
-        JSON.stringify(details),
-      ];
-    });
-    const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
-    const csv =
-      headers.map(escape).join(",") +
-      "\n" +
-      rows.map((row) => row.map(escape).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "audit-log.csv";
+    link.download = `audit-log.${format}`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -136,10 +108,16 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
           <div className="flex items-center justify-between">
             {entries.length > 0 && (
               <div className="flex gap-2">
-                <Button variant="outline" onClick={exportJson}>
+                <Button
+                  variant="outline"
+                  onClick={() => exportAudit("json")}
+                >
                   Export JSON
                 </Button>
-                <Button variant="outline" onClick={exportCsv}>
+                <Button
+                  variant="outline"
+                  onClick={() => exportAudit("csv")}
+                >
                   Export CSV
                 </Button>
               </div>

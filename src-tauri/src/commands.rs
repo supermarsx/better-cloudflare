@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use tauri::State;
-use crate::storage::Storage;
+use crate::storage::{Preferences, Storage};
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
 use crate::passkey::PasskeyManager;
@@ -616,6 +616,63 @@ pub async fn benchmark_encryption(iterations: u32) -> Result<f64, String> {
 #[tauri::command]
 pub async fn get_audit_entries(storage: State<'_, Storage>) -> Result<Vec<serde_json::Value>, String> {
     storage.get_audit_entries().await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_audit_entries(
+    storage: State<'_, Storage>,
+    format: Option<String>,
+) -> Result<String, String> {
+    let entries = storage
+        .get_audit_entries()
+        .await
+        .map_err(|e| e.to_string())?;
+    let fmt = format.unwrap_or_else(|| "json".to_string());
+    if fmt == "json" {
+        return serde_json::to_string_pretty(&entries)
+            .map_err(|e| e.to_string());
+    }
+    if fmt == "csv" {
+        let headers = ["timestamp", "operation", "resource", "details"];
+        let mut rows = Vec::new();
+        rows.push(headers.join(","));
+        for entry in entries {
+            let timestamp = entry.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+            let operation = entry.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+            let resource = entry.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+            let mut details = entry.clone();
+            if let serde_json::Value::Object(ref mut map) = details {
+                map.remove("timestamp");
+                map.remove("operation");
+                map.remove("resource");
+            }
+            let detail_str = serde_json::to_string(&details).unwrap_or_else(|_| "{}".to_string());
+            let escape = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
+            rows.push(
+                vec![escape(timestamp), escape(operation), escape(resource), escape(&detail_str)]
+                    .join(","),
+            );
+        }
+        return Ok(rows.join("\n"));
+    }
+    Err("Unsupported format".to_string())
+}
+
+#[tauri::command]
+pub async fn get_preferences(
+    storage: State<'_, Storage>,
+) -> Result<Preferences, String> {
+    storage.get_preferences().await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_preferences(
+    storage: State<'_, Storage>,
+    prefs: Preferences,
+) -> Result<(), String> {
+    storage.set_preferences(&prefs).await
         .map_err(|e| e.to_string())
 }
 

@@ -115,7 +115,7 @@ Better Cloudflare uses a **native desktop application architecture** powered by 
 - **React 19**: UI components and state management
 - **Tauri Client** (`src/lib/tauri-client.ts`): TypeScript wrapper for all Tauri IPC commands
 - **UI Components**: Radix UI primitives with Tailwind CSS styling
-- **Local Storage**: Browser localStorage for non-sensitive UI state (last selected zone, preferences)
+- **Local Storage**: Browser localStorage for non-sensitive UI state in web mode (desktop uses backend preferences for key UI state)
 
 ### IPC Communication Layer
 
@@ -528,6 +528,19 @@ const ok = await invoke<boolean>('verify_token', {
   - `iterations: number`
 - **Returns**: `number` (duration in ms)
 
+### Preferences Commands
+
+#### `get_preferences`
+- **Purpose**: Fetch desktop UI preferences
+- **Parameters**: none
+- **Returns**: `{ vault_enabled?: boolean; auto_refresh_interval?: number; last_zone?: string }`
+
+#### `update_preferences`
+- **Purpose**: Update desktop UI preferences
+- **Parameters**:
+  - `prefs: { vault_enabled?: boolean; auto_refresh_interval?: number; last_zone?: string }`
+- **Returns**: `void`
+
 ### DNS Management Commands
 
 #### `get_zones`
@@ -733,6 +746,12 @@ const ok = await invoke<boolean>('verify_token', {
 - **Retention**: Last 1000 entries kept
 - **Export**: UI supports JSON/CSV download from desktop audit log viewer
 
+#### `export_audit_entries`
+- **Purpose**: Export audit entries as JSON or CSV
+- **Parameters**:
+  - `format?: "json" | "csv"`
+- **Returns**: `string`
+
 
 ### Error Handling
 
@@ -828,6 +847,8 @@ interface ApiKeyMetadata {
 }
 ```
 
+Desktop preferences (vault enabled, last zone, auto-refresh) are stored in the backend preferences store, not localStorage.
+
 ### OS Keychain Storage
 
 **Service Name**: `better-cloudflare`
@@ -854,6 +875,10 @@ interface ApiKeyMetadata {
 - **Passkey Credentials**: Stored in OS keychain (fallback to in-memory when unavailable)
   - Key: `passkeys:{id}`
   - Value: JSON array of WebAuthn credential metadata
+
+- **Preferences**: Desktop UI preferences
+  - Key: `preferences`
+  - Value: JSON object with `vault_enabled`, `auto_refresh_interval`, `last_zone`
 
 **Fallback Mechanism**:
 If OS keychain is unavailable or user denies access:

@@ -76,6 +76,14 @@ export function useLoginForm(
         .catch(() => {
           // Keep default config if Tauri settings are unavailable.
         });
+      TauriClient.getPreferences()
+        .then((prefs) => {
+          const prefObj = prefs as { vault_enabled?: boolean };
+          if (typeof prefObj.vault_enabled === "boolean") {
+            setVaultEnabled(prefObj.vault_enabled);
+          }
+        })
+        .catch(() => {});
       return;
     }
     cryptoManager.reloadConfig();
@@ -744,7 +752,19 @@ export function useLoginForm(
     vaultEnabled,
     setVaultEnabled: (enabled: boolean) => {
         setVaultEnabled(enabled);
-        storageManager.setVaultEnabled(enabled);
+        if (desktop) {
+          TauriClient.getPreferences()
+            .then((prefs) => {
+              const current = (prefs as Record<string, unknown>) ?? {};
+              return TauriClient.updatePreferences({
+                ...current,
+                vault_enabled: enabled,
+              });
+            })
+            .catch(() => {});
+        } else {
+          storageManager.setVaultEnabled(enabled);
+        }
     },
     handleLogin,
     handleAddKey,

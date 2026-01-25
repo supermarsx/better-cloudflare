@@ -7,9 +7,11 @@ import { AuditLogDialog } from "../src/components/audit/AuditLogDialog";
 import { TauriClient } from "../src/lib/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
+const originalExport = TauriClient.exportAuditEntries;
 
 after(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
+  TauriClient.exportAuditEntries = originalExport;
 });
 
 test("AuditLogDialog shows desktop-only message when not in Tauri", async () => {
@@ -34,6 +36,7 @@ test("AuditLogDialog loads entries in desktop mode", async () => {
   TauriClient.getAuditEntries = async () => [
     { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
   ];
+  TauriClient.exportAuditEntries = async () => "{}";
   try {
     let renderer: ReturnType<typeof create> | undefined;
     await act(async () => {
@@ -54,12 +57,44 @@ test("AuditLogDialog loads entries in desktop mode", async () => {
   }
 });
 
+test("AuditLogDialog calls backend export", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => [
+    { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
+  ];
+  let called: string[] = [];
+  TauriClient.exportAuditEntries = async (format: "json" | "csv" = "json") => {
+    called.push(format);
+    return "{}";
+  };
+  let renderer: ReturnType<typeof create> | undefined;
+  await act(async () => {
+    renderer = create(
+      React.createElement(AuditLogDialog, {
+        open: true,
+        onOpenChange: () => {},
+      }),
+    );
+  });
+  const buttons = renderer!.root.findAllByType("button");
+  const exportJson = buttons.find((b) =>
+    String(b.children).includes("Export JSON"),
+  );
+  const exportCsv = buttons.find((b) =>
+    String(b.children).includes("Export CSV"),
+  );
+  await act(async () => exportJson!.props.onClick());
+  await act(async () => exportCsv!.props.onClick());
+  assert.deepEqual(called, ["json", "csv"]);
+});
+
 test("AuditLogDialog handles load errors", async () => {
   (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
   const original = TauriClient.getAuditEntries;
   TauriClient.getAuditEntries = async () => {
     throw new Error("boom");
   };
+  TauriClient.exportAuditEntries = async () => "{}";
   try {
     let renderer: ReturnType<typeof create> | undefined;
     await act(async () => {

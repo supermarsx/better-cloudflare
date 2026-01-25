@@ -108,3 +108,18 @@ test("getVaultSecret passes token in desktop mode", async () => {
   assert.equal(secret, "secret");
   assert.deepEqual(params, ["key1", "ptok"]);
 });
+
+test("getVaultSecret surfaces missing token errors in desktop mode", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getVaultSecret = async (_id: string, token?: string) => {
+    if (!token) {
+      throw new Error("Passkey token required");
+    }
+    return "secret";
+  };
+  const client = new ServerClient("token", "http://example.com");
+  await assert.rejects(
+    () => client.getVaultSecret("key1"),
+    /Passkey token required/,
+  );
+});

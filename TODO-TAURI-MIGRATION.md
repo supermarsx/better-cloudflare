@@ -255,6 +255,26 @@
   - [ ] Update to use TauriClient where needed
   - [ ] Test hook state management
 
+### Tauri-Only Parity Checklist
+- [ ] **Decide final support for web/server mode** (dual-mode vs desktop-only)
+- [ ] **Remove server runtime entrypoints if desktop-only**
+  - [ ] Remove `server.ts`
+  - [ ] Remove `src/server/*`
+  - [ ] Remove server-only middleware and config
+- [ ] **Remove server-only dependencies if desktop-only**
+  - [ ] Drop Express and middleware packages
+  - [ ] Remove keytar types and optional keytar usage
+  - [ ] `npm prune` to clean unused packages
+- [ ] **Update spec/docs to remove optional HTTP server references** if desktop-only
+- [ ] **Audit CSP settings in `tauri.conf.json`** (remove `unsafe-eval`/`unsafe-inline` if possible)
+- [ ] **Add desktop error mapping** (map Tauri errors to user-friendly messages)
+- [ ] **Add login audit events** for password-based login success/failure
+- [ ] **Add passkey verification** (attestation + assertion signature validation in Rust)
+- [ ] **Gate vault store/delete with passkey tokens** (desktop mode) if required
+- [x] **Persist `vaultEnabled` preference in Rust storage** (desktop mode)
+- [x] **Persist desktop DNS preferences in Rust storage** (last zone, auto-refresh)
+- [x] **Add backend audit export command** (optional, to export without UI)
+
 ### API Route Removal (if using App Router API routes)
 - [ ] **Remove `app/api/*` routes** (no longer needed in desktop app)
   - [ ] Remove all API route handlers
@@ -284,6 +304,7 @@
   - [x] Test environment detection
   - [x] Mock Tauri API in tests
   - [x] Test desktop routing for SPF and vault token flows
+  - [x] Test audit export command wiring
 
 - [ ] **Run test suite**
   ```bash
