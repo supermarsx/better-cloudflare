@@ -20,7 +20,6 @@
     "test:unit": "npm run test",
     "test:all": "npm run test && npm run test:e2e",
     "test:e2e": "playwright test",
-    "migrate:vault-to-sqlite": "tsx ./scripts/migrate-vault-to-sqlite.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:web": "npm run build",
     "build:desktop": "npm run build && npm run tauri:build",

@@ -264,7 +264,7 @@
   - [x] Remove server-only middleware and config
 - [x] **Remove server-only dependencies if desktop-only**
   - [x] Drop Express and middleware packages
-  - [ ] Remove keytar types and optional keytar usage
+  - [x] Remove keytar types and optional keytar usage
   - [ ] `npm prune` to clean unused packages
 - [ ] **Update spec/docs to remove optional HTTP server references** if desktop-only
   - [x] Update `spec.md` to remove optional HTTP server references
@@ -531,18 +531,18 @@
   - [x] Remove `server.ts` (Express server)
   - [x] Remove `src/server/*` directory
   - [ ] Remove server-side encryption code (Node.js)
-  - [ ] Remove keytar integration
+  - [x] Remove keytar integration
   - [x] Remove server-side WebAuthn code
 
 - [ ] **Remove Docker artifacts**
-  - [ ] Remove `Dockerfile`
-  - [ ] Remove `docker-compose.yml`
+  - [x] Remove `Dockerfile`
+  - [x] Remove `docker-compose.yml`
   - [ ] Update `.dockerignore` or remove it
   - [ ] Remove Docker-related scripts
 
 - [ ] **Clean up npm dependencies**
   - [x] Remove Express and related middleware
-  - [ ] Remove keytar
+  - [x] Remove keytar
   - [x] Remove server-only dependencies
   - [ ] Remove unused packages
   - [ ] Run `npm prune`
