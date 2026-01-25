@@ -214,12 +214,61 @@ export class TauriClient {
   }
 
   // Encryption Settings
-  static async getEncryptionSettings(): Promise<unknown> {
-    return invoke("get_encryption_settings");
+  static async getEncryptionSettings(): Promise<{
+    iterations: number;
+    keyLength: number;
+    algorithm: string;
+  }> {
+    const raw = await invoke("get_encryption_settings");
+    const fallback = {
+      iterations: 100000,
+      keyLength: 256,
+      algorithm: "AES-GCM",
+    };
+    if (!raw || typeof raw !== "object") {
+      return fallback;
+    }
+    const obj = raw as {
+      iterations?: number;
+      keyLength?: number;
+      key_length?: number;
+      algorithm?: string;
+    };
+    const rawKeyLength =
+      typeof obj.keyLength === "number"
+        ? obj.keyLength
+        : typeof obj.key_length === "number"
+          ? obj.key_length
+          : undefined;
+    const normalizedKeyLength =
+      typeof rawKeyLength === "number"
+        ? rawKeyLength <= 64
+          ? rawKeyLength * 8
+          : rawKeyLength
+        : fallback.keyLength;
+    return {
+      iterations:
+        typeof obj.iterations === "number" ? obj.iterations : fallback.iterations,
+      keyLength: normalizedKeyLength,
+      algorithm:
+        typeof obj.algorithm === "string" ? obj.algorithm : fallback.algorithm,
+    };
   }
 
-  static async updateEncryptionSettings(config: unknown): Promise<void> {
-    return invoke("update_encryption_settings", { config });
+  static async updateEncryptionSettings(config: {
+    iterations: number;
+    keyLength: number;
+    algorithm: string;
+  }): Promise<void> {
+    const keyLengthBytes =
+      config.keyLength > 64 ? Math.floor(config.keyLength / 8) : config.keyLength;
+    return invoke("update_encryption_settings", {
+      config: {
+        iterations: config.iterations,
+        key_length: keyLengthBytes,
+        algorithm: config.algorithm,
+      },
+    });
   }
 
   static async benchmarkEncryption(iterations: number): Promise<number> {
