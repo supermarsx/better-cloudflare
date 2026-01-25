@@ -724,12 +724,10 @@ try {
 ```typescript
 import { TauriClient } from '@/lib/tauri-client';
 
-const client = new TauriClient();
-
 // Check if running in Tauri
 if (TauriClient.isTauri()) {
   // Desktop app - use Tauri commands
-  await client.verifyToken(token, email);
+  await TauriClient.verifyToken(token, email);
 } else {
   // Web mode - fallback or error
   throw new Error('Desktop app required');
@@ -750,12 +748,13 @@ if (TauriClient.isTauri()) {
 
 Better Cloudflare uses a **two-tier storage model**:
 
-1. **Browser localStorage**: Non-sensitive UI state
+1. **Browser localStorage**: Non-sensitive UI state (web + desktop)
    - Last selected zone
    - UI preferences (theme, language)
-   - Credential metadata (labels, IDs, encryption config)
+   - Current session id
+   - Web mode only: encrypted key metadata
 
-2. **OS Keychain**: Sensitive encrypted credentials
+2. **OS Keychain**: Sensitive encrypted credentials (desktop)
    - macOS: Keychain Access (via Security framework)
    - Windows: Credential Manager (via Windows Credential API)
    - Linux: Secret Service API (via libsecret/gnome-keyring)
@@ -766,7 +765,8 @@ Better Cloudflare uses a **two-tier storage model**:
 
 ```typescript
 interface StorageData {
-  apiKeys: ApiKeyMetadata[];  // Metadata only, no secrets
+  // Web mode only: encrypted key metadata stored client-side.
+  apiKeys?: ApiKeyMetadata[];
   currentSession?: string;     // Active credential ID
   lastZone?: string;           // Last selected zone ID
   preferences?: {
@@ -790,37 +790,29 @@ interface ApiKeyMetadata {
 
 ### OS Keychain Storage
 
-**Service Name**: `com.better-cloudflare.app`
+**Service Name**: `better-cloudflare`
 
 **Stored Items**:
-- **API Keys**: Encrypted with AES-256-GCM
-  - Key: `api_key:{id}`
-  - Value: JSON string containing encrypted token + metadata
-  ```json
-  {
-    "encrypted": "base64_ciphertext",
-    "salt": "base64_salt",
-    "nonce": "base64_nonce",
-    "iterations": 100000,
-    "keyLength": 256
-  }
-  ```
-
-- **Passkey Credentials**: WebAuthn credential data
-  - Key: `passkey:{id}`
-  - Value: JSON array of credential objects
+- **API Keys**: Stored as a JSON list
+  - Key: `api_keys_list`
+  - Value: JSON array with encrypted key blobs and metadata
   ```json
   [
     {
-      "id": "credential_id",
-      "publicKey": "base64_public_key",
-      "counter": 42,
-      "deviceName": "MacBook Pro Touch ID",
-      "createdAt": "2026-01-23T...",
-      "lastUsed": "2026-01-23T..."
+      "id": "key_123",
+      "label": "Work token",
+      "email": "user@example.com",
+      "encrypted_key": "base64_ciphertext"
     }
   ]
   ```
+
+- **Vault Secrets**: Transient secrets for passkey login
+  - Key: `vault:{id}`
+  - Value: decrypted API token
+
+- **Passkey Credentials**: Stored in-memory in the current implementation
+  - Persistence is a follow-up task
 
 **Fallback Mechanism**:
 If OS keychain is unavailable or user denies access:
@@ -936,7 +928,7 @@ Users can update encryption settings for stored keys:
    - Decrypt with old password
    - Re-encrypt with new password
    - Update keychain entry
-   - Update metadata in localStorage
+   - Update encryption config (desktop: Rust settings; web: localStorage)
 
 2. **Algorithm Upgrade**:
    - Decrypt with current settings
@@ -990,7 +982,7 @@ Users can update encryption settings for stored keys:
 **Protected Against:**
 - ✅ Network interception (no local server, direct HTTPS to Cloudflare)
 - ✅ XSS attacks (strict CSP, no dynamic code execution)
-- ✅ Credential theft from localStorage (encrypted in OS keychain)
+- ✅ Credential theft from browser storage (desktop keys live in OS keychain)
 - ✅ CSRF attacks (no cookies, no web session)
 - ✅ Man-in-the-middle (HTTPS to Cloudflare API only)
 - ✅ Tampering (AES-GCM authentication tags)
@@ -1040,12 +1032,13 @@ Users can update encryption settings for stored keys:
 **Passkey Storage:**
 1. WebAuthn credential generated on device
 2. Private key stored in platform authenticator (TPM/Secure Enclave)
-3. Public key + metadata stored in OS keychain
+3. Public key + metadata stored in backend memory (persistence TBD)
 4. Challenge-response prevents credential extraction
 5. Counter prevents replay attacks
 
 **Session Management:**
-- Active session stored in memory only
+- Active session id stored in localStorage (UI state only)
+- Decrypted token stays in memory only
 - Cleared on logout
 - Cleared on app close
 - No persistent session tokens
@@ -2421,7 +2414,7 @@ See `CONTRIBUTING.md` for guidelines.
 - DNS components: `src/components/dns/*`
 - UI primitives: `src/components/ui/*`
 - Tauri client: `src/lib/tauri-client.ts`
-- Storage & crypto: `src/lib/storage.ts`, `src/lib/crypto.ts` (legacy)
+- Storage & crypto: `src/lib/storage.ts`, `src/lib/crypto.ts` (web mode legacy)
 - Validation: `src/lib/validation.ts`
 - Types: `src/types/*`
 
@@ -2627,7 +2620,7 @@ await invoke('register_passkey', {
 - ❌ Network timeout → Retry 3 times, then error toast
 
 **App-Level Errors:**
-- ❌ Corrupted localStorage → Clear and prompt re-add keys
+- ❌ Corrupted localStorage → Clear UI state (web mode may need re-add keys)
 - ❌ Corrupted keychain entry → Delete and prompt re-add
 - ❌ App crash → Audit log preserved, safe restart
 
@@ -2637,5 +2630,5 @@ await invoke('register_passkey', {
 - ⚠️ Bulk import (1,000 records) → Progress bar, may take 30-60 seconds
 
 
-- Single-user oriented: Local storage-based keys and session model assume a single user per browser.
+- Single-user oriented: local UI state and keychain storage assume one user per device.
 

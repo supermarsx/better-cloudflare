@@ -388,8 +388,8 @@
   - [ ] Replace Express.js backend with Tauri/Rust backend
   - [x] Update API section (HTTP REST → Tauri Commands/IPC)
   - [ ] Update authentication flow diagrams
-  - [ ] Update encryption implementation details
-  - [ ] Update storage architecture (keyring vs keytar)
+  - [x] Update encryption implementation details
+  - [x] Update storage architecture (keyring vs keytar)
   - [ ] Update deployment model (installers vs Docker)
   - [ ] Remove server deployment sections
   - [ ] Add desktop app distribution section
