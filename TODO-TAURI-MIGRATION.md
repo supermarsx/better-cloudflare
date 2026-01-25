@@ -238,7 +238,7 @@
 
 ### Hooks Migration
 - [ ] **`src/hooks/use-cloudflare-api.ts`**
-  - [ ] Update to use TauriClient
+  - [x] Update to use TauriClient
   - [ ] Test all hook methods
   - [ ] Update error handling
   - [ ] Test React Query integration (if used)
@@ -272,9 +272,9 @@
   - [ ] Review all other tests for needed updates
 
 - [ ] **Add Tauri-specific tests**
-  - [ ] Test TauriClient wrapper functions
+  - [x] Test TauriClient wrapper functions
   - [ ] Test error mapping
-  - [ ] Test environment detection
+  - [x] Test environment detection
   - [ ] Mock Tauri API in tests
 
 - [ ] **Run test suite**

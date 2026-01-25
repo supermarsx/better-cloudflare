@@ -847,9 +847,9 @@ interface ApiKeyMetadata {
   - Key: `vault:{id}`
   - Value: decrypted API token
 
-- **Passkey Credentials**: Stored in-memory in the current implementation
+- **Passkey Credentials**: Stored in OS keychain (fallback to in-memory when unavailable)
   - Key: `passkeys:{id}`
-  - Value: JSON array of WebAuthn credential metadata (stored in keychain)
+  - Value: JSON array of WebAuthn credential metadata
 
 **Fallback Mechanism**:
 If OS keychain is unavailable or user denies access:
