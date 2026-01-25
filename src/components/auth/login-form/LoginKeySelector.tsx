@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Pencil, Trash2 } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 import type { ApiKey } from "@/types/dns";
 
 interface LoginKeySelectorProps {
@@ -35,7 +35,7 @@ export function LoginKeySelector({
   onLogin,
   isLoading,
 }: LoginKeySelectorProps) {
-  const { t } = useTranslation();
+  const { t } = useI18n();
   const hasKeys = apiKeys.length > 0;
 
   return (

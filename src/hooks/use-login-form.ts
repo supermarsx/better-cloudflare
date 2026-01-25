@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/hooks/use-toast";
 import { storageManager } from "@/lib/storage";
 import { storageBackend } from "@/lib/storage-util";
-import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import { cryptoManager } from "@/lib/crypto";
 import { ServerClient } from "@/lib/server-client";
 import type { ApiKey } from "@/types/dns";
@@ -18,8 +18,7 @@ import {
 export function useLoginForm(
   onLogin: (apiKey: string, email?: string) => void | Promise<void>,
 ) {
-  const { t } = useTranslation();
-  const { toast } = useToast();
+  const t = i18next.t.bind(i18next);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const backend = storageBackend();
   const desktop = isDesktop();

@@ -1,9 +1,9 @@
 import { Key } from "lucide-react";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 
 export function LoginHeader() {
-  const { t } = useTranslation();
+  const { t } = useI18n();
   
   return (
     <CardHeader className="text-center pb-2">
