@@ -238,8 +238,33 @@ pub async fn decrypt_api_key(
         key_length: encrypted.key_length,
         algorithm: encrypted.algorithm,
     });
-    crypto.decrypt(&encrypted.encrypted_key, &password)
-        .map_err(|e| e.to_string())
+    match crypto.decrypt(&encrypted.encrypted_key, &password) {
+        Ok(value) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "auth:decrypt_api_key",
+                    "resource": id,
+                    "success": true
+                }),
+            )
+            .await;
+            Ok(value)
+        }
+        Err(err) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "auth:decrypt_api_key",
+                    "resource": id,
+                    "success": false,
+                    "error": err.to_string()
+                }),
+            )
+            .await;
+            Err(err.to_string())
+        }
+    }
 }
 
 // DNS Operations
