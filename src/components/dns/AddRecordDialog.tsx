@@ -37,7 +37,7 @@ import {
 } from "@/lib/dns-parsers";
 import type { SPFGraph, SPFMechanism } from "@/lib/spf";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
-import { useTranslation } from "react-i18next";
+import { useI18n } from "@/hooks/use-i18n";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
 import { Plus } from "lucide-react";
 
@@ -76,7 +76,7 @@ export function AddRecordDialog({
   apiKey,
   email,
 }: AddRecordDialogProps) {
-  const { t } = useTranslation();
+  const { t } = useI18n();
   const { simulateSPF, getSPFGraph } = useCloudflareAPI(apiKey, email);
   const ttlValue = record.ttl === 1 ? "auto" : record.ttl;
   const isCustomTTL =
