@@ -102,6 +102,28 @@
       rgba(255, 100, 60, 0.35)
     );
   }
+
+  .checkbox-themed {
+    width: 16px;
+    height: 16px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(10, 10, 15, 0.55);
+    accent-color: rgb(255 130 80);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    transition: box-shadow 160ms ease, border-color 160ms ease,
+      background-color 160ms ease;
+  }
+
+  .checkbox-themed:hover {
+    border-color: rgba(255, 170, 120, 0.6);
+    box-shadow: 0 0 0 3px rgba(255, 120, 70, 0.18);
+  }
+
+  .checkbox-themed:focus-visible {
+    outline: 2px solid rgba(255, 150, 90, 0.6);
+    outline-offset: 2px;
+  }
 }
 
 @layer base {

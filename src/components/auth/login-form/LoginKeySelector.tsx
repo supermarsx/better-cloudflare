@@ -8,9 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Pencil, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
 import { useI18n } from "@/hooks/use-i18n";
 import type { ApiKey } from "@/types/dns";
+import { useState } from "react";
 
 interface LoginKeySelectorProps {
   apiKeys: ApiKey[];
@@ -37,6 +38,7 @@ export function LoginKeySelector({
 }: LoginKeySelectorProps) {
   const { t } = useI18n();
   const hasKeys = apiKeys.length > 0;
+  const [showPassword, setShowPassword] = useState(false);
 
   return (
     <>
@@ -92,16 +94,27 @@ export function LoginKeySelector({
         <Label htmlFor="password" className={hasKeys ? "text-orange-100/80" : "text-orange-100/40"}>
           {t("Password")}
         </Label>
-        <Input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => onPasswordChange(e.target.value)}
-          placeholder={hasKeys ? t("Enter your password") : t("Add an API key first")}
-          onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
-          disabled={!hasKeys}
-          className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 placeholder:text-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-        />
+        <div className="relative">
+          <Input
+            id="password"
+            type={showPassword ? "text" : "password"}
+            value={password}
+            onChange={(e) => onPasswordChange(e.target.value)}
+            placeholder={hasKeys ? t("Enter your password") : t("Add an API key first")}
+            onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
+            disabled={!hasKeys}
+            className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 pr-10 placeholder:text-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((prev) => !prev)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-orange-200/70 transition hover:text-orange-100"
+            aria-label={showPassword ? t("Hide password") : t("Show password")}
+            disabled={!hasKeys}
+          >
+            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
       <Button

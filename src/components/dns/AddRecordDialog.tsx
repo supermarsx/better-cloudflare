@@ -277,7 +277,10 @@ export function AddRecordDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button>
+        <Button
+          variant="outline"
+          className="border-white/10 bg-black/20 text-muted-foreground hover:text-foreground hover:border-orange-500/20"
+        >
           <Plus className="h-4 w-4 mr-2" />
           Add Record
         </Button>
