@@ -134,7 +134,7 @@ Better Cloudflare uses a **native desktop application architecture** powered by 
    - Authentication: `verify_token`, `store_vault_secret`, `get_vault_secret`, `delete_vault_secret`, `passkey_*`
    - DNS: `get_zones`, `get_dns_records`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
    - Encryption: `get_encryption_settings`, `update_encryption_settings`, `benchmark_encryption`
-   - Audit: `get_audit_logs`
+   - Audit: `get_audit_entries`
 
 3. **`crypto.rs`** (~180 lines): Cryptographic operations
    - AES-256-GCM encryption/decryption
