@@ -175,9 +175,12 @@ pub async fn create_bulk_dns_records(
     email: Option<String>,
     zone_id: String,
     records: Vec<DNSRecordInput>,
+    dryrun: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client.create_bulk_dns_records(&zone_id, records).await
+    client
+        .create_bulk_dns_records(&zone_id, records, dryrun.unwrap_or(false))
+        .await
         .map_err(|e| e.to_string())
 }
 

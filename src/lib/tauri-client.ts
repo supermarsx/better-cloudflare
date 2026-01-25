@@ -147,6 +147,7 @@ export class TauriClient {
       email,
       zoneId,
       records,
+      dryrun: _dryrun,
     });
   }
 

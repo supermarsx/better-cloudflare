@@ -199,7 +199,27 @@ impl CloudflareClient {
         &self,
         zone_id: &str,
         records: Vec<crate::commands::DNSRecordInput>,
+        dryrun: bool,
     ) -> Result<Value, CloudflareError> {
+        if dryrun {
+            let created = records
+                .into_iter()
+                .map(|record| {
+                    serde_json::json!({
+                        "type": record.r#type,
+                        "name": record.name,
+                        "content": record.content,
+                        "ttl": record.ttl,
+                        "priority": record.priority,
+                        "proxied": record.proxied
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(serde_json::json!({
+                "created": created,
+                "skipped": []
+            }));
+        }
         let mut created = Vec::new();
         let mut skipped = Vec::new();
 
