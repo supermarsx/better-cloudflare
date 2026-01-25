@@ -193,7 +193,10 @@ export class ServerClient {
    */
   async verifyToken(signal?: AbortSignal): Promise<void> {
     if (isDesktop()) {
-      await TauriClient.verifyToken(this.apiKey, this.email);
+      const ok = await TauriClient.verifyToken(this.apiKey, this.email);
+      if (!ok) {
+        throw new Error("Token verification failed");
+      }
       return;
     }
     await this.request("/verify-token", { method: "POST", signal });
@@ -397,7 +400,7 @@ export class ServerClient {
 
   async getPasskeyRegistrationOptions(
     id: string,
-  ): Promise<{ challenge: string }> {
+  ): Promise<{ challenge?: string; options?: unknown }> {
     /**
      * Request passkey registration options (a challenge) from the server.
      */
@@ -424,7 +427,9 @@ export class ServerClient {
     });
   }
 
-  async getPasskeyAuthOptions(id: string): Promise<{ challenge: string }> {
+  async getPasskeyAuthOptions(
+    id: string,
+  ): Promise<{ challenge?: string; options?: unknown }> {
     /**
      * Request passkey authentication options (a challenge) from the server.
      */

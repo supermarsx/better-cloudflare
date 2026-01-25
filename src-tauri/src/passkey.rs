@@ -218,6 +218,7 @@ impl PasskeyManager {
         if let Some(cred_list) = credentials.get_mut(id) {
             cred_list.retain(|c| {
                 c["id"].as_str() != Some(credential_id)
+                    && c["rawId"].as_str() != Some(credential_id)
             });
         }
 
