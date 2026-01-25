@@ -191,6 +191,7 @@
 
 - [ ] **DNS record management**
   - [x] Tauri backend parity for pagination + bind export + bulk dry-run
+  - [x] Tauri SPF simulate/graph commands
   - [ ] Update record CRUD operations
   - [ ] Test all record types (A, AAAA, CNAME, MX, TXT, etc.)
   - [ ] Test bulk operations

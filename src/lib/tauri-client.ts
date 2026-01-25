@@ -230,4 +230,16 @@ export class TauriClient {
   static async getAuditEntries(): Promise<unknown[]> {
     return invoke("get_audit_entries");
   }
+
+  // SPF
+  static async simulateSPF(
+    domain: string,
+    ip: string
+  ): Promise<{ result: string; reasons: string[]; lookups: number }> {
+    return invoke("simulate_spf", { domain, ip });
+  }
+
+  static async getSPFGraph(domain: string): Promise<unknown> {
+    return invoke("spf_graph", { domain });
+  }
 }

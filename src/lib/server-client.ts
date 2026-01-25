@@ -445,6 +445,9 @@ export class ServerClient {
     domain: string,
     ip: string,
   ): Promise<{ result: string; reasons: string[]; lookups: number }> {
+    if (isDesktop()) {
+      return TauriClient.simulateSPF(domain, ip);
+    }
     return this.request(
       `/spf/simulate?domain=${encodeURIComponent(domain)}&ip=${encodeURIComponent(ip)}`,
       { method: "GET" },
@@ -452,6 +455,9 @@ export class ServerClient {
   }
 
   async getSPFGraph(domain: string): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.getSPFGraph(domain);
+    }
     return this.request(`/spf/graph?domain=${encodeURIComponent(domain)}`, {
       method: "GET",
     });

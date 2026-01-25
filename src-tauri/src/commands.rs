@@ -4,6 +4,7 @@ use crate::storage::Storage;
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
 use crate::passkey::PasskeyManager;
+use crate::spf;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -311,4 +312,15 @@ pub async fn benchmark_encryption(iterations: u32) -> Result<f64, String> {
 pub async fn get_audit_entries(storage: State<'_, Storage>) -> Result<Vec<serde_json::Value>, String> {
     storage.get_audit_entries().await
         .map_err(|e| e.to_string())
+}
+
+// SPF
+#[tauri::command]
+pub async fn simulate_spf(domain: String, ip: String) -> Result<spf::SPFSimulation, String> {
+    spf::simulate_spf(&domain, &ip).await
+}
+
+#[tauri::command]
+pub async fn spf_graph(domain: String) -> Result<spf::SPFGraph, String> {
+    spf::build_spf_graph(&domain).await
 }

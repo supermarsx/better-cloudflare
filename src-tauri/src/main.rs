@@ -7,6 +7,7 @@ mod storage;
 mod cloudflare_api;
 mod passkey;
 mod audit;
+mod spf;
 
 use tauri::Manager;
 
@@ -51,6 +52,9 @@ fn main() {
             
             // Audit
             commands::get_audit_entries,
+            // SPF
+            commands::simulate_spf,
+            commands::spf_graph,
         ])
         .setup(|app| {
             // Initialize storage
