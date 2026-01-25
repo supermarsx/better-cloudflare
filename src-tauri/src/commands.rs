@@ -17,11 +17,29 @@ pub struct ApiKey {
 pub struct Zone {
     pub id: String,
     pub name: String,
+    pub status: String,
+    pub paused: bool,
+    pub r#type: String,
+    pub development_mode: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DNSRecord {
     pub id: Option<String>,
+    pub r#type: String,
+    pub name: String,
+    pub content: String,
+    pub ttl: Option<u32>,
+    pub priority: Option<u16>,
+    pub proxied: Option<bool>,
+    pub zone_id: String,
+    pub zone_name: String,
+    pub created_on: String,
+    pub modified_on: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DNSRecordInput {
     pub r#type: String,
     pub name: String,
     pub content: String,
@@ -117,7 +135,7 @@ pub async fn create_dns_record(
     api_key: String,
     email: Option<String>,
     zone_id: String,
-    record: DNSRecord,
+    record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client.create_dns_record(&zone_id, record).await
@@ -130,7 +148,7 @@ pub async fn update_dns_record(
     email: Option<String>,
     zone_id: String,
     record_id: String,
-    record: DNSRecord,
+    record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client.update_dns_record(&zone_id, &record_id, record).await
@@ -154,7 +172,7 @@ pub async fn create_bulk_dns_records(
     api_key: String,
     email: Option<String>,
     zone_id: String,
-    records: Vec<DNSRecord>,
+    records: Vec<DNSRecordInput>,
 ) -> Result<serde_json::Value, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client.create_bulk_dns_records(&zone_id, records).await

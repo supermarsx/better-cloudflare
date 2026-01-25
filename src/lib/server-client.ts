@@ -17,6 +17,15 @@ const DEFAULT_BASE = getEnv(
 )!;
 const DEFAULT_TIMEOUT = 10_000;
 
+function normalizeTauriRecordInput(
+  record: Partial<DNSRecord>,
+): Partial<DNSRecord> {
+  if (record.ttl === "auto") {
+    return { ...record, ttl: 1 };
+  }
+  return record;
+}
+
 /**
  * Build headers used for authorization toward our server API.
  *
@@ -221,6 +230,8 @@ export class ServerClient {
         this.apiKey,
         this.email,
         zoneId,
+        page,
+        perPage,
       ) as Promise<DNSRecord[]>;
     }
     const qsParts = [] as string[];
@@ -248,7 +259,7 @@ export class ServerClient {
         this.apiKey,
         this.email,
         zoneId,
-        record,
+        normalizeTauriRecordInput(record),
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records`, {
@@ -274,7 +285,8 @@ export class ServerClient {
         this.apiKey,
         this.email,
         zoneId,
-        records,
+        records.map((r) => normalizeTauriRecordInput(r)),
+        dryrun,
       ) as Promise<{ created: DNSRecord[]; skipped: unknown[] }>;
     }
     /**
@@ -310,7 +322,7 @@ export class ServerClient {
         this.email,
         zoneId,
         recordId,
-        record,
+        normalizeTauriRecordInput(record),
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {

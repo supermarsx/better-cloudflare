@@ -5,7 +5,32 @@
  * It replaces the HTTP-based ServerClient for desktop app usage.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
+
+export interface TauriZone {
+  id: string;
+  name: string;
+  status: string;
+  paused: boolean;
+  type: string;
+  development_mode: number;
+}
+
+export interface TauriDNSRecord {
+  id?: string;
+  type: string;
+  name: string;
+  content: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+  zone_id: string;
+  zone_name: string;
+  created_on: string;
+  modified_on: string;
+}
+
+export type TauriDNSRecordInput = Partial<TauriDNSRecord>;
 
 export class TauriClient {
   // Check if running in Tauri environment
@@ -15,11 +40,11 @@ export class TauriClient {
 
   // Authentication & Key Management
   static async verifyToken(apiKey: string, email?: string): Promise<boolean> {
-    return invoke('verify_token', { apiKey, email });
+    return invoke("verify_token", { apiKey, email });
   }
 
-  static async getApiKeys(): Promise<any[]> {
-    return invoke('get_api_keys');
+  static async getApiKeys(): Promise<unknown[]> {
+    return invoke("get_api_keys");
   }
 
   static async addApiKey(
@@ -28,7 +53,7 @@ export class TauriClient {
     email: string | undefined,
     password: string
   ): Promise<string> {
-    return invoke('add_api_key', { label, apiKey, email, password });
+    return invoke("add_api_key", { label, apiKey, email, password });
   }
 
   static async updateApiKey(
@@ -38,7 +63,7 @@ export class TauriClient {
     currentPassword?: string,
     newPassword?: string
   ): Promise<void> {
-    return invoke('update_api_key', {
+    return invoke("update_api_key", {
       id,
       label,
       email,
@@ -48,33 +73,35 @@ export class TauriClient {
   }
 
   static async deleteApiKey(id: string): Promise<void> {
-    return invoke('delete_api_key', { id });
+    return invoke("delete_api_key", { id });
   }
 
   static async decryptApiKey(id: string, password: string): Promise<string> {
-    return invoke('decrypt_api_key', { id, password });
+    return invoke("decrypt_api_key", { id, password });
   }
 
   // DNS Operations
-  static async getZones(apiKey: string, email?: string): Promise<any[]> {
-    return invoke('get_zones', { apiKey, email });
+  static async getZones(apiKey: string, email?: string): Promise<TauriZone[]> {
+    return invoke("get_zones", { apiKey, email });
   }
 
   static async getDNSRecords(
     apiKey: string,
     email: string | undefined,
-    zoneId: string
-  ): Promise<any[]> {
-    return invoke('get_dns_records', { apiKey, email, zoneId });
+    zoneId: string,
+    _page?: number,
+    _perPage?: number
+  ): Promise<TauriDNSRecord[]> {
+    return invoke("get_dns_records", { apiKey, email, zoneId });
   }
 
   static async createDNSRecord(
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    record: any
-  ): Promise<any> {
-    return invoke('create_dns_record', { apiKey, email, zoneId, record });
+    record: TauriDNSRecordInput
+  ): Promise<TauriDNSRecord> {
+    return invoke("create_dns_record", { apiKey, email, zoneId, record });
   }
 
   static async updateDNSRecord(
@@ -82,9 +109,9 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     recordId: string,
-    record: any
-  ): Promise<any> {
-    return invoke('update_dns_record', {
+    record: TauriDNSRecordInput
+  ): Promise<TauriDNSRecord> {
+    return invoke("update_dns_record", {
       apiKey,
       email,
       zoneId,
@@ -99,16 +126,22 @@ export class TauriClient {
     zoneId: string,
     recordId: string
   ): Promise<void> {
-    return invoke('delete_dns_record', { apiKey, email, zoneId, recordId });
+    return invoke("delete_dns_record", { apiKey, email, zoneId, recordId });
   }
 
   static async createBulkDNSRecords(
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    records: any[]
-  ): Promise<any> {
-    return invoke('create_bulk_dns_records', { apiKey, email, zoneId, records });
+    records: TauriDNSRecordInput[],
+    _dryrun?: boolean
+  ): Promise<{ created: TauriDNSRecord[]; skipped: unknown[] }> {
+    return invoke("create_bulk_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      records,
+    });
   }
 
   static async exportDNSRecords(
@@ -117,62 +150,68 @@ export class TauriClient {
     zoneId: string,
     format: string
   ): Promise<string> {
-    return invoke('export_dns_records', { apiKey, email, zoneId, format });
+    return invoke("export_dns_records", { apiKey, email, zoneId, format });
   }
 
   // Vault Operations
   static async storeVaultSecret(id: string, secret: string): Promise<void> {
-    return invoke('store_vault_secret', { id, secret });
+    return invoke("store_vault_secret", { id, secret });
   }
 
   static async getVaultSecret(id: string): Promise<string> {
-    return invoke('get_vault_secret', { id });
+    return invoke("get_vault_secret", { id });
   }
 
   static async deleteVaultSecret(id: string): Promise<void> {
-    return invoke('delete_vault_secret', { id });
+    return invoke("delete_vault_secret", { id });
   }
 
   // Passkey Operations
-  static async getPasskeyRegistrationOptions(id: string): Promise<any> {
-    return invoke('get_passkey_registration_options', { id });
+  static async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
+    return invoke("get_passkey_registration_options", { id });
   }
 
-  static async registerPasskey(id: string, attestation: any): Promise<void> {
-    return invoke('register_passkey', { id, attestation });
+  static async registerPasskey(
+    id: string,
+    attestation: unknown
+  ): Promise<void> {
+    return invoke("register_passkey", { id, attestation });
   }
 
-  static async getPasskeyAuthOptions(id: string): Promise<any> {
-    return invoke('get_passkey_auth_options', { id });
+  static async getPasskeyAuthOptions(id: string): Promise<unknown> {
+    return invoke("get_passkey_auth_options", { id });
   }
 
-  static async authenticatePasskey(id: string, assertion: any): Promise<any> {
-    return invoke('authenticate_passkey', { id, assertion });
+  static async authenticatePasskey(
+    id: string,
+    assertion: unknown
+  ): Promise<unknown> {
+    return invoke("authenticate_passkey", { id, assertion });
   }
 
-  static async listPasskeys(id: string): Promise<any[]> {
-    return invoke('list_passkeys', { id });
+  static async listPasskeys(id: string): Promise<unknown[]> {
+    return invoke("list_passkeys", { id });
   }
 
   static async deletePasskey(id: string, credentialId: string): Promise<void> {
-    return invoke('delete_passkey', { id, credentialId });
+    return invoke("delete_passkey", { id, credentialId });
   }
 
   // Encryption Settings
-  static async getEncryptionSettings(): Promise<any> {
-    return invoke('get_encryption_settings');
+  static async getEncryptionSettings(): Promise<unknown> {
+    return invoke("get_encryption_settings");
   }
 
-  static async updateEncryptionSettings(config: any): Promise<void> {
-    return invoke('update_encryption_settings', { config });
+  static async updateEncryptionSettings(config: unknown): Promise<void> {
+    return invoke("update_encryption_settings", { config });
   }
 
   static async benchmarkEncryption(iterations: number): Promise<number> {
-    return invoke('benchmark_encryption', { iterations });
+    return invoke("benchmark_encryption", { iterations });
   }
 
   // Audit
-  static async getAuditEntries(): Promise<any[]> {
-    return invoke('get_audit_entries');
+  static async getAuditEntries(): Promise<unknown[]> {
+    return invoke("get_audit_entries");
   }
 }

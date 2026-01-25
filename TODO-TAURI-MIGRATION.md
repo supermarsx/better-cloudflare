@@ -141,8 +141,8 @@
 - [ ] **Update `src/lib/server-client.ts`**
   - [x] Detect Tauri environment vs web environment
   - [x] Route requests to TauriClient when in desktop mode
-  - [ ] Fallback to HTTP client for web mode (if needed)
-  - [ ] Update all method signatures to match TauriClient
+  - [x] Fallback to HTTP client for web mode (if needed)
+  - [x] Update all method signatures to match TauriClient
 
 - [x] **Create environment detection utility**
   ```typescript

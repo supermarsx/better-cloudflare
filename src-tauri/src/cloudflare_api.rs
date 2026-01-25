@@ -67,6 +67,12 @@ impl CloudflareClient {
                 Some(crate::commands::Zone {
                     id: z["id"].as_str()?.to_string(),
                     name: z["name"].as_str()?.to_string(),
+                    status: z["status"].as_str().unwrap_or("unknown").to_string(),
+                    paused: z["paused"].as_bool().unwrap_or(false),
+                    r#type: z["type"].as_str().unwrap_or("").to_string(),
+                    development_mode: z["development_mode"]
+                        .as_u64()
+                        .unwrap_or(0) as u32,
                 })
             })
             .collect();
@@ -74,7 +80,10 @@ impl CloudflareClient {
         Ok(zones)
     }
 
-    pub async fn get_dns_records(&self, zone_id: &str) -> Result<Vec<crate::commands::DNSRecord>, CloudflareError> {
+    pub async fn get_dns_records(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<crate::commands::DNSRecord>, CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
         
         let mut req = self.client.get(&url)
@@ -93,17 +102,7 @@ impl CloudflareClient {
         let records = json["result"].as_array()
             .ok_or(CloudflareError::ApiError("Invalid response format".to_string()))?
             .iter()
-            .filter_map(|r| {
-                Some(crate::commands::DNSRecord {
-                    id: r["id"].as_str().map(|s| s.to_string()),
-                    r#type: r["type"].as_str()?.to_string(),
-                    name: r["name"].as_str()?.to_string(),
-                    content: r["content"].as_str()?.to_string(),
-                    ttl: r["ttl"].as_u64().map(|n| n as u32),
-                    priority: r["priority"].as_u64().map(|n| n as u16),
-                    proxied: r["proxied"].as_bool(),
-                })
-            })
+            .filter_map(parse_dns_record)
             .collect();
 
         Ok(records)
@@ -112,7 +111,7 @@ impl CloudflareClient {
     pub async fn create_dns_record(
         &self,
         zone_id: &str,
-        record: crate::commands::DNSRecord,
+        record: crate::commands::DNSRecordInput,
     ) -> Result<crate::commands::DNSRecord, CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
         
@@ -131,14 +130,8 @@ impl CloudflareClient {
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
         let result = &json["result"];
-        Ok(crate::commands::DNSRecord {
-            id: result["id"].as_str().map(|s| s.to_string()),
-            r#type: result["type"].as_str().unwrap_or("").to_string(),
-            name: result["name"].as_str().unwrap_or("").to_string(),
-            content: result["content"].as_str().unwrap_or("").to_string(),
-            ttl: result["ttl"].as_u64().map(|n| n as u32),
-            priority: result["priority"].as_u64().map(|n| n as u16),
-            proxied: result["proxied"].as_bool(),
+        parse_dns_record(result).ok_or_else(|| {
+            CloudflareError::ApiError("Invalid response format".to_string())
         })
     }
 
@@ -146,7 +139,7 @@ impl CloudflareClient {
         &self,
         zone_id: &str,
         record_id: &str,
-        record: crate::commands::DNSRecord,
+        record: crate::commands::DNSRecordInput,
     ) -> Result<crate::commands::DNSRecord, CloudflareError> {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
         
@@ -165,14 +158,8 @@ impl CloudflareClient {
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
         let result = &json["result"];
-        Ok(crate::commands::DNSRecord {
-            id: result["id"].as_str().map(|s| s.to_string()),
-            r#type: result["type"].as_str().unwrap_or("").to_string(),
-            name: result["name"].as_str().unwrap_or("").to_string(),
-            content: result["content"].as_str().unwrap_or("").to_string(),
-            ttl: result["ttl"].as_u64().map(|n| n as u32),
-            priority: result["priority"].as_u64().map(|n| n as u16),
-            proxied: result["proxied"].as_bool(),
+        parse_dns_record(result).ok_or_else(|| {
+            CloudflareError::ApiError("Invalid response format".to_string())
         })
     }
 
@@ -195,7 +182,7 @@ impl CloudflareClient {
     pub async fn create_bulk_dns_records(
         &self,
         zone_id: &str,
-        records: Vec<crate::commands::DNSRecord>,
+        records: Vec<crate::commands::DNSRecordInput>,
     ) -> Result<Value, CloudflareError> {
         let mut created = Vec::new();
         let mut skipped = Vec::new();
@@ -240,4 +227,20 @@ impl CloudflareClient {
             _ => Err(CloudflareError::ApiError("Unsupported format".to_string())),
         }
     }
+}
+
+fn parse_dns_record(value: &Value) -> Option<crate::commands::DNSRecord> {
+    Some(crate::commands::DNSRecord {
+        id: value["id"].as_str().map(|s| s.to_string()),
+        r#type: value["type"].as_str()?.to_string(),
+        name: value["name"].as_str()?.to_string(),
+        content: value["content"].as_str()?.to_string(),
+        ttl: value["ttl"].as_u64().map(|n| n as u32),
+        priority: value["priority"].as_u64().map(|n| n as u16),
+        proxied: value["proxied"].as_bool(),
+        zone_id: value["zone_id"].as_str().unwrap_or("").to_string(),
+        zone_name: value["zone_name"].as_str().unwrap_or("").to_string(),
+        created_on: value["created_on"].as_str().unwrap_or("").to_string(),
+        modified_on: value["modified_on"].as_str().unwrap_or("").to_string(),
+    })
 }
