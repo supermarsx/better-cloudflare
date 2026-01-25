@@ -27,9 +27,11 @@ import {
   FileDown,
   FileUp,
   Filter,
+  GripVertical,
   LogOut,
   Search,
   Settings,
+  Shield,
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
@@ -98,11 +100,6 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     label: "Audit",
     hint: "Review sensitive activity from the desktop backend",
   },
-  {
-    id: "settings",
-    label: "Settings",
-    hint: "Tune refresh, per-page defaults, and UI options",
-  },
 ];
 
 const createEmptyRecord = (): Partial<DNSRecord> => ({
@@ -149,6 +146,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [actionTab, setActionTab] = useState<ActionTab>("records");
   const [listHeight, setListHeight] = useState(600);
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
@@ -205,6 +204,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const activateTab = useCallback((tabId: string) => {
     setActiveTabId(tabId);
     setSelectedZoneId(tabId);
+    setActionTab("records");
   }, []);
 
   const closeTab = useCallback(
@@ -236,6 +236,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [getZones, toast],
   );
+
+  const reorderTabs = useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    setTabs((prev) => {
+      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
+      const targetIndex = prev.findIndex((tab) => tab.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const moveTabToEnd = useCallback((sourceId: string) => {
+    setTabs((prev) => {
+      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
+      if (sourceIndex < 0) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(sourceIndex, 1);
+      next.push(moved);
+      return next;
+    });
+  }, []);
 
   const loadRecords = useCallback(
     async (tab: ZoneTab, signal?: AbortSignal) => {
@@ -793,6 +817,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const selectedZoneData = activeTab
     ? availableZones.find((z) => z.id === activeTab.zoneId)
     : undefined;
+  const actionHint =
+    actionTab === "settings"
+      ? "Tune refresh, per-page defaults, and UI options"
+      : ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
@@ -812,12 +840,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   )}
                 </p>
               </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button onClick={handleLogout} variant="outline">
-                    <LogOut className="h-4 w-4 mr-2" />
-                    Logout
+              <div className="flex flex-wrap items-center gap-2">
+                {isDesktop() && (
+                  <Button
+                    onClick={() => setShowAuditLog(true)}
+                    variant="outline"
+                    size="icon"
+                    className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                    aria-label="Audit Log"
+                    title="Audit Log"
+                  >
+                    <Shield className="h-4 w-4" />
                   </Button>
-                </div>
+                )}
+                <Button
+                  onClick={handleLogout}
+                  variant="outline"
+                  size="icon"
+                  className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                  aria-label="Logout"
+                  title="Logout"
+                >
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -831,15 +877,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       openZoneTab(value);
                     }}
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a domain" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableZones.map((zone: Zone) => (
-                        <SelectItem key={zone.id} value={zone.id}>
-                          {zone.name} ({zone.status})
-                        </SelectItem>
-                      ))}
+                  <SelectTrigger className="bg-black/30 border-white/10 text-orange-50 focus:ring-orange-500/40">
+                    <SelectValue placeholder="Select a domain" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-black/90 border border-orange-500/20 text-orange-100">
+                    {availableZones.map((zone: Zone) => (
+                      <SelectItem
+                        key={zone.id}
+                        value={zone.id}
+                        className="cursor-pointer focus:bg-orange-500/20 focus:text-orange-100"
+                      >
+                        {zone.name} ({zone.status})
+                      </SelectItem>
+                    ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -857,10 +907,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </div>
                 )}
               </div>
-              {tabs.length > 0 && (
-                <div className="flex flex-wrap gap-2 fade-in">
+              {(tabs.length > 0 || actionTab === "settings") && (
+                <div
+                  className="flex flex-wrap gap-2 fade-in"
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const sourceId =
+                      dragTabId || event.dataTransfer.getData("text/plain");
+                    if (sourceId) {
+                      moveTabToEnd(sourceId);
+                    }
+                    setDragTabId(null);
+                    setDragOverId(null);
+                  }}
+                >
                   {tabs.map((tab) => {
-                    const isActive = tab.id === activeTabId;
+                    const isActive = tab.id === activeTabId && actionTab !== "settings";
                     return (
                       <div
                         key={tab.id}
@@ -872,12 +938,40 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             activateTab(tab.id);
                           }
                         }}
-                        className={`group flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
+                        draggable
+                        onDragStart={(event) => {
+                          setDragTabId(tab.id);
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", tab.id);
+                        }}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          if (dragOverId !== tab.id) {
+                            setDragOverId(tab.id);
+                          }
+                        }}
+                        onDragEnd={() => {
+                          setDragTabId(null);
+                          setDragOverId(null);
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const sourceId =
+                            dragTabId || event.dataTransfer.getData("text/plain");
+                          if (sourceId) {
+                            reorderTabs(sourceId, tab.id);
+                          }
+                          setDragTabId(null);
+                          setDragOverId(null);
+                        }}
+                        className={`group flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition cursor-grab ${
                           isActive
                             ? "border-orange-400/40 bg-orange-500/15 text-orange-100 shadow-[0_0_18px_rgba(255,120,60,0.18)]"
                             : "border-white/10 bg-black/20 text-muted-foreground hover:border-orange-400/30 hover:text-orange-100"
-                        }`}
+                        } ${dragOverId === tab.id ? "ring-1 ring-orange-400/40" : ""}`}
                       >
+                        <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         <span className="max-w-[140px] truncate">
                           {tab.zoneName}
                         </span>
@@ -897,6 +991,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     );
                   })}
+                  <button
+                    type="button"
+                    onClick={() => setActionTab("settings")}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
+                      actionTab === "settings"
+                        ? "border-orange-400/40 bg-orange-500/15 text-orange-100 shadow-[0_0_18px_rgba(255,120,60,0.18)]"
+                        : "border-white/10 bg-black/20 text-muted-foreground hover:border-orange-400/30 hover:text-orange-100"
+                    }`}
+                  >
+                    <Settings className="h-3.5 w-3.5" />
+                    Settings
+                  </button>
                 </div>
               )}
             </CardContent>
@@ -910,9 +1016,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardTitle className="text-xl">
                     {activeTab.zoneName}
                   </CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    {ACTION_TABS.find((tab) => tab.id === actionTab)?.hint}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{actionHint}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Select
@@ -932,31 +1036,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <SelectItem value="1800000">30 min</SelectItem>
                     </SelectContent>
                   </Select>
-                  {isDesktop() && (
-                    <Button
-                      onClick={() => setShowAuditLog(true)}
-                      variant="outline"
-                    >
-                      Audit Log
-                    </Button>
-                  )}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/40 p-1 fade-in">
-                {ACTION_TABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActionTab(tab.id)}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-medium transition ${
-                      actionTab === tab.id
-                        ? "bg-orange-500/20 text-orange-100 shadow-[0_0_12px_rgba(255,80,0,0.2)]"
-                        : "text-muted-foreground hover:text-orange-100"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+              {actionTab !== "settings" && (
+                <div className="flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/40 p-1 fade-in">
+                  {ACTION_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActionTab(tab.id)}
+                      className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-medium transition ${
+                        actionTab === tab.id
+                          ? "bg-orange-500/20 text-orange-100 shadow-[0_0_12px_rgba(255,80,0,0.2)]"
+                          : "text-muted-foreground hover:text-orange-100"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </CardHeader>
             <CardContent>
               {actionTab === "records" && (
@@ -1404,8 +1502,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="space-y-2">
                       <Label>Per-page defaults</Label>
                       <Select
-                        value={String(activeTab.perPage)}
+                        value={String(activeTab?.perPage ?? 50)}
                         onValueChange={(v) => {
+                          if (!activeTab) return;
                           const value = Number(v);
                           updateTab(activeTab.id, (prev) => ({
                             ...prev,
@@ -1413,6 +1512,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             page: 1,
                           }));
                         }}
+                        disabled={!activeTab}
                       >
                         <SelectTrigger className="w-48">
                           <SelectValue placeholder="Per page" />
@@ -1426,6 +1526,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <SelectItem value="0">All</SelectItem>
                         </SelectContent>
                       </Select>
+                      {!activeTab && (
+                        <div className="text-xs text-muted-foreground">
+                          Open a zone tab to configure per-page defaults.
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
