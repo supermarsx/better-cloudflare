@@ -7,6 +7,8 @@
  */
 import type { DNSRecord, Zone } from "@/types/dns";
 import { getEnv } from "./env";
+import { isDesktop } from "./environment";
+import { TauriClient } from "./tauri-client";
 
 const DEFAULT_BASE = getEnv(
   "SERVER_API_BASE",
@@ -181,6 +183,10 @@ export class ServerClient {
    * @returns Promise that resolves when verification succeeded
    */
   async verifyToken(signal?: AbortSignal): Promise<void> {
+    if (isDesktop()) {
+      await TauriClient.verifyToken(this.apiKey, this.email);
+      return;
+    }
     await this.request("/verify-token", { method: "POST", signal });
   }
 
@@ -191,6 +197,9 @@ export class ServerClient {
    * @returns an array of Zone objects
    */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
+    if (isDesktop()) {
+      return TauriClient.getZones(this.apiKey, this.email) as Promise<Zone[]>;
+    }
     return this.request("/zones", { signal });
   }
 
@@ -207,6 +216,13 @@ export class ServerClient {
     perPage?: number,
     signal?: AbortSignal,
   ): Promise<DNSRecord[]> {
+    if (isDesktop()) {
+      return TauriClient.getDNSRecords(
+        this.apiKey,
+        this.email,
+        zoneId,
+      ) as Promise<DNSRecord[]>;
+    }
     const qsParts = [] as string[];
     if (page) qsParts.push(`page=${page}`);
     if (perPage) qsParts.push(`per_page=${perPage}`);
@@ -227,6 +243,14 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
+    if (isDesktop()) {
+      return TauriClient.createDNSRecord(
+        this.apiKey,
+        this.email,
+        zoneId,
+        record,
+      ) as Promise<DNSRecord>;
+    }
     return this.request(`/zones/${zoneId}/dns_records`, {
       method: "POST",
       body: record,
@@ -245,6 +269,14 @@ export class ServerClient {
     dryrun?: boolean,
     signal?: AbortSignal,
   ): Promise<{ created: DNSRecord[]; skipped: unknown[] }> {
+    if (isDesktop()) {
+      return TauriClient.createBulkDNSRecords(
+        this.apiKey,
+        this.email,
+        zoneId,
+        records,
+      ) as Promise<{ created: DNSRecord[]; skipped: unknown[] }>;
+    }
     /**
      * Create multiple DNS records in a single request when supported by the
      * server. Optionally performs a dry-run by setting `dryrun` to true.
@@ -272,6 +304,15 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
+    if (isDesktop()) {
+      return TauriClient.updateDNSRecord(
+        this.apiKey,
+        this.email,
+        zoneId,
+        recordId,
+        record,
+      ) as Promise<DNSRecord>;
+    }
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: "PUT",
       body: record,
@@ -292,6 +333,14 @@ export class ServerClient {
     recordId: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteDNSRecord(
+        this.apiKey,
+        this.email,
+        zoneId,
+        recordId,
+      );
+    }
     await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: "DELETE",
       signal,
@@ -303,6 +352,10 @@ export class ServerClient {
      * Store a secret in the server-side vault. The server requires
      * valid credentials in the request headers to protect this endpoint.
      */
+    if (isDesktop()) {
+      await TauriClient.storeVaultSecret(id, secret);
+      return;
+    }
     await this.request(`/vault/${id}`, { method: "POST", body: { secret } });
   }
 
@@ -310,6 +363,9 @@ export class ServerClient {
     id: string,
     passkeyToken?: string,
   ): Promise<string | undefined> {
+    if (isDesktop()) {
+      return TauriClient.getVaultSecret(id);
+    }
     const data = await this.request(`/vault/${id}`, {
       method: "GET",
       headers: passkeyToken ? { "x-passkey-token": passkeyToken } : undefined,
@@ -320,6 +376,10 @@ export class ServerClient {
 
   async deleteVaultSecret(id: string): Promise<void> {
     /** Delete a vault secret on the server */
+    if (isDesktop()) {
+      await TauriClient.deleteVaultSecret(id);
+      return;
+    }
     await this.request(`/vault/${id}`, { method: "DELETE" });
   }
 
@@ -329,6 +389,9 @@ export class ServerClient {
     /**
      * Request passkey registration options (a challenge) from the server.
      */
+    if (isDesktop()) {
+      return TauriClient.getPasskeyRegistrationOptions(id);
+    }
     return this.request(`/passkeys/register/options/${id}`, { method: "GET" });
   }
 
@@ -339,6 +402,10 @@ export class ServerClient {
      * currently stores the provided attestation and should be extended to
      * verify it against a FIDO2 library in production deployments.
      */
+    if (isDesktop()) {
+      await TauriClient.registerPasskey(id, attestation);
+      return;
+    }
     await this.request(`/passkeys/register/${id}`, {
       method: "POST",
       body: attestation,
@@ -349,6 +416,9 @@ export class ServerClient {
     /**
      * Request passkey authentication options (a challenge) from the server.
      */
+    if (isDesktop()) {
+      return TauriClient.getPasskeyAuthOptions(id);
+    }
     return this.request(`/passkeys/authenticate/options/${id}`, {
       method: "GET",
     });
@@ -380,6 +450,9 @@ export class ServerClient {
      * includes a stubbed verification; extend with proper use of FIDO2
      * verification before production use.
      */
+    if (isDesktop()) {
+      return TauriClient.authenticatePasskey(id, assertion);
+    }
     return this.request(`/passkeys/authenticate/${id}`, {
       method: "POST",
       body: assertion,
@@ -387,10 +460,19 @@ export class ServerClient {
   }
 
   async listPasskeys(id: string): Promise<{ id: string; counter?: number }[]> {
+    if (isDesktop()) {
+      return TauriClient.listPasskeys(id) as Promise<
+        { id: string; counter?: number }[]
+      >;
+    }
     return this.request(`/passkeys/${id}`, { method: "GET" });
   }
 
   async deletePasskey(id: string, cid: string): Promise<void> {
+    if (isDesktop()) {
+      await TauriClient.deletePasskey(id, cid);
+      return;
+    }
     await this.request(`/passkeys/${id}/${cid}`, { method: "DELETE" });
   }
 
@@ -405,6 +487,14 @@ export class ServerClient {
      * are 'json', 'csv' and 'bind'. Optional pagination parameters are
      * forwarded to the server.
      */
+    if (isDesktop()) {
+      return TauriClient.exportDNSRecords(
+        this.apiKey,
+        this.email,
+        zoneId,
+        format,
+      );
+    }
     const q: string[] = [];
     q.push(`format=${format}`);
     if (page) q.push(`page=${page}`);
