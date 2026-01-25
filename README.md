@@ -9,14 +9,14 @@ The project requires **Node 18 or higher**. Use a modern Node version when runni
 
 ## Development
 
-Install dependencies and start the Vite development server:
+Install dependencies and start the Next.js development server:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open <http://localhost:5173> in your browser.
+Then open <http://localhost:3000> in your browser.
 
 ### Custom API base
 
@@ -37,19 +37,13 @@ By default the API server allows requests from any origin. Set
 `ALLOWED_ORIGINS` to a comma-separated list to restrict CORS:
 
 ```bash
-ALLOWED_ORIGINS=http://localhost:5173,http://example.com npm run server
+ALLOWED_ORIGINS=http://localhost:3000,http://example.com npm run server
 ```
 
 Then start the app pointing at the API server:
 
 ```bash
 VITE_SERVER_API_BASE=http://localhost:8787/api npm run dev
-```
-
-Or launch both in one step by running the server and Vite in parallel.
-
-```bash
-npm run dev:server
 ```
 
 ### Request timeout
@@ -69,13 +63,7 @@ const client = new ServerClient(
 
 ### Debugging
 
-Enable verbose logs from the Cloudflare API wrapper by running the development server in debug mode:
-
-```bash
-npm run dev:debug
-```
-
-This sets `VITE_DEBUG_CF_API=1` for the React app. You can also export this variable manually and use `npm run dev:server`.
+Enable verbose logs from the Cloudflare API wrapper by running the development server with `VITE_DEBUG_CF_API=1`:
 
 Set `DEBUG_SERVER=1` to enable detailed request logs from the Express server and
 `DEBUG_SERVER_API=1` to log Cloudflare API requests made by the server.
@@ -123,7 +111,7 @@ npm run build
 npm run preview
 ```
 
-The build output is placed in the `dist` directory.
+The build output is placed in the `out` directory.
 
 ## Optional OS Vault & Passkeys
 

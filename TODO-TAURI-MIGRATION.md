@@ -380,7 +380,7 @@
   - [ ] Add platform-specific installation instructions
   - [ ] Update screenshots
   - [ ] Add system requirements
-  - [ ] Update development setup instructions
+  - [x] Update development setup instructions
   - [ ] Link to README-TAURI.md for detailed desktop info
 
 - [ ] **Update `spec.md`** ⚠️ **CRITICAL**
