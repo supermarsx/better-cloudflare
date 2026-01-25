@@ -9,11 +9,13 @@ import { TauriClient } from "../src/lib/tauri-client";
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 const originalGetZones = TauriClient.getZones;
 const originalSimulate = TauriClient.simulateSPF;
+const originalVault = TauriClient.getVaultSecret;
 
 afterEach(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
   TauriClient.getZones = originalGetZones;
   TauriClient.simulateSPF = originalSimulate;
+  TauriClient.getVaultSecret = originalVault;
 });
 
 test("useCloudflareAPI routes getZones to Tauri in desktop mode", async () => {
@@ -60,4 +62,27 @@ test("useCloudflareAPI routes simulateSPF to Tauri in desktop mode", async () =>
   const res = await api.simulateSPF("example.com", "1.2.3.4");
   assert.equal(res.result, "pass");
   assert.deepEqual(params, ["example.com", "1.2.3.4"]);
+});
+
+test("useCloudflareAPI routes getVaultSecret to Tauri in desktop mode", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  let params: unknown[] = [];
+  TauriClient.getVaultSecret = async (...args: unknown[]) => {
+    params = args;
+    return "secret";
+  };
+
+  let api: ReturnType<typeof useCloudflareAPI>;
+  function Wrapper() {
+    api = useCloudflareAPI("token");
+    return null;
+  }
+
+  act(() => {
+    create(React.createElement(Wrapper));
+  });
+
+  const secret = await api.getVaultSecret("key1", "tok");
+  assert.equal(secret, "secret");
+  assert.deepEqual(params, ["key1", "tok"]);
 });
