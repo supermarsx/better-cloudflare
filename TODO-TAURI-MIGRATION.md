@@ -185,8 +185,8 @@
   - [ ] Test error scenarios
 
 - [ ] **`src/components/auth/LoginPasskeySection.tsx`**
-  - [ ] Test passkey registration in Tauri
-  - [ ] Test passkey authentication in Tauri
+  - [x] Test passkey registration in Tauri
+  - [x] Test passkey authentication in Tauri
   - [ ] Verify platform authenticator detection works
   - [x] Test device management dialog
 
