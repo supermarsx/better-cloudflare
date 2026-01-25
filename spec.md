@@ -416,7 +416,7 @@ Validation:
 
 Supported record types:
 
-We accept the following DNS record types in the UI and server API (inherited from `RECORD_TYPES`):
+We accept the following DNS record types in the UI and Rust backend (inherited from `RECORD_TYPES`):
 
 - A, AAAA, CNAME, MX, TXT, SRV, NS, PTR, CAA, DS, DNSKEY, NAPTR, SSHFP, TLSA, HINFO, LOC, SPF, RP, DNAME, CERT, SVCB, HTTPS, URI, ALIAS, ANAME
 
@@ -425,7 +425,7 @@ The UI offers specialized inputs for certain record types:
 
 - MX: `priority` input is displayed and required by validation.
 - SRV: inputs for `priority`, `weight`, `port` and `target` are shown; the UI composes these into the record `content` string.
-- A/AAAA: content must be a valid IPv4/IPv6 address (server-side validation).
+- A/AAAA: content must be a valid IPv4/IPv6 address (validated in the Rust backend).
 
 ## 9. IPC API specification (Tauri commands)
 
