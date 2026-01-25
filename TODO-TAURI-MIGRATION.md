@@ -47,6 +47,7 @@
 ### Testing & Validation
 - [x] **Add storage unit tests** (in-memory keyring off)
 - [x] **Add SPF parser/unit tests** (parse + CIDR checks)
+- [x] **Add crypto error-case tests** (invalid base64/short payload)
 - [ ] **Test crypto module** (`src-tauri/src/crypto.rs`)
   ```bash
   cd src-tauri

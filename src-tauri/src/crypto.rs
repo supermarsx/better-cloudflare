@@ -173,4 +173,19 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_invalid_base64() {
+        let crypto = CryptoManager::default();
+        let result = crypto.decrypt("not-base64", "password");
+        assert!(matches!(result, Err(CryptoError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_too_short_payload() {
+        let crypto = CryptoManager::default();
+        let short = base64::engine::general_purpose::STANDARD.encode([0u8; 10]);
+        let result = crypto.decrypt(&short, "password");
+        assert!(matches!(result, Err(CryptoError::InvalidFormat)));
+    }
 }

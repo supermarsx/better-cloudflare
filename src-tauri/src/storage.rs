@@ -311,4 +311,19 @@ mod tests {
         assert_eq!(entries[0]["event"], "login");
         assert_eq!(entries[1]["event"], "logout");
     }
+
+    #[tokio::test]
+    async fn audit_log_retains_last_1000() {
+        let storage = Storage::new(false);
+        for idx in 0..1005 {
+            storage
+                .add_audit_entry(json!({"event":"event","idx": idx}))
+                .await
+                .expect("add audit entry");
+        }
+        let entries = storage.get_audit_entries().await.expect("get audit");
+        assert_eq!(entries.len(), 1000);
+        assert_eq!(entries[0]["idx"], 5);
+        assert_eq!(entries[999]["idx"], 1004);
+    }
 }
