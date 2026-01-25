@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --turbo",
-    "build": "next build",
+    "build": "next build && next export",
     "start": "next start",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -13,7 +13,7 @@
     "lint": "next lint",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:fix": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "preview": "vite preview",
+    "preview": "npx serve out",
     "test": "tsx --test test/*.test.ts",
     "test:e2e": "playwright test",
     "migrate:vault-to-sqlite": "tsx ./scripts/migrate-vault-to-sqlite.ts",

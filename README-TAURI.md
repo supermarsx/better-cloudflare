@@ -92,7 +92,8 @@ npm run dev                # Run Next.js only (web mode)
 
 # Building
 npm run tauri:build        # Build desktop app
-npm run build              # Build Next.js static export
+npm run build              # Build Next.js static export (out/)
+npm run preview            # Serve the static export for verification
 
 # Testing
 npm test                   # Run unit tests
