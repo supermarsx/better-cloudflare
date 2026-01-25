@@ -7,6 +7,12 @@ import { useTranslation } from "react-i18next";
 import { cryptoManager } from "@/lib/crypto";
 import { ServerClient } from "@/lib/server-client";
 import type { ApiKey } from "@/types/dns";
+import {
+  serializeAuthenticationCredential,
+  serializeRegistrationCredential,
+  toCredentialCreationOptions,
+  toCredentialRequestOptions,
+} from "@/lib/webauthn";
 
 export function useLoginForm(
   onLogin: (apiKey: string, email?: string) => void | Promise<void>,
@@ -218,49 +224,27 @@ export function useLoginForm(
       
       const sc2 = new ServerClient(decrypted.key, undefined, decrypted.email);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
-      const challenge = Uint8Array.from(atob(options.challenge), (c) =>
-        c.charCodeAt(0),
+      const registrationOptions =
+        (options as { options?: PublicKeyCredentialCreationOptions }).options ??
+        (options as PublicKeyCredentialCreationOptions);
+      const mergedRegistrationOptions =
+        "challenge" in registrationOptions
+          ? registrationOptions
+          : {
+              ...registrationOptions,
+              challenge: (options as { challenge?: unknown }).challenge,
+            };
+      const publicKey = toCredentialCreationOptions(
+        mergedRegistrationOptions as PublicKeyCredentialCreationOptions,
       );
-      const publicKey = {
-        challenge,
-        rp: { name: "Better Cloudflare" },
-        user: {
-          id: Uint8Array.from(new TextEncoder().encode(selectedKeyId)),
-          name: selectedKeyId,
-          displayName: selectedKeyId,
-        },
-        pubKeyCredParams: [
-          { alg: -7, type: "public-key" as const },  // ES256
-          { alg: -257, type: "public-key" as const }, // RS256
-        ],
-        authenticatorSelection: {
-          authenticatorAttachment: "platform" as const,
-          requireResidentKey: false,
-          residentKey: "preferred" as const,
-          userVerification: "preferred" as const,
-        },
-        timeout: 60000,
-      } as PublicKeyCredentialCreationOptions;
-      
+
       const credential = await navigator.credentials.create({ publicKey });
       if (credential) {
         const att = credential as PublicKeyCredential;
-        const attObj = {
-          id: att.id,
-          rawId: Array.from(new Uint8Array(att.rawId)),
-          response: {
-            clientDataJSON: Array.from(
-              new Uint8Array(att.response.clientDataJSON),
-            ),
-            attestationObject: Array.from(
-              new Uint8Array(
-                (att.response as AuthenticatorAttestationResponse)
-                  .attestationObject || new ArrayBuffer(0),
-              ),
-            ),
-          },
-        };
-        await sc2.registerPasskey(selectedKeyId, attObj);
+        await sc2.registerPasskey(
+          selectedKeyId,
+          serializeRegistrationCredential(att),
+        );
         toast({
           title: "✓ Passkey Registered",
           description: "You can now use this passkey for passwordless login",
@@ -315,50 +299,28 @@ export function useLoginForm(
     try {
       const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
-      const challenge = Uint8Array.from(atob(opts.challenge), (c) =>
-        c.charCodeAt(0),
+      const authOptions =
+        (opts as { options?: PublicKeyCredentialRequestOptions }).options ??
+        (opts as PublicKeyCredentialRequestOptions);
+      const mergedAuthOptions =
+        "challenge" in authOptions
+          ? authOptions
+          : {
+              ...authOptions,
+              challenge: (opts as { challenge?: unknown }).challenge,
+            };
+      const publicKey = toCredentialRequestOptions(
+        mergedAuthOptions as PublicKeyCredentialRequestOptions,
       );
-      const publicKey = {
-        challenge,
-        allowCredentials: [],
-        timeout: 60000,
-        userVerification: "preferred" as const,
-      } as PublicKeyCredentialRequestOptions;
-      
+
       const assertion = await navigator.credentials.get({ publicKey });
       
       if (assertion) {
         const a = assertion as PublicKeyCredential;
-        const auth = {
-          id: a.id,
-          rawId: Array.from(new Uint8Array(a.rawId)),
-          response: {
-            clientDataJSON: Array.from(
-              new Uint8Array(a.response.clientDataJSON),
-            ),
-            authenticatorData: Array.from(
-              new Uint8Array(
-                (a.response as AuthenticatorAssertionResponse)
-                  .authenticatorData || new ArrayBuffer(0),
-              ),
-            ),
-            signature: Array.from(
-              new Uint8Array(
-                (a.response as AuthenticatorAssertionResponse).signature ||
-                  new ArrayBuffer(0),
-              ),
-            ),
-            userHandle: (a.response as AuthenticatorAssertionResponse)
-              .userHandle
-              ? Array.from(
-                  new Uint8Array(
-                    (a.response as AuthenticatorAssertionResponse).userHandle as ArrayBuffer,
-                  ),
-                )
-              : null,
-          },
-        };
-        const serverResp = await scx.authenticatePasskey(selectedKeyId, auth);
+        const serverResp = await scx.authenticatePasskey(
+          selectedKeyId,
+          serializeAuthenticationCredential(a),
+        );
         if (serverResp?.success) {
           const secret = await scx.getVaultSecret(
             selectedKeyId,
