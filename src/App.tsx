@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { DNSManager } from "@/components/dns/DNSManager";
 import { Toaster } from "@/components/ui/toaster";
@@ -12,6 +12,10 @@ function App() {
   const [apiKey, setApiKey] = useState<string>("");
   const [email, setEmail] = useState<string | undefined>(undefined);
   const [isDesktopEnv, setIsDesktopEnv] = useState(false);
+  const [activeView, setActiveView] = useState<"login" | "app">("login");
+  const [isVisible, setIsVisible] = useState(true);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const timeouts = useRef<number[]>([]);
 
   useEffect(() => {
     // Check if there's an active session
@@ -26,15 +30,43 @@ function App() {
     setIsDesktopEnv(isDesktop());
   }, []);
 
+  useEffect(() => {
+    return () => {
+      timeouts.current.forEach((id) => clearTimeout(id));
+      timeouts.current = [];
+    };
+  }, []);
+
+  const beginTransition = (nextView: "login" | "app") => {
+    if (isTransitioning) return;
+    setIsTransitioning(true);
+    setIsVisible(false);
+    const outId = window.setTimeout(() => {
+      setActiveView(nextView);
+      if (nextView === "login") {
+        setApiKey("");
+        setEmail(undefined);
+        setIsAuthenticated(false);
+      } else {
+        setIsAuthenticated(true);
+      }
+      requestAnimationFrame(() => setIsVisible(true));
+      const inId = window.setTimeout(() => {
+        setIsTransitioning(false);
+      }, 220);
+      timeouts.current.push(inId);
+    }, 220);
+    timeouts.current.push(outId);
+  };
+
   const handleLogin = (decryptedApiKey: string, keyEmail?: string) => {
     setApiKey(decryptedApiKey);
     setEmail(keyEmail);
-    setIsAuthenticated(true);
+    beginTransition("app");
   };
 
   const handleLogout = () => {
-    setApiKey("");
-    setIsAuthenticated(false);
+    beginTransition("login");
   };
 
   const languageSelectorTop = isDesktopEnv ? "top-12" : "top-3";
@@ -50,13 +82,19 @@ function App() {
         </div>
       </div>
       <main
-        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed`}
+        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed scroll-smooth`}
       >
-        {isAuthenticated ? (
-          <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
-        ) : (
-          <LoginForm onLogin={handleLogin} />
-        )}
+        <div
+          className={`transition-opacity duration-300 ease-out ${
+            isVisible ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          {activeView === "app" && isAuthenticated ? (
+            <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
+          ) : (
+            <LoginForm onLogin={handleLogin} />
+          )}
+        </div>
       </main>
       <Toaster />
     </div>

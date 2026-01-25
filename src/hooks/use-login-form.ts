@@ -42,6 +42,7 @@ export function useLoginForm(
   };
   const formatError = (err: unknown) =>
     err instanceof Error ? err.message : typeof err === "string" ? err : "Unknown error";
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
@@ -156,6 +157,7 @@ export function useLoginForm(
       return;
     }
 
+    let succeeded = false;
     setIsLoading(true);
     try {
       const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
@@ -189,6 +191,7 @@ export function useLoginForm(
 
       storageManager.setCurrentSession(selectedKeyId);
       onLogin(decryptedKey, email);
+      succeeded = true;
 
       toast({
         title: "Success",
@@ -201,6 +204,9 @@ export function useLoginForm(
         variant: "destructive",
       });
     } finally {
+      if (!succeeded) {
+        await delay(1000);
+      }
       setIsLoading(false);
     }
   };
