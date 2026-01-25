@@ -28,7 +28,7 @@ import {
   composeNAPTR,
 } from "@/lib/dns-parsers";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
-import { Edit2, Trash2, Save, X } from "lucide-react";
+import { Copy, Edit2, Trash2, Save, X } from "lucide-react";
 
 /**
  * Properties for the `RecordRow` UI component which renders and optionally
@@ -39,6 +39,8 @@ export interface RecordRowProps {
   record: DNSRecord;
   /** Whether the row is currently in edit mode */
   isEditing: boolean;
+  /** Whether the record is selected for bulk actions */
+  isSelected?: boolean;
   /** Callback invoked to transition into edit mode */
   onEdit: () => void;
   /** Save callback after editing; receives the updated record. May return a promise. */
@@ -47,6 +49,10 @@ export interface RecordRowProps {
   onCancel: () => void;
   /** Remove the record. May return a promise. */
   onDelete: () => void | Promise<void>;
+  /** Toggle selection for bulk actions */
+  onSelectChange?: (selected: boolean) => void | Promise<void>;
+  /** Copy the record to the clipboard buffer */
+  onCopy?: () => void | Promise<void>;
   /** Toggle Cloudflare proxy status for supported types. */
   onToggleProxy?: (next: boolean) => void | Promise<void>;
 }
@@ -59,10 +65,13 @@ export interface RecordRowProps {
 export function RecordRow({
   record,
   isEditing,
+  isSelected = false,
   onEdit,
   onSave,
   onCancel,
   onDelete,
+  onSelectChange,
+  onCopy,
   onToggleProxy,
 }: RecordRowProps) {
   const [editedRecord, setEditedRecord] = useState(record);
@@ -788,6 +797,14 @@ export function RecordRow({
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={(event) => onSelectChange?.(event.target.checked)}
+            onClick={(event) => event.stopPropagation()}
+            className="mt-1 h-4 w-4 rounded border-white/20 bg-black/30 text-orange-400 focus:ring-orange-500/40"
+            aria-label="Select record"
+          />
           <span
             title={getRecordTypeLabel(record.type as RecordType)}
             className="inline-flex items-center rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs font-semibold text-foreground/80"
@@ -831,6 +848,17 @@ export function RecordRow({
             </div>
           )}
           <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(event) => {
+                event.stopPropagation();
+                onCopy?.();
+              }}
+              className="h-8 w-8 p-0"
+            >
+              <Copy className="h-3 w-3" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"

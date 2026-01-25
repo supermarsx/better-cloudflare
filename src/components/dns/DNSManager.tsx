@@ -1,8 +1,9 @@
+
 /**
  * Top-level DNS Manager UI which composes the zone selector, the record
  * list and dialogs for creating/importing records.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +21,17 @@ import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
 import { storageManager } from "@/lib/storage";
-import { Filter, LogOut, Search, X } from "lucide-react";
+import {
+  ClipboardPaste,
+  Copy,
+  FileDown,
+  FileUp,
+  Filter,
+  LogOut,
+  Search,
+  Settings,
+  X,
+} from "lucide-react";
 import { isDesktop } from "@/lib/environment";
 import { AuditLogDialog } from "@/components/audit/AuditLogDialog";
 import { TauriClient } from "@/lib/tauri-client";
@@ -28,14 +39,36 @@ import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { FixedSizeList as List } from "react-window";
+import { filterRecords } from "@/lib/dns-utils";
+import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 
 // Wrapper to avoid TS issues with react-window FixedSizeList generic types
 const VirtualList = (props: any) => {
   const { children, ...rest } = props;
   return <List {...rest}>{children}</List>;
 };
-import { filterRecords } from "@/lib/dns-utils";
-import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
+
+type ActionTab = "records" | "import" | "audit" | "settings";
+
+type ZoneTab = {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  status?: string;
+  records: DNSRecord[];
+  isLoading: boolean;
+  editingRecord: string | null;
+  searchTerm: string;
+  typeFilter: RecordType | "";
+  page: number;
+  perPage: number;
+  selectedIds: string[];
+  showAddRecord: boolean;
+  showImport: boolean;
+  newRecord: Partial<DNSRecord>;
+  importData: string;
+  importFormat: "json" | "csv" | "bind";
+};
 
 /**
  * Props for the `DNSManager` top-level component.
@@ -49,6 +82,57 @@ interface DNSManagerProps {
   onLogout: () => void;
 }
 
+const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
+  {
+    id: "records",
+    label: "Records",
+    hint: "Edit, filter, and manage records in-place",
+  },
+  {
+    id: "import",
+    label: "Import/Export",
+    hint: "Move records across zones and formats",
+  },
+  {
+    id: "audit",
+    label: "Audit",
+    hint: "Review sensitive activity from the desktop backend",
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    hint: "Tune refresh, per-page defaults, and UI options",
+  },
+];
+
+const createEmptyRecord = (): Partial<DNSRecord> => ({
+  type: "A",
+  name: "",
+  content: "",
+  ttl: 300,
+  proxied: false,
+});
+
+const createZoneTab = (zone: Zone): ZoneTab => ({
+  id: zone.id,
+  zoneId: zone.id,
+  zoneName: zone.name,
+  status: zone.status,
+  records: [],
+  isLoading: false,
+  editingRecord: null,
+  searchTerm: "",
+  typeFilter: "",
+  page: 1,
+  perPage: 50,
+  selectedIds: [],
+  showAddRecord: false,
+  showImport: false,
+  newRecord: createEmptyRecord(),
+  importData: "",
+  importFormat: "json",
+});
+
 /**
  * DNS Manager component responsible for listing zones and DNS records and
  * providing UI for add/import/export/update/delete operations.
@@ -60,32 +144,20 @@ interface DNSManagerProps {
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const [zones, setZones] = useState<Zone[]>([]);
-  const [selectedZone, setSelectedZone] = useState<string>("");
-  const [records, setRecords] = useState<DNSRecord[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [editingRecord, setEditingRecord] = useState<string | null>(null);
-  const [showAddRecord, setShowAddRecord] = useState(false);
-  const [showImport, setShowImport] = useState(false);
-  const [newRecord, setNewRecord] = useState<Partial<DNSRecord>>({
-    type: "A",
-    name: "",
-    content: "",
-    ttl: 300,
-    proxied: false,
-  });
-  const [importData, setImportData] = useState("");
-  const [importFormat, setImportFormat] = useState<"json" | "csv" | "bind">(
-    "json",
-  );
-  const [searchTerm, setSearchTerm] = useState("");
-  const [typeFilter, setTypeFilter] = useState<RecordType | "">("");
-  const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useState(50);
+  const [selectedZoneId, setSelectedZoneId] = useState("");
+  const [tabs, setTabs] = useState<ZoneTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [actionTab, setActionTab] = useState<ActionTab>("records");
   const [listHeight, setListHeight] = useState(600);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [copyBuffer, setCopyBuffer] = useState<{
+    records: DNSRecord[];
+    sourceZoneId: string;
+    sourceZoneName: string;
+  } | null>(null);
 
   const { toast } = useToast();
   const {
@@ -98,10 +170,60 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     exportDNSRecords,
   } = useCloudflareAPI(apiKey, email);
 
+  const availableZones = useMemo(
+    () => zones.filter((zone) => zone.id),
+    [zones],
+  );
+
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabId) ?? null,
+    [tabs, activeTabId],
+  );
+
+  const updateTab = useCallback(
+    (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
+      setTabs((prev) =>
+        prev.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
+      );
+    },
+    [],
+  );
+
+  const openZoneTab = useCallback(
+    (zoneId: string) => {
+      const zone = availableZones.find((item) => item.id === zoneId);
+      if (!zone) return;
+      setTabs((prev) => {
+        if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
+        return [...prev, createZoneTab(zone)];
+      });
+      setActiveTabId(zoneId);
+    },
+    [availableZones],
+  );
+
+  const activateTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    setSelectedZoneId(tabId);
+  }, []);
+
+  const closeTab = useCallback(
+    (tabId: string) => {
+      setTabs((prev) => {
+        const nextTabs = prev.filter((tab) => tab.id !== tabId);
+        if (activeTabId === tabId) {
+          const nextActive = nextTabs[nextTabs.length - 1];
+          setActiveTabId(nextActive?.id ?? null);
+          setSelectedZoneId(nextActive?.zoneId ?? "");
+        }
+        return nextTabs;
+      });
+    },
+    [activeTabId],
+  );
   const loadZones = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        setIsLoading(true);
         const zonesData = await getZones(signal);
         setZones(zonesData);
       } catch (error) {
@@ -110,26 +232,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           description: "Failed to load zones: " + (error as Error).message,
           variant: "destructive",
         });
-      } finally {
-        setIsLoading(false);
       }
     },
     [getZones, toast],
   );
 
   const loadRecords = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!selectedZone) return;
-
+    async (tab: ZoneTab, signal?: AbortSignal) => {
+      if (!tab.zoneId) return;
+      updateTab(tab.id, (prev) => ({ ...prev, isLoading: true }));
       try {
-        setIsLoading(true);
-        if (perPage === 0) {
+        if (tab.perPage === 0) {
           const pageSize = 500;
           let currentPage = 1;
           let combined: DNSRecord[] = [];
           while (true) {
             const batch = await getDNSRecords(
-              selectedZone,
+              tab.zoneId,
               currentPage,
               pageSize,
               signal,
@@ -138,15 +257,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             if (batch.length < pageSize) break;
             currentPage += 1;
           }
-          setRecords(combined);
+          updateTab(tab.id, (prev) => ({ ...prev, records: combined }));
         } else {
           const recordsData = await getDNSRecords(
-            selectedZone,
-            page,
-            perPage,
+            tab.zoneId,
+            tab.page,
+            tab.perPage,
             signal,
           );
-          setRecords(recordsData);
+          updateTab(tab.id, (prev) => ({ ...prev, records: recordsData }));
         }
       } catch (error) {
         toast({
@@ -156,10 +275,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           variant: "destructive",
         });
       } finally {
-        setIsLoading(false);
+        updateTab(tab.id, (prev) => ({ ...prev, isLoading: false }));
       }
     },
-    [getDNSRecords, selectedZone, page, perPage, toast],
+    [getDNSRecords, toast, updateTab],
   );
 
   useEffect(() => {
@@ -169,6 +288,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [loadZones]);
 
   useEffect(() => {
+    if (!selectedZoneId) return;
+    openZoneTab(selectedZoneId);
+  }, [selectedZoneId, openZoneTab]);
+
+  useEffect(() => {
+    if (activeTab) {
+      const controller = new AbortController();
+      loadRecords(activeTab, controller.signal);
+      return () => controller.abort();
+    }
+  }, [activeTab?.zoneId, activeTab?.page, activeTab?.perPage, loadRecords]);
+
+  useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
@@ -176,7 +308,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_zone?: string;
             auto_refresh_interval?: number;
           };
-          if (prefObj.last_zone) setSelectedZone(prefObj.last_zone);
+          if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
             setAutoRefreshInterval(prefObj.auto_refresh_interval);
           }
@@ -185,36 +317,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return;
     }
     const last = storageManager.getLastZone();
-    if (last) setSelectedZone(last);
+    if (last) setSelectedZoneId(last);
   }, []);
 
   useEffect(() => {
-    if (selectedZone) {
-      const controller = new AbortController();
-      loadRecords(controller.signal);
-      return () => controller.abort();
+    if (!activeTab?.zoneId) return;
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            last_zone: activeTab.zoneId,
+          }),
+        )
+        .catch(() => {});
+    } else {
+      storageManager.setLastZone(activeTab.zoneId);
     }
-  }, [selectedZone, loadRecords]);
+  }, [activeTab?.zoneId]);
 
-  useEffect(() => {
-    if (selectedZone) {
-      if (isDesktop()) {
-        TauriClient.getPreferences()
-          .then((prefs) =>
-            TauriClient.updatePreferences({
-              ...(prefs as Record<string, unknown>),
-              last_zone: selectedZone,
-            }),
-          )
-          .catch(() => {});
-      } else {
-        storageManager.setLastZone(selectedZone);
-      }
-    }
-  }, [selectedZone]);
-
-  // Auto refresh: refresh records at the selected interval unless the user is
-  // currently editing or has modal dialogs open to avoid disrupting work.
   useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
@@ -230,18 +351,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
     const id = setInterval(async () => {
-      if (editingRecord || showAddRecord || showImport) return;
+      if (!activeTab) return;
+      if (
+        activeTab.editingRecord ||
+        activeTab.showAddRecord ||
+        activeTab.showImport
+      ) {
+        return;
+      }
       const controller = new AbortController();
-      await loadRecords(controller.signal);
+      await loadRecords(activeTab, controller.signal);
     }, autoRefreshInterval);
     return () => clearInterval(id);
-  }, [
-    autoRefreshInterval,
-    editingRecord,
-    showAddRecord,
-    showImport,
-    loadRecords,
-  ]);
+  }, [autoRefreshInterval, activeTab, loadRecords]);
 
   useEffect(() => {
     const updateHeight = () => {
@@ -254,13 +376,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return () => window.removeEventListener("resize", updateHeight);
   }, []);
 
+  const filteredRecords = useMemo(() => {
+    if (!activeTab) return [];
+    return filterRecords(activeTab.records, activeTab.searchTerm).filter(
+      (record: DNSRecord) =>
+        activeTab.typeFilter ? record.type === activeTab.typeFilter : true,
+    );
+  }, [activeTab]);
   const handleAddRecord = async () => {
-    if (
-      !selectedZone ||
-      !newRecord.type ||
-      !newRecord.name ||
-      !newRecord.content
-    ) {
+    if (!activeTab) return;
+    const draft = activeTab.newRecord;
+    if (!draft.type || !draft.name || !draft.content) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -270,17 +396,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
 
     try {
-      const createdRecord = await createDNSRecord(selectedZone, newRecord);
-      setRecords([createdRecord, ...records]);
-      setNewRecord({
-        type: "A",
-        name: "",
-        content: "",
-        ttl: 300,
-        proxied: false,
-      });
-      setShowAddRecord(false);
-
+      const createdRecord = await createDNSRecord(activeTab.zoneId, draft);
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        records: [createdRecord, ...prev.records],
+        newRecord: createEmptyRecord(),
+        showAddRecord: false,
+      }));
       toast({
         title: "Success",
         description: "DNS record created successfully",
@@ -295,17 +417,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleUpdateRecord = async (record: DNSRecord) => {
+    if (!activeTab) return;
     try {
       const updatedRecord = await updateDNSRecord(
-        selectedZone,
+        activeTab.zoneId,
         record.id,
         record,
       );
-      setRecords(
-        records.map((r: DNSRecord) => (r.id === record.id ? updatedRecord : r)),
-      );
-      setEditingRecord(null);
-
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        records: prev.records.map((r) =>
+          r.id === record.id ? updatedRecord : r,
+        ),
+        editingRecord: null,
+      }));
       toast({
         title: "Success",
         description: "DNS record updated successfully",
@@ -320,18 +445,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
+    if (!activeTab) return;
     try {
       const updatedRecord = await updateDNSRecord(
-        selectedZone,
+        activeTab.zoneId,
         record.id,
         {
           ...record,
           proxied,
         },
       );
-      setRecords(
-        records.map((r: DNSRecord) => (r.id === record.id ? updatedRecord : r)),
-      );
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        records: prev.records.map((r) =>
+          r.id === record.id ? updatedRecord : r,
+        ),
+      }));
     } catch (error) {
       toast({
         title: "Error",
@@ -342,10 +471,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleDeleteRecord = async (recordId: string) => {
+    if (!activeTab) return;
     try {
-      await deleteDNSRecord(selectedZone, recordId);
-      setRecords(records.filter((r: DNSRecord) => r.id !== recordId));
-
+      await deleteDNSRecord(activeTab.zoneId, recordId);
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        records: prev.records.filter((r) => r.id !== recordId),
+        selectedIds: prev.selectedIds.filter((id) => id !== recordId),
+      }));
       toast({
         title: "Success",
         description: "DNS record deleted successfully",
@@ -360,14 +493,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleExport = (format: "json" | "csv" | "bind") => {
+    if (!activeTab) return;
     let content = "";
     let filename = "";
     let mimeType = "";
 
     switch (format) {
       case "json": {
-        content = JSON.stringify(records, null, 2);
-        filename = `${selectedZone}-records.json`;
+        content = JSON.stringify(activeTab.records, null, 2);
+        filename = `${activeTab.zoneId}-records.json`;
         mimeType = "application/json";
         break;
       }
@@ -382,7 +516,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ];
         const escapeCSV = (value: unknown) =>
           `"${String(value ?? "").replace(/"/g, '""')}"`;
-        const rows = records
+        const rows = activeTab.records
           .map((r: DNSRecord) =>
             [
               r.type,
@@ -397,19 +531,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           )
           .join("\n");
         content = headers.map(escapeCSV).join(",") + "\n" + rows;
-        filename = `${selectedZone}-records.csv`;
+        filename = `${activeTab.zoneId}-records.csv`;
         mimeType = "text/csv";
         break;
       }
       case "bind": {
-        content = records
+        content = activeTab.records
           .map((r: DNSRecord) => {
             const ttl = r.ttl || 300;
             const priority = r.priority ? `${r.priority} ` : "";
             return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
           })
           .join("\n");
-        filename = `${selectedZone}.zone`;
+        filename = `${activeTab.zoneId}.zone`;
         mimeType = "text/plain";
         break;
       }
@@ -430,6 +564,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleImport = async (
+    tab: ZoneTab,
     providedItems?: Partial<DNSRecord>[],
     dryRun?: boolean,
   ) => {
@@ -437,9 +572,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       let items: Partial<DNSRecord>[] | null = null;
       if (providedItems) items = providedItems as Partial<DNSRecord>[];
       else {
-        switch (importFormat) {
+        switch (tab.importFormat) {
           case "json": {
-            const imported = JSON.parse(importData);
+            const imported = JSON.parse(tab.importData);
             items = Array.isArray(imported)
               ? imported
               : Array.isArray(imported.records)
@@ -448,10 +583,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             break;
           }
           case "csv":
-            items = parseCSVRecords(importData);
+            items = parseCSVRecords(tab.importData);
             break;
           case "bind":
-            items = parseBINDZone(importData);
+            items = parseBINDZone(tab.importData);
             break;
         }
       }
@@ -465,7 +600,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
       for (const item of items) {
         if (item && item.type && item.name && item.content) {
-          const exists = records.some(
+          const exists = tab.records.some(
             (r) =>
               r.type === item.type &&
               r.name === item.name &&
@@ -485,16 +620,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (bulkCreateDNSRecords) {
           try {
             const result = await bulkCreateDNSRecords(
-              selectedZone,
+              tab.zoneId,
               valid,
               dryRun,
             );
-            // Server returns { created: DNSRecord[]; skipped: unknown[] }
             const created = Array.isArray(result?.created)
               ? (result.created as DNSRecord[])
               : valid;
             if (!dryRun) {
-              setRecords([...created, ...records]);
+              updateTab(tab.id, (prev) => ({
+                ...prev,
+                records: [...created, ...prev.records],
+              }));
             }
           } catch (err) {
             toast({
@@ -506,24 +643,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             return;
           }
         } else {
-          // Fall back to local creation using per-record API or local state
           const createdRecords: DNSRecord[] = [];
           for (const v of valid) {
             try {
-              const r = await createDNSRecord(selectedZone, v);
+              const r = await createDNSRecord(tab.zoneId, v);
               createdRecords.push(r);
             } catch {
-              // record creation failed for this item - count as skipped but ignore error details
               skipped++;
             }
           }
           if (!dryRun) {
-            setRecords([...createdRecords, ...records]);
+            updateTab(tab.id, (prev) => ({
+              ...prev,
+              records: [...createdRecords, ...prev.records],
+            }));
           }
         }
         if (!dryRun) {
-          setImportData("");
-          setShowImport(false);
+          updateTab(tab.id, (prev) => ({
+            ...prev,
+            importData: "",
+            showImport: false,
+          }));
           toast({
             title: "Success",
             description:
@@ -556,20 +697,106 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  const handleCopySelected = () => {
+    if (!activeTab) return;
+    const selectedRecords = activeTab.records.filter((record) =>
+      activeTab.selectedIds.includes(record.id),
+    );
+    if (!selectedRecords.length) {
+      toast({
+        title: "Nothing selected",
+        description: "Select one or more records to copy.",
+      });
+      return;
+    }
+    setCopyBuffer({
+      records: selectedRecords,
+      sourceZoneId: activeTab.zoneId,
+      sourceZoneName: activeTab.zoneName,
+    });
+    toast({
+      title: "Copied",
+      description: `Copied ${selectedRecords.length} record(s) from ${activeTab.zoneName}`,
+    });
+  };
+
+  const handleCopySingle = (record: DNSRecord) => {
+    if (!activeTab) return;
+    setCopyBuffer({
+      records: [record],
+      sourceZoneId: activeTab.zoneId,
+      sourceZoneName: activeTab.zoneName,
+    });
+    toast({
+      title: "Copied",
+      description: `Copied ${record.name} from ${activeTab.zoneName}`,
+    });
+  };
+
+  const handlePasteRecords = async () => {
+    if (!activeTab || !copyBuffer) return;
+    const toCreate = copyBuffer.records.map((record) => ({
+      type: record.type,
+      name: record.name,
+      content: record.content,
+      ttl: record.ttl,
+      priority: record.priority,
+      proxied: record.proxied,
+    }));
+    try {
+      if (bulkCreateDNSRecords) {
+        const result = await bulkCreateDNSRecords(
+          activeTab.zoneId,
+          toCreate,
+          false,
+        );
+        const created = Array.isArray(result?.created)
+          ? (result.created as DNSRecord[])
+          : [];
+        updateTab(activeTab.id, (prev) => ({
+          ...prev,
+          records: [...created, ...prev.records],
+        }));
+        toast({
+          title: "Pasted",
+          description: `Created ${created.length} record(s) in ${activeTab.zoneName}`,
+        });
+        return;
+      }
+      const createdRecords: DNSRecord[] = [];
+      for (const record of toCreate) {
+        const created = await createDNSRecord(activeTab.zoneId, record);
+        createdRecords.push(created);
+      }
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        records: [...createdRecords, ...prev.records],
+      }));
+      toast({
+        title: "Pasted",
+        description: `Created ${createdRecords.length} record(s) in ${activeTab.zoneName}`,
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to paste records: " + (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleLogout = () => {
     storageManager.clearSession();
     onLogout();
   };
 
-  const selectedZoneData = zones.find((z: Zone) => z.id === selectedZone);
-  const filteredRecords = filterRecords(records, searchTerm).filter(
-    (record: DNSRecord) => (typeFilter ? record.type === typeFilter : true),
-  );
+  const selectedZoneData = activeTab
+    ? availableZones.find((z) => z.id === activeTab.zoneId)
+    : undefined;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
       <div className="max-w-6xl mx-auto space-y-6 pb-10">
-        {/* Header */}
         <Card className="border-white/10 bg-gradient-to-br from-slate-950/80 via-slate-900/60 to-orange-950/30 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -585,72 +812,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {selectedZone && (
-                  <AddRecordDialog
-                    open={showAddRecord}
-                    onOpenChange={setShowAddRecord}
-                    record={newRecord}
-                    onRecordChange={setNewRecord}
-                    onAdd={handleAddRecord}
-                    zoneName={selectedZoneData?.name}
-                    apiKey={apiKey}
-                    email={email}
-                  />
-                )}
-                <ImportExportDialog
-                  open={showImport}
-                  onOpenChange={setShowImport}
-                  importData={importData}
-                  importFormat={importFormat}
-                  onImportDataChange={setImportData}
-                  onImportFormatChange={setImportFormat}
-                  onImport={handleImport}
-                  serverExport={async (format) => {
-                    if (!selectedZone) return;
-                    try {
-                      const res = await exportDNSRecords(
-                        selectedZone,
-                        format,
-                        page,
-                        perPage,
-                      );
-                      const blob = new Blob([res], {
-                        type:
-                          format === "json"
-                            ? "application/json"
-                            : format === "csv"
-                              ? "text/csv"
-                              : "text/plain",
-                      });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `${selectedZone}-records.${format === "json" ? "json" : format === "csv" ? "csv" : "zone"}`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                      toast({
-                        title: "Success",
-                        description: `Server export ${format.toUpperCase()} completed`,
-                      });
-                    } catch (err) {
-                      toast({
-                        title: "Error",
-                        description:
-                          "Server export failed: " + (err as Error).message,
-                        variant: "destructive",
-                      });
-                    }
-                  }}
-                  onExport={handleExport}
-                />
-                {isDesktop() && (
-                  <Button
-                    onClick={() => setShowAuditLog(true)}
-                    variant="outline"
-                  >
-                    Audit Log
-                  </Button>
-                )}
                 <Button onClick={handleLogout} variant="outline">
                   <LogOut className="h-4 w-4 mr-2" />
                   Logout
@@ -662,12 +823,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
               <div className="space-y-2">
                 <Label htmlFor="zone-select">Domain/Zone</Label>
-                <Select value={selectedZone} onValueChange={setSelectedZone}>
+                <Select
+                  value={selectedZoneId || undefined}
+                  onValueChange={(value) => {
+                    setSelectedZoneId(value);
+                    openZoneTab(value);
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select a domain" />
                   </SelectTrigger>
                   <SelectContent>
-                    {zones.map((zone: Zone) => (
+                    {availableZones.map((zone: Zone) => (
                       <SelectItem key={zone.id} value={zone.id}>
                         {zone.name} ({zone.status})
                       </SelectItem>
@@ -675,181 +842,575 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </SelectContent>
                 </Select>
               </div>
-              {selectedZone && (
+              {activeTab && (
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                    {records.length} records
+                    {activeTab.records.length} records
                   </div>
                   <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
                     {filteredRecords.length} visible
                   </div>
                   <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                    Zone: {selectedZoneData?.name ?? selectedZone}
+                    Zone: {selectedZoneData?.name ?? activeTab.zoneName}
                   </div>
                 </div>
               )}
             </div>
+            {tabs.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {tabs.map((tab) => {
+                  const isActive = tab.id === activeTabId;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => activateTab(tab.id)}
+                      className={`group flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition ${
+                        isActive
+                          ? "border-orange-500/40 bg-orange-500/10 text-orange-100"
+                          : "border-white/10 bg-black/30 text-muted-foreground hover:border-orange-500/30 hover:text-orange-100"
+                      }`}
+                    >
+                      <span className="max-w-[140px] truncate">
+                        {tab.zoneName}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-widest opacity-60">
+                        {tab.status ?? "zone"}
+                      </span>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeTab(tab.id);
+                        }}
+                        className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-orange-200"
+                        aria-label="Close tab"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
-
-        {/* DNS Records */}
-        {selectedZone && (
+        {activeTab ? (
           <Card className="min-h-[70vh] border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
             <CardHeader className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
-                  <CardTitle className="text-xl">DNS Records</CardTitle>
+                  <CardTitle className="text-xl">
+                    {activeTab.zoneName}
+                  </CardTitle>
                   <p className="text-xs text-muted-foreground">
-                    {t("Edit inline, filter fast, and export with one click", "Edit inline, filter fast, and export with one click")}
+                    {ACTION_TABS.find((tab) => tab.id === actionTab)?.hint}
                   </p>
                 </div>
-                <Select
-                  value={String(autoRefreshInterval ?? 0)}
-                  onValueChange={(v) =>
-                    setAutoRefreshInterval(v ? Number(v) : null)
-                  }
-                >
-                  <SelectTrigger className="w-36">
-                    <SelectValue placeholder="Auto-refresh" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">Off</SelectItem>
-                    <SelectItem value="60000">1 min</SelectItem>
-                    <SelectItem value="300000">5 min</SelectItem>
-                    <SelectItem value="600000">10 min</SelectItem>
-                    <SelectItem value="1800000">30 min</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select
+                    value={String(autoRefreshInterval ?? 0)}
+                    onValueChange={(v) =>
+                      setAutoRefreshInterval(v ? Number(v) : null)
+                    }
+                  >
+                    <SelectTrigger className="w-36">
+                      <SelectValue placeholder="Auto-refresh" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">Off</SelectItem>
+                      <SelectItem value="60000">1 min</SelectItem>
+                      <SelectItem value="300000">5 min</SelectItem>
+                      <SelectItem value="600000">10 min</SelectItem>
+                      <SelectItem value="1800000">30 min</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {isDesktop() && (
+                    <Button
+                      onClick={() => setShowAuditLog(true)}
+                      variant="outline"
+                    >
+                      Audit Log
+                    </Button>
+                  )}
+                </div>
               </div>
-              <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder={t("Search records", "Search records")}
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-                <Select
-                  value={typeFilter || "all"}
-                  onValueChange={(v) =>
-                    setTypeFilter(v === "all" ? "" : (v as RecordType))
-                  }
-                >
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="All types" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">
-                      {t("All types", "All types")}
-                    </SelectItem>
-                    {RECORD_TYPES.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {type}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={String(perPage)}
-                  onValueChange={(v) => {
-                    const value = Number(v);
-                    setPerPage(Number.isNaN(value) ? 50 : value);
-                    setPage(1);
-                  }}
-                >
-                  <SelectTrigger className="w-32">
-                    <SelectValue placeholder="Per page" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="25">25</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                    <SelectItem value="100">100</SelectItem>
-                    <SelectItem value="200">200</SelectItem>
-                    <SelectItem value="500">500</SelectItem>
-                    <SelectItem value="0">All</SelectItem>
-                  </SelectContent>
-                </Select>
-                <div className="flex items-center gap-2 justify-start md:justify-end">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setSearchTerm("");
-                      setTypeFilter("");
-                      setPage(1);
-                    }}
+              <div className="flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-black/40 p-1">
+                {ACTION_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActionTab(tab.id)}
+                    className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium transition ${
+                      actionTab === tab.id
+                        ? "bg-orange-500/20 text-orange-100 shadow-[0_0_12px_rgba(255,80,0,0.2)]"
+                        : "text-muted-foreground hover:text-orange-100"
+                    }`}
                   >
-                    <X className="h-3 w-3 mr-1" />
-                    Clear
-                  </Button>
-                  <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                    <Filter className="h-3 w-3" />
-                    Page {page}
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page <= 1}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
+                    {tab.label}
+                  </button>
+                ))}
               </div>
             </CardHeader>
             <CardContent>
-              {isLoading ? (
-                <div className="text-center py-8">Loading...</div>
-              ) : filteredRecords.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  {t("No DNS records found", "No DNS records found")}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <VirtualList
-                    height={Math.min(listHeight, filteredRecords.length * 88)}
-                    itemCount={filteredRecords.length}
-                    itemSize={88}
-                    width={"100%"}
-                  >
-                    {({
-                      index,
-                      style,
-                    }: {
-                      index: number;
-                      style: React.CSSProperties;
-                    }) => {
-                      const record = filteredRecords[index];
-                      return (
-                        <div style={style} key={record.id}>
-                          <RecordRow
-                            record={record}
-                            isEditing={editingRecord === record.id}
-                            onEdit={() => setEditingRecord(record.id)}
-                            onSave={(updatedRecord: DNSRecord) =>
-                              handleUpdateRecord(updatedRecord)
-                            }
-                            onCancel={() => setEditingRecord(null)}
-                            onDelete={() => handleDeleteRecord(record.id)}
-                            onToggleProxy={(next) =>
-                              handleToggleProxy(record, next)
-                            }
-                          />
-                        </div>
-                      );
-                    }}
-                  </VirtualList>
+              {actionTab === "records" && (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder={t("Search records", "Search records")}
+                        value={activeTab.searchTerm}
+                        onChange={(e) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            searchTerm: e.target.value,
+                          }))
+                        }
+                        className="pl-9"
+                      />
+                    </div>
+                    <Select
+                      value={activeTab.typeFilter || "all"}
+                      onValueChange={(v) =>
+                        updateTab(activeTab.id, (prev) => ({
+                          ...prev,
+                          typeFilter: v === "all" ? "" : (v as RecordType),
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="w-[180px]">
+                        <SelectValue placeholder="All types" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">
+                          {t("All types", "All types")}
+                        </SelectItem>
+                        {RECORD_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {type}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={String(activeTab.perPage)}
+                      onValueChange={(v) => {
+                        const value = Number(v);
+                        updateTab(activeTab.id, (prev) => ({
+                          ...prev,
+                          perPage: Number.isNaN(value) ? 50 : value,
+                          page: 1,
+                        }));
+                      }}
+                    >
+                      <SelectTrigger className="w-32">
+                        <SelectValue placeholder="Per page" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="25">25</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                        <SelectItem value="200">200</SelectItem>
+                        <SelectItem value="500">500</SelectItem>
+                        <SelectItem value="0">All</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <div className="flex items-center gap-2 justify-start md:justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            searchTerm: "",
+                            typeFilter: "",
+                            page: 1,
+                          }))
+                        }
+                      >
+                        <X className="h-3 w-3 mr-1" />
+                        Clear
+                      </Button>
+                      <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                        <Filter className="h-3 w-3" />
+                        Page {activeTab.page}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            page: Math.max(1, prev.page - 1),
+                          }))
+                        }
+                        disabled={activeTab.page <= 1}
+                      >
+                        Prev
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            page: prev.page + 1,
+                          }))
+                        }
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AddRecordDialog
+                      open={activeTab.showAddRecord}
+                      onOpenChange={(open) =>
+                        updateTab(activeTab.id, (prev) => ({
+                          ...prev,
+                          showAddRecord: open,
+                        }))
+                      }
+                      record={activeTab.newRecord}
+                      onRecordChange={(record) =>
+                        updateTab(activeTab.id, (prev) => ({
+                          ...prev,
+                          newRecord: record,
+                        }))
+                      }
+                      onAdd={handleAddRecord}
+                      zoneName={activeTab.zoneName}
+                      apiKey={apiKey}
+                      email={email}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCopySelected}
+                      disabled={!activeTab.selectedIds.length}
+                    >
+                      <Copy className="h-4 w-4 mr-2" />
+                      Copy selected
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handlePasteRecords}
+                      disabled={!copyBuffer}
+                    >
+                      <ClipboardPaste className="h-4 w-4 mr-2" />
+                      Paste {copyBuffer ? `${copyBuffer.records.length}` : ""}
+                    </Button>
+                    {copyBuffer && (
+                      <div className="text-xs text-muted-foreground">
+                        Buffer: {copyBuffer.records.length} from {" "}
+                        {copyBuffer.sourceZoneName}
+                      </div>
+                    )}
+                    {activeTab.selectedIds.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            selectedIds: [],
+                          }))
+                        }
+                      >
+                        Clear selection
+                      </Button>
+                    )}
+                  </div>
+                  {activeTab.isLoading ? (
+                    <div className="text-center py-8">Loading...</div>
+                  ) : filteredRecords.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      {t("No DNS records found", "No DNS records found")}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <VirtualList
+                        height={Math.min(
+                          listHeight,
+                          filteredRecords.length * 88,
+                        )}
+                        itemCount={filteredRecords.length}
+                        itemSize={88}
+                        width={"100%"}
+                      >
+                        {({
+                          index,
+                          style,
+                        }: {
+                          index: number;
+                          style: React.CSSProperties;
+                        }) => {
+                          const record = filteredRecords[index];
+                          const isSelected = activeTab.selectedIds.includes(
+                            record.id,
+                          );
+                          return (
+                            <div style={style} key={record.id}>
+                              <RecordRow
+                                record={record}
+                                isEditing={activeTab.editingRecord === record.id}
+                                isSelected={isSelected}
+                                onSelectChange={(checked) =>
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    selectedIds: checked
+                                      ? [...prev.selectedIds, record.id]
+                                      : prev.selectedIds.filter(
+                                          (id) => id !== record.id,
+                                        ),
+                                  }))
+                                }
+                                onEdit={() =>
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    editingRecord: record.id,
+                                  }))
+                                }
+                                onSave={(updatedRecord: DNSRecord) =>
+                                  handleUpdateRecord(updatedRecord)
+                                }
+                                onCancel={() =>
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    editingRecord: null,
+                                  }))
+                                }
+                                onDelete={() => handleDeleteRecord(record.id)}
+                                onToggleProxy={(next) =>
+                                  handleToggleProxy(record, next)
+                                }
+                                onCopy={() => handleCopySingle(record)}
+                              />
+                            </div>
+                          );
+                        }}
+                      </VirtualList>
+                    </div>
+                  )}
                 </div>
               )}
+              {actionTab === "import" && (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card className="border-white/10 bg-black/40">
+                    <CardHeader>
+                      <CardTitle className="text-lg">
+                        Import Records
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Bring in records from CSV, JSON, or BIND zone files.
+                      </p>
+                      <ImportExportDialog
+                        open={activeTab.showImport}
+                        onOpenChange={(open) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            showImport: open,
+                          }))
+                        }
+                        importData={activeTab.importData}
+                        importFormat={activeTab.importFormat}
+                        onImportDataChange={(value) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            importData: value,
+                          }))
+                        }
+                        onImportFormatChange={(value) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            importFormat: value,
+                          }))
+                        }
+                        onImport={(items, dryRun) =>
+                          handleImport(activeTab, items, dryRun)
+                        }
+                        serverExport={async (format) => {
+                          try {
+                            const res = await exportDNSRecords(
+                              activeTab.zoneId,
+                              format,
+                              activeTab.page,
+                              activeTab.perPage,
+                            );
+                            const blob = new Blob([res], {
+                              type:
+                                format === "json"
+                                  ? "application/json"
+                                  : format === "csv"
+                                    ? "text/csv"
+                                    : "text/plain",
+                            });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `${activeTab.zoneId}-records.${format === "json" ? "json" : format === "csv" ? "csv" : "zone"}`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            toast({
+                              title: "Success",
+                              description: `Server export ${format.toUpperCase()} completed`,
+                            });
+                          } catch (err) {
+                            toast({
+                              title: "Error",
+                              description:
+                                "Server export failed: " +
+                                (err as Error).message,
+                              variant: "destructive",
+                            });
+                          }
+                        }}
+                        onExport={handleExport}
+                      />
+                    </CardContent>
+                  </Card>
+                  <Card className="border-white/10 bg-black/40">
+                    <CardHeader>
+                      <CardTitle className="text-lg">
+                        Export Records
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Download zone data locally or run server-side exports.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleExport("json")}
+                        >
+                          <FileDown className="h-4 w-4 mr-2" />
+                          Export JSON
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => handleExport("csv")}
+                        >
+                          <FileDown className="h-4 w-4 mr-2" />
+                          Export CSV
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => handleExport("bind")}
+                        >
+                          <FileDown className="h-4 w-4 mr-2" />
+                          Export BIND
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="ghost"
+                          onClick={() => setActionTab("records")}
+                        >
+                          <FileUp className="h-4 w-4 mr-2" />
+                          Back to records
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+              {actionTab === "audit" && (
+                <Card className="border-white/10 bg-black/40">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Audit log</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-sm text-muted-foreground">
+                      Review sensitive actions recorded by the desktop backend.
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowAuditLog(true)}
+                      disabled={!isDesktop()}
+                    >
+                      Open audit log
+                    </Button>
+                    {!isDesktop() && (
+                      <div className="text-xs text-muted-foreground">
+                        Audit log is only available in the desktop app.
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+              {actionTab === "settings" && (
+                <Card className="border-white/10 bg-black/40">
+                  <CardHeader>
+                    <CardTitle className="text-lg">
+                      Session settings
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Auto refresh</Label>
+                      <Select
+                        value={String(autoRefreshInterval ?? 0)}
+                        onValueChange={(v) =>
+                          setAutoRefreshInterval(v ? Number(v) : null)
+                        }
+                      >
+                        <SelectTrigger className="w-48">
+                          <SelectValue placeholder="Auto-refresh" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="0">Off</SelectItem>
+                          <SelectItem value="60000">1 min</SelectItem>
+                          <SelectItem value="300000">5 min</SelectItem>
+                          <SelectItem value="600000">10 min</SelectItem>
+                          <SelectItem value="1800000">30 min</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-muted-foreground">
+                        Refresh pauses automatically when you are editing a
+                        record or have dialogs open.
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Per-page defaults</Label>
+                      <Select
+                        value={String(activeTab.perPage)}
+                        onValueChange={(v) => {
+                          const value = Number(v);
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            perPage: Number.isNaN(value) ? 50 : value,
+                            page: 1,
+                          }));
+                        }}
+                      >
+                        <SelectTrigger className="w-48">
+                          <SelectValue placeholder="Per page" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="25">25</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                          <SelectItem value="200">200</SelectItem>
+                          <SelectItem value="500">500</SelectItem>
+                          <SelectItem value="0">All</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Settings className="h-4 w-4" />
+                      Settings are scoped to the active zone tab.
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-white/10 bg-black/30">
+            <CardContent className="py-12 text-center text-sm text-muted-foreground">
+              Select a zone to open it in a new tab.
             </CardContent>
           </Card>
         )}

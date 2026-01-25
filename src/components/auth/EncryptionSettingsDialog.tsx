@@ -70,6 +70,11 @@ export function EncryptionSettingsDialog({
   onVaultEnabledChange,
 }: EncryptionSettingsDialogProps) {
   const [useVault, setUseVault] = useState(vaultEnabled);
+  const safeIterations =
+    typeof settings.iterations === "number" ? settings.iterations : 100000;
+  const safeKeyLength =
+    typeof settings.keyLength === "number" ? settings.keyLength : 256;
+  const safeAlgorithm = settings.algorithm ?? "AES-GCM";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -85,7 +90,7 @@ export function EncryptionSettingsDialog({
             <Input
               id="iterations"
               type="number"
-              value={settings.iterations}
+              value={safeIterations}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
                 const n = Number.parseInt(e.target.value, 10);
                 onSettingsChange({
@@ -98,7 +103,7 @@ export function EncryptionSettingsDialog({
           <div className="space-y-2">
             <Label htmlFor="key-length">Key Length (bits)</Label>
             <Select
-              value={settings.keyLength.toString()}
+              value={safeKeyLength.toString()}
               onValueChange={(value) =>
                 onSettingsChange({ ...settings, keyLength: parseInt(value) })
               }
@@ -116,7 +121,7 @@ export function EncryptionSettingsDialog({
           <div className="space-y-2">
             <Label htmlFor="algorithm">Algorithm</Label>
             <Select
-              value={settings.algorithm}
+              value={safeAlgorithm}
               onValueChange={(value) =>
                 onSettingsChange({
                   ...settings,

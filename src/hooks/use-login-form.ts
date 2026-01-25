@@ -30,6 +30,13 @@ export function useLoginForm(
     if (!key) {
       throw new Error("API key not provided");
     }
+    if (desktop) {
+      const ok = await TauriClient.verifyToken(key, email);
+      if (!ok) {
+        throw new Error("Invalid API key");
+      }
+      return;
+    }
     const client = new ServerClient(key, undefined, email);
     await client.verifyToken(signal);
   };
