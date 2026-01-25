@@ -174,8 +174,8 @@ export class TauriClient {
     return invoke("store_vault_secret", { id, secret });
   }
 
-  static async getVaultSecret(id: string): Promise<string> {
-    return invoke("get_vault_secret", { id });
+  static async getVaultSecret(id: string, token?: string): Promise<string> {
+    return invoke("get_vault_secret", { id, token });
   }
 
   static async deleteVaultSecret(id: string): Promise<void> {

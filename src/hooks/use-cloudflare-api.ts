@@ -116,9 +116,9 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   );
 
   const getVaultSecret = useCallback(
-    (id: string) => {
+    (id: string, token?: string) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.getVaultSecret(id);
+      return api.getVaultSecret(id, token);
     },
     [api],
   );

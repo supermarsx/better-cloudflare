@@ -500,6 +500,7 @@ const ok = await invoke<boolean>('verify_token', {
 - **Purpose**: Retrieve a vault secret after passkey auth
 - **Parameters**:
   - `id: string`
+  - `token: string` (required, one-time use)
 - **Returns**: `string`
 
 #### `delete_vault_secret`

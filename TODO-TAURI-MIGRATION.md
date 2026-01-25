@@ -127,12 +127,16 @@
   - [ ] Log all sensitive operations (login, key changes, DNS modifications)
   - [x] Log key/vault operations to local audit storage
   - [x] Log DNS, passkey, encryption operations to local audit storage
+  - [ ] Add audit log export/download (CSV/JSON)
   - [ ] Add rotation policy for audit logs
   - [x] Implement log viewing UI
   - [ ] Add export functionality
 
 ### Passkey Storage
 - [x] **Persist passkey credentials in secure storage** (keychain with memory fallback)
+- [x] **Share storage between PasskeyManager and Tauri Storage state** (avoid split keychains)
+- [ ] **Verify passkey assertions/attestations** (full WebAuthn verification)
+- [x] **Enforce passkey token gating for vault reads** (desktop mode)
 
 - [ ] **Add backup/restore functionality**
   - [ ] Export all vaults to encrypted file

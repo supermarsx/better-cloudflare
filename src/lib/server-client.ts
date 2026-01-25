@@ -379,7 +379,7 @@ export class ServerClient {
     passkeyToken?: string,
   ): Promise<string | undefined> {
     if (isDesktop()) {
-      return TauriClient.getVaultSecret(id);
+      return TauriClient.getVaultSecret(id, passkeyToken);
     }
     const data = await this.request(`/vault/${id}`, {
       method: "GET",

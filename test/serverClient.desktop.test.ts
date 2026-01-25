@@ -9,6 +9,7 @@ const originalCreate = TauriClient.createDNSRecord;
 const originalExport = TauriClient.exportDNSRecords;
 const originalSimulate = TauriClient.simulateSPF;
 const originalGraph = TauriClient.getSPFGraph;
+const originalVault = TauriClient.getVaultSecret;
 
 afterEach(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
@@ -17,6 +18,7 @@ afterEach(() => {
   TauriClient.exportDNSRecords = originalExport;
   TauriClient.simulateSPF = originalSimulate;
   TauriClient.getSPFGraph = originalGraph;
+  TauriClient.getVaultSecret = originalVault;
 });
 
 test("verifyToken uses Tauri in desktop mode", async () => {
@@ -92,4 +94,17 @@ test("getSPFGraph routes to Tauri in desktop mode", async () => {
   const res = await client.getSPFGraph("example.com");
   assert.equal(res.cyclic, false);
   assert.deepEqual(params, ["example.com"]);
+});
+
+test("getVaultSecret passes token in desktop mode", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  let params: unknown[] = [];
+  TauriClient.getVaultSecret = async (...args: unknown[]) => {
+    params = args;
+    return "secret";
+  };
+  const client = new ServerClient("token", "http://example.com");
+  const secret = await client.getVaultSecret("key1", "ptok");
+  assert.equal(secret, "secret");
+  assert.deepEqual(params, ["key1", "ptok"]);
 });

@@ -388,8 +388,18 @@ pub async fn store_vault_secret(
 #[tauri::command]
 pub async fn get_vault_secret(
     storage: State<'_, Storage>,
+    passkey_mgr: State<'_, PasskeyManager>,
     id: String,
+    token: Option<String>,
 ) -> Result<String, String> {
+    let token = token.ok_or("Passkey token required")?;
+    let ok = passkey_mgr
+        .verify_token(&id, &token, true)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !ok {
+        return Err("Invalid passkey token".to_string());
+    }
     storage.get_vault_secret(&id).await
         .map_err(|e| e.to_string())
 }
@@ -415,6 +425,7 @@ pub async fn delete_vault_secret(
 // Passkey Operations
 #[tauri::command]
 pub async fn get_passkey_registration_options(
+    _storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
 ) -> Result<serde_json::Value, String> {
@@ -429,7 +440,9 @@ pub async fn register_passkey(
     id: String,
     attestation: serde_json::Value,
 ) -> Result<(), String> {
-    passkey_mgr.register_passkey(&id, attestation).await
+    passkey_mgr
+        .register_passkey(&storage, &id, attestation)
+        .await
         .map_err(|e| e.to_string())?;
     log_audit(
         &storage,
@@ -444,10 +457,13 @@ pub async fn register_passkey(
 
 #[tauri::command]
 pub async fn get_passkey_auth_options(
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
 ) -> Result<serde_json::Value, String> {
-    passkey_mgr.get_auth_options(&id).await
+    passkey_mgr
+        .get_auth_options(&storage, &id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -458,7 +474,9 @@ pub async fn authenticate_passkey(
     id: String,
     assertion: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let result = passkey_mgr.authenticate_passkey(&id, assertion).await
+    let result = passkey_mgr
+        .authenticate_passkey(&storage, &id, assertion)
+        .await
         .map_err(|e| e.to_string())?;
     if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
         log_audit(
@@ -475,10 +493,13 @@ pub async fn authenticate_passkey(
 
 #[tauri::command]
 pub async fn list_passkeys(
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    passkey_mgr.list_passkeys(&id).await
+    passkey_mgr
+        .list_passkeys(&storage, &id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -489,7 +510,9 @@ pub async fn delete_passkey(
     id: String,
     credential_id: String,
 ) -> Result<(), String> {
-    passkey_mgr.delete_passkey(&id, &credential_id).await
+    passkey_mgr
+        .delete_passkey(&storage, &id, &credential_id)
+        .await
         .map_err(|e| e.to_string())?;
     log_audit(
         &storage,
