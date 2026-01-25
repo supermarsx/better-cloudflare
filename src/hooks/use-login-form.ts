@@ -40,6 +40,8 @@ export function useLoginForm(
     const client = new ServerClient(key, undefined, email);
     await client.verifyToken(signal);
   };
+  const formatError = (err: unknown) =>
+    err instanceof Error ? err.message : typeof err === "string" ? err : "Unknown error";
 
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
@@ -179,7 +181,7 @@ export function useLoginForm(
       } catch (err) {
         toast({
           title: "Error",
-          description: (err as Error).message,
+          description: formatError(err),
           variant: "destructive",
         });
         return;
@@ -195,7 +197,7 @@ export function useLoginForm(
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to login: " + (error as Error).message,
+        description: "Failed to login: " + formatError(error),
         variant: "destructive",
       });
     } finally {
@@ -220,7 +222,7 @@ export function useLoginForm(
       } catch (err) {
         toast({
           title: "Error",
-          description: (err as Error).message,
+          description: formatError(err),
           variant: "destructive",
         });
         return;
@@ -282,7 +284,7 @@ export function useLoginForm(
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to add API key: " + (error as Error).message,
+        description: "Failed to add API key: " + formatError(error),
         variant: "destructive",
       });
     }
