@@ -376,12 +376,12 @@
 
 ### Project Documentation
 - [ ] **Update `README.md`**
-  - [ ] Replace web app instructions with desktop app
-  - [ ] Add platform-specific installation instructions
+  - [x] Replace web app instructions with desktop app
+  - [x] Add platform-specific installation instructions
   - [ ] Update screenshots
-  - [ ] Add system requirements
+  - [x] Add system requirements
   - [x] Update development setup instructions
-  - [ ] Link to README-TAURI.md for detailed desktop info
+  - [x] Link to README-TAURI.md for detailed desktop info
 
 - [ ] **Update `spec.md`** ⚠️ **CRITICAL**
   - [ ] Change architecture from web app to desktop app

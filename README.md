@@ -1,15 +1,21 @@
 # Better Cloudflare
 
-Better Cloudflare is a minimalist interface for managing DNS records on Cloudflare. It lets you securely store your API tokens in local storage using password-based encryption and provides a simple UI for creating, updating and deleting records.
+Better Cloudflare is a Tauri-powered desktop app for managing DNS records on Cloudflare. It securely stores API tokens using password-based encryption and provides a simple UI for creating, updating, and deleting records.
+
+For desktop-specific setup and distribution, see `README-TAURI.md`.
 
 ## Requirements
 
 The project requires **Node 18 or higher**. Use a modern Node version when running
 `npm install`, `npm run dev`, and `npm run build`.
 
+For desktop development, you also need:
+- **Rust toolchain** (latest stable)
+- **Tauri system dependencies** (see `README-TAURI.md` for platform-specific packages)
+
 ## Development
 
-Install dependencies and start the Next.js development server:
+Install dependencies and start the Next.js development server (web UI only):
 
 ```bash
 npm install

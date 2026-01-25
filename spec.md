@@ -363,7 +363,7 @@ Encryption configuration & Benchmarking
 - Users can change PBKDF2 iteration count, key length, and algorithm via the `EncryptionSettingsDialog`.
 - Running a CPU benchmark measures the time to derive a key with the provided iterations (via `lib/crypto-benchmark.ts`).
 
-Server Features
+Optional local server features (web mode)
 
 - Rate limiting via `express-rate-limit`.
 - CORS is only relevant for optional local HTTP endpoints; Tauri IPC does not use CORS.
@@ -1536,7 +1536,7 @@ cargo tarpaulin --out Html --output-dir coverage
 
 ### Frontend Tests
 
-**Unit Tests** (Vitest + React Testing Library):
+**Unit Tests** (tsx + React Testing Library):
 
 **Component Tests:**
 ```typescript
