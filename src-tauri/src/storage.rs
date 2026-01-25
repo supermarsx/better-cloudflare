@@ -139,8 +139,7 @@ impl Storage {
         id: String,
         label: Option<String>,
         email: Option<String>,
-        _current_password: Option<String>,
-        _new_password: Option<String>,
+        encrypted_key: Option<String>,
     ) -> Result<(), StorageError> {
         let mut keys = self.get_api_keys().await?;
         
@@ -151,7 +150,9 @@ impl Storage {
             if let Some(email) = email {
                 key.email = Some(email);
             }
-            // Note: Password re-encryption would need to be handled by the caller
+            if let Some(encrypted_key) = encrypted_key {
+                key.encrypted_key = encrypted_key;
+            }
         } else {
             return Err(StorageError::NotFound);
         }
@@ -214,5 +215,100 @@ impl Storage {
         let json = serde_json::to_string(&entries)
             .map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("audit_log", &json).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn api_key_lifecycle() {
+        let storage = Storage::new(false);
+        let id = storage
+            .add_api_key(
+                "primary".to_string(),
+                "enc_v1".to_string(),
+                Some("user@example.com".to_string()),
+            )
+            .await
+            .expect("add api key");
+
+        let keys = storage.get_api_keys().await.expect("get api keys");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, id);
+        assert_eq!(keys[0].label, "primary");
+        assert_eq!(keys[0].encrypted_key, "enc_v1");
+        assert_eq!(keys[0].email.as_deref(), Some("user@example.com"));
+
+        let encrypted = storage
+            .get_encrypted_key(&id)
+            .await
+            .expect("get encrypted key");
+        assert_eq!(encrypted, "enc_v1");
+
+        storage
+            .update_api_key(
+                id.clone(),
+                Some("updated".to_string()),
+                Some("new@example.com".to_string()),
+                Some("enc_v2".to_string()),
+            )
+            .await
+            .expect("update api key");
+
+        let keys = storage.get_api_keys().await.expect("get updated keys");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].label, "updated");
+        assert_eq!(keys[0].email.as_deref(), Some("new@example.com"));
+        assert_eq!(keys[0].encrypted_key, "enc_v2");
+
+        storage
+            .delete_api_key(id.clone())
+            .await
+            .expect("delete api key");
+        let keys = storage.get_api_keys().await.expect("get keys after delete");
+        assert!(keys.is_empty());
+        let missing = storage.get_encrypted_key(&id).await;
+        assert!(matches!(missing, Err(StorageError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn vault_secret_roundtrip() {
+        let storage = Storage::new(false);
+        storage
+            .store_vault_secret("key_1", "secret")
+            .await
+            .expect("store vault secret");
+        let secret = storage
+            .get_vault_secret("key_1")
+            .await
+            .expect("get vault secret");
+        assert_eq!(secret, "secret");
+        storage
+            .delete_vault_secret("key_1")
+            .await
+            .expect("delete vault secret");
+        let missing = storage.get_vault_secret("key_1").await;
+        assert!(matches!(missing, Err(StorageError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn audit_log_roundtrip() {
+        let storage = Storage::new(false);
+        storage
+            .add_audit_entry(json!({"event":"login","actor":"test"}))
+            .await
+            .expect("add audit entry");
+        storage
+            .add_audit_entry(json!({"event":"logout","actor":"test"}))
+            .await
+            .expect("add audit entry 2");
+
+        let entries = storage.get_audit_entries().await.expect("get audit");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["event"], "login");
+        assert_eq!(entries[1]["event"], "logout");
     }
 }

@@ -427,3 +427,36 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
         cyclic,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+    use std::str::FromStr;
+
+    #[test]
+    fn parse_spf_basic() {
+        let record = "v=spf1 ip4:192.0.2.0/24 -all redirect=example.com";
+        let parsed = parse_spf(record).expect("parse spf");
+        assert_eq!(parsed.version, "v=spf1");
+        assert_eq!(parsed.mechanisms.len(), 2);
+        assert_eq!(parsed.mechanisms[0].mechanism, "ip4");
+        assert_eq!(parsed.mechanisms[0].value.as_deref(), Some("192.0.2.0/24"));
+        assert_eq!(parsed.mechanisms[1].mechanism, "all");
+        assert_eq!(parsed.mechanisms[1].qualifier.as_deref(), Some("-"));
+        assert_eq!(parsed.modifiers.len(), 1);
+        assert_eq!(parsed.modifiers[0].key, "redirect");
+        assert_eq!(parsed.modifiers[0].value, "example.com");
+    }
+
+    #[test]
+    fn ip_matches_cidr_ipv4_ipv6() {
+        let ipv4 = IpAddr::from_str("192.0.2.5").expect("ipv4");
+        assert!(ip_matches_cidr(ipv4, "192.0.2.0/24"));
+        assert!(!ip_matches_cidr(ipv4, "198.51.100.0/24"));
+
+        let ipv6 = IpAddr::from_str("2001:db8::1").expect("ipv6");
+        assert!(ip_matches_cidr(ipv6, "2001:db8::/32"));
+        assert!(!ip_matches_cidr(ipv6, "2001:db9::/32"));
+    }
+}

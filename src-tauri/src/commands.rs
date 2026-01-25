@@ -88,7 +88,26 @@ pub async fn update_api_key(
     current_password: Option<String>,
     new_password: Option<String>,
 ) -> Result<(), String> {
-    storage.update_api_key(id, label, email, current_password, new_password).await
+    let mut encrypted_key: Option<String> = None;
+    if let Some(new_password) = new_password {
+        let current_password = current_password.ok_or("Current password required")?;
+        let crypto = CryptoManager::default();
+        let existing = storage
+            .get_encrypted_key(&id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let decrypted = crypto
+            .decrypt(&existing, &current_password)
+            .map_err(|e| e.to_string())?;
+        encrypted_key = Some(
+            crypto
+                .encrypt(&decrypted, &new_password)
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    storage
+        .update_api_key(id, label, email, encrypted_key)
+        .await
         .map_err(|e| e.to_string())
 }
 

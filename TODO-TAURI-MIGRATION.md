@@ -41,7 +41,12 @@
 
 ## 🔧 Phase 2: Rust Backend Development
 
+### Key Management
+- [x] **Re-encrypt API keys when updating password** (Tauri `update_api_key`)
+
 ### Testing & Validation
+- [x] **Add storage unit tests** (in-memory keyring off)
+- [x] **Add SPF parser/unit tests** (parse + CIDR checks)
 - [ ] **Test crypto module** (`src-tauri/src/crypto.rs`)
   ```bash
   cd src-tauri
