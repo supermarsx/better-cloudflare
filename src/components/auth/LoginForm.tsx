@@ -101,7 +101,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   };
 
   return (
-    <div className="h-full flex items-center justify-center bg-background p-4 relative overflow-hidden">
+    <div className="h-full w-full flex items-center justify-center bg-background p-4 relative overflow-hidden">
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
       

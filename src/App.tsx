@@ -82,10 +82,10 @@ function App() {
         </div>
       </div>
       <main
-        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed scroll-smooth`}
+        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed scroll-smooth flex`}
       >
         <div
-          className={`transition-opacity duration-300 ease-out ${
+          className={`transition-opacity duration-300 ease-out min-h-full flex-1 ${
             isVisible ? "opacity-100" : "opacity-0"
           }`}
         >
