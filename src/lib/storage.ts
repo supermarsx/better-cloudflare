@@ -370,6 +370,11 @@ export class StorageManager {
     this.save();
   }
 
+  setZonePerPageMap(map: Record<string, number>): void {
+    this.data.zonePerPage = { ...map };
+    this.save();
+  }
+
   getZonePerPageMap(): Record<string, number> {
     return { ...(this.data.zonePerPage ?? {}) };
   }

@@ -387,10 +387,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           const prefObj = prefs as {
             last_zone?: string;
             auto_refresh_interval?: number;
+            default_per_page?: number;
+            zone_per_page?: Record<string, number>;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
             setAutoRefreshInterval(prefObj.auto_refresh_interval);
+          }
+          if (typeof prefObj.default_per_page === "number") {
+            setGlobalPerPage(prefObj.default_per_page);
+          }
+          if (prefObj.zone_per_page && typeof prefObj.zone_per_page === "object") {
+            setZonePerPage(prefObj.zone_per_page);
           }
         })
         .catch(() => {});
@@ -398,6 +406,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
+    setGlobalPerPage(storageManager.getDefaultPerPage());
+    setZonePerPage(storageManager.getZonePerPageMap());
   }, []);
 
   useEffect(() => {
@@ -444,6 +454,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }, autoRefreshInterval);
     return () => clearInterval(id);
   }, [autoRefreshInterval, activeTab, loadRecords]);
+
+  useEffect(() => {
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            default_per_page: globalPerPage,
+            zone_per_page: zonePerPage,
+          }),
+        )
+        .catch(() => {});
+      return;
+    }
+    storageManager.setDefaultPerPage(globalPerPage);
+    storageManager.setZonePerPageMap(zonePerPage);
+  }, [globalPerPage, zonePerPage]);
+
+  useEffect(() => {
+    if (!globalPerPage) return;
+    setTabs((prev) =>
+      prev.map((tab) => {
+        if (tab.kind !== "zone") return tab;
+        if (zonePerPage[tab.zoneId] !== undefined) return tab;
+        return { ...tab, perPage: globalPerPage };
+      }),
+    );
+  }, [globalPerPage, zonePerPage]);
 
   useEffect(() => {
     const updateHeight = () => {
@@ -1183,6 +1221,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           perPage: Number.isNaN(value) ? 50 : value,
                           page: 1,
                         }));
+                        if (!Number.isNaN(value)) {
+                          setZonePerPage((prev) => ({
+                            ...prev,
+                            [activeTab.zoneId]: value,
+                          }));
+                        }
                       }}
                     >
                       <SelectTrigger className="w-32">
@@ -1500,6 +1544,71 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </Card>
                 </div>
               )}
+              {activeTab.kind === "zone" && actionTab === "zone-settings" && (
+                <Card className="border-white/10 bg-black/40">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Zone settings</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Per-page override</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Select
+                          value={
+                            zonePerPage[activeTab.zoneId] === undefined
+                              ? "inherit"
+                              : String(zonePerPage[activeTab.zoneId])
+                          }
+                          onValueChange={(v) => {
+                            if (v === "inherit") {
+                              setZonePerPage((prev) => {
+                                const next = { ...prev };
+                                delete next[activeTab.zoneId];
+                                return next;
+                              });
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                perPage: globalPerPage,
+                                page: 1,
+                              }));
+                              return;
+                            }
+                            const value = Number(v);
+                            if (Number.isNaN(value)) return;
+                            setZonePerPage((prev) => ({
+                              ...prev,
+                              [activeTab.zoneId]: value,
+                            }));
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              perPage: value,
+                              page: 1,
+                            }));
+                          }}
+                        >
+                          <SelectTrigger className="w-48">
+                            <SelectValue placeholder="Per page" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="inherit">
+                              Inherit ({globalPerPage})
+                            </SelectItem>
+                            <SelectItem value="25">25</SelectItem>
+                            <SelectItem value="50">50</SelectItem>
+                            <SelectItem value="100">100</SelectItem>
+                            <SelectItem value="200">200</SelectItem>
+                            <SelectItem value="500">500</SelectItem>
+                            <SelectItem value="0">All</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="text-xs text-muted-foreground">
+                          Overrides the global default for this zone only.
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
               {activeTab.kind === "audit" && (
                 <Card className="border-white/10 bg-black/40">
                   <CardHeader>
@@ -1533,8 +1642,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-black/30 text-sm">
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Auto refresh</div>
+                    <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                      <div className="font-medium">Auto refresh</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(autoRefreshInterval ?? 0)}
@@ -1557,22 +1666,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             Pauses while editing records or dialogs are open.
                           </div>
                         </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Per-page default</div>
+                    </div>
+                    <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Default per-page</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
-                            value={String(activeTab?.perPage ?? 50)}
+                            value={String(globalPerPage)}
                             onValueChange={(v) => {
-                              if (!activeTab) return;
                               const value = Number(v);
-                              updateTab(activeTab.id, (prev) => ({
-                                ...prev,
-                                perPage: Number.isNaN(value) ? 50 : value,
-                                page: 1,
-                              }));
+                              setGlobalPerPage(Number.isNaN(value) ? 50 : value);
                             }}
-                            disabled={!activeTab}
                           >
                             <SelectTrigger className="w-44">
                               <SelectValue placeholder="Per page" />
@@ -1586,17 +1689,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <SelectItem value="0">All</SelectItem>
                             </SelectContent>
                           </Select>
-                          {!activeTab && (
-                            <div className="text-xs text-muted-foreground">
-                              Open a zone tab to configure per-page defaults.
-                            </div>
-                          )}
+                          <div className="text-xs text-muted-foreground">
+                            New zone tabs inherit this value unless overridden.
+                          </div>
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
-                      Settings are scoped to the active zone tab.
+                      Global settings apply to every zone unless overridden.
                     </div>
                   </CardContent>
                 </Card>
