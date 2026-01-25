@@ -363,11 +363,11 @@ Encryption configuration & Benchmarking
 - Users can change PBKDF2 iteration count, key length, and algorithm via the `EncryptionSettingsDialog`.
 - Running a CPU benchmark measures the time to derive a key with the provided iterations (via `lib/crypto-benchmark.ts`).
 
-Optional local server features (web mode)
+Desktop-only runtime (no local HTTP server)
 
-- Rate limiting via `express-rate-limit`.
-- CORS is only relevant for optional local HTTP endpoints; Tauri IPC does not use CORS.
-- Centralized error handler returns JSON and hides stack in production.
+- The app uses Tauri IPC for all backend calls; there is no local HTTP server.
+- CORS, rate limiting, and HTTP middleware are not applicable in desktop mode.
+- If a web server is reintroduced in the future, it must define its own HTTP security controls.
 
 ## 7. Detailed UI components
 
@@ -1920,7 +1920,7 @@ cargo bench
 - Export audit logs → SIEM systems
 - Import records from → Terraform, Pulumi, other IaC tools
 - Webhook support → notify external services on DNS changes
-- API: expose subset of functionality via local HTTP server (optional)
+- Desktop-only IPC API; no local HTTP server planned
 
 ### Testing & Development Extensions
 
