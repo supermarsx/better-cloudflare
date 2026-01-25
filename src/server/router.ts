@@ -81,14 +81,16 @@ apiRouter.get("/api/audit", isAdmin, asyncHandler(ServerAPI.getAuditEntries()));
 apiRouter.get("/api/spf/simulate", asyncHandler(ServerAPI.simulateSPF()));
 apiRouter.get("/api/spf/graph", asyncHandler(ServerAPI.getSPFGraph()));
 
-// Admin endpoints
-apiRouter.post("/api/users", isAdmin, asyncHandler(ServerAPI.createUser()));
-apiRouter.get("/api/users/:id", asyncHandler(ServerAPI.getUser()));
-apiRouter.put(
-  "/api/users/:id/roles",
-  isAdmin,
-  asyncHandler(ServerAPI.updateUserRoles()),
-);
+// Admin endpoints (only when user management is backed by sqlite)
+if (ServerAPI.supportsUserManagement()) {
+  apiRouter.post("/api/users", isAdmin, asyncHandler(ServerAPI.createUser()));
+  apiRouter.get("/api/users/:id", asyncHandler(ServerAPI.getUser()));
+  apiRouter.put(
+    "/api/users/:id/roles",
+    isAdmin,
+    asyncHandler(ServerAPI.updateUserRoles()),
+  );
+}
 
 apiRouter.put(
   "/api/zones/:zone/dns_records/:id",

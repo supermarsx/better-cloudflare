@@ -567,6 +567,13 @@ export class ServerAPI {
     ServerAPI.credentialStore = store;
   }
 
+  static supportsUserManagement(): boolean {
+    return (
+      ServerAPI.credentialStore instanceof SqliteCredentialStore &&
+      !!ServerAPI.credentialStore.db
+    );
+  }
+
   static createPasskeyRegistrationOptions() {
     /**
      * Generate a simple challenge for WebAuthn passkey registration.

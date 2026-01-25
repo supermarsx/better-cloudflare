@@ -117,6 +117,39 @@ export function RecordRow({
   const [naptrReplacement, setNaptrReplacement] = useState<string>(
     parseNAPTR(record.content).replacement ?? "",
   );
+  const [spfQualifier, setSpfQualifier] = useState<string>("+");
+  const [spfMechanism, setSpfMechanism] = useState<string>("include");
+  const [spfValue, setSpfValue] = useState<string>("");
+  const [spfBuilderError, setSpfBuilderError] = useState<string>("");
+
+  const addSpfMechanism = useCallback(() => {
+    const needsValue = ["ip4", "ip6", "include", "exists", "ptr"].includes(
+      spfMechanism,
+    );
+    if (needsValue && !spfValue.trim()) {
+      setSpfBuilderError("Value required for this mechanism");
+      return;
+    }
+    const parsed = parseSPF(editedRecord.content) ?? {
+      version: "v=spf1",
+      mechanisms: [],
+    };
+    const qualifier = spfQualifier === "+" ? undefined : spfQualifier;
+    const mechanisms = [
+      ...parsed.mechanisms,
+      {
+        qualifier,
+        mechanism: spfMechanism,
+        value: spfValue.trim() || undefined,
+      },
+    ];
+    setEditedRecord({
+      ...editedRecord,
+      content: composeSPF({ ...parsed, mechanisms }),
+    });
+    setSpfBuilderError("");
+    if (spfMechanism === "all") setSpfValue("");
+  }, [editedRecord, spfMechanism, spfQualifier, spfValue]);
 
   useEffect(() => {
     setEditedRecord(record);
@@ -562,23 +595,48 @@ export function RecordRow({
                 <div className="flex space-x-2">
                   <select
                     className="h-8 p-2"
-                    value={""}
-                    onChange={() => {
-                      /* small builder not implemented yet */
-                    }}
+                    value={spfQualifier}
+                    onChange={(e) => setSpfQualifier(e.target.value)}
                   >
-                    <option value="">+</option>
+                    <option value="+">+</option>
+                    <option value="-">-</option>
+                    <option value="~">~</option>
+                    <option value="?">?</option>
                   </select>
-                  <span className="text-sm">
-                    Preview:{" "}
-                    {composeSPF(
-                      parseSPF(editedRecord.content) ?? {
-                        version: "v=spf1",
-                        mechanisms: [],
-                      },
-                    )}
-                  </span>
+                  <select
+                    className="h-8 p-2"
+                    value={spfMechanism}
+                    onChange={(e) => setSpfMechanism(e.target.value)}
+                  >
+                    <option value="include">include</option>
+                    <option value="ip4">ip4</option>
+                    <option value="ip6">ip6</option>
+                    <option value="a">a</option>
+                    <option value="mx">mx</option>
+                    <option value="exists">exists</option>
+                    <option value="ptr">ptr</option>
+                    <option value="all">all</option>
+                  </select>
+                  <Input
+                    placeholder="value (optional)"
+                    value={spfValue}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                      setSpfValue(e.target.value)
+                    }
+                    className="h-8"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={addSpfMechanism}
+                    className="h-8"
+                  >
+                    Add
+                  </Button>
                 </div>
+                {spfBuilderError && (
+                  <div className="text-sm text-red-600">{spfBuilderError}</div>
+                )}
                 {!validateSPF(editedRecord.content).ok && (
                   <div className="text-red-600">
                     SPF validation issues:{" "}

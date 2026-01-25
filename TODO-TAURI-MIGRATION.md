@@ -190,6 +190,7 @@
   - [ ] Test zone switching
 
 - [ ] **DNS record management**
+  - [x] Tauri backend parity for pagination + bind export + bulk dry-run
   - [ ] Update record CRUD operations
   - [ ] Test all record types (A, AAAA, CNAME, MX, TXT, etc.)
   - [ ] Test bulk operations
