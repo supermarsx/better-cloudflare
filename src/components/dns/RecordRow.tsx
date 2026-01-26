@@ -635,16 +635,31 @@ export function RecordRow({
               </div>
             ) : editedRecord.type === "SPF" ? (
               <div className="space-y-2">
-                <Input
-                  value={editedRecord.content}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: e.target.value,
-                    })
-                  }
-                  className="h-8"
-                />
+                {editedRecord.content.length > 120 ||
+                editedRecord.content.includes("\n") ? (
+                  <textarea
+                    value={editedRecord.content}
+                    onChange={(e) =>
+                      setEditedRecord({
+                        ...editedRecord,
+                        content: e.target.value,
+                      })
+                    }
+                    rows={4}
+                    className="min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  />
+                ) : (
+                  <Input
+                    value={editedRecord.content}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                      setEditedRecord({
+                        ...editedRecord,
+                        content: e.target.value,
+                      })
+                    }
+                    className="h-8"
+                  />
+                )}
                 <div className="flex flex-wrap gap-2">
                   <select
                     className="h-8 rounded-md border border-border bg-background px-2 text-sm"
@@ -698,16 +713,34 @@ export function RecordRow({
                 )}
               </div>
             ) : (
-              <Input
-                value={editedRecord.content}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setEditedRecord({
-                    ...editedRecord,
-                    content: e.target.value,
-                  })
-                }
-                className="h-8"
-              />
+              <>
+                {editedRecord.type === "TXT" ||
+                editedRecord.content.length > 120 ||
+                editedRecord.content.includes("\n") ? (
+                  <textarea
+                    value={editedRecord.content}
+                    onChange={(e) =>
+                      setEditedRecord({
+                        ...editedRecord,
+                        content: e.target.value,
+                      })
+                    }
+                    rows={4}
+                    className="min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  />
+                ) : (
+                  <Input
+                    value={editedRecord.content}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                      setEditedRecord({
+                        ...editedRecord,
+                        content: e.target.value,
+                      })
+                    }
+                    className="h-8"
+                  />
+                )}
+              </>
             )}
           </div>
           <div className="col-span-1 space-y-1">
@@ -875,6 +908,7 @@ export function RecordRow({
             onCheckedChange={(checked: boolean) => {
               onToggleProxy?.(checked);
             }}
+            onClick={(event) => event.stopPropagation()}
           />
         )}
       </div>
@@ -887,7 +921,7 @@ export function RecordRow({
             event.stopPropagation();
             onCopy?.();
           }}
-          className="h-7 w-7 p-0"
+          className="ui-icon-button h-7 w-7 p-0"
         >
           <Copy className="h-3 w-3" />
         </Button>
@@ -898,7 +932,7 @@ export function RecordRow({
             event.stopPropagation();
             onEdit();
           }}
-          className="h-7 w-7 p-0"
+          className="ui-icon-button h-7 w-7 p-0"
         >
           <Edit2 className="h-3 w-3" />
         </Button>
@@ -909,15 +943,46 @@ export function RecordRow({
             event.stopPropagation();
             onDelete();
           }}
-          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+          className="ui-icon-button h-7 w-7 p-0 text-destructive hover:text-destructive"
         >
           <Trash2 className="h-3 w-3" />
         </Button>
       </div>
       {(expandedName || expandedContent) && (
-        <div className="col-span-full mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-foreground/80 glass-fade">
+        <div className="col-span-full relative mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-foreground/80 glass-fade">
+          <div
+            className="absolute right-2 top-2 flex gap-1"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {expandedName && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ui-icon-button h-7 w-7 p-0"
+                title="Copy name"
+                aria-label="Copy name"
+                onClick={() => void navigator.clipboard?.writeText(record.name)}
+              >
+                <Copy className="h-3 w-3" />
+              </Button>
+            )}
+            {expandedContent && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ui-icon-button h-7 w-7 p-0"
+                title="Copy content"
+                aria-label="Copy content"
+                onClick={() =>
+                  void navigator.clipboard?.writeText(record.content)
+                }
+              >
+                <Copy className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
           {expandedName && (
-            <div className="break-all">
+            <div className="break-all pr-16">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 Name
               </span>
@@ -927,7 +992,7 @@ export function RecordRow({
             </div>
           )}
           {expandedContent && (
-            <div className="break-all">
+            <div className="break-all pr-16">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 Content
               </span>
