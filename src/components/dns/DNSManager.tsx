@@ -1167,6 +1167,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         role="button"
                         tabIndex={0}
                         onClick={() => activateTab(tab.id)}
+                        onAuxClick={(event) => {
+                          if (event.button !== 1) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          closeTab(tab.id);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
                             activateTab(tab.id);
