@@ -75,6 +75,8 @@ export function RecordRow({
   onToggleProxy,
 }: RecordRowProps) {
   const [editedRecord, setEditedRecord] = useState(record);
+  const [expandedName, setExpandedName] = useState(false);
+  const [expandedContent, setExpandedContent] = useState(false);
   
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
     parseSRV(record.content).priority,
@@ -166,6 +168,8 @@ export function RecordRow({
 
   useEffect(() => {
     setEditedRecord(record);
+    setExpandedName(false);
+    setExpandedContent(false);
     if (record.type === "SRV") {
       const parsed = parseSRV(record.content);
       if (parsed.priority !== srvPriority) setSrvPriority(parsed.priority);
@@ -223,6 +227,11 @@ export function RecordRow({
 
   const ttlValue = editedRecord.ttl === 1 ? "auto" : editedRecord.ttl;
   const isCustomTTL = !getTTLPresets().includes(ttlValue as TTLValue);
+  const MAX_PREVIEW_CHARS = 30;
+  const truncate = (value: string) =>
+    value.length > MAX_PREVIEW_CHARS
+      ? `${value.slice(0, MAX_PREVIEW_CHARS)}...`
+      : value;
 
   if (isEditing) {
     return (
@@ -785,7 +794,7 @@ export function RecordRow({
 
   return (
     <div
-      className="group rounded-xl border border-white/10 bg-black/20 p-4 transition-colors hover:bg-black/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/60"
+      className="group min-h-[96px] rounded-2xl border border-border/60 bg-card/60 p-5 shadow-[0_10px_24px_rgba(0,0,0,0.12)] transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
       role="button"
       tabIndex={0}
       onClick={() => onEdit()}
@@ -807,35 +816,59 @@ export function RecordRow({
           />
           <span
             title={getRecordTypeLabel(record.type as RecordType)}
-            className="inline-flex items-center rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs font-semibold text-foreground/80"
+            className="inline-flex items-center rounded-md border border-border/50 bg-muted/40 px-2 py-1 text-xs font-semibold text-foreground/80"
           >
             {record.type}
           </span>
           <div className="min-w-0">
-            <div className="truncate font-mono text-sm">{record.name}</div>
-            <div className="truncate text-xs text-muted-foreground">
-              {record.content}
+            <div
+              className={`font-mono text-sm ${expandedName ? "break-all" : "truncate"}`}
+              title={record.name}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (record.name.length > MAX_PREVIEW_CHARS) {
+                  setExpandedName((prev) => !prev);
+                }
+              }}
+              role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+              tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
+            >
+              {expandedName ? record.name : truncate(record.name)}
+            </div>
+            <div
+              className={`text-xs text-muted-foreground ${expandedContent ? "break-all" : "truncate"}`}
+              title={record.content}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (record.content.length > MAX_PREVIEW_CHARS) {
+                  setExpandedContent((prev) => !prev);
+                }
+              }}
+              role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+              tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
+            >
+              {expandedContent ? record.content : truncate(record.content)}
             </div>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-muted-foreground">
+          <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-muted-foreground">
             TTL {record.ttl === 1 ? "Auto" : record.ttl}
           </span>
           {typeof record.priority === "number" && (
-            <span className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-muted-foreground">
+            <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-muted-foreground">
               Priority {record.priority}
             </span>
           )}
           {record.proxied && (
-            <span className="rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-orange-200">
+            <span className="rounded-md border border-primary/40 bg-primary/15 px-2 py-1 text-primary-foreground">
               Proxied
             </span>
           )}
           {(record.type === "A" ||
             record.type === "AAAA" ||
             record.type === "CNAME") && (
-            <div className="flex items-center gap-2 rounded-md border border-white/10 bg-black/30 px-2 py-1">
+            <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-2 py-1">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 Proxy
               </span>
