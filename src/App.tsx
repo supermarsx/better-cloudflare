@@ -4,6 +4,7 @@ import { DNSManager } from "@/components/dns/DNSManager";
 import { Toaster } from "@/components/ui/toaster";
 import { storageManager } from "@/lib/storage";
 import { LanguageSelector } from "@/components/ui/LanguageSelector";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { WindowTitleBar } from "@/components/ui/WindowTitleBar";
 import { isDesktop } from "@/lib/environment";
 
@@ -77,8 +78,9 @@ function App() {
     <div className="h-screen bg-background text-foreground">
       {isDesktopEnv ? <WindowTitleBar /> : null}
       <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
-        <div className="rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-60 backdrop-blur-sm transition hover:opacity-90">
+        <div className="flex items-center gap-2 rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-70 backdrop-blur-sm transition hover:opacity-100">
           <LanguageSelector />
+          <ThemeToggle />
         </div>
       </div>
       <main

@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import type { DNSRecord, Zone, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
@@ -190,6 +191,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditOrder, setAuditOrder] = useState("newest");
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
+  const [reopenLastTabs, setReopenLastTabs] = useState(false);
+  const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
+  const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
+  const [restoredTabs, setRestoredTabs] = useState(false);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -421,6 +426,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             auto_refresh_interval?: number;
             default_per_page?: number;
             zone_per_page?: Record<string, number>;
+            reopen_last_tabs?: boolean;
+            reopen_zone_tabs?: Record<string, boolean>;
+            last_open_tabs?: string[];
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
@@ -432,6 +440,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (prefObj.zone_per_page && typeof prefObj.zone_per_page === "object") {
             setZonePerPage(prefObj.zone_per_page);
           }
+          if (typeof prefObj.reopen_last_tabs === "boolean") {
+            setReopenLastTabs(prefObj.reopen_last_tabs);
+          }
+          if (prefObj.reopen_zone_tabs && typeof prefObj.reopen_zone_tabs === "object") {
+            setReopenZoneTabs(prefObj.reopen_zone_tabs);
+          }
+          if (Array.isArray(prefObj.last_open_tabs)) {
+            setLastOpenTabs(prefObj.last_open_tabs);
+          }
         })
         .catch(() => {});
       return;
@@ -440,6 +457,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (last) setSelectedZoneId(last);
     setGlobalPerPage(storageManager.getDefaultPerPage());
     setZonePerPage(storageManager.getZonePerPageMap());
+    setReopenLastTabs(storageManager.getReopenLastTabs());
+    setReopenZoneTabs(storageManager.getReopenZoneTabs());
+    setLastOpenTabs(storageManager.getLastOpenTabs());
   }, []);
 
   useEffect(() => {
@@ -495,6 +515,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             ...(prefs as Record<string, unknown>),
             default_per_page: globalPerPage,
             zone_per_page: zonePerPage,
+            reopen_last_tabs: reopenLastTabs,
+            reopen_zone_tabs: reopenZoneTabs,
+            last_open_tabs: lastOpenTabs,
           }),
         )
         .catch(() => {});
@@ -502,7 +525,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     storageManager.setDefaultPerPage(globalPerPage);
     storageManager.setZonePerPageMap(zonePerPage);
-  }, [globalPerPage, zonePerPage]);
+    storageManager.setReopenLastTabs(reopenLastTabs);
+    storageManager.setReopenZoneTabs(reopenZoneTabs);
+    storageManager.setLastOpenTabs(lastOpenTabs);
+  }, [globalPerPage, zonePerPage, reopenLastTabs, reopenZoneTabs, lastOpenTabs]);
 
   useEffect(() => {
     if (!globalPerPage) return;
@@ -514,6 +540,39 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }),
     );
   }, [globalPerPage, zonePerPage]);
+
+  useEffect(() => {
+    if (!reopenLastTabs || restoredTabs) return;
+    if (!availableZones.length || !lastOpenTabs.length) return;
+    const eligible = lastOpenTabs.filter(
+      (id) => reopenZoneTabs[id] !== false,
+    );
+    if (!eligible.length) {
+      setRestoredTabs(true);
+      return;
+    }
+    eligible.forEach((zoneId) => openZoneTab(zoneId));
+    setRestoredTabs(true);
+  }, [reopenLastTabs, restoredTabs, availableZones, lastOpenTabs, reopenZoneTabs, openZoneTab]);
+
+  useEffect(() => {
+    const openZoneIds = tabs
+      .filter((tab) => tab.kind === "zone")
+      .map((tab) => tab.zoneId);
+    setLastOpenTabs(openZoneIds);
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            last_open_tabs: openZoneIds,
+          }),
+        )
+        .catch(() => {});
+      return;
+    }
+    storageManager.setLastOpenTabs(openZoneIds);
+  }, [tabs]);
 
   useEffect(() => {
     const updateHeight = () => {
@@ -1676,6 +1735,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Reopen on launch</div>
+                      <div className="flex items-center gap-3">
+                        <Switch
+                          checked={reopenZoneTabs[activeTab.zoneId] !== false}
+                          onCheckedChange={(checked: boolean) =>
+                            setReopenZoneTabs((prev) => ({
+                              ...prev,
+                              [activeTab.zoneId]: checked,
+                            }))
+                          }
+                        />
+                        <div className="text-xs text-muted-foreground">
+                          Controls whether this zone restores when tabs reopen.
+                        </div>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               )}
@@ -1863,8 +1939,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-black/30 text-sm">
-                    <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                      <div className="font-medium">Auto refresh</div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Auto refresh</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(autoRefreshInterval ?? 0)}
@@ -1887,8 +1963,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             Pauses while editing records or dialogs are open.
                           </div>
                         </div>
-                    </div>
-                    <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Default per-page</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
@@ -1912,6 +1988,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             New zone tabs inherit this value unless overridden.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Reopen last tabs</div>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={reopenLastTabs}
+                            onCheckedChange={(checked: boolean) =>
+                              setReopenLastTabs(checked)
+                            }
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            Restore tabs from the last session on launch.
                           </div>
                         </div>
                       </div>

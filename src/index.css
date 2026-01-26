@@ -2,7 +2,8 @@
 @import "tailwindcss";
 
 @layer base {
-  :root {
+  :root,
+  :root[data-theme="light"] {
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
@@ -25,7 +26,7 @@
     --radius: 0.5rem;
   }
 
-  .dark {
+  :root[data-theme="sunset"] {
     --background: 20 14% 4%;
     --foreground: 30 50% 98%;
     --card: 20 14% 8%;
@@ -45,6 +46,28 @@
     --border: 15 50% 20%;
     --input: 15 30% 15%;
     --ring: 15 90% 55%;
+  }
+
+  :root[data-theme="oled"] {
+    --background: 0 0% 0%;
+    --foreground: 30 50% 98%;
+    --card: 0 0% 6%;
+    --card-foreground: 30 50% 98%;
+    --popover: 0 0% 6%;
+    --popover-foreground: 30 50% 98%;
+    --primary: 18 90% 52%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 10%;
+    --secondary-foreground: 30 50% 98%;
+    --muted: 0 0% 10%;
+    --muted-foreground: 20 25% 70%;
+    --accent: 18 60% 16%;
+    --accent-foreground: 30 50% 98%;
+    --destructive: 0 90% 30%;
+    --destructive-foreground: 30 50% 98%;
+    --border: 0 0% 18%;
+    --input: 0 0% 12%;
+    --ring: 18 90% 52%;
   }
 }
 

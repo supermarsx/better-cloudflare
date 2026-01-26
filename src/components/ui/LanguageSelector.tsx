@@ -39,11 +39,11 @@ export function LanguageSelector() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-10 w-10 rounded-full border-2 border-orange-500/50 bg-gradient-to-br from-black to-orange-950 text-orange-500 hover:bg-orange-900/30 hover:text-orange-300 hover:border-orange-400 shadow-[0_0_15px_rgba(255,80,0,0.4)] hover:shadow-[0_0_25px_rgba(255,100,0,0.6)] transition-all duration-500 group relative overflow-hidden"
+          className="h-8 w-8 rounded-full border border-orange-500/30 bg-black/40 text-orange-200/70 hover:text-orange-100 hover:border-orange-400/50 shadow-[0_0_12px_rgba(255,80,0,0.25)] hover:shadow-[0_0_18px_rgba(255,100,0,0.45)] transition-all duration-300 group relative overflow-hidden"
           aria-label={t("Select language")}
         >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,100,0,0.2),transparent)] opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-          <Globe className="h-6 w-6 drop-shadow-[0_0_5px_rgba(255,100,0,0.8)] group-hover:rotate-180 transition-transform duration-700 ease-in-out" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,100,0,0.15),transparent)] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+          <Globe className="h-4 w-4 drop-shadow-[0_0_4px_rgba(255,100,0,0.6)] group-hover:rotate-180 transition-transform duration-700 ease-in-out" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="bg-black/90 border border-orange-500/30 backdrop-blur-xl text-orange-100 shadow-[0_0_30px_rgba(255,60,0,0.2)]">

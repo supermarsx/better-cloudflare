@@ -12,6 +12,9 @@ pub struct Preferences {
     pub last_zone: Option<String>,
     pub default_per_page: Option<u32>,
     pub zone_per_page: Option<HashMap<String, u32>>,
+    pub reopen_last_tabs: Option<bool>,
+    pub reopen_zone_tabs: Option<HashMap<String, bool>>,
+    pub last_open_tabs: Option<Vec<String>>,
 }
 
 #[derive(Error, Debug)]
@@ -323,6 +326,9 @@ impl Storage {
                 last_zone: None,
                 default_per_page: None,
                 zone_per_page: None,
+                reopen_last_tabs: None,
+                reopen_zone_tabs: None,
+                last_open_tabs: None,
             }),
             Err(e) => Err(e),
         }

@@ -22,6 +22,9 @@ interface StorageData {
   autoRefreshInterval?: number;
   defaultPerPage?: number;
   zonePerPage?: Record<string, number>;
+  reopenLastTabs?: boolean;
+  reopenZoneTabs?: Record<string, boolean>;
+  lastOpenTabs?: string[];
 }
 
 /**
@@ -377,6 +380,33 @@ export class StorageManager {
 
   getZonePerPageMap(): Record<string, number> {
     return { ...(this.data.zonePerPage ?? {}) };
+  }
+
+  setReopenLastTabs(enabled: boolean): void {
+    this.data.reopenLastTabs = enabled;
+    this.save();
+  }
+
+  getReopenLastTabs(): boolean {
+    return !!this.data.reopenLastTabs;
+  }
+
+  setReopenZoneTabs(map: Record<string, boolean>): void {
+    this.data.reopenZoneTabs = { ...map };
+    this.save();
+  }
+
+  getReopenZoneTabs(): Record<string, boolean> {
+    return { ...(this.data.reopenZoneTabs ?? {}) };
+  }
+
+  setLastOpenTabs(tabs: string[]): void {
+    this.data.lastOpenTabs = [...tabs];
+    this.save();
+  }
+
+  getLastOpenTabs(): string[] {
+    return [...(this.data.lastOpenTabs ?? [])];
   }
 
   /**
