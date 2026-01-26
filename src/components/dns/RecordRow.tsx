@@ -860,7 +860,7 @@ export function RecordRow({
 
       <Tooltip tip={record.name} side="top">
         <div
-          className="min-w-0 truncate font-mono text-sm"
+          className="min-w-0 truncate font-mono text-[11px]"
           onClick={(event) => {
             event.stopPropagation();
             if (record.name.length > MAX_PREVIEW_CHARS) {
@@ -876,7 +876,7 @@ export function RecordRow({
 
       <Tooltip tip={record.content} side="top">
         <div
-          className="min-w-0 truncate text-xs text-muted-foreground"
+          className="min-w-0 truncate text-[10px] text-muted-foreground"
           onClick={(event) => {
             event.stopPropagation();
             if (record.content.length > MAX_PREVIEW_CHARS) {
@@ -890,17 +890,19 @@ export function RecordRow({
         </div>
       </Tooltip>
 
-      <div className="text-xs text-muted-foreground whitespace-nowrap">
+      <div className="text-[10px] text-muted-foreground whitespace-nowrap">
         TTL {record.ttl === 1 ? "Auto" : record.ttl}
         {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
       </div>
 
       <div
-        className="flex items-center gap-2"
+        className="flex items-center gap-1"
         onClick={(event) => event.stopPropagation()}
       >
         {record.proxied ? (
-          <Tag variant="primary">Proxied</Tag>
+          <Tag variant="primary" className="ui-tag-proxied">
+            Proxied
+          </Tag>
         ) : (
           <span className="text-xs text-muted-foreground/80">—</span>
         )}
@@ -908,6 +910,7 @@ export function RecordRow({
           record.type === "AAAA" ||
           record.type === "CNAME") && (
           <Switch
+            size="xs"
             checked={record.proxied || false}
             onCheckedChange={(checked: boolean) => {
               onToggleProxy?.(checked);
