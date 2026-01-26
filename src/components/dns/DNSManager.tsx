@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tag } from "@/components/ui/tag";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import type { DNSRecord, Zone, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
@@ -33,6 +34,7 @@ import {
   Search,
   Settings,
   Shield,
+  Tags,
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
@@ -48,7 +50,9 @@ import { Tooltip } from "@/components/ui/tooltip";
 
 
 type ActionTab = "records" | "import" | "zone-settings";
-type TabKind = "zone" | "settings" | "audit";
+type TabKind = "zone" | "settings" | "audit" | "tags";
+type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
+type SortDir = "asc" | "desc" | null;
 
 type ZoneTab = {
   kind: TabKind;
@@ -63,6 +67,8 @@ type ZoneTab = {
   typeFilter: RecordType | "";
   page: number;
   perPage: number;
+  sortKey: SortKey | null;
+  sortDir: SortDir;
   selectedIds: string[];
   showAddRecord: boolean;
   showImport: boolean;
@@ -104,6 +110,7 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   zone: "Zone",
   settings: "Settings",
   audit: "Audit",
+  tags: "Tags",
 };
 
 const createEmptyRecord = (): Partial<DNSRecord> => ({
@@ -127,6 +134,8 @@ const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   typeFilter: "",
   page: 1,
   perPage,
+  sortKey: null,
+  sortDir: null,
   selectedIds: [],
   showAddRecord: false,
   showImport: false,
@@ -147,6 +156,8 @@ const createActionTab = (kind: Exclude<TabKind, "zone">): ZoneTab => ({
   typeFilter: "",
   page: 1,
   perPage: 50,
+  sortKey: null,
+  sortDir: null,
   selectedIds: [],
   showAddRecord: false,
   showImport: false,
@@ -186,6 +197,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditOrder, setAuditOrder] = useState("newest");
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
@@ -203,6 +215,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [toast],
   );
+  const [tagsZoneId, setTagsZoneId] = useState<string>("");
+  const [newTag, setNewTag] = useState("");
+  const [renameTagFrom, setRenameTagFrom] = useState<string | null>(null);
+  const [renameTagTo, setRenameTagTo] = useState("");
+  const [tagsVersion, setTagsVersion] = useState(0);
+  const [confirmLogout, setConfirmLogout] = useState(true);
+  const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const {
     getZones,
     getDNSRecords,
@@ -430,6 +449,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
+            confirm_logout?: boolean;
+            idle_logout_ms?: number | null;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
@@ -450,6 +471,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(prefObj.last_open_tabs);
           }
+          if (typeof prefObj.confirm_logout === "boolean") {
+            setConfirmLogout(prefObj.confirm_logout);
+          }
+          if (
+            typeof prefObj.idle_logout_ms === "number" ||
+            prefObj.idle_logout_ms === null
+          ) {
+            setIdleLogoutMs(prefObj.idle_logout_ms ?? null);
+          }
         })
         .catch(() => {});
       return;
@@ -461,6 +491,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
+    setConfirmLogout(storageManager.getConfirmLogout());
+    setIdleLogoutMs(storageManager.getIdleLogoutMs());
   }, []);
 
   useEffect(() => {
@@ -519,6 +551,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
             last_open_tabs: lastOpenTabs,
+            confirm_logout: confirmLogout,
+            idle_logout_ms: idleLogoutMs,
           }),
         )
         .catch(() => {});
@@ -529,7 +563,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
     storageManager.setLastOpenTabs(lastOpenTabs);
-  }, [globalPerPage, zonePerPage, reopenLastTabs, reopenZoneTabs, lastOpenTabs]);
+    storageManager.setConfirmLogout(confirmLogout);
+    storageManager.setIdleLogoutMs(idleLogoutMs);
+  }, [
+    globalPerPage,
+    zonePerPage,
+    reopenLastTabs,
+    reopenZoneTabs,
+    lastOpenTabs,
+    confirmLogout,
+    idleLogoutMs,
+  ]);
 
   useEffect(() => {
     if (!globalPerPage) return;
@@ -575,14 +619,99 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setLastOpenTabs(openZoneIds);
   }, [tabs]);
 
+  useEffect(() => {
+    if (!idleLogoutMs || idleLogoutMs <= 0) return;
+    if (typeof window === "undefined") return;
+
+    let timeout: number | undefined;
+    const reset = () => {
+      if (timeout) window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        storageManager.clearSession();
+        onLogout();
+      }, idleLogoutMs);
+    };
+
+    const events: Array<keyof WindowEventMap> = [
+      "pointerdown",
+      "pointermove",
+      "keydown",
+      "scroll",
+      "touchstart",
+      "wheel",
+    ];
+
+    for (const ev of events) window.addEventListener(ev, reset, { passive: true });
+    reset();
+    return () => {
+      if (timeout) window.clearTimeout(timeout);
+      for (const ev of events) window.removeEventListener(ev, reset);
+    };
+  }, [idleLogoutMs, onLogout]);
+
+  useEffect(() => {
+    const onChanged = () => setTagsVersion((v) => v + 1);
+    window.addEventListener("record-tags-changed", onChanged);
+    return () => window.removeEventListener("record-tags-changed", onChanged);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab?.kind !== "tags") return;
+    if (tagsZoneId) return;
+    const last = storageManager.getLastZone();
+    const next = last ?? availableZones[0]?.id ?? "";
+    if (next) setTagsZoneId(next);
+  }, [activeTab?.kind, availableZones, tagsZoneId]);
+
 
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
-    return filterRecords(activeTab.records, activeTab.searchTerm).filter(
+    const base = filterRecords(activeTab.records, activeTab.searchTerm).filter(
       (record: DNSRecord) =>
         activeTab.typeFilter ? record.type === activeTab.typeFilter : true,
     );
+
+    if (!activeTab.sortKey || !activeTab.sortDir) return base;
+    const dir = activeTab.sortDir === "asc" ? 1 : -1;
+    const getTtl = (record: DNSRecord) => {
+      const ttl = record.ttl;
+      if (ttl === 1) return 0;
+      if (typeof ttl === "number") return ttl;
+      return 0;
+    };
+
+    const cmpText = (a: string, b: string) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" });
+
+    const sorted = [...base].sort((a, b) => {
+      switch (activeTab.sortKey) {
+        case "type":
+          return dir * cmpText(a.type ?? "", b.type ?? "");
+        case "name":
+          return dir * cmpText(a.name ?? "", b.name ?? "");
+        case "content":
+          return dir * cmpText(a.content ?? "", b.content ?? "");
+        case "ttl":
+          return dir * (getTtl(a) - getTtl(b));
+        case "proxied":
+          return dir * (Number(Boolean(a.proxied)) - Number(Boolean(b.proxied)));
+        default:
+          return 0;
+      }
+    });
+
+    return sorted;
   }, [activeTab]);
+
+  const tagCounts = useMemo(() => {
+    if (!tagsZoneId) return {};
+    return storageManager.getTagUsageCounts(tagsZoneId);
+  }, [tagsZoneId, tagsVersion]);
+
+  const zoneTags = useMemo(() => {
+    if (!tagsZoneId) return [];
+    return storageManager.getZoneTags(tagsZoneId);
+  }, [tagsZoneId, tagsVersion]);
 
   const auditTypeOptions = useMemo(() => {
     const set = new Set<string>();
@@ -1045,6 +1174,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleLogout = () => {
     storageManager.clearSession();
+    if (confirmLogout) {
+      setShowLogoutConfirm(true);
+      return;
+    }
+    onLogout();
+  };
+
+  const confirmAndLogout = () => {
+    storageManager.clearSession();
+    setShowLogoutConfirm(false);
     onLogout();
   };
 
@@ -1052,6 +1191,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     ? availableZones.find((z) => z.id === activeTab.zoneId)
     : undefined;
   const actionHint = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
+
+  const toggleSort = useCallback(
+    (key: SortKey) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      updateTab(activeTab.id, (prev) => {
+        if (prev.kind !== "zone") return prev;
+        if (prev.sortKey !== key) {
+          return { ...prev, sortKey: key, sortDir: "asc" };
+        }
+        if (prev.sortDir === "asc") {
+          return { ...prev, sortDir: "desc" };
+        }
+        if (prev.sortDir === "desc") {
+          return { ...prev, sortKey: null, sortDir: null };
+        }
+        return { ...prev, sortDir: "asc" };
+      });
+    },
+    [activeTab, updateTab],
+  );
+
+  const sortIndicator = useCallback(
+    (key: SortKey) => {
+      if (!activeTab || activeTab.kind !== "zone") return "";
+      if (activeTab.sortKey !== key || !activeTab.sortDir) return "";
+      return activeTab.sortDir === "asc" ? "▲" : "▼";
+    },
+    [activeTab],
+  );
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
@@ -1094,6 +1262,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       aria-label="Settings"
                     >
                       <Settings className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip tip="Tags" side="bottom">
+                    <Button
+                      onClick={() => openActionTab("tags")}
+                      variant="outline"
+                      size="icon"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      aria-label="Tags"
+                    >
+                      <Tags className="h-4 w-4" />
                     </Button>
                   </Tooltip>
                   <Tooltip tip="Logout" side="bottom">
@@ -1484,11 +1663,46 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="glass-surface glass-sheen glass-fade ui-table rounded-xl">
                       <div className="ui-table-head">
                         <span />
-                        <span>Type</span>
-                        <span>Name</span>
-                        <span>Content</span>
-                        <span>TTL</span>
-                        <span>Proxy</span>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("type")}
+                        >
+                          Type{" "}
+                          <span className="opacity-70">{sortIndicator("type")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("name")}
+                        >
+                          Name{" "}
+                          <span className="opacity-70">{sortIndicator("name")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("content")}
+                        >
+                          Content{" "}
+                          <span className="opacity-70">{sortIndicator("content")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("ttl")}
+                        >
+                          TTL{" "}
+                          <span className="opacity-70">{sortIndicator("ttl")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("proxied")}
+                        >
+                          Proxy{" "}
+                          <span className="opacity-70">{sortIndicator("proxied")}</span>
+                        </button>
                         <span className="text-right">Actions</span>
                       </div>
                       {filteredRecords.map((record) => {
@@ -1498,6 +1712,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         return (
                           <RecordRow
                             key={record.id}
+                            zoneId={activeTab.zoneId}
                             record={record}
                             isEditing={activeTab.editingRecord === record.id}
                             isSelected={isSelected}
@@ -1927,6 +2142,184 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
+              {activeTab.kind === "tags" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Tag manager</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-[180px_1fr] md:items-center">
+                      <div className="font-medium">Zone</div>
+                      <Select
+                        value={tagsZoneId || undefined}
+                        onValueChange={(value) => {
+                          setTagsZoneId(value);
+                          setRenameTagFrom(null);
+                          setRenameTagTo("");
+                        }}
+                      >
+                        <SelectTrigger className="w-72">
+                          <SelectValue placeholder="Select a zone" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-popover/70 text-foreground">
+                          {availableZones.map((zone: Zone) => (
+                            <SelectItem key={zone.id} value={zone.id} className="cursor-pointer">
+                              {zone.name} ({zone.status})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {!tagsZoneId ? (
+                      <div className="text-sm text-muted-foreground">
+                        Select a zone to manage its tags.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Input
+                            value={newTag}
+                            onChange={(e) => setNewTag(e.target.value)}
+                            placeholder="New tag"
+                            className="h-9 w-56"
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter") return;
+                              e.preventDefault();
+                              const next = newTag.trim();
+                              if (!next) return;
+                              storageManager.addZoneTag(tagsZoneId, next);
+                              notifySaved(`Tag added: ${next}`);
+                              setNewTag("");
+                            }}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const next = newTag.trim();
+                              if (!next) return;
+                              storageManager.addZoneTag(tagsZoneId, next);
+                              notifySaved(`Tag added: ${next}`);
+                              setNewTag("");
+                            }}
+                          >
+                            Add tag
+                          </Button>
+                          <div className="text-xs text-muted-foreground">
+                            Tags are local-only and can be attached to records.
+                          </div>
+                        </div>
+
+                        <div className="glass-surface glass-sheen glass-fade rounded-xl overflow-hidden">
+                          <div className="grid grid-cols-[1fr_90px_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
+                            <div>Tag</div>
+                            <div className="text-right">Used</div>
+                            <div className="text-right">Actions</div>
+                          </div>
+                          {zoneTags.length === 0 ? (
+                            <div className="px-3 py-6 text-sm text-muted-foreground">
+                              No tags yet. Add one above or create tags from a record’s expanded panel.
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-white/10">
+                              {zoneTags.map((tag) => (
+                                <div
+                                  key={tag}
+                                  className="grid grid-cols-[1fr_90px_160px] items-center gap-2 px-3 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    {renameTagFrom === tag ? (
+                                      <Input
+                                        value={renameTagTo}
+                                        onChange={(e) => setRenameTagTo(e.target.value)}
+                                        className="h-8"
+                                        autoFocus
+                                        onKeyDown={(e) => {
+                                          if (e.key !== "Enter") return;
+                                          e.preventDefault();
+                                          const next = renameTagTo.trim();
+                                          if (!next) return;
+                                          storageManager.renameTag(tagsZoneId, tag, next);
+                                          notifySaved(`Tag renamed: ${tag} → ${next}`);
+                                          setRenameTagFrom(null);
+                                          setRenameTagTo("");
+                                        }}
+                                      />
+                                    ) : (
+                                      <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                                    )}
+                                  </div>
+                                  <div className="text-right text-sm text-muted-foreground">
+                                    {tagCounts[tag] ?? 0}
+                                  </div>
+                                  <div className="flex justify-end gap-2">
+                                    {renameTagFrom === tag ? (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-8"
+                                          onClick={() => {
+                                            const next = renameTagTo.trim();
+                                            if (!next) return;
+                                            storageManager.renameTag(tagsZoneId, tag, next);
+                                            notifySaved(`Tag renamed: ${tag} → ${next}`);
+                                            setRenameTagFrom(null);
+                                            setRenameTagTo("");
+                                          }}
+                                        >
+                                          Save
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-8"
+                                          onClick={() => {
+                                            setRenameTagFrom(null);
+                                            setRenameTagTo("");
+                                          }}
+                                        >
+                                          Cancel
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-8"
+                                          onClick={() => {
+                                            setRenameTagFrom(tag);
+                                            setRenameTagTo(tag);
+                                          }}
+                                        >
+                                          Rename
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="destructive"
+                                          className="h-8"
+                                          onClick={() => {
+                                            storageManager.deleteTag(tagsZoneId, tag);
+                                            notifySaved(`Tag deleted: ${tag}`);
+                                          }}
+                                        >
+                                          Delete
+                                        </Button>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
@@ -2015,6 +2408,60 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                       </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Confirm logout</div>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={confirmLogout}
+                            onCheckedChange={(checked: boolean) => {
+                              setConfirmLogout(checked);
+                              notifySaved(
+                                checked
+                                  ? "Logout confirmation enabled."
+                                  : "Logout confirmation disabled.",
+                              );
+                            }}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            Show a confirmation dialog when logging out.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Auto logout (idle)</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={String(idleLogoutMs ?? 0)}
+                            onValueChange={(v) => {
+                              const next = Number(v);
+                              setIdleLogoutMs(next ? next : null);
+                              notifySaved(
+                                next
+                                  ? `Auto logout after ${Math.round(next / 60000)} min idle.`
+                                  : "Auto logout disabled.",
+                              );
+                            }}
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Idle timeout" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-popover/70 text-foreground">
+                              <SelectItem value="0">Never</SelectItem>
+                              <SelectItem value="60000">1 min</SelectItem>
+                              <SelectItem value="120000">2 min</SelectItem>
+                              <SelectItem value="300000">5 min</SelectItem>
+                              <SelectItem value="600000">10 min</SelectItem>
+                              <SelectItem value="1800000">30 min</SelectItem>
+                              <SelectItem value="3600000">1 hour</SelectItem>
+                              <SelectItem value="14400000">4 hours</SelectItem>
+                              <SelectItem value="86400000">24 hours</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <div className="text-xs text-muted-foreground">
+                            Logs out automatically after inactivity.
+                          </div>
+                        </div>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
@@ -2056,6 +2503,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               }}
             >
               Clear logs
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Log out</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to log out? You’ll need to sign in again to manage records.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="checkbox-themed"
+              checked={!confirmLogout}
+              onChange={(e) => {
+                const disable = e.target.checked;
+                setConfirmLogout(!disable);
+                notifySaved(
+                  disable
+                    ? "Logout confirmation disabled."
+                    : "Logout confirmation enabled.",
+                );
+              }}
+            />
+            Don’t ask again
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowLogoutConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" className="flex-1" onClick={confirmAndLogout}>
+              Log out
             </Button>
           </div>
         </DialogContent>

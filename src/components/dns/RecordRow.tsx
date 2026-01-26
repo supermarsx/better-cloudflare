@@ -19,6 +19,7 @@ import { Tag } from "@/components/ui/tag";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
+import { storageManager } from "@/lib/storage";
 import {
   parseSRV,
   composeSRV,
@@ -37,6 +38,8 @@ import { Copy, Edit2, Trash2, Save, X } from "lucide-react";
  * edits a DNS record.
  */
 export interface RecordRowProps {
+  /** Zone ID this record belongs to (used for local record tags). */
+  zoneId: string;
   /** The DNS record to display or edit */
   record: DNSRecord;
   /** Whether the row is currently in edit mode */
@@ -65,6 +68,7 @@ export interface RecordRowProps {
  * displays the record details.
  */
 export function RecordRow({
+  zoneId,
   record,
   isEditing,
   isSelected = false,
@@ -79,6 +83,10 @@ export function RecordRow({
   const [editedRecord, setEditedRecord] = useState(record);
   const [expandedName, setExpandedName] = useState(false);
   const [expandedContent, setExpandedContent] = useState(false);
+  const [tags, setTags] = useState<string[]>(() =>
+    storageManager.getRecordTags(zoneId, record.id),
+  );
+  const [tagDraft, setTagDraft] = useState("");
   
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
     parseSRV(record.content).priority,
@@ -227,6 +235,43 @@ export function RecordRow({
     naptrReplacement,
   ]);
 
+  useEffect(() => {
+    setTags(storageManager.getRecordTags(zoneId, record.id));
+    setTagDraft("");
+  }, [record.id, zoneId]);
+
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const detail = (event as CustomEvent).detail as
+        | { zoneId?: string; recordId?: string }
+        | undefined;
+      if (!detail?.zoneId) return;
+      if (detail.zoneId !== zoneId) return;
+      if (detail.recordId && detail.recordId !== record.id) return;
+      setTags(storageManager.getRecordTags(zoneId, record.id));
+    };
+    window.addEventListener("record-tags-changed", onChanged);
+    return () => window.removeEventListener("record-tags-changed", onChanged);
+  }, [record.id, zoneId]);
+
+  const addTag = useCallback(() => {
+    const next = tagDraft.trim();
+    if (!next) return;
+    const nextTags = Array.from(new Set([...tags, next])).slice(0, 32);
+    setTags(nextTags);
+    storageManager.setRecordTags(zoneId, record.id, nextTags);
+    setTagDraft("");
+  }, [record.id, tagDraft, tags, zoneId]);
+
+  const removeTag = useCallback(
+    (tag: string) => {
+      const next = tags.filter((t) => t !== tag);
+      setTags(next);
+      storageManager.setRecordTags(zoneId, record.id, next);
+    },
+    [record.id, tags, zoneId],
+  );
+
   const ttlValue = editedRecord.ttl === 1 ? "auto" : editedRecord.ttl;
   const isCustomTTL = !getTTLPresets().includes(ttlValue as TTLValue);
   const MAX_PREVIEW_CHARS = 30;
@@ -256,6 +301,57 @@ export function RecordRow({
               <X className="h-3.5 w-3.5 mr-1" />
               Cancel
             </Button>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 glass-fade">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Tags
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addTag();
+                  }
+                }}
+                placeholder="Add tag"
+                className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2"
+                onClick={addTag}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {tags.length ? (
+              tags.map((tag) => (
+                <span key={tag} className="inline-flex items-center gap-1">
+                  <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                  <button
+                    type="button"
+                    className="ui-icon-button h-5 w-5"
+                    aria-label={`Remove tag ${tag}`}
+                    onClick={() => removeTag(tag)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))
+            ) : (
+              <span className="text-[10px] text-muted-foreground/70">
+                No tags
+              </span>
+            )}
           </div>
         </div>
         <div className="mt-4 grid grid-cols-12 gap-4 items-start">
@@ -1019,6 +1115,61 @@ export function RecordRow({
               <div className="mt-1 text-foreground">{record.content}</div>
             </div>
           )}
+          <div className="pr-16">
+            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Tags
+            </span>
+            <div className="mt-2 flex flex-wrap items-center gap-1">
+              {tags.length ? (
+                tags.map((tag) => (
+                  <span key={tag} className="inline-flex items-center gap-1">
+                    <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                    <button
+                      type="button"
+                      className="ui-icon-button h-5 w-5"
+                      aria-label={`Remove tag ${tag}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeTag(tag);
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))
+              ) : (
+                <span className="text-[10px] text-muted-foreground/70">
+                  No tags
+                </span>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addTag();
+                  }
+                }}
+                placeholder="Add tag"
+                className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  addTag();
+                }}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -25,6 +25,52 @@ interface StorageData {
   reopenLastTabs?: boolean;
   reopenZoneTabs?: Record<string, boolean>;
   lastOpenTabs?: string[];
+  recordTags?: Record<string, Record<string, string[]>>;
+  tagCatalog?: Record<string, string[]>;
+  confirmLogout?: boolean;
+  idleLogoutMs?: number | null;
+}
+
+function parseRecordTags(
+  value: unknown,
+): Record<string, Record<string, string[]>> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const byZone = value as Record<string, unknown>;
+  const result: Record<string, Record<string, string[]>> = {};
+
+  for (const [zoneId, zoneValue] of Object.entries(byZone)) {
+    if (!zoneValue || typeof zoneValue !== "object") continue;
+    const byRecord = zoneValue as Record<string, unknown>;
+    const zoneResult: Record<string, string[]> = {};
+
+    for (const [recordId, tagsValue] of Object.entries(byRecord)) {
+      if (!Array.isArray(tagsValue)) continue;
+      const tags = tagsValue
+        .filter((t): t is string => typeof t === "string")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      zoneResult[recordId] = Array.from(new Set(tags)).slice(0, 32);
+    }
+
+    result[zoneId] = zoneResult;
+  }
+
+  return result;
+}
+
+function parseTagCatalog(value: unknown): Record<string, string[]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const byZone = value as Record<string, unknown>;
+  const result: Record<string, string[]> = {};
+  for (const [zoneId, tagsValue] of Object.entries(byZone)) {
+    if (!Array.isArray(tagsValue)) continue;
+    const tags = tagsValue
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    result[zoneId] = Array.from(new Set(tags)).slice(0, 256);
+  }
+  return result;
 }
 
 /**
@@ -42,6 +88,8 @@ export function isStorageData(value: unknown): value is StorageData {
     apiKeys?: unknown;
     currentSession?: unknown;
     lastZone?: unknown;
+    confirmLogout?: unknown;
+    idleLogoutMs?: unknown;
   };
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
@@ -51,6 +99,16 @@ export function isStorageData(value: unknown): value is StorageData {
     return false;
   }
   if (obj.lastZone !== undefined && typeof obj.lastZone !== "string") {
+    return false;
+  }
+  if (obj.confirmLogout !== undefined && typeof obj.confirmLogout !== "boolean") {
+    return false;
+  }
+  if (
+    obj.idleLogoutMs !== undefined &&
+    obj.idleLogoutMs !== null &&
+    typeof obj.idleLogoutMs !== "number"
+  ) {
     return false;
   }
   return obj.apiKeys.every((k) => {
@@ -98,7 +156,12 @@ export class StorageManager {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (isStorageData(parsed)) {
-          this.data = parsed;
+          const obj = parsed as StorageData & { recordTags?: unknown };
+          this.data = {
+            ...obj,
+            recordTags: parseRecordTags(obj.recordTags),
+            tagCatalog: parseTagCatalog((obj as { tagCatalog?: unknown }).tagCatalog),
+          };
         } else {
           this.data = { apiKeys: [] };
           this.storage.removeItem(STORAGE_KEY);
@@ -121,6 +184,116 @@ export class StorageManager {
     } catch (error) {
       console.error("Failed to save storage data:", error);
     }
+  }
+
+  private dispatchRecordTagsChanged(zoneId: string, recordId?: string): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(
+      new CustomEvent("record-tags-changed", { detail: { zoneId, recordId } }),
+    );
+  }
+
+  private ensureTagInCatalog(zoneId: string, tag: string): void {
+    const catalog = (this.data.tagCatalog ??= {});
+    const zoneTags = (catalog[zoneId] ??= []);
+    if (zoneTags.includes(tag)) return;
+    zoneTags.push(tag);
+    zoneTags.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    catalog[zoneId] = zoneTags.slice(0, 256);
+  }
+
+  getZoneTags(zoneId: string): string[] {
+    const tags = this.data.tagCatalog?.[zoneId];
+    return Array.isArray(tags) ? [...tags] : [];
+  }
+
+  addZoneTag(zoneId: string, tag: string): void {
+    const next = tag.trim();
+    if (!next) return;
+    this.ensureTagInCatalog(zoneId, next);
+    this.save();
+    this.dispatchRecordTagsChanged(zoneId);
+  }
+
+  getRecordTags(zoneId: string, recordId: string): string[] {
+    const zone = this.data.recordTags?.[zoneId];
+    const tags = zone?.[recordId];
+    return Array.isArray(tags) ? [...tags] : [];
+  }
+
+  setRecordTags(zoneId: string, recordId: string, tags: string[]): void {
+    const nextTags = Array.from(
+      new Set(tags.map((t) => t.trim()).filter(Boolean)),
+    ).slice(0, 32);
+    for (const tag of nextTags) this.ensureTagInCatalog(zoneId, tag);
+    const recordTags = (this.data.recordTags ??= {});
+    const zoneMap = (recordTags[zoneId] ??= {});
+    zoneMap[recordId] = nextTags;
+    this.save();
+    this.dispatchRecordTagsChanged(zoneId, recordId);
+  }
+
+  getTagUsageCounts(zoneId: string): Record<string, number> {
+    const counts: Record<string, number> = {};
+    const zone = this.data.recordTags?.[zoneId] ?? {};
+    for (const tags of Object.values(zone)) {
+      for (const tag of tags ?? []) {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  renameTag(zoneId: string, from: string, to: string): void {
+    const next = to.trim();
+    const prev = from.trim();
+    if (!prev || !next) return;
+    if (prev === next) return;
+    const zone = this.data.recordTags?.[zoneId];
+    if (!zone) return;
+
+    for (const [recordId, tags] of Object.entries(zone)) {
+      if (!Array.isArray(tags) || !tags.includes(prev)) continue;
+      zone[recordId] = Array.from(
+        new Set(tags.map((t) => (t === prev ? next : t))),
+      ).slice(0, 32);
+    }
+    const catalog = this.data.tagCatalog?.[zoneId];
+    if (Array.isArray(catalog)) {
+      this.data.tagCatalog = {
+        ...(this.data.tagCatalog ?? {}),
+        [zoneId]: Array.from(
+          new Set(catalog.map((t) => (t === prev ? next : t)).filter(Boolean)),
+        )
+          .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+          .slice(0, 256),
+      };
+    } else {
+      this.ensureTagInCatalog(zoneId, next);
+    }
+    this.save();
+    this.dispatchRecordTagsChanged(zoneId);
+  }
+
+  deleteTag(zoneId: string, tag: string): void {
+    const target = tag.trim();
+    if (!target) return;
+    const zone = this.data.recordTags?.[zoneId];
+    if (!zone) return;
+
+    for (const [recordId, tags] of Object.entries(zone)) {
+      if (!Array.isArray(tags) || !tags.includes(target)) continue;
+      zone[recordId] = tags.filter((t) => t !== target);
+    }
+    const catalog = this.data.tagCatalog?.[zoneId];
+    if (Array.isArray(catalog)) {
+      this.data.tagCatalog = {
+        ...(this.data.tagCatalog ?? {}),
+        [zoneId]: catalog.filter((t) => t !== target),
+      };
+    }
+    this.save();
+    this.dispatchRecordTagsChanged(zoneId);
   }
 
   /**
@@ -359,6 +532,24 @@ export class StorageManager {
 
   getDefaultPerPage(): number {
     return this.data.defaultPerPage ?? 50;
+  }
+
+  setConfirmLogout(enabled: boolean): void {
+    this.data.confirmLogout = enabled;
+    this.save();
+  }
+
+  getConfirmLogout(): boolean {
+    return this.data.confirmLogout !== false;
+  }
+
+  setIdleLogoutMs(ms: number | null): void {
+    this.data.idleLogoutMs = ms ?? null;
+    this.save();
+  }
+
+  getIdleLogoutMs(): number | null {
+    return typeof this.data.idleLogoutMs === "number" ? this.data.idleLogoutMs : null;
   }
 
   setZonePerPage(zoneId: string, value: number | null): void {
