@@ -105,7 +105,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
       
-      <Card className="w-full max-w-md relative z-10 border-white/10 shadow-[0_0_15px_rgba(255,255,255,0.1)] bg-black/30 backdrop-blur-xl">
+      <Card className="w-full max-w-md relative z-10 border border-border/60 shadow-[0_0_18px_rgba(0,0,0,0.12)] bg-card/80 backdrop-blur-xl">
         <LoginHeader />
         <CardContent className="space-y-6 pt-4">
           <LoginKeySelector
@@ -187,9 +187,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           />
         </CardContent>
         {isLoading && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl bg-black/70 backdrop-blur-sm">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-orange-300/30 border-t-orange-400" />
-            <div className="text-xs uppercase tracking-[0.3em] text-orange-100/80">
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl border border-border/60 bg-background/85 backdrop-blur-sm">
+            <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+            <div className="text-xs uppercase tracking-[0.3em] text-foreground/80">
               Authenticating
             </div>
           </div>

@@ -36,7 +36,7 @@ export function LoginActionButtons({
         size={hasKeys ? "sm" : "default"}
         onClick={onAddKey}
         className={hasKeys 
-          ? "w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/60 hover:text-foreground hover:border-primary/30 transition-colors"
+          ? "w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
           : "w-full bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400 text-white font-semibold shadow-[0_0_20px_rgba(255,80,0,0.4)] hover:shadow-[0_0_30px_rgba(255,80,0,0.6)] transition-all duration-300 animate-pulse"
         }
       >
@@ -48,7 +48,7 @@ export function LoginActionButtons({
           <Button
             variant="secondary"
             size="sm"
-            className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/60 hover:text-foreground hover:border-primary/30 transition-colors"
+            className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
             disabled={!canManage}
           >
             Manage Key
@@ -60,14 +60,14 @@ export function LoginActionButtons({
         >
           <DropdownMenuItem
             onClick={() => selectedKey && onEditKey(selectedKey)}
-            className="cursor-pointer focus:bg-accent/60"
+            className="cursor-pointer focus:bg-primary/10"
           >
             <Sliders className="mr-2 h-3.5 w-3.5" />
             {t("Edit")}
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => selectedKey && onDeleteKey(selectedKey.id)}
-            className="cursor-pointer text-red-500/90 focus:bg-red-500/10"
+            className="cursor-pointer text-red-500/90 focus:bg-red-500/10 hover:bg-red-500/5"
           >
             <Trash2 className="mr-2 h-3.5 w-3.5" />
             {t("Delete")}
@@ -78,7 +78,7 @@ export function LoginActionButtons({
         variant="secondary"
         size="sm"
         onClick={onSettings}
-        className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/60 hover:text-foreground hover:border-primary/30 transition-colors"
+        className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
       >
         Settings
       </Button>

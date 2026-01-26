@@ -46,7 +46,7 @@ export function LoginKeySelector({
           {t("API Key")}
         </Label>
         <Select value={selectedKeyId} onValueChange={onSelectKey} disabled={!hasKeys}>
-          <SelectTrigger className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/50 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
+          <SelectTrigger className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/70 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
             <SelectValue placeholder={t("Select an API key")} />
           </SelectTrigger>
           <SelectContent className="bg-popover/95 border border-border text-foreground">
@@ -54,7 +54,7 @@ export function LoginKeySelector({
               <SelectItem
                 key={key.id}
                 value={key.id}
-                className="cursor-pointer focus:bg-accent/60 focus:text-foreground hover:bg-accent/40"
+                className="cursor-pointer focus:bg-primary/10 focus:text-foreground hover:bg-primary/5"
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="font-medium">{key.label}</span>
