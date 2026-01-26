@@ -16,7 +16,7 @@ const Switch = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SwitchPrimitives.Root
     className={cn(
-      "peer inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-border/30 bg-background/60 shadow-inner transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 data-[state=unchecked]:bg-muted/30 data-[state=checked]:border-primary/50 data-[state=checked]:bg-primary data-[state=checked]:ring-2 data-[state=checked]:ring-primary/30",
+      "switch-toggle peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-border bg-muted/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/70 data-[state=checked]:bg-primary data-[state=checked]:shadow-[0_0_6px_rgba(255,120,80,0.25)]",
       className,
     )}
     {...props}
@@ -24,7 +24,7 @@ const Switch = React.forwardRef<
   >
     <SwitchPrimitives.Thumb
       className={cn(
-        "pointer-events-none block h-6 w-6 rounded-full border border-foreground/20 bg-card shadow-[0_2px_8px_rgba(0,0,0,0.2)] ring-0 transition-transform transition-colors data-[state=unchecked]:translate-x-0 data-[state=checked]:translate-x-5 data-[state=checked]:border-primary-foreground/70 data-[state=checked]:bg-primary-foreground data-[state=checked]:shadow-[0_0_12px_rgba(255,140,90,0.35)]",
+        "switch-toggle-thumb pointer-events-none block h-5 w-5 rounded-full border-2 border-border bg-background shadow-[0_2px_6px_rgba(0,0,0,0.35)] transition-transform transition-colors data-[state=unchecked]:translate-x-0 data-[state=checked]:translate-x-5 data-[state=checked]:border-primary-foreground data-[state=checked]:bg-primary-foreground data-[state=checked]:shadow-[0_0_6px_rgba(255,160,120,0.25)]",
       )}
     />
   </SwitchPrimitives.Root>

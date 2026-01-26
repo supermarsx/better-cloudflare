@@ -120,6 +120,22 @@
       rgba(0, 0, 0, 0.98);
   }
 
+  [data-theme="light"] .switch-toggle {
+    border-color: hsl(220 35% 30% / 0.6);
+  }
+
+  [data-theme="light"] .switch-toggle-thumb {
+    border-color: hsl(220 35% 30% / 0.7);
+  }
+
+  [data-theme="oled"] .switch-toggle {
+    border-color: hsl(0 0% 85% / 0.7);
+  }
+
+  [data-theme="oled"] .switch-toggle-thumb {
+    border-color: hsl(0 0% 90% / 0.8);
+  }
+
   [data-theme="light"] .bg-black\/90 {
     background-color: rgba(255, 255, 255, 0.98);
   }
