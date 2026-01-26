@@ -492,6 +492,99 @@
     filter: drop-shadow(0 0 16px hsl(var(--primary) / 0.16));
   }
 
+  .ui-tooltip-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .ui-tooltip {
+    position: absolute;
+    z-index: 60;
+    max-width: 260px;
+    padding: 0.4rem 0.55rem;
+    border-radius: 0.65rem;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    color: hsl(var(--foreground) / 0.92);
+    background: hsl(var(--popover) / 0.72);
+    border: 1px solid hsl(var(--border) / 0.6);
+    -webkit-backdrop-filter: blur(16px) saturate(1.35);
+    backdrop-filter: blur(16px) saturate(1.35);
+    box-shadow:
+      0 18px 46px hsl(0 0% 0% / 0.28),
+      inset 0 1px 0 hsl(0 0% 100% / 0.06);
+    opacity: 0;
+    transform: translateY(2px) scale(0.98);
+    pointer-events: none;
+    transition:
+      opacity 120ms ease,
+      transform 140ms ease;
+  }
+
+  .ui-tooltip::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      circle at 18% 12%,
+      hsl(0 0% 100% / 0.08),
+      transparent 58%
+    );
+    pointer-events: none;
+    mix-blend-mode: screen;
+  }
+
+  .ui-tooltip[data-side="top"] {
+    bottom: calc(100% + 10px);
+    left: 50%;
+    transform: translate(-50%, 2px) scale(0.98);
+  }
+
+  .ui-tooltip[data-side="bottom"] {
+    top: calc(100% + 10px);
+    left: 50%;
+    transform: translate(-50%, -2px) scale(0.98);
+  }
+
+  .ui-tooltip[data-side="left"] {
+    right: calc(100% + 10px);
+    top: 50%;
+    transform: translate(2px, -50%) scale(0.98);
+  }
+
+  .ui-tooltip[data-side="right"] {
+    left: calc(100% + 10px);
+    top: 50%;
+    transform: translate(-2px, -50%) scale(0.98);
+  }
+
+  .ui-tooltip-wrap:hover > .ui-tooltip,
+  .ui-tooltip-wrap:focus-within > .ui-tooltip {
+    opacity: 1;
+  }
+
+  .ui-tooltip-wrap:hover > .ui-tooltip[data-side="top"],
+  .ui-tooltip-wrap:focus-within > .ui-tooltip[data-side="top"] {
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  .ui-tooltip-wrap:hover > .ui-tooltip[data-side="bottom"],
+  .ui-tooltip-wrap:focus-within > .ui-tooltip[data-side="bottom"] {
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  .ui-tooltip-wrap:hover > .ui-tooltip[data-side="left"],
+  .ui-tooltip-wrap:focus-within > .ui-tooltip[data-side="left"] {
+    transform: translate(0, -50%) scale(1);
+  }
+
+  .ui-tooltip-wrap:hover > .ui-tooltip[data-side="right"],
+  .ui-tooltip-wrap:focus-within > .ui-tooltip[data-side="right"] {
+    transform: translate(0, -50%) scale(1);
+  }
+
   .ui-tab {
     position: relative;
     display: inline-flex;

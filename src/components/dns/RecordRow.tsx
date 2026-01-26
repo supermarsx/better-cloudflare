@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
+import { Tooltip } from "@/components/ui/tooltip";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import {
@@ -917,39 +918,48 @@ export function RecordRow({
       </div>
 
       <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={(event) => {
-            event.stopPropagation();
-            onCopy?.();
-          }}
-          className="ui-icon-button h-7 w-7 p-0"
-        >
-          <Copy className="h-3 w-3" />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={(event) => {
-            event.stopPropagation();
-            onEdit();
-          }}
-          className="ui-icon-button h-7 w-7 p-0"
-        >
-          <Edit2 className="h-3 w-3" />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-          className="ui-icon-button h-7 w-7 p-0 text-destructive hover:text-destructive"
-        >
-          <Trash2 className="h-3 w-3" />
-        </Button>
+        <Tooltip tip="Copy record" side="top">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCopy?.();
+            }}
+            className="ui-icon-button h-7 w-7 p-0"
+            aria-label="Copy record"
+          >
+            <Copy className="h-3 w-3" />
+          </Button>
+        </Tooltip>
+        <Tooltip tip="Edit record" side="top">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit();
+            }}
+            className="ui-icon-button h-7 w-7 p-0"
+            aria-label="Edit record"
+          >
+            <Edit2 className="h-3 w-3" />
+          </Button>
+        </Tooltip>
+        <Tooltip tip="Delete record" side="top">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+            className="ui-icon-button h-7 w-7 p-0 text-destructive hover:text-destructive"
+            aria-label="Delete record"
+          >
+            <Trash2 className="h-3 w-3" />
+          </Button>
+        </Tooltip>
       </div>
       {(expandedName || expandedContent) && (
         <div className="col-span-full relative mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-foreground/80 glass-fade">
@@ -958,30 +968,34 @@ export function RecordRow({
             onClick={(event) => event.stopPropagation()}
           >
             {expandedName && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ui-icon-button h-7 w-7 p-0"
-                title="Copy name"
-                aria-label="Copy name"
-                onClick={() => void navigator.clipboard?.writeText(record.name)}
-              >
-                <Copy className="h-3 w-3" />
-              </Button>
+              <Tooltip tip="Copy name" side="left">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ui-icon-button h-7 w-7 p-0"
+                  aria-label="Copy name"
+                  onClick={() =>
+                    void navigator.clipboard?.writeText(record.name)
+                  }
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
+              </Tooltip>
             )}
             {expandedContent && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ui-icon-button h-7 w-7 p-0"
-                title="Copy content"
-                aria-label="Copy content"
-                onClick={() =>
-                  void navigator.clipboard?.writeText(record.content)
-                }
-              >
-                <Copy className="h-3 w-3" />
-              </Button>
+              <Tooltip tip="Copy content" side="left">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ui-icon-button h-7 w-7 p-0"
+                  aria-label="Copy content"
+                  onClick={() =>
+                    void navigator.clipboard?.writeText(record.content)
+                  }
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
+              </Tooltip>
             )}
           </div>
           {expandedName && (
