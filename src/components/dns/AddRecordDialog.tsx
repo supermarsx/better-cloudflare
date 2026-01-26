@@ -221,6 +221,115 @@ export function AddRecordDialog({
   const [spfGraph, setSpfGraph] = useState<SPFGraph | null>(null);
   const [spfGraphError, setSpfGraphError] = useState<string | null>(null);
 
+  const [txtHelperMode, setTxtHelperMode] = useState<
+    "auto" | "generic" | "spf" | "dkim" | "dmarc"
+  >("auto");
+  const [dmarcPolicy, setDmarcPolicy] = useState<
+    "none" | "quarantine" | "reject"
+  >("none");
+  const [dmarcRua, setDmarcRua] = useState<string>("");
+  const [dmarcRuf, setDmarcRuf] = useState<string>("");
+  const [dmarcPct, setDmarcPct] = useState<number | undefined>(undefined);
+  const [dmarcAdkim, setDmarcAdkim] = useState<"r" | "s">("r");
+  const [dmarcAspf, setDmarcAspf] = useState<"r" | "s">("r");
+  const [dmarcSubdomainPolicy, setDmarcSubdomainPolicy] = useState<
+    "" | "none" | "quarantine" | "reject"
+  >("");
+  const [dkimKeyType, setDkimKeyType] = useState<"rsa" | "ed25519">("rsa");
+  const [dkimSelector, setDkimSelector] = useState<string>("");
+  const [dkimPublicKey, setDkimPublicKey] = useState<string>("");
+
+  const effectiveTxtMode = useMemo(() => {
+    if (record.type !== "TXT") return "generic" as const;
+    if (txtHelperMode !== "auto") return txtHelperMode;
+    const content = (record.content ?? "").trim();
+    if (content.toLowerCase().startsWith("v=spf1")) return "spf" as const;
+    if (content.toLowerCase().startsWith("v=dmarc1")) return "dmarc" as const;
+    if (content.toLowerCase().startsWith("v=dkim1")) return "dkim" as const;
+    return "generic" as const;
+  }, [record.type, record.content, txtHelperMode]);
+
+  const validateDKIM = useCallback((value: string) => {
+    const problems: string[] = [];
+    const content = value.trim();
+    if (!content) return { ok: true, problems };
+    if (!/^v=DKIM1\b/i.test(content)) {
+      problems.push("Missing v=DKIM1.");
+      return { ok: false, problems };
+    }
+    const tags = content
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const map = new Map<string, string>();
+    for (const tag of tags) {
+      const [kRaw, ...rest] = tag.split("=");
+      const k = (kRaw ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const v = rest.join("=").trim();
+      map.set(k, v);
+    }
+    const p = map.get("p");
+    if (p === undefined) {
+      problems.push("Missing p= (public key).");
+    } else {
+      const pk = p.replace(/\s+/g, "");
+      if (pk.length > 0 && !/^[A-Za-z0-9+/=]+$/.test(pk))
+        problems.push("p= contains non-base64 characters.");
+      if (pk.length === 0)
+        problems.push("p= is empty (revoked key). This may be intentional.");
+    }
+    const k = map.get("k");
+    if (k && !["rsa", "ed25519"].includes(k.toLowerCase()))
+      problems.push("k= is usually rsa or ed25519.");
+    return { ok: problems.length === 0, problems };
+  }, []);
+
+  const validateDMARC = useCallback((value: string) => {
+    const problems: string[] = [];
+    const content = value.trim();
+    if (!content) return { ok: true, problems };
+    if (!/^v=DMARC1\b/i.test(content)) {
+      problems.push("Missing v=DMARC1.");
+      return { ok: false, problems };
+    }
+    const tags = content
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const map = new Map<string, string>();
+    for (const tag of tags) {
+      const [kRaw, ...rest] = tag.split("=");
+      const k = (kRaw ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const v = rest.join("=").trim();
+      map.set(k, v);
+    }
+    const p = map.get("p");
+    if (!p) problems.push("Missing p= (policy).");
+    else if (!["none", "quarantine", "reject"].includes(p.toLowerCase()))
+      problems.push("p= should be none, quarantine, or reject.");
+    const rua = map.get("rua");
+    if (rua) {
+      const parts = rua.split(",").map((s) => s.trim());
+      if (parts.some((u) => u && !u.toLowerCase().startsWith("mailto:")))
+        problems.push("rua= URIs should start with mailto:.");
+    }
+    const ruf = map.get("ruf");
+    if (ruf) {
+      const parts = ruf.split(",").map((s) => s.trim());
+      if (parts.some((u) => u && !u.toLowerCase().startsWith("mailto:")))
+        problems.push("ruf= URIs should start with mailto:.");
+    }
+    const pct = map.get("pct");
+    if (pct) {
+      const n = Number(pct);
+      if (Number.isNaN(n) || n < 0 || n > 100)
+        problems.push("pct= should be 0–100.");
+    }
+    return { ok: problems.length === 0, problems };
+  }, []);
+
   const addSPFMechanism = () => {
     const mechVal = newSPFValue?.trim();
     const newMech: SPFMechanism = {
@@ -562,6 +671,19 @@ export function AddRecordDialog({
           warnings.push(
             "TXT content is longer than 255 characters (may need quoting/splitting).",
           );
+        if (effectiveTxtMode === "spf") {
+          const v = validateSPF(content);
+          if (!v.ok)
+            warnings.push(`SPF validation issues: ${v.problems.join(", ")}`);
+        } else if (effectiveTxtMode === "dkim") {
+          const v = validateDKIM(content);
+          if (!v.ok)
+            warnings.push(`DKIM validation issues: ${v.problems.join(", ")}`);
+        } else if (effectiveTxtMode === "dmarc") {
+          const v = validateDMARC(content);
+          if (!v.ok)
+            warnings.push(`DMARC validation issues: ${v.problems.join(", ")}`);
+        }
         break;
       case "SRV": {
         const parsed = parseSRV(record.content);
@@ -644,10 +766,19 @@ export function AddRecordDialog({
     }
 
     return warnings;
-  }, [record.type, record.name, record.content, record.priority]);
+  }, [
+    record.type,
+    record.name,
+    record.content,
+    record.priority,
+    effectiveTxtMode,
+    validateDKIM,
+    validateDMARC,
+  ]);
 
   useEffect(() => {
     setConfirmInvalid(false);
+    setShowDiscardConfirm(false);
   }, [open, record.type, record.name, record.content, record.priority]);
 
   const handleCreateRecord = () => {
@@ -843,6 +974,16 @@ export function AddRecordDialog({
               Use <code>@</code> for the zone apex. Names are usually relative to{" "}
               <code>{zoneName}</code>.
               {nameHint && <div className="mt-1">{nameHint}</div>}
+              {record.type === "TXT" && effectiveTxtMode === "dmarc" && (
+                <div className="mt-1">
+                  DMARC TXT is usually named <code>_dmarc</code>.
+                </div>
+              )}
+              {record.type === "TXT" && effectiveTxtMode === "dkim" && (
+                <div className="mt-1">
+                  DKIM TXT is usually named <code>&lt;selector&gt;._domainkey</code>.
+                </div>
+              )}
             </div>
           </div>
           <div className="space-y-2">
@@ -854,18 +995,378 @@ export function AddRecordDialog({
               switch (record.type) {
                 case "TXT":
                   return (
-                    <textarea
-                      aria-label={t("TXT content input", "TXT content")}
-                      className="ui-focus w-full min-h-24 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                      value={record.content}
-                      onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                        onRecordChange({
-                          ...record,
-                          content: e.target.value,
-                        })
-                      }
-                      placeholder={contentPlaceholder}
-                    />
+                    <div className="space-y-2">
+                      <textarea
+                        aria-label={t("TXT content input", "TXT content")}
+                        className="ui-focus w-full min-h-24 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                        value={record.content}
+                        onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                          onRecordChange({
+                            ...record,
+                            content: e.target.value,
+                          })
+                        }
+                        placeholder={contentPlaceholder}
+                      />
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">TXT helper</Label>
+                          <select
+                            className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                            value={txtHelperMode}
+                            onChange={(e) =>
+                              setTxtHelperMode(
+                                e.target.value as typeof txtHelperMode,
+                              )
+                            }
+                          >
+                            <option value="auto">Auto-detect</option>
+                            <option value="generic">Generic</option>
+                            <option value="spf">SPF</option>
+                            <option value="dkim">DKIM</option>
+                            <option value="dmarc">DMARC</option>
+                          </select>
+                        </div>
+                        {effectiveTxtMode === "dkim" && (
+                          <>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Key type</Label>
+                              <select
+                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                                value={dkimKeyType}
+                                onChange={(e) =>
+                                  setDkimKeyType(
+                                    e.target.value as typeof dkimKeyType,
+                                  )
+                                }
+                              >
+                                <option value="rsa">rsa</option>
+                                <option value="ed25519">ed25519</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Selector (name)</Label>
+                              <Input
+                                value={dkimSelector}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDkimSelector(e.target.value)
+                                }
+                                placeholder="e.g., default"
+                              />
+                            </div>
+                            <div className="space-y-1 sm:col-span-1">
+                              <Label className="text-xs">Public key (p=)</Label>
+                              <Input
+                                value={dkimPublicKey}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDkimPublicKey(e.target.value)
+                                }
+                                placeholder="base64 public key"
+                              />
+                            </div>
+                          </>
+                        )}
+                        {effectiveTxtMode === "dmarc" && (
+                          <>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Policy (p=)</Label>
+                              <select
+                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                                value={dmarcPolicy}
+                                onChange={(e) =>
+                                  setDmarcPolicy(
+                                    e.target.value as typeof dmarcPolicy,
+                                  )
+                                }
+                              >
+                                <option value="none">none</option>
+                                <option value="quarantine">quarantine</option>
+                                <option value="reject">reject</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">rua= (optional)</Label>
+                              <Input
+                                value={dmarcRua}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDmarcRua(e.target.value)
+                                }
+                                placeholder="mailto:dmarc@yourdomain.com"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">ruf= (optional)</Label>
+                              <Input
+                                value={dmarcRuf}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDmarcRuf(e.target.value)
+                                }
+                                placeholder="mailto:dmarc@yourdomain.com"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">pct= (optional)</Label>
+                              <Input
+                                type="number"
+                                value={dmarcPct ?? ""}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const n = Number.parseInt(e.target.value, 10);
+                                  setDmarcPct(
+                                    Number.isNaN(n) ? undefined : n,
+                                  );
+                                }}
+                                placeholder="100"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">adkim</Label>
+                              <select
+                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                                value={dmarcAdkim}
+                                onChange={(e) =>
+                                  setDmarcAdkim(
+                                    e.target.value as typeof dmarcAdkim,
+                                  )
+                                }
+                              >
+                                <option value="r">r</option>
+                                <option value="s">s</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">aspf</Label>
+                              <select
+                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                                value={dmarcAspf}
+                                onChange={(e) =>
+                                  setDmarcAspf(
+                                    e.target.value as typeof dmarcAspf,
+                                  )
+                                }
+                              >
+                                <option value="r">r</option>
+                                <option value="s">s</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">sp= (optional)</Label>
+                              <select
+                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                                value={dmarcSubdomainPolicy}
+                                onChange={(e) =>
+                                  setDmarcSubdomainPolicy(
+                                    e.target.value as typeof dmarcSubdomainPolicy,
+                                  )
+                                }
+                              >
+                                <option value="">(inherit)</option>
+                                <option value="none">none</option>
+                                <option value="quarantine">quarantine</option>
+                                <option value="reject">reject</option>
+                              </select>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      {effectiveTxtMode === "spf" && (
+                        <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            SPF builder
+                          </div>
+                          <div className="flex space-x-2 mt-2">
+                            <select
+                              className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              value={newSPFQualifier}
+                              onChange={(e) => setNewSPFQualifier(e.target.value)}
+                            >
+                              <option value="">+</option>
+                              <option value="-">-</option>
+                              <option value="~">~</option>
+                              <option value="?">?</option>
+                            </select>
+                            <select
+                              className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              value={newSPFMechanism}
+                              onChange={(e) => setNewSPFMechanism(e.target.value)}
+                            >
+                              <option value="ip4">ip4</option>
+                              <option value="ip6">ip6</option>
+                              <option value="a">a</option>
+                              <option value="mx">mx</option>
+                              <option value="include">include</option>
+                              <option value="all">all</option>
+                            </select>
+                            <Input
+                              placeholder="value (optional)"
+                              value={newSPFValue}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                setNewSPFValue(e.target.value)
+                              }
+                            />
+                            <Button onClick={addSPFMechanism}>
+                              {editingSPFIndex !== null ? "Update" : "Add"}
+                            </Button>
+                          </div>
+                          {parsedSPF?.mechanisms && parsedSPF.mechanisms.length > 0 && (
+                            <div className="mt-3 space-y-2">
+                              <div className="text-xs font-semibold text-muted-foreground">
+                                Mechanisms
+                              </div>
+                              {parsedSPF.mechanisms.map((m, i) => (
+                                <div
+                                  key={`${m.mechanism}:${i}`}
+                                  className="flex flex-wrap items-center gap-2"
+                                >
+                                  <div className="text-xs">
+                                    <code>
+                                      {(m.qualifier ?? "") +
+                                        (m.mechanism ?? "") +
+                                        (m.value ? `:${m.value}` : "")}
+                                    </code>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => editSPFMechanism(i)}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => removeSPFMechanism(i)}
+                                  >
+                                    Remove
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Preview:
+                          </div>
+                          <pre className="mt-1 whitespace-pre-wrap text-xs">
+                            {composeSPF(
+                              parsedSPF ?? { version: "v=spf1", mechanisms: [] },
+                            )}
+                          </pre>
+                          {!validateSPF(record.content).ok && (
+                            <div className="mt-2 text-xs text-red-600">
+                              SPF validation issues:{" "}
+                              {validateSPF(record.content).problems.join(", ")}
+                            </div>
+                          )}
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSPF(
+                                    parsedSPF ?? {
+                                      version: "v=spf1",
+                                      mechanisms: [],
+                                    },
+                                  ),
+                                });
+                              }}
+                            >
+                              Apply to TXT
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {effectiveTxtMode === "dkim" && (
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const selector = dkimSelector.trim();
+                              if (!selector) return;
+                              onRecordChange({
+                                ...record,
+                                name: `${selector}._domainkey`,
+                              });
+                            }}
+                            disabled={!dkimSelector.trim()}
+                          >
+                            Use DKIM name
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              const p = dkimPublicKey.trim();
+                              const parts = [
+                                "v=DKIM1",
+                                `k=${dkimKeyType}`,
+                                `p=${p}`,
+                              ];
+                              onRecordChange({
+                                ...record,
+                                content: parts.join("; ") + ";",
+                              });
+                            }}
+                          >
+                            Build DKIM TXT
+                          </Button>
+                        </div>
+                      )}
+                      {effectiveTxtMode === "dmarc" && (
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              onRecordChange({ ...record, name: "_dmarc" });
+                            }}
+                          >
+                            Use _dmarc name
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              const parts: string[] = ["v=DMARC1", `p=${dmarcPolicy}`];
+                              if (dmarcRua.trim()) parts.push(`rua=${dmarcRua.trim()}`);
+                              if (dmarcRuf.trim()) parts.push(`ruf=${dmarcRuf.trim()}`);
+                              if (dmarcPct !== undefined) parts.push(`pct=${dmarcPct}`);
+                              if (dmarcAdkim) parts.push(`adkim=${dmarcAdkim}`);
+                              if (dmarcAspf) parts.push(`aspf=${dmarcAspf}`);
+                              if (dmarcSubdomainPolicy)
+                                parts.push(`sp=${dmarcSubdomainPolicy}`);
+                              onRecordChange({
+                                ...record,
+                                content: parts.join("; ") + ";",
+                              });
+                            }}
+                          >
+                            Build DMARC TXT
+                          </Button>
+                        </div>
+                      )}
+                      {record.type === "TXT" && effectiveTxtMode === "dkim" && (
+                        (() => {
+                          const v = validateDKIM((record.content ?? "").trim());
+                          if (v.ok) return null;
+                          return (
+                            <div className="text-xs text-red-600">
+                              DKIM validation issues: {v.problems.join(", ")}
+                            </div>
+                          );
+                        })()
+                      )}
+                      {record.type === "TXT" && effectiveTxtMode === "dmarc" && (
+                        (() => {
+                          const v = validateDMARC((record.content ?? "").trim());
+                          if (v.ok) return null;
+                          return (
+                            <div className="text-xs text-red-600">
+                              DMARC validation issues: {v.problems.join(", ")}
+                            </div>
+                          );
+                        })()
+                      )}
+                    </div>
                   );
                 case "SRV":
                   return (
@@ -1405,7 +1906,11 @@ export function AddRecordDialog({
                     priority: Number.isNaN(n) ? undefined : n,
                   });
                 }}
+                placeholder="10 (common) or 0 (primary)"
               />
+              <div className="text-xs text-muted-foreground">
+                Lower numbers have higher priority. Typical setups use 10/20 or 0/10.
+              </div>
             </div>
           )}
           {(record.type === "A" ||
