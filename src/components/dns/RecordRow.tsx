@@ -822,11 +822,7 @@ export function RecordRow({
           </span>
           <div className="min-w-0 flex-1">
             <div
-              className={`font-mono text-sm ${
-                expandedName
-                  ? "break-all rounded-md border border-border/40 bg-muted/40 px-3 py-2"
-                  : "truncate"
-              }`}
+              className="truncate font-mono text-sm"
               title={record.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -837,14 +833,10 @@ export function RecordRow({
               role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
               tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
             >
-              {expandedName ? record.name : truncate(record.name)}
+              {truncate(record.name)}
             </div>
             <div
-              className={`text-xs text-muted-foreground ${
-                expandedContent
-                  ? "mt-2 break-all rounded-md border border-border/30 bg-muted/30 px-3 py-2"
-                  : "truncate"
-              }`}
+              className="truncate text-xs text-muted-foreground"
               title={record.content}
               onClick={(event) => {
                 event.stopPropagation();
@@ -855,7 +847,7 @@ export function RecordRow({
               role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
               tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
             >
-              {expandedContent ? record.content : truncate(record.content)}
+              {truncate(record.content)}
             </div>
           </div>
         </div>
@@ -925,6 +917,28 @@ export function RecordRow({
           </div>
         </div>
       </div>
+      {(expandedName || expandedContent) && (
+        <div className="mt-4 space-y-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-xs text-foreground/80">
+          {expandedName && (
+            <div className="break-all">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                Name
+              </span>
+              <div className="mt-1 font-mono text-sm text-foreground">
+                {record.name}
+              </div>
+            </div>
+          )}
+          {expandedContent && (
+            <div className="break-all">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                Content
+              </span>
+              <div className="mt-1 text-foreground">{record.content}</div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

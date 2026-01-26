@@ -12,7 +12,7 @@ export function LoginHeader() {
       </div>
       <div className="flex justify-center mb-6">
         <div className="p-4">
-          <Key className="h-10 w-10 text-orange-500" />
+          <Key className="h-10 w-10 text-primary" />
         </div>
       </div>
       <CardDescription className="mt-2">

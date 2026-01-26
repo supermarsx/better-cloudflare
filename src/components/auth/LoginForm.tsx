@@ -204,7 +204,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-muted-foreground">
+            <div className="rounded-md border border-border/60 bg-card/70 px-3 py-2 text-sm text-muted-foreground">
               {deleteTarget ? deleteTarget.label : "Selected key"}
             </div>
             <div className="flex gap-2">

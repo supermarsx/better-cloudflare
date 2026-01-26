@@ -104,7 +104,7 @@ export function PasskeyManagerDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-orange-500" />
+        <Shield className="h-5 w-5 text-primary" />
             Manage Passkeys
           </DialogTitle>
           <DialogDescription>
@@ -128,7 +128,7 @@ export function PasskeyManagerDialog({
                     key={it.id}
                   >
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <div className="p-2 rounded-full bg-orange-500/10 text-orange-500">
+                      <div className="p-2 rounded-full bg-primary/10 text-primary">
                         {getDeviceIcon(it.label)}
                       </div>
                       <div className="flex-1 min-w-0">

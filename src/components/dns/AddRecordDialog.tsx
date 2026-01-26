@@ -279,7 +279,7 @@ export function AddRecordDialog({
       <DialogTrigger asChild>
         <Button
           variant="outline"
-          className="border-white/10 bg-black/20 text-muted-foreground hover:text-foreground hover:border-orange-500/20"
+          className="border-border/60 bg-muted/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
         >
           <Plus className="h-4 w-4 mr-2" />
           Add Record

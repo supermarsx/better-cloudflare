@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Moon, Sun, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,10 +15,10 @@ type ThemeId = "sunset" | "oled" | "light";
 const themeLabels: Record<ThemeId, string> = {
   sunset: "Sunset",
   oled: "OLED",
-  light: "Light",
+  light: "Tarnished",
 };
 
-const themeIcons: Record<ThemeId, JSX.Element> = {
+const themeIcons: Record<ThemeId, ReactNode> = {
   sunset: <Flame className="h-4 w-4" />,
   oled: <Moon className="h-4 w-4" />,
   light: <Sun className="h-4 w-4" />,
@@ -79,7 +79,7 @@ export function ThemeToggle() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 rounded-full border border-border/70 bg-card/70 text-foreground/70 hover:text-foreground hover:border-primary/40 hover:bg-accent/70 shadow-sm transition-all"
+          className="ui-icon-button h-8 w-8"
           aria-label="Select theme"
           title={`Theme: ${themeLabels[theme]}`}
         >
@@ -88,13 +88,13 @@ export function ThemeToggle() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="bg-popover/95 border border-border/60 text-foreground shadow-[0_12px_28px_rgba(0,0,0,0.18)]"
+        className="bg-popover/70 text-foreground"
       >
         {(Object.keys(themeLabels) as ThemeId[]).map((id) => (
           <DropdownMenuItem
             key={id}
             onClick={() => applyTheme(id)}
-            className="cursor-pointer focus:bg-accent/70"
+            className="cursor-pointer"
           >
             <span className="mr-2 text-primary">{themeIcons[id]}</span>
             {themeLabels[id]}

@@ -1046,10 +1046,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const actionHint = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,120,40,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(20,20,35,0.6),transparent_60%)] p-4 text-foreground">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-        <div className="sticky top-0 z-20">
-          <Card className="border-white/10 bg-gradient-to-br from-slate-950/85 via-slate-900/70 to-orange-950/35 shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur">
+          <div className="sticky top-0 z-20">
+            <Card className="border-border/60 bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)] backdrop-blur">
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="space-y-2 fade-in">
@@ -1069,7 +1069,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     onClick={() => openActionTab("audit")}
                     variant="outline"
                     size="icon"
-                    className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                     aria-label="Audit Log"
                     title="Audit Log"
                   >
@@ -1080,7 +1080,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   onClick={() => openActionTab("settings")}
                   variant="outline"
                   size="icon"
-                  className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                   aria-label="Settings"
                   title="Settings"
                 >
@@ -1090,7 +1090,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   onClick={handleLogout}
                   variant="outline"
                   size="icon"
-                  className="border-orange-500/20 text-orange-100/70 hover:border-orange-400/50 hover:text-orange-100 hover:shadow-[0_0_18px_rgba(255,120,70,0.25)] transition"
+                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                   aria-label="Logout"
                   title="Logout"
                 >
@@ -1200,9 +1200,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                         className={`group flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition cursor-grab ${
                           isActive
-                            ? "border-orange-400/40 bg-orange-500/15 text-orange-100 shadow-[0_0_18px_rgba(255,120,60,0.18)]"
-                            : "border-white/10 bg-black/20 text-muted-foreground hover:border-orange-400/30 hover:text-orange-100"
-                        } ${dragOverId === tab.id ? "ring-1 ring-orange-400/40" : ""}`}
+                            ? "border-primary/40 bg-primary/15 text-foreground shadow-[0_0_18px_rgba(0,0,0,0.15)]"
+                            : "border-border/60 bg-card/50 text-muted-foreground hover:border-primary/30 hover:text-foreground"
+                        } ${dragOverId === tab.id ? "ring-1 ring-primary/30" : ""}`}
                       >
                         <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         <span className="max-w-[140px] truncate">
@@ -1218,7 +1218,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             event.stopPropagation();
                             closeTab(tab.id);
                           }}
-                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-orange-200"
+                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground"
                           aria-label="Close tab"
                         >
                           <X className="h-3 w-3" />
@@ -1232,7 +1232,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </Card>
         </div>
         {activeTab ? (
-          <Card className="min-h-[70vh] border-white/10 bg-black/30 shadow-[0_20px_40px_rgba(0,0,0,0.2)] fade-in">
+          <Card className="min-h-[70vh] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
             <CardHeader className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -1246,16 +1246,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div className="flex flex-wrap items-center gap-2" />
               </div>
               {activeTab.kind === "zone" && (
-                <div className="flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/40 p-1 fade-in">
+                <div className="flex flex-wrap gap-2 rounded-xl border border-border/60 bg-muted/40 p-1 fade-in">
                   {ACTION_TABS.map((tab) => (
                     <button
                       key={tab.id}
                       onClick={() => setActionTab(tab.id)}
-                      className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-medium transition ${
-                        actionTab === tab.id
-                          ? "bg-orange-500/20 text-orange-100 shadow-[0_0_12px_rgba(255,80,0,0.2)]"
-                          : "text-muted-foreground hover:text-orange-100"
-                      }`}
+                        className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-medium transition ${
+                          actionTab === tab.id
+                            ? "bg-primary/15 text-foreground shadow-[0_0_12px_rgba(0,0,0,0.15)]"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
                     >
                       {tab.label}
                     </button>
@@ -1271,7 +1271,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {Array.from({ length: 6 }).map((_, idx) => (
                         <div
                           key={`skeleton-${idx}`}
-                          className="rounded-xl border border-white/10 bg-black/20 p-4"
+                          className="rounded-xl border border-border/50 bg-muted/30 p-4"
                         >
                           <div className="flex items-center gap-3">
                             <div className="skeleton h-4 w-4 rounded-md" />
@@ -1369,7 +1369,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <X className="h-3 w-3 mr-1" />
                         Clear
                       </Button>
-                      <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                      <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
                         <Filter className="h-3 w-3" />
                         Page {activeTab.page}
                       </div>
@@ -1517,7 +1517,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               )}
               {activeTab.kind === "zone" && actionTab === "import" && (
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Card className="border-white/10 bg-black/40">
+                  <Card className="border-border/60 bg-card/70">
                     <CardHeader>
                       <CardTitle className="text-lg">
                         Import Records
@@ -1592,7 +1592,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       />
                     </CardContent>
                   </Card>
-                  <Card className="border-white/10 bg-black/40">
+                  <Card className="border-border/60 bg-card/70">
                     <CardHeader>
                       <CardTitle className="text-lg">
                         Export Records
@@ -1639,7 +1639,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </div>
               )}
               {activeTab.kind === "zone" && actionTab === "zone-settings" && (
-                <Card className="border-white/10 bg-black/40">
+                <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <CardTitle className="text-lg">Zone settings</CardTitle>
                   </CardHeader>
@@ -1721,7 +1721,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Card>
               )}
               {activeTab.kind === "audit" && (
-                <Card className="border-white/10 bg-black/40">
+                <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <CardTitle className="text-lg">Audit log</CardTitle>
@@ -1855,8 +1855,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     )}
                     {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
-                      <div className="overflow-auto rounded-lg border border-white/10">
-                        <div className="grid grid-cols-[160px_160px_1fr_80px] gap-3 border-b border-white/10 bg-black/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
+                      <div className="overflow-auto rounded-lg border border-border/60">
+                      <div className="grid grid-cols-[160px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
                           <div>Timestamp</div>
                           <div>Operation</div>
                           <div>Resource</div>
@@ -1877,11 +1877,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   <div className="truncate text-muted-foreground">
                                     {resource}
                                   </div>
-                                  <div className="text-xs text-muted-foreground hover:text-orange-200">
+                                  <div className="text-xs text-muted-foreground hover:text-foreground">
                                     View
                                   </div>
                                 </summary>
-                                <div className="mt-3 rounded-md border border-white/10 bg-black/30 p-3 text-xs text-muted-foreground">
+                                <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
                                   <pre className="whitespace-pre-wrap">
                                     {JSON.stringify(entry, null, 2)}
                                   </pre>
@@ -1896,14 +1896,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Card>
               )}
               {activeTab.kind === "settings" && (
-                <Card className="border-white/10 bg-black/40">
+                <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <CardTitle className="text-lg">
                       Session settings
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-black/30 text-sm">
+                    <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Auto refresh</div>
                         <div className="flex flex-wrap items-center gap-3">
@@ -1981,7 +1981,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </CardContent>
           </Card>
         ) : (
-          <Card className="border-white/10 bg-black/30">
+          <Card className="border-border/60 bg-card/60">
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
               Select a zone to open it in a new tab.
             </CardContent>
@@ -2018,3 +2018,4 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     </div>
   );
 }
+

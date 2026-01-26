@@ -37,7 +37,7 @@ export function LoginActionButtons({
         onClick={onAddKey}
         className={hasKeys 
           ? "w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
-          : "w-full bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400 text-white font-semibold shadow-[0_0_20px_rgba(255,80,0,0.4)] hover:shadow-[0_0_30px_rgba(255,80,0,0.6)] transition-all duration-300 animate-pulse"
+          : "w-full bg-primary text-primary-foreground font-semibold shadow-[0_12px_24px_rgba(0,0,0,0.2)] hover:brightness-110 transition-all duration-300"
         }
       >
         {!hasKeys && <Plus className="h-4 w-4 mr-2" />}
