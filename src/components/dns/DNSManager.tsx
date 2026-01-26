@@ -1127,35 +1127,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       openZoneTab(value);
                     }}
                   >
-                  <SelectTrigger className="bg-black/30 border-white/10 text-orange-50 focus:ring-orange-500/40">
-                    <SelectValue placeholder="Select a domain" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-black/90 border border-orange-500/20 text-orange-100">
-                    {availableZones.map((zone: Zone) => (
-                      <SelectItem
-                        key={zone.id}
-                        value={zone.id}
-                        className="cursor-pointer focus:bg-orange-500/20 focus:text-orange-100"
-                      >
-                        {zone.name} ({zone.status})
-                      </SelectItem>
-                    ))}
+                    <SelectTrigger className="bg-card/70 border-border text-foreground focus:ring-primary/40">
+                      <SelectValue placeholder="Select a domain" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-popover/95 border border-border text-foreground">
+                      {availableZones.map((zone: Zone) => (
+                        <SelectItem
+                          key={zone.id}
+                          value={zone.id}
+                          className="cursor-pointer focus:bg-muted/60 focus:text-foreground"
+                        >
+                          {zone.name} ({zone.status})
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
-                {activeTab && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                      {activeTab.records.length} records
+                  {activeTab && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                        {activeTab.records.length} records
+                      </div>
+                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                        {filteredRecords.length} visible
+                      </div>
+                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                        Zone: {selectedZoneData?.name ?? activeTab.zoneName}
+                      </div>
                     </div>
-                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                      {filteredRecords.length} visible
-                    </div>
-                    <div className="rounded-md border border-white/10 bg-black/30 px-3 py-2">
-                      Zone: {selectedZoneData?.name ?? activeTab.zoneName}
-                    </div>
-                  </div>
-                )}
+                  )}
               </div>
               {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit") && (
                 <div
@@ -1739,7 +1739,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="font-medium text-sm">Reopen on launch</div>
                       <div className="flex items-center gap-3">
                         <Switch
-                          className="data-[state=unchecked]:bg-white/10 data-[state=checked]:bg-orange-500/70 data-[state=checked]:shadow-[0_0_12px_rgba(255,120,70,0.35)]"
                           checked={reopenZoneTabs[activeTab.zoneId] !== false}
                           onCheckedChange={(checked: boolean) =>
                             setReopenZoneTabs((prev) => ({
@@ -1996,7 +1995,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="font-medium">Reopen last tabs</div>
                         <div className="flex items-center gap-3">
                           <Switch
-                            className="data-[state=unchecked]:bg-white/10 data-[state=checked]:bg-orange-500/70 data-[state=checked]:shadow-[0_0_12px_rgba(255,120,70,0.35)]"
                             checked={reopenLastTabs}
                             onCheckedChange={(checked: boolean) =>
                               setReopenLastTabs(checked)

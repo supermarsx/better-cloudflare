@@ -157,7 +157,6 @@ export function EncryptionSettingsDialog({
               </p>
             </div>
             <Switch
-              className="data-[state=unchecked]:bg-white/10 data-[state=checked]:bg-orange-500/70 data-[state=checked]:shadow-[0_0_12px_rgba(255,120,70,0.35)]"
               checked={useVault}
               onCheckedChange={(v: boolean) => {
                 setUseVault(v);

@@ -5,24 +5,24 @@
   :root,
   :root[data-theme="light"] {
     --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
+    --foreground: 220 40% 6%;
+    --card: 210 20% 98%;
     --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
     --primary: 221.2 83.2% 53.3%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
+    --secondary: 210 20% 97%;
     --secondary-foreground: 222.2 84% 4.9%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96%;
+    --muted: 210 20% 97%;
+    --muted-foreground: 215 18% 32%;
+    --accent: 210 20% 97%;
     --accent-foreground: 222.2 84% 4.9%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --border: 210 20% 93%;
+    --input: 210 20% 95%;
+    --ring: 221 83% 55%;
     --radius: 0.5rem;
   }
 
@@ -50,23 +50,23 @@
 
   :root[data-theme="oled"] {
     --background: 0 0% 0%;
-    --foreground: 30 50% 98%;
-    --card: 0 0% 6%;
+    --foreground: 30 25% 98%;
+    --card: 0 0% 0%;
     --card-foreground: 30 50% 98%;
     --popover: 0 0% 6%;
     --popover-foreground: 30 50% 98%;
     --primary: 18 90% 52%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 10%;
+    --secondary: 0 0% 0%;
     --secondary-foreground: 30 50% 98%;
-    --muted: 0 0% 10%;
-    --muted-foreground: 20 25% 70%;
-    --accent: 18 60% 16%;
+    --muted: 0 0% 0%;
+    --muted-foreground: 20 18% 72%;
+    --accent: 18 60% 6%;
     --accent-foreground: 30 50% 98%;
     --destructive: 0 90% 30%;
     --destructive-foreground: 30 50% 98%;
-    --border: 0 0% 18%;
-    --input: 0 0% 12%;
+    --border: 0 0% 4%;
+    --input: 0 0% 2%;
     --ring: 18 90% 52%;
   }
 }
@@ -97,22 +97,27 @@
   [data-theme="light"] .titlebar {
     background: linear-gradient(
         120deg,
-        rgba(240, 130, 70, 0.08),
-        rgba(255, 170, 120, 0.12)
+        rgba(255, 170, 120, 0.08),
+        rgba(255, 210, 180, 0.18)
       ),
-      rgba(255, 255, 255, 0.9);
+      rgba(255, 255, 255, 0.985);
     box-shadow:
       0 10px 24px rgba(0, 0, 0, 0.08),
       inset 0 -1px 0 rgba(0, 0, 0, 0.06);
   }
 
+  [data-theme="light"] .titlebar-title,
+  [data-theme="light"] .titlebar-actions {
+    color: hsl(var(--foreground));
+  }
+
   [data-theme="oled"] .titlebar {
     background: linear-gradient(
         120deg,
-        rgba(255, 120, 64, 0.1),
-        rgba(255, 60, 30, 0.05)
+        rgba(255, 120, 64, 0.06),
+        rgba(255, 60, 30, 0.03)
       ),
-      rgba(0, 0, 0, 0.85);
+      rgba(0, 0, 0, 0.98);
   }
 
   [data-theme="light"] .bg-black\/90 {
