@@ -1111,15 +1111,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       openZoneTab(value);
                     }}
                   >
-                    <SelectTrigger className="bg-card/70 border-border text-foreground focus:ring-primary/40">
+                    <SelectTrigger className="bg-card/70 border-border text-foreground">
                       <SelectValue placeholder="Select a domain" />
                     </SelectTrigger>
-                    <SelectContent className="bg-popover/95 border border-border text-foreground">
+                    <SelectContent className="bg-popover/70 text-foreground">
                       {availableZones.map((zone: Zone) => (
                         <SelectItem
                           key={zone.id}
                           value={zone.id}
-                          className="cursor-pointer focus:bg-muted/60 focus:text-foreground"
+                          className="cursor-pointer"
                         >
                           {zone.name} ({zone.status})
                         </SelectItem>

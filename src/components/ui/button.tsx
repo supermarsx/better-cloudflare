@@ -10,7 +10,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:translate-y-[1px]",
+  "ui-focus inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-all focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 active:translate-y-[1px]",
   {
     variants: {
       variant: {
@@ -22,7 +22,8 @@ const buttonVariants = cva(
           "glass-surface glass-sheen glass-surface-hover border-border/60 bg-background/10 hover:bg-accent/35 hover:text-accent-foreground hover:-translate-y-0.5",
         secondary:
           "glass-surface glass-sheen glass-surface-hover border-border/60 bg-card/35 text-foreground/85 hover:bg-accent/45 hover:text-foreground hover:-translate-y-0.5",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
+        ghost:
+          "hover:-translate-y-0.5 hover:bg-accent/55 hover:text-foreground hover:shadow-[0_14px_28px_hsl(0_0%_0%_/_0.2),0_0_16px_hsl(var(--primary)_/_0.12)]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
