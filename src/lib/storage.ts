@@ -29,6 +29,7 @@ interface StorageData {
   tagCatalog?: Record<string, string[]>;
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
+  confirmWindowClose?: boolean;
 }
 
 function parseRecordTags(
@@ -90,6 +91,7 @@ export function isStorageData(value: unknown): value is StorageData {
     lastZone?: unknown;
     confirmLogout?: unknown;
     idleLogoutMs?: unknown;
+    confirmWindowClose?: unknown;
   };
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
@@ -108,6 +110,12 @@ export function isStorageData(value: unknown): value is StorageData {
     obj.idleLogoutMs !== undefined &&
     obj.idleLogoutMs !== null &&
     typeof obj.idleLogoutMs !== "number"
+  ) {
+    return false;
+  }
+  if (
+    obj.confirmWindowClose !== undefined &&
+    typeof obj.confirmWindowClose !== "boolean"
   ) {
     return false;
   }
@@ -191,6 +199,11 @@ export class StorageManager {
     window.dispatchEvent(
       new CustomEvent("record-tags-changed", { detail: { zoneId, recordId } }),
     );
+  }
+
+  private dispatchPreferencesChanged(fields: Record<string, unknown>): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("preferences-changed", { detail: fields }));
   }
 
   private ensureTagInCatalog(zoneId: string, tag: string): void {
@@ -537,6 +550,7 @@ export class StorageManager {
   setConfirmLogout(enabled: boolean): void {
     this.data.confirmLogout = enabled;
     this.save();
+    this.dispatchPreferencesChanged({ confirmLogout: enabled });
   }
 
   getConfirmLogout(): boolean {
@@ -546,10 +560,21 @@ export class StorageManager {
   setIdleLogoutMs(ms: number | null): void {
     this.data.idleLogoutMs = ms ?? null;
     this.save();
+    this.dispatchPreferencesChanged({ idleLogoutMs: ms ?? null });
   }
 
   getIdleLogoutMs(): number | null {
     return typeof this.data.idleLogoutMs === "number" ? this.data.idleLogoutMs : null;
+  }
+
+  setConfirmWindowClose(enabled: boolean): void {
+    this.data.confirmWindowClose = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ confirmWindowClose: enabled });
+  }
+
+  getConfirmWindowClose(): boolean {
+    return this.data.confirmWindowClose !== false;
   }
 
   setZonePerPage(zoneId: string, value: number | null): void {

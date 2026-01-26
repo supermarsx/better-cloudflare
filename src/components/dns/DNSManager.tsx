@@ -222,6 +222,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [tagsVersion, setTagsVersion] = useState(0);
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
+  const [confirmWindowClose, setConfirmWindowClose] = useState(true);
   const {
     getZones,
     getDNSRecords,
@@ -451,6 +452,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_open_tabs?: string[];
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
+            confirm_window_close?: boolean;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
@@ -480,6 +482,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           ) {
             setIdleLogoutMs(prefObj.idle_logout_ms ?? null);
           }
+          if (typeof prefObj.confirm_window_close === "boolean") {
+            setConfirmWindowClose(prefObj.confirm_window_close);
+          }
         })
         .catch(() => {});
       return;
@@ -493,6 +498,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setLastOpenTabs(storageManager.getLastOpenTabs());
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
+    setConfirmWindowClose(storageManager.getConfirmWindowClose());
   }, []);
 
   useEffect(() => {
@@ -541,6 +547,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [autoRefreshInterval, activeTab, loadRecords]);
 
   useEffect(() => {
+    storageManager.setDefaultPerPage(globalPerPage);
+    storageManager.setZonePerPageMap(zonePerPage);
+    storageManager.setReopenLastTabs(reopenLastTabs);
+    storageManager.setReopenZoneTabs(reopenZoneTabs);
+    storageManager.setLastOpenTabs(lastOpenTabs);
+    storageManager.setConfirmLogout(confirmLogout);
+    storageManager.setIdleLogoutMs(idleLogoutMs);
+    storageManager.setConfirmWindowClose(confirmWindowClose);
+
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) =>
@@ -553,18 +568,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_open_tabs: lastOpenTabs,
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
+            confirm_window_close: confirmWindowClose,
           }),
         )
         .catch(() => {});
-      return;
     }
-    storageManager.setDefaultPerPage(globalPerPage);
-    storageManager.setZonePerPageMap(zonePerPage);
-    storageManager.setReopenLastTabs(reopenLastTabs);
-    storageManager.setReopenZoneTabs(reopenZoneTabs);
-    storageManager.setLastOpenTabs(lastOpenTabs);
-    storageManager.setConfirmLogout(confirmLogout);
-    storageManager.setIdleLogoutMs(idleLogoutMs);
   }, [
     globalPerPage,
     zonePerPage,
@@ -573,6 +581,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     lastOpenTabs,
     confirmLogout,
     idleLogoutMs,
+    confirmWindowClose,
   ]);
 
   useEffect(() => {
@@ -2427,6 +2436,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                       </div>
+                      {isDesktop() && (
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Confirm window close</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={confirmWindowClose}
+                              onCheckedChange={(checked: boolean) => {
+                                setConfirmWindowClose(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Window close confirmation enabled."
+                                    : "Window close confirmation disabled.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Show a confirmation dialog when closing the app window.
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Auto logout (idle)</div>
                         <div className="flex flex-wrap items-center gap-3">
