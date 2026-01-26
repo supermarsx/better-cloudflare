@@ -84,6 +84,7 @@ export function AddRecordDialog({
     ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
 
   const [confirmInvalid, setConfirmInvalid] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const openSnapshotRef = useRef<Partial<DNSRecord> | null>(null);
   const wasOpenRef = useRef(false);
 
@@ -319,6 +320,167 @@ export function AddRecordDialog({
     }
   }, [record.type]);
 
+  const namePlaceholder = useMemo(() => {
+    const type = record.type;
+    if (!type) return "e.g., www or @ for root";
+    switch (type) {
+      case "A":
+      case "AAAA":
+      case "CNAME":
+      case "TXT":
+      case "MX":
+      case "NS":
+      case "PTR":
+      case "CAA":
+      case "URI":
+      case "SVCB":
+      case "HTTPS":
+      case "ALIAS":
+      case "ANAME":
+        return "e.g., www or @ for root";
+      case "SRV":
+        return "e.g., _sip._tcp";
+      case "TLSA":
+        return "e.g., _443._tcp";
+      case "SSHFP":
+        return "e.g., host or @";
+      case "HINFO":
+        return "e.g., host or @";
+      case "LOC":
+        return "e.g., office or @";
+      case "SPF":
+        return "e.g., @ (apex)";
+      case "DS":
+      case "DNSKEY":
+      case "CDNSKEY":
+      case "RRSIG":
+      case "NSEC":
+      case "SOA":
+        return "e.g., @";
+      case "NAPTR":
+        return "e.g., @ or _sip._udp";
+      case "RP":
+        return "e.g., @ or host";
+      case "DNAME":
+        return "e.g., alias";
+      case "CERT":
+        return "e.g., host";
+      case "AFSDB":
+        return "e.g., afs";
+      case "APL":
+        return "e.g., @";
+      case "DCHID":
+        return "e.g., @";
+      case "HIP":
+        return "e.g., host";
+      case "IPSECKEY":
+        return "e.g., host";
+      default:
+        return "e.g., www or @ for root";
+    }
+  }, [record.type]);
+
+  const nameHint = useMemo(() => {
+    const type = record.type;
+    if (!type) return null;
+    switch (type) {
+      case "SRV":
+        return "SRV names usually look like _service._proto (e.g., _sip._tcp).";
+      case "TLSA":
+        return "TLSA names are often _port._proto (e.g., _443._tcp).";
+      case "MX":
+        return "MX is commonly set at @ (apex) or a subdomain like mail.";
+      case "SOA":
+        return "SOA is typically @ (zone apex).";
+      case "DS":
+      case "DNSKEY":
+      case "CDNSKEY":
+        return "DNSSEC records are typically @ (zone apex).";
+      case "CAA":
+        return "CAA is commonly set at @ (apex) and/or subdomains.";
+      case "SPF":
+        return "SPF is typically published as a TXT record at @; SPF type exists but TXT is more common.";
+      default:
+        return null;
+    }
+  }, [record.type]);
+
+  const contentPlaceholder = useMemo(() => {
+    const type = record.type;
+    if (!type) return "e.g., 192.0.2.10";
+    switch (type) {
+      case "A":
+        return "e.g., 192.0.2.10";
+      case "AAAA":
+        return "e.g., 2001:db8::1";
+      case "CNAME":
+        return "e.g., target.example.com";
+      case "MX":
+        return "e.g., mail.example.com";
+      case "TXT":
+        return 'e.g., "v=spf1 include:_spf.example.com ~all"';
+      case "NS":
+        return "e.g., ns1.example.com";
+      case "PTR":
+        return "e.g., host.example.com";
+      case "CAA":
+        return 'e.g., 0 issue "letsencrypt.org"';
+      case "DS":
+        return "e.g., 2371 13 2 <digest>";
+      case "DNSKEY":
+        return "e.g., 257 3 13 <public key>";
+      case "CDNSKEY":
+        return "e.g., 257 3 13 <public key>";
+      case "HINFO":
+        return 'e.g., "CPU" "OS"';
+      case "LOC":
+        return 'e.g., 37 47 0.000 N 122 24 0.000 W 10m 1m 100m 10m';
+      case "RP":
+        return "e.g., mailbox.example.com text.example.com";
+      case "DNAME":
+        return "e.g., target.example.com";
+      case "CERT":
+        return "e.g., 1 0 0 <base64>";
+      case "AFSDB":
+        return "e.g., 1 afsdb.example.com";
+      case "APL":
+        return "e.g., 1:192.0.2.0/24";
+      case "DCHID":
+        return "e.g., <hex>";
+      case "HIP":
+        return "e.g., 2 200100107B1A74DF365639CC39F1D578 <pk> <rvs>";
+      case "IPSECKEY":
+        return "e.g., 10 0 2 192.0.2.1 <key>";
+      case "NSEC":
+        return "e.g., next.example.com A AAAA RRSIG";
+      case "RRSIG":
+        return "e.g., A 13 2 3600 ... <signature>";
+      case "SOA":
+        return "e.g., ns1.example.com hostmaster.example.com 1 7200 3600 1209600 3600";
+      case "SVCB":
+        return "e.g., 1 svc.example.com alpn=h2";
+      case "HTTPS":
+        return "e.g., 1 . alpn=h2,h3";
+      case "URI":
+        return 'e.g., 10 1 "https://example.com/path"';
+      case "ALIAS":
+      case "ANAME":
+        return "e.g., target.example.com";
+      case "SPF":
+        return "e.g., v=spf1 include:_spf.example.com ~all";
+      case "SRV":
+        return "e.g., 10 5 5060 sipserver.example.com";
+      case "TLSA":
+        return "e.g., 3 1 1 <hex>";
+      case "SSHFP":
+        return "e.g., 4 2 <hex>";
+      case "NAPTR":
+        return 'e.g., 100 10 "u" "E2U+sip" "!^.*$!sip:info@example.com!" .';
+      default:
+        return "Enter record content…";
+    }
+  }, [record.type]);
+
   const validationWarnings = useMemo(() => {
     const warnings: string[] = [];
     const type = record.type;
@@ -532,23 +694,12 @@ export function AddRecordDialog({
     }
 
     if (!isDirtySinceOpen) {
+      setShowDiscardConfirm(false);
       onOpenChange(false);
       return;
     }
 
-    const ok =
-      typeof window === "undefined"
-        ? true
-        : window.confirm(
-            "You have unsaved changes. Close and discard them?",
-          );
-
-    if (!ok) return;
-
-    if (openSnapshotRef.current) {
-      onRecordChange(openSnapshotRef.current);
-    }
-    onOpenChange(false);
+    if (!showDiscardConfirm) setShowDiscardConfirm(true);
   };
 
   return (
@@ -569,6 +720,37 @@ export function AddRecordDialog({
             Create a new DNS record for {zoneName}
           </DialogDescription>
         </DialogHeader>
+        {showDiscardConfirm && (
+          <div className="absolute inset-0 z-50 grid place-items-center rounded-xl bg-background/55 backdrop-blur-sm">
+            <div className="glass-surface glass-sheen w-[min(520px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/80 p-5 shadow-[0_26px_70px_hsl(0_0%_0%_/_0.42)]">
+              <div className="text-base font-semibold">Discard changes?</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Closing will lose the edits in this record draft.
+              </div>
+              <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  variant="ghost"
+                  onClick={() => setShowDiscardConfirm(false)}
+                >
+                  Keep editing
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setShowDiscardConfirm(false);
+                    setConfirmInvalid(false);
+                    if (openSnapshotRef.current) {
+                      onRecordChange(openSnapshotRef.current);
+                    }
+                    onOpenChange(false);
+                  }}
+                >
+                  Discard changes
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -655,11 +837,12 @@ export function AddRecordDialog({
                   name: e.target.value,
                 })
               }
-              placeholder="e.g., www or @ for root"
+              placeholder={namePlaceholder}
             />
             <div className="text-xs text-muted-foreground">
               Use <code>@</code> for the zone apex. Names are usually relative to{" "}
               <code>{zoneName}</code>.
+              {nameHint && <div className="mt-1">{nameHint}</div>}
             </div>
           </div>
           <div className="space-y-2">
@@ -681,7 +864,7 @@ export function AddRecordDialog({
                           content: e.target.value,
                         })
                       }
-                      placeholder='e.g., "v=spf1 include:_spf.example.com ~all"'
+                      placeholder={contentPlaceholder}
                     />
                   );
                 case "SRV":
@@ -744,13 +927,13 @@ export function AddRecordDialog({
                           });
                         }}
                       />
-                      <Input
-                        aria-label={t("SRV target", "target")}
-                        placeholder="target"
-                        value={srvTarget}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          setSrvTarget(e.target.value);
-                          onRecordChange({
+                        <Input
+                          aria-label={t("SRV target", "target")}
+                          placeholder="target e.g., sipserver.example.com"
+                          value={srvTarget}
+                          onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                            setSrvTarget(e.target.value);
+                            onRecordChange({
                             ...record,
                             content: composeSRV(
                               srvPriority,
@@ -825,7 +1008,7 @@ export function AddRecordDialog({
                       />
                       <Input
                         aria-label={t("TLSA data", "data")}
-                        placeholder="data"
+                        placeholder="data (hex)"
                         value={tlsaData}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setTlsaData(e.target.value);
@@ -883,6 +1066,7 @@ export function AddRecordDialog({
                       />
                       <Input
                         aria-label={t("SSHFP fingerprint", "fingerprint")}
+                        placeholder="fingerprint (hex)"
                         value={sshfpFingerprint}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setSshfpFingerprint(e.target.value);
@@ -985,7 +1169,7 @@ export function AddRecordDialog({
                       />
                       <Input
                         aria-label={t("NAPTR regexp", "regexp")}
-                        placeholder="regexp"
+                        placeholder='regexp e.g., "!^.*$!sip:info@example.com!"'
                         value={naptrRegexp}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => {
                           setNaptrRegexp(e.target.value);
@@ -1202,7 +1386,7 @@ export function AddRecordDialog({
                           content: e.target.value,
                         })
                       }
-                      placeholder="e.g., 192.168.1.1"
+                      placeholder={contentPlaceholder}
                     />
                   );
               }
