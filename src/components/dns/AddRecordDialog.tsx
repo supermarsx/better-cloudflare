@@ -143,6 +143,10 @@ export function AddRecordDialog({
     parseNAPTR(record.content).replacement ?? "",
   );
 
+  const [uriPriority, setUriPriority] = useState<number | undefined>(undefined);
+  const [uriWeight, setUriWeight] = useState<number | undefined>(undefined);
+  const [uriTarget, setUriTarget] = useState<string>("");
+
   const [soaPrimaryNs, setSoaPrimaryNs] = useState<string>("");
   const [soaAdmin, setSoaAdmin] = useState<string>("");
   const [soaSerial, setSoaSerial] = useState<number | undefined>(undefined);
@@ -212,6 +216,41 @@ export function AddRecordDialog({
     return parts.join(" ").replace(/\s+/g, " ").trim();
   }
 
+  function parseURIContent(value: string | undefined) {
+    const raw = (value ?? "").trim();
+    if (!raw) return { priority: undefined, weight: undefined, target: "" };
+    const parts = raw.split(/\s+/);
+    const pr = Number.parseInt(parts[0] ?? "", 10);
+    const wt = Number.parseInt(parts[1] ?? "", 10);
+    const rest = raw.replace(/^\s*\S+\s+\S+\s+/, "");
+    const trimmed = rest.trim();
+    let target = trimmed;
+    if (target.startsWith("\"") && target.endsWith("\"") && target.length >= 2) {
+      target = target.slice(1, -1);
+    }
+    target = target.replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+    return {
+      priority: Number.isNaN(pr) ? undefined : pr,
+      weight: Number.isNaN(wt) ? undefined : wt,
+      target,
+    };
+  }
+
+  function escapeDnsQuotedString(value: string) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  }
+
+  function composeURI(fields: {
+    priority: number | undefined;
+    weight: number | undefined;
+    target: string;
+  }) {
+    const pr = fields.priority ?? "";
+    const wt = fields.weight ?? "";
+    const target = `"${escapeDnsQuotedString(fields.target ?? "")}"`;
+    return `${pr} ${wt} ${target}`.replace(/\s+/g, " ").trim();
+  }
+
   useEffect(() => {
     if (record.type === "SRV") {
       const parsed = parseSRV(record.content);
@@ -230,10 +269,20 @@ export function AddRecordDialog({
   ]);
 
   useEffect(() => {
+    if (record.type === "URI") {
+      const parsed = parseURIContent(record.content);
+      if (parsed.priority !== uriPriority) setUriPriority(parsed.priority);
+      if (parsed.weight !== uriWeight) setUriWeight(parsed.weight);
+      if (parsed.target !== uriTarget) setUriTarget(parsed.target);
+    }
+  }, [record.type, record.content, uriPriority, uriWeight, uriTarget]);
+
+  useEffect(() => {
     if (record.type !== "SOA") return;
     const parsed = parseSOAContent(record.content);
     if (parsed.mname !== soaPrimaryNs) setSoaPrimaryNs(parsed.mname);
-    if (parsed.rname !== soaAdmin) setSoaAdmin(parsed.rname);
+    if (!soaAdmin.includes("@") && parsed.rname !== soaAdmin)
+      setSoaAdmin(parsed.rname);
     if (parsed.serial !== soaSerial) setSoaSerial(parsed.serial);
     if (parsed.refresh !== soaRefresh) setSoaRefresh(parsed.refresh);
     if (parsed.retry !== soaRetry) setSoaRetry(parsed.retry);
@@ -630,6 +679,8 @@ export function AddRecordDialog({
         return "TLSA names are often _port._proto (e.g., _443._tcp).";
       case "MX":
         return "MX is commonly set at @ (apex) or a subdomain like mail.";
+      case "URI":
+        return "URI names are often _service._proto (e.g., _sip._tcp), depending on the application.";
       case "SOA":
         return "SOA is typically @ (zone apex).";
       case "DS":
@@ -721,17 +772,290 @@ export function AddRecordDialog({
     }
   }, [record.type]);
 
+  const soaValidation = useMemo(() => {
+    if (record.type !== "SOA") {
+      return {
+        issues: [] as string[],
+        fieldIssues: {} as Record<
+          | "mname"
+          | "rname"
+          | "serial"
+          | "refresh"
+          | "retry"
+          | "expire"
+          | "minimum",
+          string[]
+        >,
+      };
+    }
+
+    const pushUnique = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const fieldIssues: Record<
+      "mname" | "rname" | "serial" | "refresh" | "retry" | "expire" | "minimum",
+      string[]
+    > = {
+      mname: [],
+      rname: [],
+      serial: [],
+      refresh: [],
+      retry: [],
+      expire: [],
+      minimum: [],
+    };
+
+    const issues: string[] = [];
+    const parsed = parseSOAContent(record.content);
+    const soaName = (record.name ?? "").trim();
+
+    const isValidDnsLabel = (label: string) => {
+      if (!label) return false;
+      if (label.length > 63) return false;
+      if (!/^[A-Za-z0-9-]+$/.test(label)) return false;
+      if (label.startsWith("-") || label.endsWith("-")) return false;
+      return true;
+    };
+
+    const isValidHostname = (value: string) => {
+      const v = normalizeDnsName(value);
+      if (!v) return false;
+      if (v.length > 253) return false;
+      if (/\s/.test(v)) return false;
+      if (v.includes("://") || v.includes("/")) return false;
+      const labels = v.split(".");
+      if (labels.some((l) => l.length === 0)) return false;
+      return labels.every(isValidDnsLabel);
+    };
+
+    if (parsed.fieldCount !== 7) {
+      pushUnique(
+        issues,
+        "SOA content should have 7 fields: mname rname serial refresh retry expire minimum.",
+      );
+    }
+
+    if (soaName && soaName !== "@") {
+      pushUnique(
+        issues,
+        "SOA name is typically @ (zone apex); other names are unusual.",
+      );
+    }
+
+    if (!parsed.mname) {
+      pushUnique(fieldIssues.mname, "Primary NS (mname) is required.");
+    } else {
+      if (!isValidHostname(parsed.mname)) {
+        pushUnique(fieldIssues.mname, "mname must be a valid hostname.");
+      }
+      if (!normalizeDnsName(parsed.mname).includes(".")) {
+        pushUnique(
+          fieldIssues.mname,
+          "mname should usually be a FQDN (contain at least one dot).",
+        );
+      }
+      if (normalizeDnsName(parsed.mname).includes("_")) {
+        pushUnique(fieldIssues.mname, "mname should not contain underscores.");
+      }
+    }
+
+    if (!parsed.rname) {
+      pushUnique(fieldIssues.rname, "Admin (rname) is required.");
+    } else {
+      const r = normalizeDnsName(parsed.rname);
+      if (r.includes("@")) {
+        pushUnique(fieldIssues.rname, "rname must not contain @ (use DNS-name form).");
+      }
+      if (!isValidHostname(r)) {
+        pushUnique(
+          fieldIssues.rname,
+          "rname must be a valid DNS name (represents an email address).",
+        );
+      }
+      if (!r.includes(".")) {
+        pushUnique(
+          fieldIssues.rname,
+          "rname should usually contain a dot (like hostmaster.example.com).",
+        );
+      }
+    }
+
+    const validateUint32 = (n: number | undefined, label: keyof typeof fieldIssues) => {
+      if (n === undefined) {
+        pushUnique(fieldIssues[label], `${label} is required and must be a number.`);
+        return;
+      }
+      if (!Number.isFinite(n)) {
+        pushUnique(fieldIssues[label], `${label} must be a finite number.`);
+        return;
+      }
+      if (n < 0) pushUnique(fieldIssues[label], `${label} must be >= 0.`);
+      if (n > 4294967295)
+        pushUnique(fieldIssues[label], `${label} must be <= 4294967295.`);
+    };
+
+    validateUint32(parsed.serial, "serial");
+    validateUint32(parsed.refresh, "refresh");
+    validateUint32(parsed.retry, "retry");
+    validateUint32(parsed.expire, "expire");
+    validateUint32(parsed.minimum, "minimum");
+
+    if (parsed.serial !== undefined) {
+      const serialStr = String(parsed.serial);
+      if (!/^\d{10}$/.test(serialStr)) {
+        pushUnique(
+          fieldIssues.serial,
+          "Serial should commonly be YYYYMMDDnn (10 digits).",
+        );
+      } else {
+        const year = Number(serialStr.slice(0, 4));
+        const month = Number(serialStr.slice(4, 6));
+        const day = Number(serialStr.slice(6, 8));
+        const nn = Number(serialStr.slice(8, 10));
+        const daysInMonth = (y: number, m: number) =>
+          new Date(y, m, 0).getDate();
+        if (year < 1970 || year > 2100)
+          pushUnique(fieldIssues.serial, "Serial year looks out of range.");
+        if (month < 1 || month > 12)
+          pushUnique(fieldIssues.serial, "Serial month must be 01–12.");
+        else {
+          const maxDay = daysInMonth(year, month);
+          if (day < 1 || day > maxDay)
+            pushUnique(fieldIssues.serial, `Serial day must be 01–${maxDay}.`);
+        }
+        if (nn < 0 || nn > 99)
+          pushUnique(fieldIssues.serial, "Serial nn must be 00–99.");
+      }
+    }
+
+    const validateSecondsRange = (
+      value: number | undefined,
+      label: "refresh" | "retry" | "expire" | "minimum",
+      min: number,
+      max: number,
+    ) => {
+      if (value === undefined) return;
+      if (value > 0 && (value < min || value > max)) {
+        pushUnique(
+          fieldIssues[label],
+          `${label} is unusual; common range is ${min}–${max} seconds.`,
+        );
+      }
+      if (value === 0) {
+        pushUnique(fieldIssues[label], `${label} of 0 is unusual.`);
+      }
+    };
+
+    validateSecondsRange(parsed.refresh, "refresh", 900, 86400);
+    validateSecondsRange(parsed.retry, "retry", 300, 86400);
+    validateSecondsRange(parsed.expire, "expire", 604800, 2419200);
+    validateSecondsRange(parsed.minimum, "minimum", 60, 86400);
+
+    if (
+      parsed.refresh !== undefined &&
+      parsed.retry !== undefined &&
+      parsed.refresh > 0 &&
+      parsed.retry > 0 &&
+      parsed.retry >= parsed.refresh
+    ) {
+      pushUnique(fieldIssues.retry, "retry is usually less than refresh.");
+    }
+
+    if (
+      parsed.expire !== undefined &&
+      parsed.refresh !== undefined &&
+      parsed.expire > 0 &&
+      parsed.refresh > 0 &&
+      parsed.expire <= parsed.refresh
+    ) {
+      pushUnique(fieldIssues.expire, "expire is usually much greater than refresh.");
+    }
+
+    for (const msgs of Object.values(fieldIssues)) {
+      for (const msg of msgs) pushUnique(issues, `SOA: ${msg}`);
+    }
+
+    return { issues, fieldIssues };
+  }, [record.type, record.content, record.name]);
+
+  const uriValidation = useMemo(() => {
+    if (record.type !== "URI") {
+      return {
+        issues: [] as string[],
+        fieldIssues: {} as Record<"priority" | "weight" | "target", string[]>,
+      };
+    }
+
+    const issues: string[] = [];
+    const fieldIssues: Record<"priority" | "weight" | "target", string[]> = {
+      priority: [],
+      weight: [],
+      target: [],
+    };
+
+    const pushUnique = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const parsed = parseURIContent(record.content);
+
+    const validateU16 = (value: number | undefined, label: "priority" | "weight") => {
+      if (value === undefined) {
+        pushUnique(fieldIssues[label], `${label} is required.`);
+        return;
+      }
+      if (!Number.isFinite(value)) {
+        pushUnique(fieldIssues[label], `${label} must be a number.`);
+        return;
+      }
+      if (value < 0 || value > 65535)
+        pushUnique(fieldIssues[label], `${label} must be between 0 and 65535.`);
+    };
+
+    validateU16(parsed.priority, "priority");
+    validateU16(parsed.weight, "weight");
+
+    const target = (parsed.target ?? "").trim();
+    if (!target) {
+      pushUnique(fieldIssues.target, "target is required.");
+    } else {
+      if (/\s/.test(target))
+        pushUnique(fieldIssues.target, "URI should not contain spaces (use %20).");
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target))
+        pushUnique(fieldIssues.target, "URI should include a scheme (e.g., https:, sip:, mailto:).");
+      try {
+        // URL accepts many schemes; this is a sanity check only.
+        // eslint-disable-next-line no-new
+        new URL(target);
+      } catch {
+        pushUnique(fieldIssues.target, "target does not parse as a valid URI.");
+      }
+      if (target.length > 2048)
+        pushUnique(fieldIssues.target, "target is very long; some resolvers may reject it.");
+    }
+
+    for (const msgs of Object.values(fieldIssues)) {
+      for (const msg of msgs) pushUnique(issues, `URI: ${msg}`);
+    }
+
+    return { issues, fieldIssues };
+  }, [record.type, record.content]);
+
   const validationWarnings = useMemo(() => {
     const warnings: string[] = [];
+    const pushUnique = (msg: string) => {
+      if (!warnings.includes(msg)) warnings.push(msg);
+    };
     const type = record.type;
     const name = (record.name ?? "").trim();
     const content = (record.content ?? "").trim();
 
-    if (name && /\s/.test(name)) warnings.push("Name contains whitespace.");
+    if (name && /\s/.test(name)) pushUnique("Name contains whitespace.");
     if (name && name.includes("://"))
-      warnings.push("Name looks like a URL; DNS names should not include a scheme.");
+      pushUnique("Name looks like a URL; DNS names should not include a scheme.");
     if (name && name.startsWith("."))
-      warnings.push("Name starts with '.', which is unusual for DNS records.");
+      pushUnique("Name starts with '.', which is unusual for DNS records.");
 
     if (!type) return warnings;
     if (!content && type !== "MX") return warnings;
@@ -770,11 +1094,11 @@ export function AddRecordDialog({
     switch (type) {
       case "A":
         if (content && !isValidIPv4(content))
-          warnings.push("A record content does not look like a valid IPv4 address.");
+          pushUnique("A record content does not look like a valid IPv4 address.");
         break;
       case "AAAA":
         if (content && !isValidIPv6(content))
-          warnings.push(
+          pushUnique(
             "AAAA record content does not look like a valid IPv6 address.",
           );
         break;
@@ -782,38 +1106,38 @@ export function AddRecordDialog({
       case "NS":
       case "PTR":
         if (content && !looksLikeHostname(content))
-          warnings.push(`${type} content does not look like a hostname.`);
+          pushUnique(`${type} content does not look like a hostname.`);
         break;
       case "MX": {
         if (content && !looksLikeHostname(content))
-          warnings.push("MX content does not look like a hostname.");
+          pushUnique("MX content does not look like a hostname.");
         const pr = record.priority;
         if (pr === undefined || pr === null || Number.isNaN(Number(pr))) {
-          warnings.push("MX priority is missing.");
+          pushUnique("MX priority is missing.");
         } else if (Number(pr) < 0 || Number(pr) > 65535) {
-          warnings.push("MX priority should be between 0 and 65535.");
+          pushUnique("MX priority should be between 0 and 65535.");
         }
         break;
       }
       case "TXT":
         if (content.includes("\n"))
-          warnings.push("TXT content contains newlines (often rejected by DNS providers).");
+          pushUnique("TXT content contains newlines (often rejected by DNS providers).");
         if (content.length > 255)
-          warnings.push(
+          pushUnique(
             "TXT content is longer than 255 characters (may need quoting/splitting).",
           );
         if (effectiveTxtMode === "spf") {
           const v = validateSPF(content);
           if (!v.ok)
-            warnings.push(`SPF validation issues: ${v.problems.join(", ")}`);
+            pushUnique(`SPF validation issues: ${v.problems.join(", ")}`);
         } else if (effectiveTxtMode === "dkim") {
           const v = validateDKIM(content);
           if (!v.ok)
-            warnings.push(`DKIM validation issues: ${v.problems.join(", ")}`);
+            pushUnique(`DKIM validation issues: ${v.problems.join(", ")}`);
         } else if (effectiveTxtMode === "dmarc") {
           const v = validateDMARC(content);
           if (!v.ok)
-            warnings.push(`DMARC validation issues: ${v.problems.join(", ")}`);
+            pushUnique(`DMARC validation issues: ${v.problems.join(", ")}`);
         }
         break;
       case "SRV": {
@@ -822,18 +1146,18 @@ export function AddRecordDialog({
           parsed.priority !== undefined &&
           (parsed.priority < 0 || parsed.priority > 65535)
         )
-          warnings.push("SRV priority should be between 0 and 65535.");
+          pushUnique("SRV priority should be between 0 and 65535.");
         if (
           parsed.weight !== undefined &&
           (parsed.weight < 0 || parsed.weight > 65535)
         )
-          warnings.push("SRV weight should be between 0 and 65535.");
+          pushUnique("SRV weight should be between 0 and 65535.");
         if (parsed.port !== undefined && (parsed.port < 0 || parsed.port > 65535))
-          warnings.push("SRV port should be between 0 and 65535.");
+          pushUnique("SRV port should be between 0 and 65535.");
         if (parsed.target && !looksLikeHostname(parsed.target))
-          warnings.push("SRV target does not look like a hostname.");
+          pushUnique("SRV target does not look like a hostname.");
         if (name && !name.startsWith("_"))
-          warnings.push("SRV name usually starts with _service._proto.");
+          pushUnique("SRV name usually starts with _service._proto.");
         break;
       }
       case "TLSA": {
@@ -842,19 +1166,19 @@ export function AddRecordDialog({
           parsed.usage !== undefined &&
           ![0, 1, 2, 3].includes(Number(parsed.usage))
         )
-          warnings.push("TLSA usage is usually 0–3.");
+          pushUnique("TLSA usage is usually 0–3.");
         if (
           parsed.selector !== undefined &&
           ![0, 1].includes(Number(parsed.selector))
         )
-          warnings.push("TLSA selector is usually 0–1.");
+          pushUnique("TLSA selector is usually 0–1.");
         if (
           parsed.matchingType !== undefined &&
           ![0, 1, 2].includes(Number(parsed.matchingType))
         )
-          warnings.push("TLSA matching type is usually 0–2.");
+          pushUnique("TLSA matching type is usually 0–2.");
         if (parsed.data && (!isHex(parsed.data) || parsed.data.length % 2 !== 0))
-          warnings.push("TLSA data should be even-length hex.");
+          pushUnique("TLSA data should be even-length hex.");
         break;
       }
       case "SSHFP": {
@@ -863,14 +1187,14 @@ export function AddRecordDialog({
           parsed.algorithm !== undefined &&
           ![1, 2, 3, 4].includes(Number(parsed.algorithm))
         )
-          warnings.push("SSHFP algorithm is usually 1–4.");
+          pushUnique("SSHFP algorithm is usually 1–4.");
         if (
           parsed.fptype !== undefined &&
           ![1, 2].includes(Number(parsed.fptype))
         )
-          warnings.push("SSHFP fptype is usually 1–2.");
+          pushUnique("SSHFP fptype is usually 1–2.");
         if (parsed.fingerprint && !isHex(parsed.fingerprint))
-          warnings.push("SSHFP fingerprint should be hex.");
+          pushUnique("SSHFP fingerprint should be hex.");
         break;
       }
       case "NAPTR": {
@@ -879,63 +1203,27 @@ export function AddRecordDialog({
           parsed.order !== undefined &&
           (parsed.order < 0 || parsed.order > 65535)
         )
-          warnings.push("NAPTR order should be between 0 and 65535.");
+          pushUnique("NAPTR order should be between 0 and 65535.");
         if (
           parsed.preference !== undefined &&
           (parsed.preference < 0 || parsed.preference > 65535)
         )
-          warnings.push("NAPTR preference should be between 0 and 65535.");
+          pushUnique("NAPTR preference should be between 0 and 65535.");
         if (parsed.replacement && !looksLikeHostname(parsed.replacement) && parsed.replacement !== ".")
-          warnings.push("NAPTR replacement does not look like a hostname.");
+          pushUnique("NAPTR replacement does not look like a hostname.");
         break;
       }
       case "SOA": {
-        const parsed = parseSOAContent(record.content);
-        if (parsed.fieldCount !== 7) {
-          warnings.push(
-            "SOA content should have 7 fields: mname rname serial refresh retry expire minimum.",
-          );
-        }
-        if (parsed.mname && !looksLikeHostname(parsed.mname))
-          warnings.push("SOA mname does not look like a hostname.");
-        if (parsed.rname && !looksLikeHostname(parsed.rname))
-          warnings.push(
-            "SOA rname does not look like a hostname (it represents an email address).",
-          );
-        if (parsed.rname && parsed.rname.includes("@"))
-          warnings.push("SOA rname should not contain @ (use DNS-name form).");
-        if (parsed.serial === undefined) {
-          warnings.push("SOA serial is missing or not a number.");
-        } else {
-          const s = String(parsed.serial);
-          if (s.length < 8)
-            warnings.push("SOA serial looks short; common format is YYYYMMDDnn.");
-        }
-        const positive = (label: string, n: number | undefined) => {
-          if (n === undefined) return;
-          if (n <= 0) warnings.push(`SOA ${label} should be > 0.`);
-        };
-        positive("refresh", parsed.refresh);
-        positive("retry", parsed.retry);
-        positive("expire", parsed.expire);
-        positive("minimum", parsed.minimum);
-        if (
-          parsed.refresh !== undefined &&
-          parsed.retry !== undefined &&
-          parsed.retry >= parsed.refresh
-        )
-          warnings.push("SOA retry is usually less than refresh.");
-        if (
-          parsed.expire !== undefined &&
-          parsed.refresh !== undefined &&
-          parsed.expire <= parsed.refresh
-        )
-          warnings.push("SOA expire is usually much greater than refresh.");
+        for (const msg of soaValidation.issues) pushUnique(msg);
+        break;
+      }
+      case "URI": {
+        for (const msg of uriValidation.issues) pushUnique(msg);
         break;
       }
       case "SPF": {
         const v = validateSPF(record.content);
-        if (!v.ok) warnings.push(`SPF validation issues: ${v.problems.join(", ")}`);
+        if (!v.ok) pushUnique(`SPF validation issues: ${v.problems.join(", ")}`);
         break;
       }
     }
@@ -949,6 +1237,8 @@ export function AddRecordDialog({
     effectiveTxtMode,
     validateDKIM,
     validateDMARC,
+    soaValidation.issues,
+    uriValidation.issues,
   ]);
 
   useEffect(() => {
@@ -978,6 +1268,17 @@ export function AddRecordDialog({
       proxied: draft.proxied ?? false,
     };
     return JSON.stringify(normalized);
+  }, []);
+
+  const createEmptyDraft = useCallback((): Partial<DNSRecord> => {
+    return {
+      type: "A",
+      name: "",
+      content: "",
+      ttl: 300,
+      proxied: false,
+      priority: undefined,
+    };
   }, []);
 
   useEffect(() => {
@@ -1045,9 +1346,7 @@ export function AddRecordDialog({
                   onClick={() => {
                     setShowDiscardConfirm(false);
                     setConfirmInvalid(false);
-                    if (openSnapshotRef.current) {
-                      onRecordChange(openSnapshotRef.current);
-                    }
+                    onRecordChange(createEmptyDraft());
                     onOpenChange(false);
                   }}
                 >
@@ -1883,6 +2182,146 @@ export function AddRecordDialog({
                       />
                     </div>
                   );
+                case "URI":
+                  return (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Priority</Label>
+                          <Input
+                            type="number"
+                            value={uriPriority ?? ""}
+                            placeholder="10"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setUriPriority(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeURI({
+                                  priority: val,
+                                  weight: uriWeight,
+                                  target: uriTarget,
+                                }),
+                              });
+                            }}
+                          />
+                          {uriValidation.fieldIssues.priority.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {uriValidation.fieldIssues.priority.join(" ")}
+                            </div>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Weight</Label>
+                          <Input
+                            type="number"
+                            value={uriWeight ?? ""}
+                            placeholder="1"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setUriWeight(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeURI({
+                                  priority: uriPriority,
+                                  weight: val,
+                                  target: uriTarget,
+                                }),
+                              });
+                            }}
+                          />
+                          {uriValidation.fieldIssues.weight.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {uriValidation.fieldIssues.weight.join(" ")}
+                            </div>
+                          )}
+                        </div>
+                        <div className="space-y-1 sm:col-span-2">
+                          <Label className="text-xs">Target URI</Label>
+                          <Input
+                            value={uriTarget}
+                            placeholder="https://example.com/path"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const v = e.target.value;
+                              setUriTarget(v);
+                              onRecordChange({
+                                ...record,
+                                content: composeURI({
+                                  priority: uriPriority,
+                                  weight: uriWeight,
+                                  target: v,
+                                }),
+                              });
+                            }}
+                          />
+                          {uriValidation.fieldIssues.target.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {uriValidation.fieldIssues.target.join(" ")}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                        <div className="text-xs font-semibold text-muted-foreground">
+                          Preview (content)
+                        </div>
+                        <pre className="mt-1 whitespace-pre-wrap text-xs">
+                          {composeURI({
+                            priority: uriPriority,
+                            weight: uriWeight,
+                            target: uriTarget,
+                          })}
+                        </pre>
+                        <div className="mt-2 flex flex-wrap justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setUriPriority(10);
+                              setUriWeight(1);
+                              setUriTarget("https://example.com/");
+                              onRecordChange({
+                                ...record,
+                                content: composeURI({
+                                  priority: 10,
+                                  weight: 1,
+                                  target: "https://example.com/",
+                                }),
+                              });
+                            }}
+                          >
+                            Example https
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setUriPriority(10);
+                              setUriWeight(1);
+                              setUriTarget("mailto:admin@example.com");
+                              onRecordChange({
+                                ...record,
+                                content: composeURI({
+                                  priority: 10,
+                                  weight: 1,
+                                  target: "mailto:admin@example.com",
+                                }),
+                              });
+                            }}
+                          >
+                            Example mailto
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Lower priority wins; weight is used for load balancing among
+                        same-priority records. Target should be an absolute URI.
+                      </div>
+                    </div>
+                  );
                 case "SOA":
                   return (
                     <div className="space-y-3">
@@ -1909,6 +2348,11 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          {soaValidation.fieldIssues.mname.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.mname.join(" ")}
+                            </div>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <Label className="text-xs">Admin email (rname)</Label>
@@ -1936,6 +2380,11 @@ export function AddRecordDialog({
                             You can paste an email; it will be converted to DNS-name
                             form (replace <code>@</code> with a dot).
                           </div>
+                          {soaValidation.fieldIssues.rname.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.rname.join(" ")}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -2014,6 +2463,11 @@ export function AddRecordDialog({
                               +1
                             </Button>
                           </div>
+                          {soaValidation.fieldIssues.serial.length > 0 && (
+                            <div className="mt-1 text-xs text-red-600">
+                              {soaValidation.fieldIssues.serial.join(" ")}
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-1">
@@ -2040,6 +2494,11 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          {soaValidation.fieldIssues.refresh.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.refresh.join(" ")}
+                            </div>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <Label className="text-xs">Retry</Label>
@@ -2065,6 +2524,11 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          {soaValidation.fieldIssues.retry.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.retry.join(" ")}
+                            </div>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <Label className="text-xs">Expire</Label>
@@ -2090,6 +2554,11 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          {soaValidation.fieldIssues.expire.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.expire.join(" ")}
+                            </div>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <Label className="text-xs">Minimum</Label>
@@ -2115,6 +2584,11 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          {soaValidation.fieldIssues.minimum.length > 0 && (
+                            <div className="text-xs text-red-600">
+                              {soaValidation.fieldIssues.minimum.join(" ")}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -2406,14 +2880,13 @@ export function AddRecordDialog({
               <div className="text-sm font-semibold">
                 Potential validation issues
               </div>
-              <ul className="mt-1 list-disc pl-5 text-xs text-foreground/85">
-                {validationWarnings.slice(0, 5).map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-                {validationWarnings.length > 5 && (
-                  <li>…and {validationWarnings.length - 5} more</li>
-                )}
-              </ul>
+              <div className="mt-2 max-h-44 overflow-auto pr-2">
+                <ul className="list-disc pl-5 text-xs text-foreground/85">
+                  {validationWarnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              </div>
               <div className="mt-2 text-xs text-muted-foreground">
                 You can still create the record, but it may be rejected or behave
                 unexpectedly.
