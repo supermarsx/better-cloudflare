@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tag } from "@/components/ui/tag";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import {
@@ -794,9 +795,10 @@ export function RecordRow({
 
   return (
     <div
-      className="group min-h-[112px] rounded-xl border border-border/60 bg-card/60 p-6 shadow-[0_10px_24px_rgba(0,0,0,0.12)] transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+      className="ui-table-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       role="button"
       tabIndex={0}
+      data-selected={isSelected}
       onClick={() => onEdit()}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
@@ -804,121 +806,116 @@ export function RecordRow({
         }
       }}
     >
-      <div className="flex flex-wrap items-start justify-between gap-6">
-        <div className="flex min-w-0 flex-1 items-start gap-4">
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={(event) => onSelectChange?.(event.target.checked)}
-            onClick={(event) => event.stopPropagation()}
-            className="checkbox-themed mt-1"
-            aria-label="Select record"
+      <div className="flex items-center justify-center">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={(event) => onSelectChange?.(event.target.checked)}
+          onClick={(event) => event.stopPropagation()}
+          className="checkbox-themed"
+          aria-label="Select record"
+        />
+      </div>
+
+      <div className="min-w-0">
+        <Tag title={getRecordTypeLabel(record.type as RecordType)}>
+          {record.type}
+        </Tag>
+      </div>
+
+      <div
+        className="min-w-0 truncate font-mono text-sm"
+        title={record.name}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (record.name.length > MAX_PREVIEW_CHARS) {
+            setExpandedName((prev) => !prev);
+          }
+        }}
+        role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+        tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
+      >
+        {truncate(record.name)}
+      </div>
+
+      <div
+        className="min-w-0 truncate text-xs text-muted-foreground"
+        title={record.content}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (record.content.length > MAX_PREVIEW_CHARS) {
+            setExpandedContent((prev) => !prev);
+          }
+        }}
+        role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+        tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
+      >
+        {truncate(record.content)}
+      </div>
+
+      <div className="text-xs text-muted-foreground whitespace-nowrap">
+        TTL {record.ttl === 1 ? "Auto" : record.ttl}
+        {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
+      </div>
+
+      <div
+        className="flex items-center gap-2"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {record.proxied ? (
+          <Tag variant="primary">Proxied</Tag>
+        ) : (
+          <span className="text-xs text-muted-foreground/80">—</span>
+        )}
+        {(record.type === "A" ||
+          record.type === "AAAA" ||
+          record.type === "CNAME") && (
+          <Switch
+            checked={record.proxied || false}
+            onCheckedChange={(checked: boolean) => {
+              onToggleProxy?.(checked);
+            }}
           />
-          <span
-            title={getRecordTypeLabel(record.type as RecordType)}
-            className="inline-flex items-center rounded-md border border-border/50 bg-muted/40 px-2.5 py-1.5 text-xs font-semibold text-foreground/80"
-          >
-            {record.type}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div
-              className="truncate font-mono text-sm"
-              title={record.name}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (record.name.length > MAX_PREVIEW_CHARS) {
-                  setExpandedName((prev) => !prev);
-                }
-              }}
-              role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-              tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
-            >
-              {truncate(record.name)}
-            </div>
-            <div
-              className="truncate text-xs text-muted-foreground"
-              title={record.content}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (record.content.length > MAX_PREVIEW_CHARS) {
-                  setExpandedContent((prev) => !prev);
-                }
-              }}
-              role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-              tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
-            >
-              {truncate(record.content)}
-            </div>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <span className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-muted-foreground">
-            TTL {record.ttl === 1 ? "Auto" : record.ttl}
-          </span>
-          {typeof record.priority === "number" && (
-            <span className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-muted-foreground">
-              Priority {record.priority}
-            </span>
-          )}
-          {record.proxied && (
-            <span className="rounded-full border border-primary/40 bg-primary/15 px-2.5 py-1 text-[10px] uppercase tracking-widest text-primary-foreground shadow-[0_0_10px_rgba(255,120,80,0.25)]">
-              Proxied
-            </span>
-          )}
-          {(record.type === "A" ||
-            record.type === "AAAA" ||
-            record.type === "CNAME") && (
-            <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-2 py-1">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                Proxy
-              </span>
-              <Switch
-                checked={record.proxied || false}
-                onCheckedChange={(checked: boolean) => {
-                  onToggleProxy?.(checked);
-                }}
-              />
-            </div>
-          )}
-          <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={(event) => {
-                event.stopPropagation();
-                onCopy?.();
-              }}
-              className="h-8 w-8 p-0"
-            >
-              <Copy className="h-3 w-3" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={(event) => {
-                event.stopPropagation();
-                onEdit();
-              }}
-              className="h-8 w-8 p-0"
-            >
-              <Edit2 className="h-3 w-3" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={(event) => {
-                event.stopPropagation();
-                onDelete();
-              }}
-              className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-            >
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </div>
-        </div>
+        )}
+      </div>
+
+      <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCopy?.();
+          }}
+          className="h-7 w-7 p-0"
+        >
+          <Copy className="h-3 w-3" />
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+          className="h-7 w-7 p-0"
+        >
+          <Edit2 className="h-3 w-3" />
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+        >
+          <Trash2 className="h-3 w-3" />
+        </Button>
       </div>
       {(expandedName || expandedContent) && (
-        <div className="mt-4 space-y-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-xs text-foreground/80">
+        <div className="col-span-full mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-foreground/80 glass-fade">
           {expandedName && (
             <div className="break-all">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">

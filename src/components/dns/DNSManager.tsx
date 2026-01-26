@@ -43,6 +43,7 @@ import { RecordRow } from "./RecordRow";
 import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 
 type ActionTab = "records" | "import" | "zone-settings";
@@ -1198,11 +1199,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           setDragTabId(null);
                           setDragOverId(null);
                         }}
-                        className={`group flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition cursor-grab ${
-                          isActive
-                            ? "border-primary/40 bg-primary/15 text-foreground shadow-[0_0_18px_rgba(0,0,0,0.15)]"
-                            : "border-border/60 bg-card/50 text-muted-foreground hover:border-primary/30 hover:text-foreground"
-                        } ${dragOverId === tab.id ? "ring-1 ring-primary/30" : ""}`}
+                        data-active={isActive}
+                        className={cn(
+                          "ui-tab cursor-grab",
+                          dragOverId === tab.id && "ring-1 ring-primary/30",
+                        )}
                       >
                         <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         <span className="max-w-[140px] truncate">
@@ -1246,16 +1247,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div className="flex flex-wrap items-center gap-2" />
               </div>
               {activeTab.kind === "zone" && (
-                <div className="flex flex-wrap gap-2 rounded-xl border border-border/60 bg-muted/40 p-1 fade-in">
+                <div className="glass-surface glass-fade ui-segment-group fade-in">
                   {ACTION_TABS.map((tab) => (
                     <button
                       key={tab.id}
                       onClick={() => setActionTab(tab.id)}
-                        className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-medium transition ${
-                          actionTab === tab.id
-                            ? "bg-primary/15 text-foreground shadow-[0_0_12px_rgba(0,0,0,0.15)]"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
+                      data-active={actionTab === tab.id}
+                      className="ui-segment"
                     >
                       {tab.label}
                     </button>
@@ -1467,7 +1465,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {t("No DNS records found", "No DNS records found")}
                     </div>
                   ) : (
-                    <div className="space-y-4">
+                    <div className="glass-surface glass-fade ui-table rounded-xl">
+                      <div className="ui-table-head">
+                        <span />
+                        <span>Type</span>
+                        <span>Name</span>
+                        <span>Content</span>
+                        <span>TTL</span>
+                        <span>Proxy</span>
+                        <span className="text-right">Actions</span>
+                      </div>
                       {filteredRecords.map((record) => {
                         const isSelected = activeTab.selectedIds.includes(
                           record.id,
