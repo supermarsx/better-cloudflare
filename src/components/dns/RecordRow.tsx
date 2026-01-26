@@ -794,7 +794,7 @@ export function RecordRow({
 
   return (
     <div
-      className="group min-h-[96px] rounded-2xl border border-border/60 bg-card/60 p-5 shadow-[0_10px_24px_rgba(0,0,0,0.12)] transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+      className="group min-h-[112px] rounded-xl border border-border/60 bg-card/60 p-6 shadow-[0_10px_24px_rgba(0,0,0,0.12)] transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
       role="button"
       tabIndex={0}
       onClick={() => onEdit()}
@@ -804,8 +804,8 @@ export function RecordRow({
         }
       }}
     >
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-6">
+        <div className="flex min-w-0 flex-1 items-start gap-4">
           <input
             type="checkbox"
             checked={isSelected}
@@ -816,13 +816,17 @@ export function RecordRow({
           />
           <span
             title={getRecordTypeLabel(record.type as RecordType)}
-            className="inline-flex items-center rounded-md border border-border/50 bg-muted/40 px-2 py-1 text-xs font-semibold text-foreground/80"
+            className="inline-flex items-center rounded-md border border-border/50 bg-muted/40 px-2.5 py-1.5 text-xs font-semibold text-foreground/80"
           >
             {record.type}
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div
-              className={`font-mono text-sm ${expandedName ? "break-all" : "truncate"}`}
+              className={`font-mono text-sm ${
+                expandedName
+                  ? "break-all rounded-md border border-border/40 bg-muted/40 px-3 py-2"
+                  : "truncate"
+              }`}
               title={record.name}
               onClick={(event) => {
                 event.stopPropagation();
@@ -836,7 +840,11 @@ export function RecordRow({
               {expandedName ? record.name : truncate(record.name)}
             </div>
             <div
-              className={`text-xs text-muted-foreground ${expandedContent ? "break-all" : "truncate"}`}
+              className={`text-xs text-muted-foreground ${
+                expandedContent
+                  ? "mt-2 break-all rounded-md border border-border/30 bg-muted/30 px-3 py-2"
+                  : "truncate"
+              }`}
               title={record.content}
               onClick={(event) => {
                 event.stopPropagation();
@@ -851,17 +859,17 @@ export function RecordRow({
             </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <span className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-muted-foreground">
             TTL {record.ttl === 1 ? "Auto" : record.ttl}
           </span>
           {typeof record.priority === "number" && (
-            <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-muted-foreground">
+            <span className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-muted-foreground">
               Priority {record.priority}
             </span>
           )}
           {record.proxied && (
-            <span className="rounded-md border border-primary/40 bg-primary/15 px-2 py-1 text-primary-foreground">
+            <span className="rounded-full border border-primary/40 bg-primary/15 px-2.5 py-1 text-[10px] uppercase tracking-widest text-primary-foreground shadow-[0_0_10px_rgba(255,120,80,0.25)]">
               Proxied
             </span>
           )}
