@@ -14,13 +14,14 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-gradient-to-br from-orange-500 via-red-600 to-red-700 text-white border border-orange-400/60 shadow-[0_0_20px_rgba(255,80,0,0.5)] hover:shadow-[0_0_35px_rgba(255,100,0,0.7)] hover:border-orange-300 hover:brightness-110 transition-all duration-300",
+        default:
+          "bg-primary text-primary-foreground border border-primary/70 shadow-[0_10px_22px_rgba(0,0,0,0.18)] hover:brightness-110 hover:shadow-[0_14px_28px_rgba(0,0,0,0.22)] transition-all",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:
-          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+          "border border-border bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "bg-neutral-900 text-neutral-200 border border-neutral-800 hover:bg-neutral-800 hover:text-white shadow-inner hover:shadow-none transition-all",
+          "bg-card/70 text-foreground/85 border border-border hover:bg-accent/70 hover:text-foreground shadow-inner transition-all",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },

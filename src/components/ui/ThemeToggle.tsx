@@ -79,7 +79,7 @@ export function ThemeToggle() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 rounded-full border border-orange-500/20 bg-black/40 text-orange-200/70 hover:text-orange-100 hover:border-orange-400/50 shadow-[0_0_12px_rgba(255,80,0,0.2)] hover:shadow-[0_0_18px_rgba(255,100,0,0.4)] transition-all duration-300"
+          className="h-8 w-8 rounded-full border border-border/70 bg-card/70 text-foreground/70 hover:text-foreground hover:border-primary/40 hover:bg-accent/70 shadow-sm transition-all"
           aria-label="Select theme"
           title={`Theme: ${themeLabels[theme]}`}
         >
@@ -88,15 +88,15 @@ export function ThemeToggle() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="bg-black/90 border border-orange-500/20 text-orange-100 shadow-[0_0_20px_rgba(255,80,0,0.2)]"
+        className="bg-popover/95 border border-border/60 text-foreground shadow-[0_12px_28px_rgba(0,0,0,0.18)]"
       >
         {(Object.keys(themeLabels) as ThemeId[]).map((id) => (
           <DropdownMenuItem
             key={id}
             onClick={() => applyTheme(id)}
-            className="cursor-pointer focus:bg-orange-500/15"
+            className="cursor-pointer focus:bg-accent/70"
           >
-            <span className="mr-2 text-orange-300">{themeIcons[id]}</span>
+            <span className="mr-2 text-primary">{themeIcons[id]}</span>
             {themeLabels[id]}
           </DropdownMenuItem>
         ))}

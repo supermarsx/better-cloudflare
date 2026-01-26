@@ -40,16 +40,10 @@ import { TauriClient } from "@/lib/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
-import { FixedSizeList as List } from "react-window";
 import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-// Wrapper to avoid TS issues with react-window FixedSizeList generic types
-const VirtualList = (props: any) => {
-  const { children, ...rest } = props;
-  return <List {...rest}>{children}</List>;
-};
 
 type ActionTab = "records" | "import" | "zone-settings";
 type TabKind = "zone" | "settings" | "audit";
@@ -174,7 +168,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [actionTab, setActionTab] = useState<ActionTab>("records");
-  const [listHeight, setListHeight] = useState(600);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [globalPerPage, setGlobalPerPage] = useState(50);
@@ -574,16 +567,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setLastOpenTabs(openZoneIds);
   }, [tabs]);
 
-  useEffect(() => {
-    const updateHeight = () => {
-      if (typeof window === "undefined") return;
-      const height = Math.max(420, window.innerHeight - 380);
-      setListHeight(height);
-    };
-    updateHeight();
-    window.addEventListener("resize", updateHeight);
-    return () => window.removeEventListener("resize", updateHeight);
-  }, []);
 
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
@@ -1484,68 +1467,50 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {t("No DNS records found", "No DNS records found")}
                     </div>
                   ) : (
-                    <div className="space-y-2">
-                      <VirtualList
-                        height={Math.min(
-                          listHeight,
-                          filteredRecords.length * 88,
-                        )}
-                        itemCount={filteredRecords.length}
-                        itemSize={88}
-                        width={"100%"}
-                      >
-                        {({
-                          index,
-                          style,
-                        }: {
-                          index: number;
-                          style: React.CSSProperties;
-                        }) => {
-                          const record = filteredRecords[index];
-                          const isSelected = activeTab.selectedIds.includes(
-                            record.id,
-                          );
-                          return (
-                            <div style={style} key={record.id}>
-                              <RecordRow
-                                record={record}
-                                isEditing={activeTab.editingRecord === record.id}
-                                isSelected={isSelected}
-                                onSelectChange={(checked) =>
-                                  updateTab(activeTab.id, (prev) => ({
-                                    ...prev,
-                                    selectedIds: checked
-                                      ? [...prev.selectedIds, record.id]
-                                      : prev.selectedIds.filter(
-                                          (id) => id !== record.id,
-                                        ),
-                                  }))
-                                }
-                                onEdit={() =>
-                                  updateTab(activeTab.id, (prev) => ({
-                                    ...prev,
-                                    editingRecord: record.id,
-                                  }))
-                                }
-                                onSave={(updatedRecord: DNSRecord) =>
-                                  handleUpdateRecord(updatedRecord)
-                                }
-                                onCancel={() =>
-                                  updateTab(activeTab.id, (prev) => ({
-                                    ...prev,
-                                    editingRecord: null,
-                                  }))
-                                }
-                                onDelete={() => handleDeleteRecord(record.id)}
-                                onToggleProxy={(next) =>
-                                  handleToggleProxy(record, next)
-                                }
-                                onCopy={() => handleCopySingle(record)}
-                              />
-                            </div>
-                          );
-                        }}
-                      </VirtualList>
+                    <div className="space-y-4">
+                      {filteredRecords.map((record) => {
+                        const isSelected = activeTab.selectedIds.includes(
+                          record.id,
+                        );
+                        return (
+                          <RecordRow
+                            key={record.id}
+                            record={record}
+                            isEditing={activeTab.editingRecord === record.id}
+                            isSelected={isSelected}
+                            onSelectChange={(checked) =>
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                selectedIds: checked
+                                  ? [...prev.selectedIds, record.id]
+                                  : prev.selectedIds.filter(
+                                      (id) => id !== record.id,
+                                    ),
+                              }))
+                            }
+                            onEdit={() =>
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                editingRecord: record.id,
+                              }))
+                            }
+                            onSave={(updatedRecord: DNSRecord) =>
+                              handleUpdateRecord(updatedRecord)
+                            }
+                            onCancel={() =>
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                editingRecord: null,
+                              }))
+                            }
+                            onDelete={() => handleDeleteRecord(record.id)}
+                            onToggleProxy={(next) =>
+                              handleToggleProxy(record, next)
+                            }
+                            onCopy={() => handleCopySingle(record)}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                 </div>

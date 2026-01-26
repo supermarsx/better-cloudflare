@@ -235,7 +235,7 @@ export function RecordRow({
 
   if (isEditing) {
     return (
-      <div className="rounded-xl border border-orange-500/20 bg-black/40 p-4 shadow-[0_12px_30px_rgba(0,0,0,0.25)]">
+      <div className="rounded-xl border border-border/60 bg-card/80 p-4 shadow-[0_12px_30px_rgba(0,0,0,0.18)]">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
@@ -646,7 +646,7 @@ export function RecordRow({
                 />
                 <div className="flex flex-wrap gap-2">
                   <select
-                    className="h-8 rounded-md border border-white/10 bg-black/30 px-2 text-sm"
+                    className="h-8 rounded-md border border-border bg-background px-2 text-sm"
                     value={spfQualifier}
                     onChange={(e) => setSpfQualifier(e.target.value)}
                   >
@@ -656,7 +656,7 @@ export function RecordRow({
                     <option value="?">?</option>
                   </select>
                   <select
-                    className="h-8 rounded-md border border-white/10 bg-black/30 px-2 text-sm"
+                    className="h-8 rounded-md border border-border bg-background px-2 text-sm"
                     value={spfMechanism}
                     onChange={(e) => setSpfMechanism(e.target.value)}
                   >
