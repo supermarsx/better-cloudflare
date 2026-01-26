@@ -851,7 +851,10 @@ export function RecordRow({
       </div>
 
       <div className="min-w-0">
-        <Tag title={getRecordTypeLabel(record.type as RecordType)}>
+        <Tag
+          title={getRecordTypeLabel(record.type as RecordType)}
+          data-record-type={record.type}
+        >
           {record.type}
         </Tag>
       </div>

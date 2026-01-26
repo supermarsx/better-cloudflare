@@ -31,6 +31,18 @@
     --input: 30 20% 90%;
     --ring: 18 85% 44%;
     --radius: 0.5rem;
+
+    /* Record-type accents (tarnished light) */
+    --tone-amber: 32 92% 44%;
+    --tone-tangerine: 24 90% 44%;
+    --tone-coral: 18 85% 44%;
+    --tone-rose: 8 72% 42%;
+    --tone-gold: 40 92% 42%;
+    --tone-ember: 12 78% 40%;
+    --tone-plum: 292 45% 46%;
+    --tone-sand: 34 35% 40%;
+    --tone-crimson: 2 75% 42%;
+    --tone-copper: 22 55% 40%;
   }
 
   :root[data-theme="sunset"] {
@@ -53,6 +65,18 @@
     --border: 15 50% 20%;
     --input: 15 30% 15%;
     --ring: 15 90% 55%;
+
+    /* Record-type accents (sunset) */
+    --tone-amber: 34 92% 58%;
+    --tone-tangerine: 26 92% 56%;
+    --tone-coral: 15 90% 55%;
+    --tone-rose: 6 82% 58%;
+    --tone-gold: 42 94% 58%;
+    --tone-ember: 10 82% 54%;
+    --tone-plum: 292 55% 64%;
+    --tone-sand: 34 30% 72%;
+    --tone-crimson: 2 84% 58%;
+    --tone-copper: 22 62% 56%;
   }
 
   :root[data-theme="oled"] {
@@ -75,6 +99,18 @@
     --border: 0 0% 10%;
     --input: 0 0% 5%;
     --ring: 18 90% 52%;
+
+    /* Record-type accents (OLED) */
+    --tone-amber: 34 92% 60%;
+    --tone-tangerine: 26 92% 58%;
+    --tone-coral: 18 90% 52%;
+    --tone-rose: 6 82% 60%;
+    --tone-gold: 42 94% 60%;
+    --tone-ember: 10 82% 56%;
+    --tone-plum: 292 55% 68%;
+    --tone-sand: 34 25% 78%;
+    --tone-crimson: 2 84% 60%;
+    --tone-copper: 22 62% 58%;
   }
 }
 
@@ -349,6 +385,73 @@
     box-shadow:
       0 14px 32px hsl(0 0% 0% / 0.22),
       0 0 22px hsl(var(--primary) / 0.18);
+  }
+
+  .ui-tag[data-record-type] {
+    --chip: var(--tone-coral);
+    border-color: hsl(var(--chip) / 0.38);
+    background: linear-gradient(
+      135deg,
+      hsl(var(--chip) / 0.22),
+      hsl(var(--chip) / 0.06)
+    );
+    box-shadow:
+      0 12px 26px hsl(0 0% 0% / 0.18),
+      0 0 0 1px hsl(var(--chip) / 0.1),
+      inset 0 1px 0 hsl(0 0% 100% / 0.06);
+  }
+
+  .ui-tag[data-record-type="A"] {
+    --chip: var(--tone-amber);
+  }
+  .ui-tag[data-record-type="AAAA"] {
+    --chip: var(--tone-gold);
+  }
+  .ui-tag[data-record-type="CNAME"] {
+    --chip: var(--tone-coral);
+  }
+  .ui-tag[data-record-type="MX"] {
+    --chip: var(--tone-rose);
+  }
+  .ui-tag[data-record-type="TXT"] {
+    --chip: var(--tone-tangerine);
+  }
+  .ui-tag[data-record-type="SPF"] {
+    --chip: var(--tone-ember);
+  }
+  .ui-tag[data-record-type="SRV"] {
+    --chip: var(--tone-plum);
+  }
+  .ui-tag[data-record-type="NS"] {
+    --chip: var(--tone-sand);
+  }
+  .ui-tag[data-record-type="PTR"] {
+    --chip: var(--tone-copper);
+  }
+  .ui-tag[data-record-type="CAA"] {
+    --chip: var(--tone-amber);
+  }
+  .ui-tag[data-record-type="DS"],
+  .ui-tag[data-record-type="DNSKEY"],
+  .ui-tag[data-record-type="CDNSKEY"] {
+    --chip: var(--tone-plum);
+  }
+  .ui-tag[data-record-type="TLSA"],
+  .ui-tag[data-record-type="SSHFP"],
+  .ui-tag[data-record-type="CERT"] {
+    --chip: var(--tone-crimson);
+  }
+  .ui-tag[data-record-type="NAPTR"],
+  .ui-tag[data-record-type="URI"],
+  .ui-tag[data-record-type="SVCB"],
+  .ui-tag[data-record-type="HTTPS"] {
+    --chip: var(--tone-tangerine);
+  }
+  .ui-tag[data-record-type="SOA"],
+  .ui-tag[data-record-type="DNAME"],
+  .ui-tag[data-record-type="ALIAS"],
+  .ui-tag[data-record-type="ANAME"] {
+    --chip: var(--tone-sand);
   }
 
   .ui-icon-button {
