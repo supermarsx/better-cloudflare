@@ -44,6 +44,7 @@ import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { Tooltip } from "@/components/ui/tooltip";
 
 
 type ActionTab = "records" | "import" | "zone-settings";
@@ -196,6 +197,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   } | null>(null);
 
   const { toast } = useToast();
+  const notifySaved = useCallback(
+    (description: string) => {
+      toast({ title: "Saved", description });
+    },
+    [toast],
+  );
   const {
     getZones,
     getDNSRecords,
@@ -1064,40 +1071,43 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   )}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {isDesktop() && (
-                  <Button
-                    onClick={() => openActionTab("audit")}
-                    variant="outline"
-                    size="icon"
-                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                    aria-label="Audit Log"
-                    title="Audit Log"
-                  >
-                    <Shield className="h-4 w-4" />
-                  </Button>
-                )}
-                <Button
-                  onClick={() => openActionTab("settings")}
-                  variant="outline"
-                  size="icon"
-                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                  aria-label="Settings"
-                  title="Settings"
-                >
-                  <Settings className="h-4 w-4" />
-                </Button>
-                <Button
-                  onClick={handleLogout}
-                  variant="outline"
-                  size="icon"
-                    className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                  aria-label="Logout"
-                  title="Logout"
-                >
-                  <LogOut className="h-4 w-4" />
-                </Button>
-              </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {isDesktop() && (
+                    <Tooltip tip="Audit log" side="bottom">
+                      <Button
+                        onClick={() => openActionTab("audit")}
+                        variant="outline"
+                        size="icon"
+                        className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                        aria-label="Audit log"
+                      >
+                        <Shield className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                  )}
+                  <Tooltip tip="Settings" side="bottom">
+                    <Button
+                      onClick={() => openActionTab("settings")}
+                      variant="outline"
+                      size="icon"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      aria-label="Settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip tip="Logout" side="bottom">
+                    <Button
+                      onClick={handleLogout}
+                      variant="outline"
+                      size="icon"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      aria-label="Logout"
+                    >
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1678,6 +1688,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 perPage: globalPerPage,
                                 page: 1,
                               }));
+                              notifySaved(
+                                `Zone per-page set to inherit (${globalPerPage}).`,
+                              );
                               return;
                             }
                             const value = Number(v);
@@ -1691,6 +1704,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               perPage: value,
                               page: 1,
                             }));
+                            notifySaved(`Zone per-page set to ${value}.`);
                           }}
                         >
                           <SelectTrigger className="w-48">
@@ -1718,12 +1732,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="flex items-center gap-3">
                         <Switch
                           checked={reopenZoneTabs[activeTab.zoneId] !== false}
-                          onCheckedChange={(checked: boolean) =>
+                          onCheckedChange={(checked: boolean) => {
                             setReopenZoneTabs((prev) => ({
                               ...prev,
                               [activeTab.zoneId]: checked,
-                            }))
-                          }
+                            }));
+                            notifySaved(
+                              checked
+                                ? "Zone will reopen on launch."
+                                : "Zone will not reopen on launch.",
+                            );
+                          }}
                         />
                         <div className="text-xs text-muted-foreground">
                           Controls whether this zone restores when tabs reopen.
@@ -1922,9 +1941,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(autoRefreshInterval ?? 0)}
-                            onValueChange={(v) =>
-                              setAutoRefreshInterval(v ? Number(v) : null)
-                            }
+                            onValueChange={(v) => {
+                              const next = v ? Number(v) : 0;
+                              setAutoRefreshInterval(next ? next : null);
+                              notifySaved(
+                                next
+                                  ? `Auto refresh set to ${next / 1000}s.`
+                                  : "Auto refresh off.",
+                              );
+                            }}
                           >
                             <SelectTrigger className="w-44">
                               <SelectValue placeholder="Auto-refresh" />
@@ -1949,7 +1974,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             value={String(globalPerPage)}
                             onValueChange={(v) => {
                               const value = Number(v);
-                              setGlobalPerPage(Number.isNaN(value) ? 50 : value);
+                              const next = Number.isNaN(value) ? 50 : value;
+                              setGlobalPerPage(next);
+                              notifySaved(`Default per-page set to ${next}.`);
                             }}
                           >
                             <SelectTrigger className="w-44">
@@ -1974,9 +2001,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="flex items-center gap-3">
                           <Switch
                             checked={reopenLastTabs}
-                            onCheckedChange={(checked: boolean) =>
-                              setReopenLastTabs(checked)
-                            }
+                            onCheckedChange={(checked: boolean) => {
+                              setReopenLastTabs(checked);
+                              notifySaved(
+                                checked
+                                  ? "Will reopen last tabs on launch."
+                                  : "Will not reopen last tabs on launch.",
+                              );
+                            }}
                           />
                           <div className="text-xs text-muted-foreground">
                             Restore tabs from the last session on launch.

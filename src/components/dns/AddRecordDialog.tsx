@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -315,9 +316,10 @@ export function AddRecordDialog({
                     <SelectItem
                       key={type}
                       value={type}
-                      title={getRecordTypeLabel(type)}
                     >
-                      {getRecordTypeLabel(type)}
+                      <Tooltip tip={getRecordTypeLabel(type)} side="right">
+                        <span>{getRecordTypeLabel(type)}</span>
+                      </Tooltip>
                     </SelectItem>
                   ))}
                 </SelectContent>

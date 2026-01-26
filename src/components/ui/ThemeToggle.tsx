@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Moon, Sun, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,15 +77,16 @@ export function ThemeToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="ui-icon-button h-8 w-8"
-          aria-label="Select theme"
-          title={`Theme: ${themeLabels[theme]}`}
-        >
-          {themeIcons[theme]}
-        </Button>
+        <Tooltip tip={`Theme: ${themeLabels[theme]}`} side="bottom">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ui-icon-button h-8 w-8"
+            aria-label="Select theme"
+          >
+            {themeIcons[theme]}
+          </Button>
+        </Tooltip>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"

@@ -280,9 +280,10 @@ export function RecordRow({
                   <SelectItem
                     key={type}
                     value={type}
-                    title={getRecordTypeLabel(type)}
                   >
-                    {getRecordTypeLabel(type)}
+                    <Tooltip tip={getRecordTypeLabel(type)} side="right">
+                      <span>{getRecordTypeLabel(type)}</span>
+                    </Tooltip>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -833,7 +834,7 @@ export function RecordRow({
       role="button"
       tabIndex={0}
       data-selected={isSelected}
-      onClick={() => onEdit()}
+      onDoubleClick={() => onEdit()}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           onEdit();
@@ -852,43 +853,42 @@ export function RecordRow({
       </div>
 
       <div className="min-w-0">
-        <Tag
-          title={getRecordTypeLabel(record.type as RecordType)}
-          data-record-type={record.type}
+        <Tooltip tip={getRecordTypeLabel(record.type as RecordType)} side="top">
+          <Tag data-record-type={record.type}>{record.type}</Tag>
+        </Tooltip>
+      </div>
+
+      <Tooltip tip={record.name} side="top">
+        <div
+          className="min-w-0 truncate font-mono text-sm"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (record.name.length > MAX_PREVIEW_CHARS) {
+              setExpandedName((prev) => !prev);
+            }
+          }}
+          role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+          tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
         >
-          {record.type}
-        </Tag>
-      </div>
+          {truncate(record.name)}
+        </div>
+      </Tooltip>
 
-      <div
-        className="min-w-0 truncate font-mono text-sm"
-        title={record.name}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (record.name.length > MAX_PREVIEW_CHARS) {
-            setExpandedName((prev) => !prev);
-          }
-        }}
-        role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-        tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
-      >
-        {truncate(record.name)}
-      </div>
-
-      <div
-        className="min-w-0 truncate text-xs text-muted-foreground"
-        title={record.content}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (record.content.length > MAX_PREVIEW_CHARS) {
-            setExpandedContent((prev) => !prev);
-          }
-        }}
-        role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-        tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
-      >
-        {truncate(record.content)}
-      </div>
+      <Tooltip tip={record.content} side="top">
+        <div
+          className="min-w-0 truncate text-xs text-muted-foreground"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (record.content.length > MAX_PREVIEW_CHARS) {
+              setExpandedContent((prev) => !prev);
+            }
+          }}
+          role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
+          tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
+        >
+          {truncate(record.content)}
+        </div>
+      </Tooltip>
 
       <div className="text-xs text-muted-foreground whitespace-nowrap">
         TTL {record.ttl === 1 ? "Auto" : record.ttl}

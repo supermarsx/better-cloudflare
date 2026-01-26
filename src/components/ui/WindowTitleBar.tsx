@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { PointerEvent } from "react";
+import { Tooltip } from "@/components/ui/tooltip";
 
 const TITLEBAR_HEIGHT_PX = 36;
 
@@ -58,33 +59,36 @@ export function WindowTitleBar() {
         Better Cloudflare Console
       </div>
       <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
-        <button
-          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
-          onClick={() => void withWindow("minimize")}
-          type="button"
-          aria-label="Minimize window"
-          title="Minimize"
-        >
-          -
-        </button>
-        <button
-          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
-          onClick={() => void withWindow("toggle-maximize")}
-          type="button"
-          aria-label="Toggle maximize"
-          title="Toggle maximize"
-        >
-          []
-        </button>
-        <button
-          className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-destructive/70 hover:text-destructive-foreground hover:shadow-[0_0_18px_rgba(255,90,50,0.4)] active:scale-[0.98]"
-          onClick={() => void withWindow("close")}
-          type="button"
-          aria-label="Close window"
-          title="Close"
-        >
-          X
-        </button>
+        <Tooltip tip="Minimize" side="bottom">
+          <button
+            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
+            onClick={() => void withWindow("minimize")}
+            type="button"
+            aria-label="Minimize window"
+          >
+            -
+          </button>
+        </Tooltip>
+        <Tooltip tip="Toggle maximize" side="bottom">
+          <button
+            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
+            onClick={() => void withWindow("toggle-maximize")}
+            type="button"
+            aria-label="Toggle maximize"
+          >
+            []
+          </button>
+        </Tooltip>
+        <Tooltip tip="Close" side="bottom">
+          <button
+            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-destructive/70 hover:text-destructive-foreground hover:shadow-[0_0_18px_rgba(255,90,50,0.4)] active:scale-[0.98]"
+            onClick={() => void withWindow("close")}
+            type="button"
+            aria-label="Close window"
+          >
+            X
+          </button>
+        </Tooltip>
       </div>
     </div>
   );
