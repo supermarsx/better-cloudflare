@@ -1247,7 +1247,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div className="flex flex-wrap items-center gap-2" />
               </div>
               {activeTab.kind === "zone" && (
-                <div className="glass-surface glass-fade ui-segment-group fade-in">
+                <div className="glass-surface glass-sheen glass-fade ui-segment-group fade-in">
                   {ACTION_TABS.map((tab) => (
                     <button
                       key={tab.id}
@@ -1465,7 +1465,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {t("No DNS records found", "No DNS records found")}
                     </div>
                   ) : (
-                    <div className="glass-surface glass-fade ui-table rounded-xl">
+                    <div className="glass-surface glass-sheen glass-fade ui-table rounded-xl">
                       <div className="ui-table-head">
                         <span />
                         <span>Type</span>
