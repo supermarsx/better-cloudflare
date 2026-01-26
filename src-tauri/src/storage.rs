@@ -275,6 +275,10 @@ impl Storage {
         }
     }
 
+    pub async fn clear_audit_entries(&self) -> Result<(), StorageError> {
+        self.delete_secret("audit_log").await
+    }
+
     pub async fn add_audit_entry(&self, entry: Value) -> Result<(), StorageError> {
         let mut entries = self.get_audit_entries().await?;
         entries.push(entry);

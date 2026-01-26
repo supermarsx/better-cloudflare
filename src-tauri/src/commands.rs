@@ -701,6 +701,14 @@ pub async fn export_audit_entries(
 }
 
 #[tauri::command]
+pub async fn clear_audit_entries(storage: State<'_, Storage>) -> Result<(), String> {
+    storage
+        .clear_audit_entries()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_preferences(
     storage: State<'_, Storage>,
 ) -> Result<Preferences, String> {

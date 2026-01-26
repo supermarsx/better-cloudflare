@@ -42,6 +42,7 @@ import { RecordRow } from "./RecordRow";
 import { FixedSizeList as List } from "react-window";
 import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 // Wrapper to avoid TS issues with react-window FixedSizeList generic types
 const VirtualList = (props: any) => {
@@ -186,6 +187,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditSearch, setAuditSearch] = useState("");
   const [auditType, setAuditType] = useState("all");
   const [auditResource, setAuditResource] = useState("all");
+  const [auditOrder, setAuditOrder] = useState("newest");
+  const [auditLimit, setAuditLimit] = useState("100");
+  const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -559,6 +563,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return payload.includes(search);
     });
   }, [auditEntries, auditSearch, auditType, auditResource]);
+
+  const orderedAuditEntries = useMemo(() => {
+    const entries = [...filteredAuditEntries];
+    const parseTime = (value: unknown) => {
+      if (typeof value !== "string") return 0;
+      const ts = Date.parse(value);
+      return Number.isNaN(ts) ? 0 : ts;
+    };
+    entries.sort((a, b) => {
+      if (auditOrder === "operation") {
+        return String(a.operation ?? "").localeCompare(String(b.operation ?? ""));
+      }
+      if (auditOrder === "resource") {
+        return String(a.resource ?? "").localeCompare(String(b.resource ?? ""));
+      }
+      const aTime = parseTime(a.timestamp);
+      const bTime = parseTime(b.timestamp);
+      return auditOrder === "oldest" ? aTime - bTime : bTime - aTime;
+    });
+    return entries;
+  }, [filteredAuditEntries, auditOrder]);
+
+  const limitedAuditEntries = useMemo(() => {
+    if (auditLimit === "all") return orderedAuditEntries;
+    const limit = Number(auditLimit);
+    if (Number.isNaN(limit)) return orderedAuditEntries;
+    return orderedAuditEntries.slice(0, limit);
+  }, [orderedAuditEntries, auditLimit]);
   const handleAddRecord = async () => {
     if (!activeTab) return;
     const draft = activeTab.newRecord;
@@ -1169,27 +1201,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <p className="text-xs text-muted-foreground">{actionHint}</p>
                   )}
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {activeTab.kind === "zone" && (
-                    <Select
-                      value={String(autoRefreshInterval ?? 0)}
-                      onValueChange={(v) =>
-                        setAutoRefreshInterval(v ? Number(v) : null)
-                      }
-                    >
-                      <SelectTrigger className="w-36">
-                        <SelectValue placeholder="Auto-refresh" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="0">Off</SelectItem>
-                        <SelectItem value="60000">1 min</SelectItem>
-                        <SelectItem value="300000">5 min</SelectItem>
-                        <SelectItem value="600000">10 min</SelectItem>
-                        <SelectItem value="1800000">30 min</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
+                <div className="flex flex-wrap items-center gap-2" />
               </div>
               {activeTab.kind === "zone" && (
                 <div className="flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/40 p-1 fade-in">
@@ -1681,6 +1693,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </Button>
                         <Button
                           variant="outline"
+                          onClick={() => setShowClearAuditConfirm(true)}
+                          disabled={!isDesktop() || auditEntries.length === 0}
+                        >
+                          Clear logs
+                        </Button>
+                        <Button
+                          variant="outline"
                           onClick={async () => {
                             if (!isDesktop()) return;
                             const data = await TauriClient.exportAuditEntries("json");
@@ -1752,6 +1771,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </SelectContent>
                       </Select>
                     </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_200px]">
+                      <Select value={auditOrder} onValueChange={setAuditOrder}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Order" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="newest">Newest first</SelectItem>
+                          <SelectItem value="oldest">Oldest first</SelectItem>
+                          <SelectItem value="operation">Operation A–Z</SelectItem>
+                          <SelectItem value="resource">Resource A–Z</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select value={auditLimit} onValueChange={setAuditLimit}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Limit" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                          <SelectItem value="250">250</SelectItem>
+                          <SelectItem value="500">500</SelectItem>
+                          <SelectItem value="1000">1000</SelectItem>
+                          <SelectItem value="all">All</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                     {!isDesktop() && (
                       <div className="text-xs text-muted-foreground">
                         Audit log is only available in the desktop app.
@@ -1763,12 +1808,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {auditError && (
                       <div className="text-sm text-destructive">{auditError}</div>
                     )}
-                    {!auditLoading && !auditError && filteredAuditEntries.length === 0 && (
+                    {!auditLoading && !auditError && limitedAuditEntries.length === 0 && (
                       <div className="text-sm text-muted-foreground">
                         No audit entries match the current filters.
                       </div>
                     )}
-                    {!auditLoading && !auditError && filteredAuditEntries.length > 0 && (
+                    {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
                       <div className="overflow-auto rounded-lg border border-white/10">
                         <div className="grid grid-cols-[160px_160px_1fr_80px] gap-3 border-b border-white/10 bg-black/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
                           <div>Timestamp</div>
@@ -1777,31 +1822,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <div>Details</div>
                         </div>
                         <div className="divide-y divide-white/10">
-                          {filteredAuditEntries.map((entry, index) => {
+                          {limitedAuditEntries.map((entry, index) => {
                             const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "unknown";
                             const operation = typeof entry.operation === "string" ? entry.operation : "operation";
                             const resource = typeof entry.resource === "string" ? entry.resource : "resource";
                             return (
-                              <div
-                                key={`${timestamp}-${index}`}
-                                className="grid grid-cols-[160px_160px_1fr_80px] gap-3 px-4 py-3 text-sm"
-                              >
-                                <div className="text-xs text-muted-foreground">
-                                  {timestamp}
-                                </div>
-                                <div className="font-medium">{operation}</div>
-                                <div className="truncate text-muted-foreground">
-                                  {resource}
-                                </div>
-                                <details className="text-xs text-muted-foreground">
-                                  <summary className="cursor-pointer hover:text-orange-200">
+                              <details key={`${timestamp}-${index}`} className="px-4 py-3 text-sm">
+                                <summary className="grid grid-cols-[160px_160px_1fr_80px] gap-3 cursor-pointer list-none">
+                                  <div className="text-xs text-muted-foreground">
+                                    {timestamp}
+                                  </div>
+                                  <div className="font-medium">{operation}</div>
+                                  <div className="truncate text-muted-foreground">
+                                    {resource}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground hover:text-orange-200">
                                     View
-                                  </summary>
-                                  <pre className="mt-2 whitespace-pre-wrap text-xs">
+                                  </div>
+                                </summary>
+                                <div className="mt-3 rounded-md border border-white/10 bg-black/30 p-3 text-xs text-muted-foreground">
+                                  <pre className="whitespace-pre-wrap">
                                     {JSON.stringify(entry, null, 2)}
                                   </pre>
-                                </details>
-                              </div>
+                                </div>
+                              </details>
                             );
                           })}
                         </div>
@@ -1889,6 +1933,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </Card>
         )}
       </div>
+      <Dialog open={showClearAuditConfirm} onOpenChange={setShowClearAuditConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear audit logs</DialogTitle>
+            <DialogDescription>
+              This deletes all audit entries stored on this device. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setShowClearAuditConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1 bg-red-500/80 text-white hover:bg-red-500 hover:text-white shadow-[0_0_18px_rgba(255,80,80,0.25)] hover:shadow-[0_0_26px_rgba(255,90,90,0.45)] transition"
+              onClick={async () => {
+                if (!isDesktop()) return;
+                await TauriClient.clearAuditEntries();
+                setAuditEntries([]);
+                setShowClearAuditConfirm(false);
+              }}
+            >
+              Clear logs
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
