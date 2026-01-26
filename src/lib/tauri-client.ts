@@ -310,4 +310,9 @@ export class TauriClient {
   static async updatePreferences(prefs: unknown): Promise<void> {
     return invoke("update_preferences", { prefs });
   }
+
+  static async updatePreferenceFields(fields: Record<string, unknown>): Promise<void> {
+    const current = await this.getPreferences();
+    return this.updatePreferences({ ...(current as Record<string, unknown>), ...fields });
+  }
 }

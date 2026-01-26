@@ -7,6 +7,8 @@ import { LanguageSelector } from "@/components/ui/LanguageSelector";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { WindowTitleBar } from "@/components/ui/WindowTitleBar";
 import { isDesktop } from "@/lib/environment";
+import i18n from "@/i18n";
+import { TauriClient } from "@/lib/tauri-client";
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -29,6 +31,27 @@ function App() {
 
   useEffect(() => {
     setIsDesktopEnv(isDesktop());
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktop()) return;
+    TauriClient.getPreferences()
+      .then((prefs) => {
+        const pref = prefs as { theme?: string; locale?: string };
+        if (pref.theme && typeof document !== "undefined") {
+          document.documentElement.dataset.theme = pref.theme;
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("theme", pref.theme);
+          }
+        }
+        if (pref.locale) {
+          void i18n.changeLanguage(pref.locale);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("locale", pref.locale);
+          }
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

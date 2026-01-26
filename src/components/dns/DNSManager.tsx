@@ -1739,6 +1739,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="font-medium text-sm">Reopen on launch</div>
                       <div className="flex items-center gap-3">
                         <Switch
+                          className="data-[state=unchecked]:bg-white/10 data-[state=checked]:bg-orange-500/70 data-[state=checked]:shadow-[0_0_12px_rgba(255,120,70,0.35)]"
                           checked={reopenZoneTabs[activeTab.zoneId] !== false}
                           onCheckedChange={(checked: boolean) =>
                             setReopenZoneTabs((prev) => ({
@@ -1995,6 +1996,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="font-medium">Reopen last tabs</div>
                         <div className="flex items-center gap-3">
                           <Switch
+                            className="data-[state=unchecked]:bg-white/10 data-[state=checked]:bg-orange-500/70 data-[state=checked]:shadow-[0_0_12px_rgba(255,120,70,0.35)]"
                             checked={reopenLastTabs}
                             onCheckedChange={(checked: boolean) =>
                               setReopenLastTabs(checked)

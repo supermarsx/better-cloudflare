@@ -15,6 +15,8 @@ pub struct Preferences {
     pub reopen_last_tabs: Option<bool>,
     pub reopen_zone_tabs: Option<HashMap<String, bool>>,
     pub last_open_tabs: Option<Vec<String>>,
+    pub theme: Option<String>,
+    pub locale: Option<String>,
 }
 
 #[derive(Error, Debug)]
@@ -329,6 +331,8 @@ impl Storage {
                 reopen_last_tabs: None,
                 reopen_zone_tabs: None,
                 last_open_tabs: None,
+                theme: None,
+                locale: None,
             }),
             Err(e) => Err(e),
         }

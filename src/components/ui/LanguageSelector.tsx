@@ -15,6 +15,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { Button } from "@/components/ui/button";
+import { isDesktop } from "@/lib/environment";
+import { TauriClient } from "@/lib/tauri-client";
 
 export function LanguageSelector() {
   const { t } = useI18n();
@@ -30,6 +32,9 @@ export function LanguageSelector() {
       storage?.setItem("locale", lng);
     } catch {
       /* ignore */
+    }
+    if (isDesktop()) {
+      void TauriClient.updatePreferenceFields({ locale: lng });
     }
   };
 
