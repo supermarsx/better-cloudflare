@@ -1669,7 +1669,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {t("No DNS records found", "No DNS records found")}
                     </div>
                   ) : (
-                    <div className="glass-surface glass-sheen glass-fade ui-table rounded-xl">
+                    <div className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl">
                       <div className="ui-table-head">
                         <span />
                         <button
