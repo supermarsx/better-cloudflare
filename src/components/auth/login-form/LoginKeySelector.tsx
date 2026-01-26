@@ -39,19 +39,22 @@ export function LoginKeySelector({
   return (
     <>
       <div className="space-y-2">
-        <Label htmlFor="api-key" className={hasKeys ? "text-orange-100/80" : "text-orange-100/40"}>
+        <Label
+          htmlFor="api-key"
+          className={hasKeys ? "text-foreground/80" : "text-muted-foreground/60"}
+        >
           {t("API Key")}
         </Label>
         <Select value={selectedKeyId} onValueChange={onSelectKey} disabled={!hasKeys}>
-          <SelectTrigger className="bg-black/40 border-orange-500/20 focus:ring-orange-500/50 text-orange-50 h-11 disabled:opacity-50 disabled:cursor-not-allowed">
+          <SelectTrigger className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/50 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
             <SelectValue placeholder={t("Select an API key")} />
           </SelectTrigger>
-          <SelectContent className="bg-black/90 border-orange-500/30 text-orange-50">
+          <SelectContent className="bg-popover/95 border border-border text-foreground">
             {apiKeys.map((key) => (
               <SelectItem
                 key={key.id}
                 value={key.id}
-                className="focus:bg-orange-500/20 focus:text-orange-100 cursor-pointer"
+                className="cursor-pointer focus:bg-accent/60 focus:text-foreground hover:bg-accent/40"
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="font-medium">{key.label}</span>
@@ -63,7 +66,10 @@ export function LoginKeySelector({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="password" className={hasKeys ? "text-orange-100/80" : "text-orange-100/40"}>
+        <Label
+          htmlFor="password"
+          className={hasKeys ? "text-foreground/80" : "text-muted-foreground/60"}
+        >
           {t("Password")}
         </Label>
         <div className="relative">
@@ -75,12 +81,12 @@ export function LoginKeySelector({
             placeholder={hasKeys ? t("Enter your password") : t("Add an API key first")}
             onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
             disabled={!hasKeys}
-            className="bg-black/40 border-orange-500/20 focus:border-orange-500/50 focus:ring-orange-500/20 text-orange-50 h-11 pr-10 placeholder:text-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-card/70 border-border text-foreground h-11 pr-10 placeholder:text-muted-foreground/70 transition-colors hover:border-primary/30 focus:border-primary/50 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <button
             type="button"
             onClick={() => setShowPassword((prev) => !prev)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-orange-200/70 transition hover:text-orange-100"
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition hover:bg-accent/60 hover:text-foreground"
             aria-label={showPassword ? t("Hide password") : t("Show password")}
             disabled={!hasKeys}
           >
