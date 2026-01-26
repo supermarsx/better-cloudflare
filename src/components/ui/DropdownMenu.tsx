@@ -95,7 +95,7 @@ const DropdownMenuCheckboxItem = React.forwardRef<
   <DropdownMenuPrimitive.CheckboxItem
     ref={ref}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center text-sm outline-none data-[disabled]:pointer-events-none",
+      "ui-entry relative flex cursor-default select-none items-center pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
       className
     )}
     checked={checked}
@@ -119,7 +119,7 @@ const DropdownMenuRadioItem = React.forwardRef<
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center text-sm outline-none data-[disabled]:pointer-events-none",
+      "ui-entry relative flex cursor-default select-none items-center pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
       className
     )}
     {...props}

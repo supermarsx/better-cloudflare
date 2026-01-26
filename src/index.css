@@ -332,6 +332,16 @@
     opacity: 0.5;
   }
 
+  /* Ensure Tailwind padding utilities can override `.ui-entry` padding even if
+     `.ui-entry` is emitted later in CSS. */
+  .ui-entry.pl-8 {
+    padding-left: 2rem;
+  }
+
+  .ui-entry.pr-2 {
+    padding-right: 0.5rem;
+  }
+
   .ui-tag {
     position: relative;
     display: inline-flex;
