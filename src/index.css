@@ -10,6 +10,7 @@
 
   :root,
   :root[data-theme="light"] {
+    --app-top-inset: 0px;
     /* Tarnished light: warm, faded ivory base with sunset accents. */
     --background: 36 35% 96%;
     --foreground: 24 30% 10%;
@@ -335,11 +336,11 @@
   /* Ensure Tailwind padding utilities can override `.ui-entry` padding even if
      `.ui-entry` is emitted later in CSS. */
   .ui-entry.pl-8 {
-    padding-left: 2rem;
+    padding-left: 2rem !important;
   }
 
   .ui-entry.pr-2 {
-    padding-right: 0.5rem;
+    padding-right: 0.5rem !important;
   }
 
   .ui-tag {
@@ -658,7 +659,7 @@
   .ui-table-head {
     display: grid;
     grid-template-columns:
-      24px 64px minmax(140px, 1.4fr) minmax(180px, 2fr) 96px 110px 92px;
+      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr) 92px 78px 92px;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
     font-size: 0.7rem;
@@ -672,7 +673,7 @@
   .ui-table-row {
     display: grid;
     grid-template-columns:
-      24px 64px minmax(140px, 1.4fr) minmax(180px, 2fr) 96px 110px 92px;
+      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr) 92px 78px 92px;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
     align-items: center;

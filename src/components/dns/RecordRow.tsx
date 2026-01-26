@@ -760,7 +760,7 @@ export function RecordRow({
                 )}
                 <div className="flex flex-wrap gap-2">
                   <select
-                    className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                    className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
                     value={spfQualifier}
                     onChange={(e) => setSpfQualifier(e.target.value)}
                   >
@@ -770,7 +770,7 @@ export function RecordRow({
                     <option value="?">?</option>
                   </select>
                   <select
-                    className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                    className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
                     value={spfMechanism}
                     onChange={(e) => setSpfMechanism(e.target.value)}
                   >
@@ -992,8 +992,9 @@ export function RecordRow({
       </div>
 
       <div
-        className="flex items-center gap-1"
+        className="flex items-center gap-0.5"
         onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
       >
         {record.proxied ? (
           <Tag variant="primary" className="ui-tag-proxied">
@@ -1012,6 +1013,7 @@ export function RecordRow({
               onToggleProxy?.(checked);
             }}
             onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
           />
         )}
       </div>
@@ -1061,7 +1063,7 @@ export function RecordRow({
         </Tooltip>
       </div>
       {(expandedName || expandedContent) && (
-        <div className="col-span-full relative mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-foreground/80 glass-fade">
+        <div className="glass-surface glass-sheen glass-fade col-span-full relative mt-2 space-y-2 rounded-lg px-3 py-2 text-xs text-foreground/80">
           <div
             className="absolute right-2 top-2 flex gap-1"
             onClick={(event) => event.stopPropagation()}

@@ -741,7 +741,7 @@ export function AddRecordDialog({
                       />
                       <div className="flex space-x-2">
                         <select
-                          className="h-8 p-2"
+                          className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
                           value={newSPFQualifier}
                           onChange={(e) => setNewSPFQualifier(e.target.value)}
                         >
@@ -751,7 +751,7 @@ export function AddRecordDialog({
                           <option value="?">?</option>
                         </select>
                         <select
-                          className="h-8 p-2"
+                          className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
                           value={newSPFMechanism}
                           onChange={(e) => setNewSPFMechanism(e.target.value)}
                         >

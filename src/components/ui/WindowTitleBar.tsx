@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { PointerEvent } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 
@@ -31,6 +31,17 @@ async function withWindow(action: WindowAction) {
 export function WindowTitleBar() {
   const [isDragging, setIsDragging] = useState(false);
 
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.style.setProperty(
+      "--app-top-inset",
+      `${TITLEBAR_HEIGHT_PX}px`,
+    );
+    return () => {
+      document.documentElement.style.setProperty("--app-top-inset", "0px");
+    };
+  }, []);
+
   const handleDragStart = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
@@ -47,7 +58,7 @@ export function WindowTitleBar() {
 
   return (
     <div
-      className="titlebar fixed inset-x-0 top-0 z-30 flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
+      className="titlebar fixed inset-x-0 top-0 z-[2147483000] flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
       style={{ height: TITLEBAR_HEIGHT_PX }}
     >
       <div

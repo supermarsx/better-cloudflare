@@ -21,43 +21,68 @@ export function Tooltip({
 }: TooltipProps) {
   const id = React.useId();
   const triggerRef = React.useRef<HTMLSpanElement | null>(null);
+  const tooltipRef = React.useRef<HTMLSpanElement | null>(null);
   const [open, setOpen] = React.useState(false);
-  const [pos, setPos] = React.useState<{ x: number; y: number }>({
-    x: -9999,
-    y: -9999,
+  const [pos, setPos] = React.useState<{ left: number; top: number }>({
+    left: -9999,
+    top: -9999,
   });
 
   const updatePosition = React.useCallback(() => {
     const el = triggerRef.current;
+    const tipEl = tooltipRef.current;
     if (!el) return;
+    if (!tipEl) return;
     const rect = el.getBoundingClientRect();
+    const tipRect = tipEl.getBoundingClientRect();
     const gap = 10;
+    const margin = 10;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
 
-    let x = rect.left + rect.width / 2;
-    let y = rect.top - gap;
+    let left = rect.left + rect.width / 2 - tipRect.width / 2;
+    let top = rect.top - gap - tipRect.height;
 
     if (side === "bottom") {
-      y = rect.bottom + gap;
+      top = rect.bottom + gap;
     } else if (side === "left") {
-      x = rect.left - gap;
-      y = rect.top + rect.height / 2;
+      left = rect.left - gap - tipRect.width;
+      top = rect.top + rect.height / 2 - tipRect.height / 2;
     } else if (side === "right") {
-      x = rect.right + gap;
-      y = rect.top + rect.height / 2;
+      left = rect.right + gap;
+      top = rect.top + rect.height / 2 - tipRect.height / 2;
     }
 
-    setPos({ x, y });
+    left = Math.min(Math.max(left, margin), vw - margin - tipRect.width);
+    top = Math.min(Math.max(top, margin), vh - margin - tipRect.height);
+
+    setPos({ left, top });
   }, [side]);
 
   React.useEffect(() => {
     if (!open) return;
-    updatePosition();
+
+    let cancelled = false;
+    let rafId = 0;
+
+    const tick = () => {
+      if (cancelled) return;
+      updatePosition();
+      rafId = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        updatePosition();
+      });
+    };
+
+    rafId = window.requestAnimationFrame(tick);
 
     const onScroll = () => updatePosition();
     const onResize = () => updatePosition();
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
     return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(rafId);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
     };
@@ -84,13 +109,10 @@ export function Tooltip({
               className="ui-tooltip"
               data-side={side}
               style={{
-                left: `${pos.x}px`,
-                top: `${pos.y}px`,
-                transform:
-                  side === "top" || side === "bottom"
-                    ? "translate(-50%, -100%)"
-                    : "translate(0, -50%)",
+                left: `${pos.left}px`,
+                top: `${pos.top}px`,
               }}
+              ref={tooltipRef}
             >
               {tip}
             </span>,
