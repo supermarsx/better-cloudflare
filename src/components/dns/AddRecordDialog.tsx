@@ -143,6 +143,75 @@ export function AddRecordDialog({
     parseNAPTR(record.content).replacement ?? "",
   );
 
+  const [soaPrimaryNs, setSoaPrimaryNs] = useState<string>("");
+  const [soaAdmin, setSoaAdmin] = useState<string>("");
+  const [soaSerial, setSoaSerial] = useState<number | undefined>(undefined);
+  const [soaRefresh, setSoaRefresh] = useState<number | undefined>(undefined);
+  const [soaRetry, setSoaRetry] = useState<number | undefined>(undefined);
+  const [soaExpire, setSoaExpire] = useState<number | undefined>(undefined);
+  const [soaMinimum, setSoaMinimum] = useState<number | undefined>(undefined);
+
+  function normalizeDnsName(value: string) {
+    return value.trim().replace(/\.$/, "");
+  }
+
+  function parseSOAContent(value: string | undefined) {
+    const raw = (value ?? "")
+      .replace(/[()]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const parts = raw ? raw.split(" ").filter(Boolean) : [];
+    const [mname, rname, serial, refresh, retry, expire, minimum] = parts;
+    const toNum = (v: string | undefined) => {
+      if (!v) return undefined;
+      const n = Number.parseInt(v, 10);
+      return Number.isNaN(n) ? undefined : n;
+    };
+    return {
+      mname: mname ?? "",
+      rname: rname ?? "",
+      serial: toNum(serial),
+      refresh: toNum(refresh),
+      retry: toNum(retry),
+      expire: toNum(expire),
+      minimum: toNum(minimum),
+      fieldCount: parts.length,
+    };
+  }
+
+  function emailToRname(value: string) {
+    const v = value.trim();
+    if (!v) return "";
+    if (v.includes("@")) {
+      const [local, domain] = v.split("@");
+      if (!domain) return normalizeDnsName(v.replace("@", "."));
+      return normalizeDnsName(`${local}.${domain}`);
+    }
+    return normalizeDnsName(v);
+  }
+
+  function composeSOA(fields: {
+    mname: string;
+    rname: string;
+    serial: number | undefined;
+    refresh: number | undefined;
+    retry: number | undefined;
+    expire: number | undefined;
+    minimum: number | undefined;
+  }) {
+    const parts = [
+      normalizeDnsName(fields.mname),
+      normalizeDnsName(fields.rname),
+      fields.serial,
+      fields.refresh,
+      fields.retry,
+      fields.expire,
+      fields.minimum,
+    ].map((p) => String(p ?? "").trim());
+
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  }
+
   useEffect(() => {
     if (record.type === "SRV") {
       const parsed = parseSRV(record.content);
@@ -159,6 +228,29 @@ export function AddRecordDialog({
     srvPort,
     srvTarget,
   ]);
+
+  useEffect(() => {
+    if (record.type !== "SOA") return;
+    const parsed = parseSOAContent(record.content);
+    if (parsed.mname !== soaPrimaryNs) setSoaPrimaryNs(parsed.mname);
+    if (parsed.rname !== soaAdmin) setSoaAdmin(parsed.rname);
+    if (parsed.serial !== soaSerial) setSoaSerial(parsed.serial);
+    if (parsed.refresh !== soaRefresh) setSoaRefresh(parsed.refresh);
+    if (parsed.retry !== soaRetry) setSoaRetry(parsed.retry);
+    if (parsed.expire !== soaExpire) setSoaExpire(parsed.expire);
+    if (parsed.minimum !== soaMinimum) setSoaMinimum(parsed.minimum);
+  }, [
+    record.type,
+    record.content,
+    soaPrimaryNs,
+    soaAdmin,
+    soaSerial,
+    soaRefresh,
+    soaRetry,
+    soaExpire,
+    soaMinimum,
+  ]);
+
   useEffect(() => {
     if (record.type === "TLSA") {
       const parsed = parseTLSA(record.content);
@@ -205,6 +297,43 @@ export function AddRecordDialog({
     naptrRegexp,
     naptrReplacement,
   ]);
+
+  useEffect(() => {
+    if (record.type !== "SOA") return;
+    const content = (record.content ?? "").trim();
+    if (content) return;
+
+    const zn = (zoneName ?? "").trim();
+    const defaultMname = zn ? `ns1.${zn}` : "";
+    const defaultRname = zn ? `hostmaster.${zn}` : "";
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const serial = Number(`${y}${m}${d}01`);
+
+    setSoaPrimaryNs(defaultMname);
+    setSoaAdmin(defaultRname);
+    setSoaSerial(serial);
+    setSoaRefresh(7200);
+    setSoaRetry(3600);
+    setSoaExpire(1209600);
+    setSoaMinimum(3600);
+
+    onRecordChange({
+      ...record,
+      name: record.name?.trim() ? record.name : "@",
+      content: composeSOA({
+        mname: defaultMname,
+        rname: defaultRname,
+        serial,
+        refresh: 7200,
+        retry: 3600,
+        expire: 1209600,
+        minimum: 3600,
+      }),
+    });
+  }, [record.type, record.content, record.name, zoneName, onRecordChange]);
 
   // SPF state and builder
   const parsedSPF = parseSPF(record.content);
@@ -422,6 +551,8 @@ export function AddRecordDialog({
       case "HTTPS":
       case "SVCB":
         return "Service binding record (complex); double-check params.";
+      case "SOA":
+        return "Start of authority: primary NS, admin email (as DNS name), serial, refresh/retry/expire/minimum.";
       case "SPF":
         return "SPF content (v=spf1 ...). Use the helper below if needed.";
       default:
@@ -756,6 +887,50 @@ export function AddRecordDialog({
           warnings.push("NAPTR preference should be between 0 and 65535.");
         if (parsed.replacement && !looksLikeHostname(parsed.replacement) && parsed.replacement !== ".")
           warnings.push("NAPTR replacement does not look like a hostname.");
+        break;
+      }
+      case "SOA": {
+        const parsed = parseSOAContent(record.content);
+        if (parsed.fieldCount !== 7) {
+          warnings.push(
+            "SOA content should have 7 fields: mname rname serial refresh retry expire minimum.",
+          );
+        }
+        if (parsed.mname && !looksLikeHostname(parsed.mname))
+          warnings.push("SOA mname does not look like a hostname.");
+        if (parsed.rname && !looksLikeHostname(parsed.rname))
+          warnings.push(
+            "SOA rname does not look like a hostname (it represents an email address).",
+          );
+        if (parsed.rname && parsed.rname.includes("@"))
+          warnings.push("SOA rname should not contain @ (use DNS-name form).");
+        if (parsed.serial === undefined) {
+          warnings.push("SOA serial is missing or not a number.");
+        } else {
+          const s = String(parsed.serial);
+          if (s.length < 8)
+            warnings.push("SOA serial looks short; common format is YYYYMMDDnn.");
+        }
+        const positive = (label: string, n: number | undefined) => {
+          if (n === undefined) return;
+          if (n <= 0) warnings.push(`SOA ${label} should be > 0.`);
+        };
+        positive("refresh", parsed.refresh);
+        positive("retry", parsed.retry);
+        positive("expire", parsed.expire);
+        positive("minimum", parsed.minimum);
+        if (
+          parsed.refresh !== undefined &&
+          parsed.retry !== undefined &&
+          parsed.retry >= parsed.refresh
+        )
+          warnings.push("SOA retry is usually less than refresh.");
+        if (
+          parsed.expire !== undefined &&
+          parsed.refresh !== undefined &&
+          parsed.expire <= parsed.refresh
+        )
+          warnings.push("SOA expire is usually much greater than refresh.");
         break;
       }
       case "SPF": {
@@ -1706,6 +1881,303 @@ export function AddRecordDialog({
                           });
                         }}
                       />
+                    </div>
+                  );
+                case "SOA":
+                  return (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Primary NS (mname)</Label>
+                          <Input
+                            value={soaPrimaryNs}
+                            placeholder="e.g., ns1.example.com"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const v = e.target.value;
+                              setSoaPrimaryNs(v);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: v,
+                                  rname: emailToRname(soaAdmin),
+                                  serial: soaSerial,
+                                  refresh: soaRefresh,
+                                  retry: soaRetry,
+                                  expire: soaExpire,
+                                  minimum: soaMinimum,
+                                }),
+                              });
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Admin email (rname)</Label>
+                          <Input
+                            value={soaAdmin}
+                            placeholder="e.g., hostmaster@example.com"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const v = e.target.value;
+                              setSoaAdmin(v);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: soaPrimaryNs,
+                                  rname: emailToRname(v),
+                                  serial: soaSerial,
+                                  refresh: soaRefresh,
+                                  retry: soaRetry,
+                                  expire: soaExpire,
+                                  minimum: soaMinimum,
+                                }),
+                              });
+                            }}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            You can paste an email; it will be converted to DNS-name
+                            form (replace <code>@</code> with a dot).
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="space-y-1 sm:col-span-2">
+                          <Label className="text-xs">Serial</Label>
+                          <div className="flex gap-2">
+                            <Input
+                              type="number"
+                              value={soaSerial ?? ""}
+                              placeholder="YYYYMMDDnn (e.g., 2026012601)"
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                const val = Number.isNaN(n) ? undefined : n;
+                                setSoaSerial(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSOA({
+                                    mname: soaPrimaryNs,
+                                    rname: emailToRname(soaAdmin),
+                                    serial: val,
+                                    refresh: soaRefresh,
+                                    retry: soaRetry,
+                                    expire: soaExpire,
+                                    minimum: soaMinimum,
+                                  }),
+                                });
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const now = new Date();
+                                const y = now.getFullYear();
+                                const m = String(now.getMonth() + 1).padStart(2, "0");
+                                const d = String(now.getDate()).padStart(2, "0");
+                                const val = Number(`${y}${m}${d}01`);
+                                setSoaSerial(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSOA({
+                                    mname: soaPrimaryNs,
+                                    rname: emailToRname(soaAdmin),
+                                    serial: val,
+                                    refresh: soaRefresh,
+                                    retry: soaRetry,
+                                    expire: soaExpire,
+                                    minimum: soaMinimum,
+                                  }),
+                                });
+                              }}
+                            >
+                              Today
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const val = (soaSerial ?? 0) + 1;
+                                setSoaSerial(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSOA({
+                                    mname: soaPrimaryNs,
+                                    rname: emailToRname(soaAdmin),
+                                    serial: val,
+                                    refresh: soaRefresh,
+                                    retry: soaRetry,
+                                    expire: soaExpire,
+                                    minimum: soaMinimum,
+                                  }),
+                                });
+                              }}
+                            >
+                              +1
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label className="text-xs">Refresh</Label>
+                          <Input
+                            type="number"
+                            value={soaRefresh ?? ""}
+                            placeholder="7200"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setSoaRefresh(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: soaPrimaryNs,
+                                  rname: emailToRname(soaAdmin),
+                                  serial: soaSerial,
+                                  refresh: val,
+                                  retry: soaRetry,
+                                  expire: soaExpire,
+                                  minimum: soaMinimum,
+                                }),
+                              });
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Retry</Label>
+                          <Input
+                            type="number"
+                            value={soaRetry ?? ""}
+                            placeholder="3600"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setSoaRetry(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: soaPrimaryNs,
+                                  rname: emailToRname(soaAdmin),
+                                  serial: soaSerial,
+                                  refresh: soaRefresh,
+                                  retry: val,
+                                  expire: soaExpire,
+                                  minimum: soaMinimum,
+                                }),
+                              });
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Expire</Label>
+                          <Input
+                            type="number"
+                            value={soaExpire ?? ""}
+                            placeholder="1209600"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setSoaExpire(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: soaPrimaryNs,
+                                  rname: emailToRname(soaAdmin),
+                                  serial: soaSerial,
+                                  refresh: soaRefresh,
+                                  retry: soaRetry,
+                                  expire: val,
+                                  minimum: soaMinimum,
+                                }),
+                              });
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Minimum</Label>
+                          <Input
+                            type="number"
+                            value={soaMinimum ?? ""}
+                            placeholder="3600"
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                              const n = Number.parseInt(e.target.value, 10);
+                              const val = Number.isNaN(n) ? undefined : n;
+                              setSoaMinimum(val);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname: soaPrimaryNs,
+                                  rname: emailToRname(soaAdmin),
+                                  serial: soaSerial,
+                                  refresh: soaRefresh,
+                                  retry: soaRetry,
+                                  expire: soaExpire,
+                                  minimum: val,
+                                }),
+                              });
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                        <div className="text-xs font-semibold text-muted-foreground">
+                          Preview (content)
+                        </div>
+                        <pre className="mt-1 whitespace-pre-wrap text-xs">
+                          {composeSOA({
+                            mname: soaPrimaryNs,
+                            rname: emailToRname(soaAdmin),
+                            serial: soaSerial,
+                            refresh: soaRefresh,
+                            retry: soaRetry,
+                            expire: soaExpire,
+                            minimum: soaMinimum,
+                          })}
+                        </pre>
+                        <div className="mt-2 flex flex-wrap justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              onRecordChange({ ...record, name: "@" })
+                            }
+                          >
+                            Use @ name
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const zn = (zoneName ?? "").trim();
+                              const mname = zn ? `ns1.${zn}` : soaPrimaryNs;
+                              const rname = zn ? `hostmaster.${zn}` : emailToRname(soaAdmin);
+                              setSoaPrimaryNs(mname);
+                              setSoaAdmin(rname);
+                              setSoaRefresh(7200);
+                              setSoaRetry(3600);
+                              setSoaExpire(1209600);
+                              setSoaMinimum(3600);
+                              onRecordChange({
+                                ...record,
+                                content: composeSOA({
+                                  mname,
+                                  rname,
+                                  serial: soaSerial,
+                                  refresh: 7200,
+                                  retry: 3600,
+                                  expire: 1209600,
+                                  minimum: 3600,
+                                }),
+                              });
+                            }}
+                          >
+                            Common defaults
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Many DNS providers manage SOA automatically; changes may be
+                        ignored or rejected. This tool still lets you submit it.
+                      </div>
                     </div>
                   );
                 case "SPF":
