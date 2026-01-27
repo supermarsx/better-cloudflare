@@ -101,6 +101,10 @@ export function AddRecordDialog({
   const [srvTarget, setSrvTarget] = useState<string>(
     parseSRV(record.content).target ?? "",
   );
+  const [srvService, setSrvService] = useState<string>("");
+  const [srvProto, setSrvProto] = useState<"tcp" | "udp" | "tls" | "other">("tcp");
+  const [srvProtoOther, setSrvProtoOther] = useState<string>("");
+  const [srvHost, setSrvHost] = useState<string>("");
   
   const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
     parseTLSA(record.content).usage,
@@ -149,6 +153,18 @@ export function AddRecordDialog({
   const [uriTarget, setUriTarget] = useState<string>("");
   const [uriTargetSpaceWarning, setUriTargetSpaceWarning] = useState(false);
 
+  const [caaFlags, setCaaFlags] = useState<number | undefined>(undefined);
+  const [caaTag, setCaaTag] = useState<"issue" | "issuewild" | "iodef" | "custom">(
+    "issue",
+  );
+  const [caaTagCustom, setCaaTagCustom] = useState<string>("");
+  const [caaValue, setCaaValue] = useState<string>("");
+
+  const [dsKeyTag, setDsKeyTag] = useState<number | undefined>(undefined);
+  const [dsAlgorithm, setDsAlgorithm] = useState<number | undefined>(13);
+  const [dsDigestType, setDsDigestType] = useState<number | undefined>(2);
+  const [dsDigest, setDsDigest] = useState<string>("");
+
   const [soaPrimaryNs, setSoaPrimaryNs] = useState<string>("");
   const [soaAdmin, setSoaAdmin] = useState<string>("");
   const [soaSerial, setSoaSerial] = useState<number | undefined>(undefined);
@@ -159,6 +175,127 @@ export function AddRecordDialog({
 
   function normalizeDnsName(value: string) {
     return value.trim().replace(/\.$/, "");
+  }
+
+  function unescapeDnsQuotedString(value: string) {
+    return value.replace(/\\\\/g, "\\").replace(/\\"/g, "\"");
+  }
+
+  function parseCAAContent(value: string | undefined) {
+    const raw = (value ?? "").trim();
+    if (!raw) {
+      return { flags: undefined as number | undefined, tag: "", value: "" };
+    }
+    const m = raw.match(/^\s*(\d{1,3})\s+([A-Za-z0-9-]+)\s+(.*)\s*$/);
+    if (!m) {
+      return { flags: undefined as number | undefined, tag: "", value: raw };
+    }
+    const flagsRaw = m[1] ?? "";
+    const tag = (m[2] ?? "").trim().toLowerCase();
+    const rest = (m[3] ?? "").trim();
+    const flagsNum = Number.parseInt(flagsRaw, 10);
+    let v = rest;
+    if (v.startsWith("\"") && v.endsWith("\"") && v.length >= 2) {
+      v = unescapeDnsQuotedString(v.slice(1, -1));
+    }
+    return { flags: Number.isNaN(flagsNum) ? undefined : flagsNum, tag, value: v };
+  }
+
+  function parseDSContent(value: string | undefined) {
+    const raw = (value ?? "")
+      .replace(/[()]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!raw) {
+      return {
+        keyTag: undefined as number | undefined,
+        algorithm: undefined as number | undefined,
+        digestType: undefined as number | undefined,
+        digest: "",
+      };
+    }
+    const parts = raw.split(" ").filter(Boolean);
+    const keyTag = Number.parseInt(parts[0] ?? "", 10);
+    const algorithm = Number.parseInt(parts[1] ?? "", 10);
+    const digestType = Number.parseInt(parts[2] ?? "", 10);
+    const digest = parts.slice(3).join("").replace(/\s+/g, "");
+    return {
+      keyTag: Number.isNaN(keyTag) ? undefined : keyTag,
+      algorithm: Number.isNaN(algorithm) ? undefined : algorithm,
+      digestType: Number.isNaN(digestType) ? undefined : digestType,
+      digest,
+    };
+  }
+
+  function escapeDnsQuotedString(value: string) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  }
+
+  function composeCAA(fields: {
+    flags: number | undefined;
+    tag: string;
+    value: string;
+  }) {
+    const flags = fields.flags ?? 0;
+    const tag = (fields.tag ?? "").trim().toLowerCase();
+    const v = `"${escapeDnsQuotedString((fields.value ?? "").trim())}"`;
+    return `${flags} ${tag} ${v}`.replace(/\s+/g, " ").trim();
+  }
+
+  function composeDS(fields: {
+    keyTag: number | undefined;
+    algorithm: number | undefined;
+    digestType: number | undefined;
+    digest: string;
+  }) {
+    const keyTag = fields.keyTag ?? "";
+    const algorithm = fields.algorithm ?? "";
+    const digestType = fields.digestType ?? "";
+    const digest = (fields.digest ?? "")
+      .replace(/\s+/g, "")
+      .toUpperCase()
+      .replace(/[^0-9A-F]/g, "");
+    return `${keyTag} ${algorithm} ${digestType} ${digest}`.replace(/\s+/g, " ").trim();
+  }
+
+  function parseSrvName(
+    value: string | undefined,
+  ): { service: string; proto: "tcp" | "udp" | "tls" | "other"; protoOther: string; host: string } {
+    const raw = (value ?? "").trim();
+    if (!raw) {
+      return { service: "", proto: "tcp", protoOther: "", host: "" };
+    }
+    const v = normalizeDnsName(raw);
+    const parts = v.split(".").filter(Boolean);
+    const first = parts[0] ?? "";
+    const second = parts[1] ?? "";
+    const service = first.startsWith("_") ? first.slice(1) : "";
+    const protoLabel = second.startsWith("_") ? second.slice(1).toLowerCase() : "";
+    const host = parts.slice(2).join(".");
+    if (protoLabel === "tcp" || protoLabel === "udp" || protoLabel === "tls") {
+      return { service, proto: protoLabel, protoOther: "", host };
+    }
+    if (protoLabel) {
+      return { service, proto: "other", protoOther: protoLabel, host };
+    }
+    return { service, proto: "tcp", protoOther: "", host };
+  }
+
+  function composeSrvName(fields: {
+    service: string;
+    proto: "tcp" | "udp" | "tls" | "other";
+    protoOther: string;
+    host: string;
+  }) {
+    const service = fields.service.trim().replace(/^_+/, "");
+    const proto =
+      fields.proto === "other"
+        ? fields.protoOther.trim().replace(/^_+/, "")
+        : fields.proto;
+    const host = normalizeDnsName(fields.host.trim().replace(/^@$/, ""));
+    const parts = [`_${service || "service"}`, `_${proto || "tcp"}`];
+    if (host) parts.push(host);
+    return parts.join(".");
   }
 
   function parseSOAContent(value: string | undefined) {
@@ -238,10 +375,6 @@ export function AddRecordDialog({
     };
   }
 
-  function escapeDnsQuotedString(value: string) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-  }
-
   function composeURI(fields: {
     priority: number | undefined;
     weight: number | undefined;
@@ -271,6 +404,16 @@ export function AddRecordDialog({
   ]);
 
   useEffect(() => {
+    if (record.type !== "SRV") return;
+    const parsed = parseSrvName(record.name);
+    if (parsed.service !== srvService) setSrvService(parsed.service);
+    if (parsed.proto !== srvProto) setSrvProto(parsed.proto);
+    if (parsed.protoOther !== srvProtoOther) setSrvProtoOther(parsed.protoOther);
+    if (parsed.host !== srvHost) setSrvHost(parsed.host);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, record.name]);
+
+  useEffect(() => {
     if (record.type === "URI") {
       const parsed = parseURIContent(record.content);
       if (parsed.priority !== uriPriority) setUriPriority(parsed.priority);
@@ -278,6 +421,34 @@ export function AddRecordDialog({
       if (parsed.target !== uriTarget) setUriTarget(parsed.target);
     }
   }, [record.type, record.content, uriPriority, uriWeight, uriTarget]);
+
+  useEffect(() => {
+    if (record.type !== "CAA") return;
+    const parsed = parseCAAContent(record.content);
+    if (parsed.flags !== caaFlags) setCaaFlags(parsed.flags);
+    if (parsed.tag) {
+      const tag = parsed.tag.toLowerCase();
+      if (tag === "issue" || tag === "issuewild" || tag === "iodef") {
+        if (tag !== caaTag) setCaaTag(tag);
+        if (caaTagCustom) setCaaTagCustom("");
+      } else {
+        if (caaTag !== "custom") setCaaTag("custom");
+        if (tag !== caaTagCustom) setCaaTagCustom(tag);
+      }
+    }
+    if (parsed.value !== caaValue) setCaaValue(parsed.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, record.content]);
+
+  useEffect(() => {
+    if (record.type !== "DS") return;
+    const parsed = parseDSContent(record.content);
+    if (parsed.keyTag !== dsKeyTag) setDsKeyTag(parsed.keyTag);
+    if (parsed.algorithm !== dsAlgorithm) setDsAlgorithm(parsed.algorithm);
+    if (parsed.digestType !== dsDigestType) setDsDigestType(parsed.digestType);
+    if (parsed.digest !== dsDigest) setDsDigest(parsed.digest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, record.content]);
 
   useEffect(() => {
     if (record.type !== "SOA") return;
@@ -438,6 +609,18 @@ export function AddRecordDialog({
     if (normalized === "sha256:sha1") return "sha256:sha1";
     return "custom";
   }, [dkimHashAlgs]);
+
+  const dsAlgorithmPreset = useMemo(() => {
+    if (dsAlgorithm === undefined || dsAlgorithm === null) return "custom";
+    if ([8, 13, 14, 15, 16].includes(dsAlgorithm)) return String(dsAlgorithm);
+    return "custom";
+  }, [dsAlgorithm]);
+
+  const dsDigestTypePreset = useMemo(() => {
+    if (dsDigestType === undefined || dsDigestType === null) return "custom";
+    if ([1, 2, 4].includes(dsDigestType)) return String(dsDigestType);
+    return "custom";
+  }, [dsDigestType]);
 
   const effectiveTxtMode = useMemo(() => {
     if (record.type !== "TXT") return "generic" as const;
@@ -1304,6 +1487,304 @@ export function AddRecordDialog({
     validateDMARC,
   ]);
 
+  const srvDiagnostics = useMemo(() => {
+    if (record.type !== "SRV") {
+      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+    }
+    const issues: string[] = [];
+    const nameIssues: string[] = [];
+    const push = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const pr = srvPriority;
+    const wt = srvWeight;
+    const port = srvPort;
+    const target = (srvTarget ?? "").trim();
+
+    if (pr === undefined) push(issues, "SRV: priority is missing.");
+    else if (pr < 0 || pr > 65535) push(issues, "SRV: priority should be 0–65535.");
+    if (wt === undefined) push(issues, "SRV: weight is missing.");
+    else if (wt < 0 || wt > 65535) push(issues, "SRV: weight should be 0–65535.");
+    if (port === undefined) push(issues, "SRV: port is missing.");
+    else if (port < 0 || port > 65535) push(issues, "SRV: port should be 0–65535.");
+    if (!target) push(issues, "SRV: target is missing.");
+    if (target) {
+      if (/\s/.test(target)) push(issues, "SRV: target contains whitespace.");
+      if (target.includes("://"))
+        push(issues, "SRV: target looks like a URL; it should be a hostname.");
+      if (target.includes("/"))
+        push(issues, "SRV: target contains '/', which is unusual for hostnames.");
+      const normalized = normalizeDnsName(target);
+      const tld = normalized.split(".").pop()?.toLowerCase();
+      if (tld && normalized.includes(".") && /^[a-z0-9-]{2,63}$/.test(tld)) {
+        if (!KNOWN_TLDS.has(tld))
+          push(issues, `SRV: target has unknown/invalid TLD “.${tld}”.`);
+      }
+    }
+
+    const expectedName = composeSrvName({
+      service: srvService,
+      proto: srvProto,
+      protoOther: srvProtoOther,
+      host: srvHost,
+    });
+    const name = (record.name ?? "").trim();
+    if (!name) {
+      push(nameIssues, `SRV: name is usually "${expectedName}".`);
+    } else if (!name.startsWith("_")) {
+      push(nameIssues, "SRV: name usually starts with _service._proto.");
+    } else if (name !== expectedName) {
+      push(nameIssues, `SRV: name differs from builder: "${expectedName}".`);
+    }
+    if (!srvService.trim())
+      push(nameIssues, "SRV: service is missing (e.g., sip, xmpp-client).");
+    if (srvProto === "other" && !srvProtoOther.trim())
+      push(nameIssues, "SRV: protocol is set to Other but is empty.");
+
+    const canonical = composeSRV(pr, wt, port, target);
+    return { canonical, issues, nameIssues };
+  }, [
+    record.type,
+    record.name,
+    srvHost,
+    srvPort,
+    srvPriority,
+    srvProto,
+    srvProtoOther,
+    srvService,
+    srvTarget,
+    srvWeight,
+  ]);
+
+  const caaDiagnostics = useMemo(() => {
+    if (record.type !== "CAA") {
+      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+    }
+    const issues: string[] = [];
+    const nameIssues: string[] = [];
+    const push = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const isValidDnsLabel = (label: string) => {
+      if (!label) return false;
+      if (label.length > 63) return false;
+      if (!/^[A-Za-z0-9-]+$/.test(label)) return false;
+      if (label.startsWith("-") || label.endsWith("-")) return false;
+      return true;
+    };
+    const isValidHostname = (value: string) => {
+      const v = normalizeDnsName(value);
+      if (!v) return false;
+      if (/\s/.test(v)) return false;
+      if (v.length > 253) return false;
+      if (v.includes("..")) return false;
+      const labels = v.split(".");
+      if (labels.some((l) => l.length === 0)) return false;
+      return labels.every(isValidDnsLabel);
+    };
+    const validateEmailAddress = (address: string) => {
+      const a = address.trim();
+      if (!a) return "missing an email address.";
+      if (/\s/.test(a)) return "email address contains whitespace.";
+      const at = a.indexOf("@");
+      if (at <= 0 || at !== a.lastIndexOf("@") || at === a.length - 1)
+        return "invalid email (expected local@domain).";
+      const domain = normalizeDnsName(a.slice(at + 1));
+      if (!isValidHostname(domain)) return "email domain does not look like a hostname.";
+      const labels = domain.split(".");
+      if (labels.length < 2) return "email domain should be a FQDN.";
+      const tld = labels[labels.length - 1]?.toLowerCase() ?? "";
+      if (tld && !KNOWN_TLDS.has(tld))
+        return `email domain uses an unknown/invalid TLD “.${tld}”.`;
+      return null;
+    };
+
+    const effectiveTag =
+      caaTag === "custom"
+        ? caaTagCustom.trim().toLowerCase()
+        : (caaTag as string);
+    const flags = caaFlags ?? 0;
+    const critical = (flags & 128) !== 0;
+    const value = (caaValue ?? "").trim();
+
+    if (caaFlags !== undefined) {
+      if (caaFlags < 0 || caaFlags > 255) push(issues, "CAA: flags must be 0–255.");
+      if (critical) {
+        push(
+          issues,
+          "CAA: critical flag is set (128). Clients that don't understand the tag may reject issuance.",
+        );
+      }
+    } else {
+      push(issues, "CAA: flags are missing (usually 0).");
+    }
+
+    if (!effectiveTag) {
+      push(issues, "CAA: tag is missing (issue, issuewild, iodef, or custom).");
+    } else {
+      if (!/^[a-z0-9-]+$/.test(effectiveTag))
+        push(issues, "CAA: tag contains unusual characters.");
+      if (effectiveTag.length > 15)
+        push(issues, "CAA: tag is unusually long (common tags are short).");
+      const known = new Set(["issue", "issuewild", "iodef"]);
+      if (!known.has(effectiveTag) && !caaTagCustom.trim())
+        push(issues, "CAA: custom tag is empty.");
+      if (!known.has(effectiveTag) && critical)
+        push(issues, "CAA: critical + unknown tag may break issuance for some clients.");
+    }
+
+    if (!value) {
+      push(issues, "CAA: value is empty.");
+    } else if (effectiveTag === "issue" || effectiveTag === "issuewild") {
+      const beforeParams = value.split(";")[0]?.trim() ?? "";
+      if (!beforeParams) {
+        push(
+          issues,
+          `CAA: ${effectiveTag} value has no CA domain (this may intentionally forbid issuance).`,
+        );
+      } else {
+        if (!isValidHostname(beforeParams))
+          push(issues, `CAA: ${effectiveTag} CA domain does not look like a hostname.`);
+        const tld = normalizeDnsName(beforeParams).split(".").pop()?.toLowerCase() ?? "";
+        if (tld && beforeParams.includes(".") && !KNOWN_TLDS.has(tld))
+          push(issues, `CAA: ${effectiveTag} CA domain has unknown/invalid TLD “.${tld}”.`);
+      }
+      if (value.includes("://"))
+        push(issues, `CAA: ${effectiveTag} value looks like a URL; expected CA domain.`);
+    } else if (effectiveTag === "iodef") {
+      const v = value;
+      if (v.toLowerCase().startsWith("mailto:")) {
+        const addr = v.slice("mailto:".length).split("?")[0]?.trim() ?? "";
+        const emailProblem = validateEmailAddress(addr);
+        if (emailProblem) push(issues, `CAA: iodef mailto ${emailProblem}`);
+      } else {
+        try {
+          // eslint-disable-next-line no-new
+          const u = new URL(v);
+          if (u.protocol !== "http:" && u.protocol !== "https:")
+            push(issues, "CAA: iodef should be mailto:, http:, or https:.");
+        } catch {
+          push(issues, "CAA: iodef value does not parse as a valid URL or mailto:.");
+        }
+      }
+    } else {
+      // Custom tag: can't fully validate value.
+    }
+
+    const canonical = composeCAA({
+      flags,
+      tag: effectiveTag || "issue",
+      value,
+    });
+    const content = (record.content ?? "").trim();
+    if (content && content !== canonical) {
+      push(
+        issues,
+        "CAA: content differs from builder settings (use Apply canonical to normalize).",
+      );
+    }
+
+    const name = (record.name ?? "").trim();
+    if (!name) push(nameIssues, 'CAA: name is often "@" (zone apex) unless you need subdomain-specific policy.');
+
+    return { canonical, issues, nameIssues };
+  }, [record.type, record.content, record.name, caaFlags, caaTag, caaTagCustom, caaValue]);
+
+  const dsDiagnostics = useMemo(() => {
+    if (record.type !== "DS") {
+      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+    }
+    const issues: string[] = [];
+    const nameIssues: string[] = [];
+    const push = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const keyTag = dsKeyTag;
+    const alg = dsAlgorithm;
+    const digestType = dsDigestType;
+    const digestRaw = (dsDigest ?? "").trim();
+    const digest = digestRaw.replace(/\s+/g, "").toUpperCase();
+
+    if (keyTag === undefined) push(issues, "DS: key tag is missing.");
+    else if (keyTag < 0 || keyTag > 65535) push(issues, "DS: key tag should be 0–65535.");
+
+    const knownAlg: Record<number, string> = {
+      5: "RSASHA1",
+      7: "RSASHA1-NSEC3-SHA1",
+      8: "RSASHA256",
+      10: "RSASHA512",
+      13: "ECDSAP256SHA256",
+      14: "ECDSAP384SHA384",
+      15: "ED25519",
+      16: "ED448",
+    };
+    if (alg === undefined) push(issues, "DS: algorithm is missing.");
+    else if (alg < 0 || alg > 255) push(issues, "DS: algorithm should be 0–255.");
+    else if (!knownAlg[alg]) push(issues, `DS: algorithm ${alg} is uncommon; double-check.`);
+
+    const knownDigest: Record<number, { name: string; hexLen: number }> = {
+      1: { name: "SHA-1", hexLen: 40 },
+      2: { name: "SHA-256", hexLen: 64 },
+      4: { name: "SHA-384", hexLen: 96 },
+    };
+    if (digestType === undefined) push(issues, "DS: digest type is missing.");
+    else if (digestType < 0 || digestType > 255) push(issues, "DS: digest type should be 0–255.");
+    else if (!knownDigest[digestType])
+      push(issues, `DS: digest type ${digestType} is uncommon; double-check.`);
+
+    if (!digestRaw) push(issues, "DS: digest is missing.");
+    else {
+      if (!/^[0-9A-Fa-f]+$/.test(digestRaw.replace(/\s+/g, "")))
+        push(issues, "DS: digest contains non-hex characters.");
+      if (digest.length % 2 !== 0) push(issues, "DS: digest hex length should be even.");
+      const expected = digestType !== undefined ? knownDigest[digestType]?.hexLen : undefined;
+      if (expected && digest.length !== expected)
+        push(
+          issues,
+          `DS: digest length is ${digest.length} hex chars; expected ${expected} for ${knownDigest[digestType!].name}.`,
+        );
+    }
+
+    if (alg === 13 && digestType === 1)
+      push(issues, "DS: SHA-1 digests are deprecated; prefer digest type 2 (SHA-256).");
+
+    const name = (record.name ?? "").trim();
+    if (!name) {
+      push(
+        nameIssues,
+        "DS: name is the delegated child label (e.g., 'sub') in this zone; DS is normally published at the parent of the child zone.",
+      );
+    } else {
+      if (name === "@") {
+        push(
+          nameIssues,
+          "DS: @ is unusual; DS records are normally in the parent zone for a child delegation. Use @ only if you are delegating the zone apex from its parent.",
+        );
+      }
+      if (name.startsWith("_"))
+        push(nameIssues, "DS: names starting with '_' are unusual for delegations.");
+    }
+
+    const canonical = composeDS({
+      keyTag,
+      algorithm: alg,
+      digestType,
+      digest,
+    });
+    const content = (record.content ?? "").trim();
+    if (content && content !== canonical) {
+      push(
+        issues,
+        "DS: content differs from builder settings (use Apply canonical to normalize).",
+      );
+    }
+
+    return { canonical, issues, nameIssues };
+  }, [record.type, record.content, record.name, dsAlgorithm, dsDigest, dsDigestType, dsKeyTag]);
+
   const addSPFMechanism = () => {
     const mechVal = newSPFValue?.trim();
     const newMech: SPFMechanism = {
@@ -1482,7 +1963,7 @@ export function AddRecordDialog({
       case "DS":
       case "DNSKEY":
       case "CDNSKEY":
-        return "DNSSEC records are typically @ (zone apex).";
+        return "DNSSEC records: DS is for delegating a child zone (name is usually the child label); DNSKEY/CDNSKEY are typically @.";
       case "CAA":
         return "CAA is commonly set at @ (apex) and/or subdomains.";
       case "SPF":
@@ -2063,25 +2544,7 @@ export function AddRecordDialog({
         }
         break;
       case "SRV": {
-        const parsed = parseSRV(record.content);
-        if (
-          parsed.priority !== undefined &&
-          (parsed.priority < 0 || parsed.priority > 65535)
-        )
-          pushUnique("SRV priority should be between 0 and 65535.");
-        if (
-          parsed.weight !== undefined &&
-          (parsed.weight < 0 || parsed.weight > 65535)
-        )
-          pushUnique("SRV weight should be between 0 and 65535.");
-        if (parsed.port !== undefined && (parsed.port < 0 || parsed.port > 65535))
-          pushUnique("SRV port should be between 0 and 65535.");
-        if (parsed.target && !looksLikeHostname(parsed.target))
-          pushUnique("SRV target does not look like a hostname.");
-        if (parsed.target && looksLikeHostname(parsed.target))
-          warnInvalidTld(parsed.target, "SRV target");
-        if (name && !name.startsWith("_"))
-          pushUnique("SRV name usually starts with _service._proto.");
+        // SRV warnings are shown in the SRV builder panel; keep confirmation logic separate.
         break;
       }
       case "TLSA": {
@@ -2190,14 +2653,35 @@ export function AddRecordDialog({
         if (!combined.includes(w)) combined.push(w);
       }
     }
+    if (record.type === "SRV") {
+      for (const w of [...srvDiagnostics.nameIssues, ...srvDiagnostics.issues]) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
+    if (record.type === "CAA") {
+      for (const w of [...caaDiagnostics.nameIssues, ...caaDiagnostics.issues]) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
+    if (record.type === "DS") {
+      for (const w of [...dsDiagnostics.nameIssues, ...dsDiagnostics.issues]) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
     return combined;
   }, [
+    caaDiagnostics.issues,
+    caaDiagnostics.nameIssues,
     dmarcDiagnostics.issues,
     dmarcDiagnostics.nameIssues,
     dkimDiagnostics.issues,
     dkimDiagnostics.nameIssues,
+    dsDiagnostics.issues,
+    dsDiagnostics.nameIssues,
     effectiveTxtMode,
     record.type,
+    srvDiagnostics.issues,
+    srvDiagnostics.nameIssues,
     spfDiagnostics.issues,
     validationWarnings,
   ]);
@@ -3601,83 +4085,762 @@ export function AddRecordDialog({
                       )}
                     </div>
                   );
+                case "DS": {
+                  const digestNormalized = (dsDigest ?? "").replace(/\s+/g, "").toUpperCase();
+                  const expectedLen =
+                    dsDigestType === 1 ? 40 : dsDigestType === 2 ? 64 : dsDigestType === 4 ? 96 : undefined;
+                  return (
+                    <div className="space-y-2">
+                      <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            DS builder (Delegation Signer)
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Format: <code>keyTag algorithm digestType digest</code>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Key tag</Label>
+                            <Input
+                              type="number"
+                              value={dsKeyTag ?? ""}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                setDsKeyTag(Number.isNaN(n) ? undefined : n);
+                              }}
+                              placeholder="e.g., 2371"
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              0–65535 (from the child DNSSEC key).
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Algorithm</Label>
+                            <Select
+                              value={dsAlgorithmPreset}
+                              onValueChange={(value: string) => {
+                                if (value === "custom") return;
+                                const n = Number.parseInt(value, 10);
+                                setDsAlgorithm(Number.isNaN(n) ? undefined : n);
+                              }}
+                            >
+                              <SelectTrigger className="h-9">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="13">13 (ECDSAP256SHA256)</SelectItem>
+                                <SelectItem value="14">14 (ECDSAP384SHA384)</SelectItem>
+                                <SelectItem value="15">15 (ED25519)</SelectItem>
+                                <SelectItem value="16">16 (ED448)</SelectItem>
+                                <SelectItem value="8">8 (RSASHA256)</SelectItem>
+                                <SelectItem value="custom">Custom…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {dsAlgorithmPreset === "custom" && (
+                              <Input
+                                className="mt-2"
+                                type="number"
+                                value={dsAlgorithm ?? ""}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const n = Number.parseInt(e.target.value, 10);
+                                  setDsAlgorithm(Number.isNaN(n) ? undefined : n);
+                                }}
+                                placeholder="e.g., 13"
+                              />
+                            )}
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Digest type</Label>
+                            <Select
+                              value={dsDigestTypePreset}
+                              onValueChange={(value: string) => {
+                                if (value === "custom") return;
+                                const n = Number.parseInt(value, 10);
+                                setDsDigestType(Number.isNaN(n) ? undefined : n);
+                              }}
+                            >
+                              <SelectTrigger className="h-9">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="2">2 (SHA-256)</SelectItem>
+                                <SelectItem value="4">4 (SHA-384)</SelectItem>
+                                <SelectItem value="1">1 (SHA-1)</SelectItem>
+                                <SelectItem value="custom">Custom…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {dsDigestTypePreset === "custom" && (
+                              <Input
+                                className="mt-2"
+                                type="number"
+                                value={dsDigestType ?? ""}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const n = Number.parseInt(e.target.value, 10);
+                                  setDsDigestType(Number.isNaN(n) ? undefined : n);
+                                }}
+                                placeholder="e.g., 2"
+                              />
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-2 space-y-1">
+                          <Label className="text-xs">Digest (hex)</Label>
+                          <textarea
+                            className="scrollbar-themed ui-focus w-full min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+                            value={dsDigest}
+                            onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                              setDsDigest(e.target.value)
+                            }
+                            placeholder={
+                              expectedLen
+                                ? `${expectedLen} hex chars (no spaces)`
+                                : "hex digest"
+                            }
+                          />
+                          <div className="text-[11px] text-muted-foreground">
+                            {expectedLen
+                              ? `Expected ${expectedLen} hex characters for this digest type.`
+                              : "Paste the hex digest from your DNSSEC provider."}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setDsDigest(digestNormalized);
+                            }}
+                          >
+                            Normalize digest
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const parsed = parseDSContent(record.content);
+                              setDsKeyTag(parsed.keyTag);
+                              setDsAlgorithm(parsed.algorithm);
+                              setDsDigestType(parsed.digestType);
+                              setDsDigest(parsed.digest);
+                            }}
+                          >
+                            Load from content
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              onRecordChange({
+                                ...record,
+                                content: dsDiagnostics.canonical,
+                              });
+                            }}
+                          >
+                            Apply canonical to content
+                          </Button>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Preview (canonical)
+                          </div>
+                          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                            {dsDiagnostics.canonical ||
+                              composeDS({
+                                keyTag: dsKeyTag,
+                                algorithm: dsAlgorithm,
+                                digestType: dsDigestType,
+                                digest: dsDigest,
+                              })}
+                          </pre>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Recommendations
+                          </div>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                            <li>
+                              DS records are normally published in the <em>parent</em>{" "}
+                              zone for a child delegation. Only add DS here if you’re
+                              delegating a subdomain from this zone.
+                            </li>
+                            <li>
+                              Prefer digest type <code>2</code> (SHA-256). Avoid SHA-1
+                              unless required.
+                            </li>
+                            <li>
+                              Copy values exactly from your DNSSEC provider (key tag,
+                              algorithm, digest type, digest).
+                            </li>
+                          </ul>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setDsAlgorithm(13);
+                                setDsDigestType(2);
+                              }}
+                            >
+                              Preset: alg 13 + digest 2
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setDsDigestType(2)}
+                            >
+                              Prefer SHA-256 (2)
+                            </Button>
+                          </div>
+                        </div>
+
+                        {(dsDiagnostics.nameIssues.length > 0 ||
+                          dsDiagnostics.issues.length > 0) && (
+                          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                            <div className="text-sm font-semibold">DS warnings</div>
+                            <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
+                              <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                {dsDiagnostics.nameIssues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                                {dsDiagnostics.issues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+                case "CAA": {
+                  const effectiveTag =
+                    caaTag === "custom"
+                      ? caaTagCustom.trim().toLowerCase()
+                      : (caaTag as string);
+                  const critical = ((caaFlags ?? 0) & 128) !== 0;
+                  const valuePlaceholder =
+                    effectiveTag === "iodef"
+                      ? `mailto:security@${zoneName}`
+                      : effectiveTag === "issuewild"
+                        ? "letsencrypt.org (for wildcard certs)"
+                        : "letsencrypt.org";
+                  return (
+                    <div className="space-y-2">
+                      <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            CAA builder
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Format: <code>flags tag "value"</code>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Tag</Label>
+                            <Select
+                              value={caaTag}
+                              onValueChange={(v: string) =>
+                                setCaaTag(v as typeof caaTag)
+                              }
+                            >
+                              <SelectTrigger className="h-9">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="issue">issue</SelectItem>
+                                <SelectItem value="issuewild">issuewild</SelectItem>
+                                <SelectItem value="iodef">iodef</SelectItem>
+                                <SelectItem value="custom">custom…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {caaTag === "custom" && (
+                              <Input
+                                className="mt-2"
+                                value={caaTagCustom}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setCaaTagCustom(e.target.value)
+                                }
+                                placeholder="e.g., issue"
+                              />
+                            )}
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Flags</Label>
+                            <Input
+                              type="number"
+                              value={caaFlags ?? ""}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                setCaaFlags(Number.isNaN(n) ? undefined : n);
+                              }}
+                              placeholder="0"
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Usually <code>0</code>. <code>128</code> sets critical.
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Critical</Label>
+                            <div className="flex h-9 items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3">
+                              <Switch
+                                checked={critical}
+                                onCheckedChange={(checked: boolean) => {
+                                  const base = caaFlags ?? 0;
+                                  const next = checked
+                                    ? base | 128
+                                    : base & ~128;
+                                  setCaaFlags(next);
+                                }}
+                              />
+                              <span className="text-xs text-muted-foreground">
+                                {critical ? "On (128)" : "Off"}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              Use sparingly; unknown tags may break issuance.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 space-y-1">
+                          <Label className="text-xs">Value</Label>
+                          <Input
+                            value={caaValue}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                              setCaaValue(e.target.value)
+                            }
+                            placeholder={valuePlaceholder}
+                          />
+                          <div className="text-[11px] text-muted-foreground">
+                            {effectiveTag === "iodef"
+                              ? "Where to send policy violation reports (mailto: or https://)."
+                              : "CA domain (optional parameters after ';')."}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              onRecordChange({ ...record, name: "@" });
+                            }}
+                          >
+                            Set name to @
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const parsed = parseCAAContent(record.content);
+                              setCaaFlags(parsed.flags);
+                              const tag = (parsed.tag ?? "").toLowerCase();
+                              if (
+                                tag === "issue" ||
+                                tag === "issuewild" ||
+                                tag === "iodef"
+                              ) {
+                                setCaaTag(tag as "issue" | "issuewild" | "iodef");
+                                setCaaTagCustom("");
+                              } else {
+                                setCaaTag("custom");
+                                setCaaTagCustom(tag);
+                              }
+                              setCaaValue(parsed.value ?? "");
+                            }}
+                          >
+                            Load from content
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              onRecordChange({
+                                ...record,
+                                content: caaDiagnostics.canonical,
+                              });
+                            }}
+                          >
+                            Apply canonical to content
+                          </Button>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Preview (canonical)
+                          </div>
+                          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                            {caaDiagnostics.canonical ||
+                              composeCAA({
+                                flags: caaFlags ?? 0,
+                                tag: effectiveTag || "issue",
+                                value: caaValue ?? "",
+                              })}
+                          </pre>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Recommendations
+                          </div>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                            <li>
+                              Add one <code>issue</code> record per allowed CA (multiple CAA
+                              records are normal).
+                            </li>
+                            <li>
+                              Use <code>issuewild</code> only if you plan to issue wildcard
+                              certificates.
+                            </li>
+                            <li>
+                              Keep flags at <code>0</code> unless you know you need critical
+                              behavior.
+                            </li>
+                          </ul>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setCaaTag("issue");
+                                setCaaValue("letsencrypt.org");
+                                setCaaFlags(0);
+                              }}
+                            >
+                              Preset: Let's Encrypt (issue)
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setCaaTag("issuewild");
+                                setCaaValue("letsencrypt.org");
+                                setCaaFlags(0);
+                              }}
+                            >
+                              Preset: Let's Encrypt (issuewild)
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setCaaTag("iodef");
+                                setCaaValue(`mailto:security@${zoneName}`);
+                                setCaaFlags(0);
+                              }}
+                            >
+                              Preset: iodef mailto
+                            </Button>
+                          </div>
+                        </div>
+
+                        {(caaDiagnostics.nameIssues.length > 0 ||
+                          caaDiagnostics.issues.length > 0) && (
+                          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                            <div className="text-sm font-semibold">CAA warnings</div>
+                            <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
+                              <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                {caaDiagnostics.nameIssues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                                {caaDiagnostics.issues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
                 case "SRV":
                   return (
-                    <div className="grid grid-cols-4 gap-2">
-                      <Input
-                        aria-label={t("SRV priority", "priority")}
-                        type="number"
-                        placeholder="priority"
-                        value={srvPriority ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          setSrvPriority(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({
-                            ...record,
-                            content: composeSRV(
-                              Number.isNaN(n) ? undefined : n,
-                              srvWeight,
-                              srvPort,
-                              srvTarget,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        aria-label={t("SRV weight", "weight")}
-                        type="number"
-                        placeholder="weight"
-                        value={srvWeight ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          setSrvWeight(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({
-                            ...record,
-                            content: composeSRV(
-                              srvPriority,
-                              Number.isNaN(n) ? undefined : n,
-                              srvPort,
-                              srvTarget,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        aria-label={t("SRV port", "port")}
-                        type="number"
-                        placeholder="port"
-                        value={srvPort ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          setSrvPort(Number.isNaN(n) ? undefined : n);
-                          onRecordChange({
-                            ...record,
-                            content: composeSRV(
-                              srvPriority,
-                              srvWeight,
-                              Number.isNaN(n) ? undefined : n,
-                              srvTarget,
-                            ),
-                          });
-                        }}
-                      />
-                        <Input
-                          aria-label={t("SRV target", "target")}
-                          placeholder="target e.g., sipserver.example.com"
-                          value={srvTarget}
-                          onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                            setSrvTarget(e.target.value);
-                            onRecordChange({
-                            ...record,
-                            content: composeSRV(
-                              srvPriority,
-                              srvWeight,
-                              srvPort,
-                              e.target.value,
-                            ),
-                          });
-                        }}
-                      />
+                    <div className="space-y-2">
+                      <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            SRV builder
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Format: <code>priority weight port target</code>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
+                          <div className="space-y-1 sm:col-span-1">
+                            <Label className="text-xs">Priority</Label>
+                            <Input
+                              aria-label={t("SRV priority", "priority")}
+                              type="number"
+                              placeholder="10"
+                              value={srvPriority ?? ""}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                const val = Number.isNaN(n) ? undefined : n;
+                                setSrvPriority(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSRV(
+                                    val,
+                                    srvWeight,
+                                    srvPort,
+                                    srvTarget,
+                                  ),
+                                });
+                              }}
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Lower is preferred.
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-1">
+                            <Label className="text-xs">Weight</Label>
+                            <Input
+                              aria-label={t("SRV weight", "weight")}
+                              type="number"
+                              placeholder="5"
+                              value={srvWeight ?? ""}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                const val = Number.isNaN(n) ? undefined : n;
+                                setSrvWeight(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSRV(
+                                    srvPriority,
+                                    val,
+                                    srvPort,
+                                    srvTarget,
+                                  ),
+                                });
+                              }}
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Load-balancing.
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-1">
+                            <Label className="text-xs">Port</Label>
+                            <Input
+                              aria-label={t("SRV port", "port")}
+                              type="number"
+                              placeholder="5060"
+                              value={srvPort ?? ""}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                const n = Number.parseInt(e.target.value, 10);
+                                const val = Number.isNaN(n) ? undefined : n;
+                                setSrvPort(val);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSRV(
+                                    srvPriority,
+                                    srvWeight,
+                                    val,
+                                    srvTarget,
+                                  ),
+                                });
+                              }}
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Service port.
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-3">
+                            <Label className="text-xs">Target</Label>
+                            <Input
+                              aria-label={t("SRV target", "target")}
+                              placeholder="e.g., sipserver.example.com"
+                              value={srvTarget}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                setSrvTarget(e.target.value);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeSRV(
+                                    srvPriority,
+                                    srvWeight,
+                                    srvPort,
+                                    e.target.value,
+                                  ),
+                                });
+                              }}
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Hostname only (no scheme, no path).
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-6">
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Service</Label>
+                            <Input
+                              value={srvService}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                setSrvService(e.target.value)
+                              }
+                              placeholder="e.g., sip"
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Becomes <code>_&lt;service&gt;</code> in the name.
+                            </div>
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Protocol</Label>
+                            <Select
+                              value={srvProto}
+                              onValueChange={(value: string) =>
+                                setSrvProto(value as typeof srvProto)
+                              }
+                            >
+                              <SelectTrigger className="h-9">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="tcp">tcp</SelectItem>
+                                <SelectItem value="udp">udp</SelectItem>
+                                <SelectItem value="tls">tls</SelectItem>
+                                <SelectItem value="other">other…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {srvProto === "other" && (
+                              <Input
+                                className="mt-2"
+                                value={srvProtoOther}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setSrvProtoOther(e.target.value)
+                                }
+                                placeholder="e.g., sctp"
+                              />
+                            )}
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-xs">Host (optional)</Label>
+                            <Input
+                              value={srvHost}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                setSrvHost(e.target.value)
+                              }
+                              placeholder="@ or subdomain"
+                            />
+                            <div className="text-[11px] text-muted-foreground">
+                              Leave empty for zone apex.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const parsed = parseSrvName(record.name);
+                              setSrvService(parsed.service);
+                              setSrvProto(parsed.proto);
+                              setSrvProtoOther(parsed.protoOther);
+                              setSrvHost(parsed.host);
+                            }}
+                          >
+                            Load from name
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const parsed = parseSRV(record.content);
+                              setSrvPriority(parsed.priority);
+                              setSrvWeight(parsed.weight);
+                              setSrvPort(parsed.port);
+                              setSrvTarget(parsed.target ?? "");
+                            }}
+                          >
+                            Load from content
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              onRecordChange({
+                                ...record,
+                                name: composeSrvName({
+                                  service: srvService,
+                                  proto: srvProto,
+                                  protoOther: srvProtoOther,
+                                  host: srvHost,
+                                }),
+                              });
+                            }}
+                          >
+                            Apply name
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              onRecordChange({
+                                ...record,
+                                content: srvDiagnostics.canonical,
+                              });
+                            }}
+                          >
+                            Apply canonical to content
+                          </Button>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Preview (canonical)
+                          </div>
+                          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                            {srvDiagnostics.canonical}
+                          </pre>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+                          <div className="text-xs font-semibold text-muted-foreground">
+                            Recommendations
+                          </div>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                            <li>
+                              Keep the name as <code>_service._proto</code> (and add a
+                              host suffix only if needed).
+                            </li>
+                            <li>
+                              Target should be a hostname (not an IP and not a URL).
+                            </li>
+                            <li>
+                              Use weight to distribute traffic among same-priority targets.
+                            </li>
+                            <li>
+                              Prefer explicit ports; avoid 0.
+                            </li>
+                          </ul>
+                        </div>
+
+                        {(srvDiagnostics.nameIssues.length > 0 ||
+                          srvDiagnostics.issues.length > 0) && (
+                          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                            <div className="text-sm font-semibold">SRV warnings</div>
+                            <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
+                              <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                {srvDiagnostics.nameIssues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                                {srvDiagnostics.issues.map((w) => (
+                                  <li key={w}>{w}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 case "TLSA":
