@@ -43,6 +43,10 @@ import { NaptrBuilder } from "@/components/dns/builders/NaptrBuilder";
 import { SshfpBuilder } from "@/components/dns/builders/SshfpBuilder";
 import { TlsaBuilder } from "@/components/dns/builders/TlsaBuilder";
 import { HinfoBuilder } from "@/components/dns/builders/HinfoBuilder";
+import { LocBuilder } from "@/components/dns/builders/LocBuilder";
+import { RpBuilder } from "@/components/dns/builders/RpBuilder";
+import { DnameBuilder } from "@/components/dns/builders/DnameBuilder";
+import { CertBuilder } from "@/components/dns/builders/CertBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -868,6 +872,38 @@ export function AddRecordDialog({
                 case "HINFO":
                   return (
                     <HinfoBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "LOC":
+                  return (
+                    <LocBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "RP":
+                  return (
+                    <RpBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "DNAME":
+                  return (
+                    <DnameBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "CERT":
+                  return (
+                    <CertBuilder
                       record={record}
                       onRecordChange={onRecordChange}
                       onWarningsChange={setActiveBuilderWarnings}
