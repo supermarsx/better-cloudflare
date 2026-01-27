@@ -2,7 +2,7 @@
  * Dialog used to collect DNS record properties required to create a new
  * record via the API.
  */
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, SelectHTMLAttributes } from "react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,7 +41,28 @@ import type { SPFGraph, SPFMechanism } from "@/lib/spf";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
-import { Plus } from "lucide-react";
+import { ChevronDown, Plus } from "lucide-react";
+
+function StyledNativeSelect({
+  className,
+  children,
+  ...props
+}: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <div className="relative">
+      <select
+        className={[
+          "ui-focus glass-surface glass-sheen glass-surface-hover w-full rounded-md border border-border/60 bg-background/10 px-2 pr-9 text-sm text-foreground focus-visible:outline-none appearance-none",
+          className ?? "",
+        ].join(" ")}
+        {...props}
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 opacity-70" />
+    </div>
+  );
+}
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -1630,8 +1651,8 @@ export function AddRecordDialog({
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                         <div className="space-y-1">
                           <Label className="text-xs">TXT helper</Label>
-                          <select
-                            className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                          <StyledNativeSelect
+                            className="h-9"
                             value={txtHelperMode}
                             onChange={(e) =>
                               setTxtHelperMode(
@@ -1644,14 +1665,14 @@ export function AddRecordDialog({
                             <option value="spf">SPF</option>
                             <option value="dkim">DKIM</option>
                             <option value="dmarc">DMARC</option>
-                          </select>
+                          </StyledNativeSelect>
                         </div>
                         {effectiveTxtMode === "dkim" && (
                           <>
                             <div className="space-y-1">
                               <Label className="text-xs">Key type</Label>
-                              <select
-                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              <StyledNativeSelect
+                                className="h-9"
                                 value={dkimKeyType}
                                 onChange={(e) =>
                                   setDkimKeyType(
@@ -1661,7 +1682,7 @@ export function AddRecordDialog({
                               >
                                 <option value="rsa">rsa</option>
                                 <option value="ed25519">ed25519</option>
-                              </select>
+                              </StyledNativeSelect>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">Selector (name)</Label>
@@ -1689,8 +1710,8 @@ export function AddRecordDialog({
                           <>
                             <div className="space-y-1">
                               <Label className="text-xs">Policy (p=)</Label>
-                              <select
-                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              <StyledNativeSelect
+                                className="h-9"
                                 value={dmarcPolicy}
                                 onChange={(e) =>
                                   setDmarcPolicy(
@@ -1701,7 +1722,7 @@ export function AddRecordDialog({
                                 <option value="none">none</option>
                                 <option value="quarantine">quarantine</option>
                                 <option value="reject">reject</option>
-                              </select>
+                              </StyledNativeSelect>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">rua= (optional)</Label>
@@ -1739,8 +1760,8 @@ export function AddRecordDialog({
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">adkim</Label>
-                              <select
-                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              <StyledNativeSelect
+                                className="h-9"
                                 value={dmarcAdkim}
                                 onChange={(e) =>
                                   setDmarcAdkim(
@@ -1750,12 +1771,12 @@ export function AddRecordDialog({
                               >
                                 <option value="r">r</option>
                                 <option value="s">s</option>
-                              </select>
+                              </StyledNativeSelect>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">aspf</Label>
-                              <select
-                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              <StyledNativeSelect
+                                className="h-9"
                                 value={dmarcAspf}
                                 onChange={(e) =>
                                   setDmarcAspf(
@@ -1765,12 +1786,12 @@ export function AddRecordDialog({
                               >
                                 <option value="r">r</option>
                                 <option value="s">s</option>
-                              </select>
+                              </StyledNativeSelect>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">sp= (optional)</Label>
-                              <select
-                                className="ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                              <StyledNativeSelect
+                                className="h-9"
                                 value={dmarcSubdomainPolicy}
                                 onChange={(e) =>
                                   setDmarcSubdomainPolicy(
@@ -1782,7 +1803,7 @@ export function AddRecordDialog({
                                 <option value="none">none</option>
                                 <option value="quarantine">quarantine</option>
                                 <option value="reject">reject</option>
-                              </select>
+                              </StyledNativeSelect>
                             </div>
                           </>
                         )}
@@ -1793,8 +1814,8 @@ export function AddRecordDialog({
                             SPF builder
                           </div>
                           <div className="flex space-x-2 mt-2">
-                            <select
-                              className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                            <StyledNativeSelect
+                              className="h-8"
                               value={newSPFQualifier}
                               onChange={(e) => setNewSPFQualifier(e.target.value)}
                             >
@@ -1802,9 +1823,9 @@ export function AddRecordDialog({
                               <option value="-">-</option>
                               <option value="~">~</option>
                               <option value="?">?</option>
-                            </select>
-                            <select
-                              className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                            </StyledNativeSelect>
+                            <StyledNativeSelect
+                              className="h-8"
                               value={newSPFMechanism}
                               onChange={(e) => setNewSPFMechanism(e.target.value)}
                             >
@@ -1814,7 +1835,7 @@ export function AddRecordDialog({
                               <option value="mx">mx</option>
                               <option value="include">include</option>
                               <option value="all">all</option>
-                            </select>
+                            </StyledNativeSelect>
                             <Input
                               placeholder="value (optional)"
                               value={newSPFValue}
@@ -2848,8 +2869,8 @@ export function AddRecordDialog({
                         placeholder="v=spf1 ip4:... ~all"
                       />
                       <div className="flex space-x-2">
-                        <select
-                          className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                        <StyledNativeSelect
+                          className="h-8 w-auto"
                           value={newSPFQualifier}
                           onChange={(e) => setNewSPFQualifier(e.target.value)}
                         >
@@ -2857,9 +2878,9 @@ export function AddRecordDialog({
                           <option value="-">-</option>
                           <option value="~">~</option>
                           <option value="?">?</option>
-                        </select>
-                        <select
-                          className="ui-focus glass-surface glass-surface-hover h-8 rounded-md border border-border bg-background/10 px-2 text-sm focus-visible:outline-none"
+                        </StyledNativeSelect>
+                        <StyledNativeSelect
+                          className="h-8 w-auto"
                           value={newSPFMechanism}
                           onChange={(e) => setNewSPFMechanism(e.target.value)}
                         >
@@ -2869,7 +2890,7 @@ export function AddRecordDialog({
                           <option value="mx">mx</option>
                           <option value="include">include</option>
                           <option value="all">all</option>
-                        </select>
+                        </StyledNativeSelect>
                         <Input
                           placeholder="value (optional)"
                           value={newSPFValue}
