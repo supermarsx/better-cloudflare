@@ -29,8 +29,6 @@ import { KNOWN_TLDS } from "@/lib/tlds";
 import {
   parseTLSA,
   composeTLSA,
-  parseSSHFP,
-  composeSSHFP,
 } from "@/lib/dns-parsers";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
@@ -46,6 +44,7 @@ import { SpfBuilder } from "@/components/dns/builders/SpfBuilder";
 import { UriBuilder } from "@/components/dns/builders/UriBuilder";
 import { SoaBuilder } from "@/components/dns/builders/SoaBuilder";
 import { NaptrBuilder } from "@/components/dns/builders/NaptrBuilder";
+import { SshfpBuilder } from "@/components/dns/builders/SshfpBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -109,16 +108,6 @@ export function AddRecordDialog({
   const [tlsaData, setTlsaData] = useState<string>(
     parseTLSA(record.content).data ?? "",
   );
-  
-  const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
-    parseSSHFP(record.content).algorithm,
-  );
-  const [sshfpFptype, setSshfpFptype] = useState<number | undefined>(
-    parseSSHFP(record.content).fptype,
-  );
-  const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(
-    parseSSHFP(record.content).fingerprint ?? "",
-  );
 
   function normalizeDnsName(value: string) {
     return value.trim().replace(/\.$/, "");
@@ -133,15 +122,6 @@ export function AddRecordDialog({
         setTlsaMatchingType(parsed.matchingType);
       if (parsed.data !== tlsaData) setTlsaData(parsed.data ?? "");
     }
-    if (record.type === "SSHFP") {
-      const parsed = parseSSHFP(record.content);
-      if (parsed.algorithm !== sshfpAlgorithm)
-        setSshfpAlgorithm(parsed.algorithm);
-      if (parsed.fptype !== sshfpFptype) setSshfpFptype(parsed.fptype);
-      if (parsed.fingerprint !== sshfpFingerprint)
-        setSshfpFingerprint(parsed.fingerprint ?? "");
-    }
-    // SSHFP state managed similarly below
   }, [
     record.type,
     record.content,
@@ -149,9 +129,6 @@ export function AddRecordDialog({
     tlsaSelector,
     tlsaMatchingType,
     tlsaData,
-    sshfpAlgorithm,
-    sshfpFptype,
-    sshfpFingerprint,
   ]);
 
   const recordGuide = useMemo(() => {
@@ -608,19 +585,7 @@ export function AddRecordDialog({
         break;
       }
       case "SSHFP": {
-        const parsed = parseSSHFP(record.content);
-        if (
-          parsed.algorithm !== undefined &&
-          ![1, 2, 3, 4].includes(Number(parsed.algorithm))
-        )
-          pushUnique("SSHFP algorithm is usually 1–4.");
-        if (
-          parsed.fptype !== undefined &&
-          ![1, 2].includes(Number(parsed.fptype))
-        )
-          pushUnique("SSHFP fptype is usually 1–2.");
-        if (parsed.fingerprint && !isHex(parsed.fingerprint))
-          pushUnique("SSHFP fingerprint should be hex.");
+        // SSHFP warnings are shown in the SSHFP builder panel; keep confirmation logic separate.
         break;
       }
       case "NAPTR": {
@@ -1015,60 +980,11 @@ export function AddRecordDialog({
                   );
                 case "SSHFP":
                   return (
-                    <div className="grid grid-cols-3 gap-2">
-                      <Input
-                        type="number"
-                        placeholder="algorithm"
-                        value={sshfpAlgorithm ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          const val = Number.isNaN(n) ? undefined : n;
-                          setSshfpAlgorithm(val);
-                          onRecordChange({
-                            ...record,
-                            content: composeSSHFP(
-                              val,
-                              sshfpFptype,
-                              sshfpFingerprint,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        type="number"
-                        placeholder="fptype"
-                        value={sshfpFptype ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          const val = Number.isNaN(n) ? undefined : n;
-                          setSshfpFptype(val);
-                          onRecordChange({
-                            ...record,
-                            content: composeSSHFP(
-                              sshfpAlgorithm,
-                              val,
-                              sshfpFingerprint,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        aria-label={t("SSHFP fingerprint", "fingerprint")}
-                        placeholder="fingerprint (hex)"
-                        value={sshfpFingerprint}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          setSshfpFingerprint(e.target.value);
-                          onRecordChange({
-                            ...record,
-                            content: composeSSHFP(
-                              sshfpAlgorithm,
-                              sshfpFptype,
-                              e.target.value,
-                            ),
-                          });
-                        }}
-                      />
-                    </div>
+                    <SshfpBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
                   );
                 case "NAPTR":
                   return (
