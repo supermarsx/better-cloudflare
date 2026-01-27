@@ -28,7 +28,12 @@ import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
 import { KNOWN_TLDS } from "@/lib/tlds";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
-import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
+import {
+  CLOUDFLARE_SUPPORTED_RECORD_TYPES,
+  RECORD_TYPES,
+  getTTLPresets,
+  getRecordTypeLabel,
+} from "@/types/dns";
 import { Plus } from "lucide-react";
 import type { BuilderWarnings } from "@/components/dns/builders/types";
 import { DsBuilder } from "@/components/dns/builders/DsBuilder";
@@ -47,6 +52,10 @@ import { LocBuilder } from "@/components/dns/builders/LocBuilder";
 import { RpBuilder } from "@/components/dns/builders/RpBuilder";
 import { DnameBuilder } from "@/components/dns/builders/DnameBuilder";
 import { CertBuilder } from "@/components/dns/builders/CertBuilder";
+import { AfsdbBuilder } from "@/components/dns/builders/AfsdbBuilder";
+import { AplBuilder } from "@/components/dns/builders/AplBuilder";
+import { SmimeaBuilder } from "@/components/dns/builders/SmimeaBuilder";
+import { OpenpgpkeyBuilder } from "@/components/dns/builders/OpenpgpkeyBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -89,6 +98,8 @@ export function AddRecordDialog({
   const isCustomTTL =
     ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
 
+  const [showUnsupportedRecordTypes, setShowUnsupportedRecordTypes] =
+    useState(false);
   const [confirmInvalid, setConfirmInvalid] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
@@ -97,6 +108,21 @@ export function AddRecordDialog({
   });
   const openSnapshotRef = useRef<Partial<DNSRecord> | null>(null);
   const wasOpenRef = useRef(false);
+
+  const recordTypeOptions = useMemo(() => {
+    const base = showUnsupportedRecordTypes
+      ? RECORD_TYPES
+      : CLOUDFLARE_SUPPORTED_RECORD_TYPES;
+    const set = new Set<RecordType>(base);
+    if (record.type && !set.has(record.type as RecordType))
+      set.add(record.type as RecordType);
+
+    return Array.from(set).sort((a, b) =>
+      getRecordTypeLabel(a).localeCompare(getRecordTypeLabel(b), undefined, {
+        sensitivity: "base",
+      }),
+    );
+  }, [record.type, showUnsupportedRecordTypes]);
 
   function normalizeDnsName(value: string) {
     return value.trim().replace(/\.$/, "");
@@ -168,6 +194,10 @@ export function AddRecordDialog({
         return "e.g., _443._tcp";
       case "SSHFP":
         return "e.g., host or @";
+      case "SMIMEA":
+        return "e.g., <hash>._smimecert";
+      case "OPENPGPKEY":
+        return "e.g., <hash>._openpgpkey";
       case "HINFO":
         return "e.g., host or @";
       case "LOC":
@@ -214,6 +244,10 @@ export function AddRecordDialog({
         return "TLSA names are often _port._proto (e.g., _443._tcp).";
       case "MX":
         return "MX is commonly set at @ (apex) or a subdomain like mail.";
+      case "SMIMEA":
+        return "SMIMEA names usually include “._smimecert” and a user hash label.";
+      case "OPENPGPKEY":
+        return "OPENPGPKEY names usually include “._openpgpkey” and a user hash label.";
       case "URI":
         return "URI names are often _service._proto (e.g., _sip._tcp), depending on the application.";
       case "SOA":
@@ -300,6 +334,10 @@ export function AddRecordDialog({
         return "e.g., 3 1 1 <hex>";
       case "SSHFP":
         return "e.g., 4 2 <hex>";
+      case "SMIMEA":
+        return "e.g., 3 1 1 <hex>";
+      case "OPENPGPKEY":
+        return "e.g., <base64>";
       case "NAPTR":
         return 'e.g., 100 10 "u" "E2U+sip" "!^.*$!sip:info@example.com!" .';
       default:
@@ -725,8 +763,8 @@ export function AddRecordDialog({
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
-                  {RECORD_TYPES.map((type) => (
+              <SelectContent>
+                  {recordTypeOptions.map((type) => (
                     <SelectItem
                       key={type}
                       value={type}
@@ -738,6 +776,17 @@ export function AddRecordDialog({
                   ))}
                 </SelectContent>
               </Select>
+              <div className="mt-2 flex items-center gap-2">
+                <Switch
+                  checked={showUnsupportedRecordTypes}
+                  onCheckedChange={(checked: boolean) =>
+                    setShowUnsupportedRecordTypes(checked)
+                  }
+                />
+                <div className="text-xs text-muted-foreground">
+                  Show unsupported record types
+                </div>
+              </div>
             </div>
             <div className="space-y-2">
               <Label>{t("TTL", "TTL")}</Label>
@@ -885,6 +934,22 @@ export function AddRecordDialog({
                       onWarningsChange={setActiveBuilderWarnings}
                     />
                   );
+                case "AFSDB":
+                  return (
+                    <AfsdbBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "APL":
+                  return (
+                    <AplBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
                 case "RP":
                   return (
                     <RpBuilder
@@ -904,6 +969,22 @@ export function AddRecordDialog({
                 case "CERT":
                   return (
                     <CertBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "SMIMEA":
+                  return (
+                    <SmimeaBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "OPENPGPKEY":
+                  return (
+                    <OpenpgpkeyBuilder
                       record={record}
                       onRecordChange={onRecordChange}
                       onWarningsChange={setActiveBuilderWarnings}

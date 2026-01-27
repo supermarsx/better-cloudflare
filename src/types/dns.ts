@@ -112,6 +112,8 @@ export const RECORD_TYPES = [
   "RP",
   "DNAME",
   "CERT",
+  "SMIMEA",
+  "OPENPGPKEY",
   "CDNSKEY",
   "AFSDB",
   "APL",
@@ -152,6 +154,8 @@ export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
   RP: "RP (responsible person)",
   DNAME: "DNAME (delegation name)",
   CERT: "CERT (certificates)",
+  SMIMEA: "SMIMEA (S/MIME cert association)",
+  OPENPGPKEY: "OPENPGPKEY (OpenPGP public key)",
   CDNSKEY: "CDNSKEY (child DNSKEY)",
   AFSDB: "AFSDB (Andrew File System DB)",
   APL: "APL (address prefix list)",
@@ -173,8 +177,32 @@ export function getRecordTypeLabel(type: RecordType) {
 }
 
 /**
- * Supported record types used across the UI and validation schema.
+ * Record types Cloudflare officially supports via its DNS API / dashboard.
+ *
+ * Used to keep the Add Record UI focused by default; users can opt-in to show
+ * other IANA record types that may not be supported.
  */
+export const CLOUDFLARE_SUPPORTED_RECORD_TYPES: RecordType[] = [
+  "A",
+  "AAAA",
+  "CAA",
+  "CNAME",
+  "DS",
+  "DNSKEY",
+  "HTTPS",
+  "LOC",
+  "MX",
+  "NAPTR",
+  "NS",
+  "PTR",
+  "SMIMEA",
+  "SRV",
+  "SSHFP",
+  "SVCB",
+  "TLSA",
+  "TXT",
+  "URI",
+];
 
 /**
  * TTL presets used in the UI for quick selection (seconds or 'auto')
