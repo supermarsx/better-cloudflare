@@ -41,6 +41,7 @@ async function withWindow(action: WindowAction) {
 
 export function WindowTitleBar() {
   const [isDragging, setIsDragging] = useState(false);
+  const [isTopmost, setIsTopmost] = useState(false);
   const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [confirmWindowClose, setConfirmWindowClose] = useState(
@@ -99,6 +100,14 @@ export function WindowTitleBar() {
     (async () => {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const appWindow = getCurrentWindow();
+
+      try {
+        const current = await (appWindow as any).isAlwaysOnTop?.();
+        if (typeof current === "boolean") setIsTopmost(current);
+      } catch {
+        // ignore
+      }
+
       unlisten = await appWindow.onCloseRequested((event) => {
         if (allowCloseRef.current) {
           allowCloseRef.current = false;
@@ -127,6 +136,23 @@ export function WindowTitleBar() {
     void withWindow("toggle-maximize");
   }, []);
 
+  const handleToggleTopmost = useCallback(() => {
+    if (!TauriClient.isTauri()) return;
+    setIsTopmost((prev) => {
+      const next = !prev;
+      void (async () => {
+        try {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          const appWindow = getCurrentWindow();
+          await (appWindow as any).setAlwaysOnTop?.(next);
+        } catch {
+          setIsTopmost(prev);
+        }
+      })();
+      return next;
+    });
+  }, []);
+
   return (
     <div
       className="titlebar fixed inset-x-0 top-0 z-[2147483000] flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
@@ -141,6 +167,25 @@ export function WindowTitleBar() {
         Better Cloudflare Console
       </div>
       <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
+        <Tooltip
+          tip={isTopmost ? "Always on top: On" : "Always on top: Off"}
+          side="bottom"
+        >
+          <button
+            className={`h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground active:scale-[0.98] ${
+              isTopmost ? "bg-muted/60 text-foreground" : ""
+            }`}
+            onClick={handleToggleTopmost}
+            type="button"
+            aria-label={
+              isTopmost
+                ? "Disable always on top"
+                : "Enable always on top"
+            }
+          >
+            T
+          </button>
+        </Tooltip>
         <Tooltip tip="Minimize" side="bottom">
           <button
             className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
