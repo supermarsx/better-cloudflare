@@ -750,6 +750,21 @@ export function AddRecordDialog({
     return "custom";
   }, [dnskeyFlags, dnskeyFlagsMode]);
 
+  const dnskeyFlagsExplainer = useMemo(() => {
+    const flags = dnskeyFlags ?? 0;
+    const zoneKey = (flags & 0x0100) !== 0; // 256
+    const sep = (flags & 0x0001) !== 0; // 1
+    const revoke = (flags & 0x0080) !== 0; // 128 (RFC 5011)
+    const knownMask = 0x0100 | 0x0001 | 0x0080;
+    const unknown = flags & ~knownMask;
+    const unknownBits: number[] = [];
+    for (let bit = 0; bit < 16; bit += 1) {
+      const mask = 1 << bit;
+      if ((unknown & mask) !== 0) unknownBits.push(mask);
+    }
+    return { flags, zoneKey, sep, revoke, unknownBits };
+  }, [dnskeyFlags]);
+
   const dnskeyAlgorithmSelectValue = useMemo(() => {
     if (dnskeyAlgorithmMode === "custom") return "custom";
     if (dnskeyAlgorithm === undefined || dnskeyAlgorithm === null) return "custom";
@@ -4585,8 +4600,6 @@ export function AddRecordDialog({
                 case "DNSKEY":
                 case "CDNSKEY": {
                   const pkNormalized = (dnskeyPublicKey ?? "").replace(/\s+/g, "");
-                  const flagsLabel =
-                    dnskeyFlags === 256 ? "256 (ZSK)" : dnskeyFlags === 257 ? "257 (KSK)" : "";
                   return (
                     <div className="space-y-2">
                       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
@@ -4641,7 +4654,46 @@ export function AddRecordDialog({
                               />
                             )}
                             <div className="text-[11px] text-muted-foreground">
-                              {flagsLabel || "Common: 257 (KSK), 256 (ZSK)."}
+                              Common presets:
+                              <ul className="mt-1 list-disc space-y-1 pl-4">
+                                <li>
+                                  <code>256</code>: Zone Key (ZSK)
+                                </li>
+                                <li>
+                                  <code>257</code>: Zone Key + SEP (KSK)
+                                </li>
+                              </ul>
+                            </div>
+                            <div className="mt-2 rounded-md border border-border/50 bg-background/30 px-3 py-2 text-[11px] text-muted-foreground">
+                              <div className="font-semibold text-foreground/80">
+                                Current flags: <code>{dnskeyFlagsExplainer.flags}</code>
+                              </div>
+                              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
+                                <div>
+                                  <code>256</code> Zone Key:{" "}
+                                  {dnskeyFlagsExplainer.zoneKey ? "on" : "off"}
+                                </div>
+                                <div>
+                                  <code>1</code> SEP:{" "}
+                                  {dnskeyFlagsExplainer.sep ? "on" : "off"}
+                                </div>
+                                <div className="col-span-2">
+                                  <code>128</code> REVOKE:{" "}
+                                  {dnskeyFlagsExplainer.revoke ? "on" : "off"}
+                                </div>
+                              </div>
+                              {dnskeyFlagsExplainer.unknownBits.length > 0 && (
+                                <div className="mt-2">
+                                  Unknown bits set:{" "}
+                                  {dnskeyFlagsExplainer.unknownBits
+                                    .slice(0, 6)
+                                    .map((b) => `0x${b.toString(16)}`)
+                                    .join(", ")}
+                                  {dnskeyFlagsExplainer.unknownBits.length > 6
+                                    ? "…"
+                                    : ""}
+                                </div>
+                              )}
                             </div>
                           </div>
                           <div className="space-y-1 sm:col-span-2">
