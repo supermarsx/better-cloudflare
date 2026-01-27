@@ -56,6 +56,8 @@ import { AfsdbBuilder } from "@/components/dns/builders/AfsdbBuilder";
 import { AplBuilder } from "@/components/dns/builders/AplBuilder";
 import { SmimeaBuilder } from "@/components/dns/builders/SmimeaBuilder";
 import { OpenpgpkeyBuilder } from "@/components/dns/builders/OpenpgpkeyBuilder";
+import { AnameBuilder } from "@/components/dns/builders/AnameBuilder";
+import { SvcbBuilder } from "@/components/dns/builders/SvcbBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -74,6 +76,8 @@ export interface AddRecordDialogProps {
   onAdd: () => void;
   /** Optional name of the zone to display in the dialog */
   zoneName?: string;
+  /** Controls whether unsupported record types appear in the Type dropdown */
+  showUnsupportedRecordTypes?: boolean;
   apiKey?: string;
   email?: string;
 }
@@ -89,6 +93,7 @@ export function AddRecordDialog({
   onRecordChange,
   onAdd,
   zoneName,
+  showUnsupportedRecordTypes = false,
   apiKey,
   email,
 }: AddRecordDialogProps) {
@@ -98,8 +103,6 @@ export function AddRecordDialog({
   const isCustomTTL =
     ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
 
-  const [showUnsupportedRecordTypes, setShowUnsupportedRecordTypes] =
-    useState(false);
   const [confirmInvalid, setConfirmInvalid] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
@@ -118,9 +121,7 @@ export function AddRecordDialog({
       set.add(record.type as RecordType);
 
     return Array.from(set).sort((a, b) =>
-      getRecordTypeLabel(a).localeCompare(getRecordTypeLabel(b), undefined, {
-        sensitivity: "base",
-      }),
+      String(a).localeCompare(String(b), undefined, { sensitivity: "base" }),
     );
   }, [record.type, showUnsupportedRecordTypes]);
 
@@ -776,17 +777,6 @@ export function AddRecordDialog({
                   ))}
                 </SelectContent>
               </Select>
-              <div className="mt-2 flex items-center gap-2">
-                <Switch
-                  checked={showUnsupportedRecordTypes}
-                  onCheckedChange={(checked: boolean) =>
-                    setShowUnsupportedRecordTypes(checked)
-                  }
-                />
-                <div className="text-xs text-muted-foreground">
-                  Show unsupported record types
-                </div>
-              </div>
             </div>
             <div className="space-y-2">
               <Label>{t("TTL", "TTL")}</Label>
@@ -998,9 +988,27 @@ export function AddRecordDialog({
                       onWarningsChange={setActiveBuilderWarnings}
                     />
                   );
+                case "ALIAS":
+                case "ANAME":
+                  return (
+                    <AnameBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
                 case "URI":
                   return (
                     <UriBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "SVCB":
+                case "HTTPS":
+                  return (
+                    <SvcbBuilder
                       record={record}
                       onRecordChange={onRecordChange}
                       onWarningsChange={setActiveBuilderWarnings}

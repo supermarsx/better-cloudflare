@@ -14,19 +14,41 @@ function escapeDnsQuotedString(value: string) {
 function parseURIContent(value: string | undefined) {
   const raw = (value ?? "").trim();
   if (!raw) return { priority: undefined, weight: undefined, target: "" };
-  const parts = raw.split(/\s+/);
-  const pr = Number.parseInt(parts[0] ?? "", 10);
-  const wt = Number.parseInt(parts[1] ?? "", 10);
-  const rest = raw.replace(/^\s*\S+\s+\S+\s+/, "");
-  const trimmed = rest.trim();
-  let target = trimmed;
+  let remaining = raw;
+  let priority: number | undefined;
+  let weight: number | undefined;
+
+  const readToken = () => {
+    remaining = remaining.replace(/^\s+/, "");
+    const m = remaining.match(/^(\S+)(\s+|$)/);
+    if (!m) return null;
+    remaining = remaining.slice(m[1].length).replace(/^\s+/, "");
+    return m[1];
+  };
+
+  // If the string starts with a quote, treat it as target-only.
+  if (!remaining.startsWith("\"")) {
+    const t1 = readToken();
+    const n1 = t1 ? Number.parseInt(t1, 10) : Number.NaN;
+    if (t1 && !Number.isNaN(n1) && /^\d+$/.test(t1)) priority = n1;
+    else if (t1) remaining = `${t1} ${remaining}`.trim();
+
+    if (!remaining.startsWith("\"")) {
+      const t2 = readToken();
+      const n2 = t2 ? Number.parseInt(t2, 10) : Number.NaN;
+      if (t2 && !Number.isNaN(n2) && /^\d+$/.test(t2)) weight = n2;
+      else if (t2) remaining = `${t2} ${remaining}`.trim();
+    }
+  }
+
+  let target = remaining.trim();
   if (target.startsWith("\"") && target.endsWith("\"") && target.length >= 2) {
     target = target.slice(1, -1);
   }
   target = target.replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
   return {
-    priority: Number.isNaN(pr) ? undefined : pr,
-    weight: Number.isNaN(wt) ? undefined : wt,
+    priority,
+    weight,
     target,
   };
 }
@@ -36,10 +58,20 @@ function composeURI(fields: {
   weight: number | undefined;
   target: string;
 }) {
-  const pr = fields.priority ?? "";
-  const wt = fields.weight ?? "";
-  const target = `"${escapeDnsQuotedString(fields.target ?? "")}"`;
-  return `${pr} ${wt} ${target}`.replace(/\s+/g, " ").trim();
+  const pr =
+    fields.priority === undefined || Number.isNaN(Number(fields.priority))
+      ? undefined
+      : fields.priority;
+  const wt =
+    fields.weight === undefined || Number.isNaN(Number(fields.weight))
+      ? undefined
+      : fields.weight;
+  const tg = (fields.target ?? "").trim();
+  const parts: string[] = [];
+  if (pr !== undefined) parts.push(String(pr));
+  if (wt !== undefined) parts.push(String(wt));
+  if (tg.length > 0) parts.push(`"${escapeDnsQuotedString(tg)}"`);
+  return parts.join(" ").trim();
 }
 
 export function UriBuilder({
@@ -128,8 +160,15 @@ export function UriBuilder({
     }
 
     const canonical = composeURI({ priority, weight, target });
+    const content = (record.content ?? "").trim();
+    if (content && canonical && content !== canonical) {
+      pushUnique(
+        issues,
+        "URI: content differs from builder settings (Apply canonical to normalize).",
+      );
+    }
     return { issues, fieldIssues, canonical };
-  }, [priority, spaceConvertedWarning, target, weight]);
+  }, [priority, record.content, spaceConvertedWarning, target, weight]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -147,9 +186,11 @@ export function UriBuilder({
   if (record.type !== "URI") return null;
 
   const apply = (next: { priority?: number; weight?: number; target?: string }) => {
-    const pr = next.priority ?? priority;
-    const wt = next.weight ?? weight;
-    const tg = next.target ?? target;
+    const has = (k: "priority" | "weight" | "target") =>
+      Object.prototype.hasOwnProperty.call(next, k);
+    const pr = has("priority") ? next.priority : priority;
+    const wt = has("weight") ? next.weight : weight;
+    const tg = has("target") ? next.target ?? "" : target;
     onRecordChange({
       ...record,
       content: composeURI({ priority: pr, weight: wt, target: tg }),
@@ -157,122 +198,164 @@ export function UriBuilder({
   };
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="space-y-1">
-          <Label className="text-xs">Priority</Label>
-          <Input
-            type="number"
-            value={priority ?? ""}
-            placeholder="10"
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const n = Number.parseInt(e.target.value, 10);
-              const val = Number.isNaN(n) ? undefined : n;
-              setPriority(val);
-              apply({ priority: val });
-            }}
-          />
-          <div className="text-xs text-muted-foreground">
-            Lower wins. Use the same value across multiple targets to enable
-            weighting.
-          </div>
-          {validation.fieldIssues.priority.length > 0 && (
-            <div className="text-xs text-red-600">
-              {validation.fieldIssues.priority.join(" ")}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1">
-          <Label className="text-xs">Weight</Label>
-          <Input
-            type="number"
-            value={weight ?? ""}
-            placeholder="1"
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const n = Number.parseInt(e.target.value, 10);
-              const val = Number.isNaN(n) ? undefined : n;
-              setWeight(val);
-              apply({ weight: val });
-            }}
-          />
-          <div className="text-xs text-muted-foreground">
-            Used only among records with the same priority. 0 is allowed.
-          </div>
-          {validation.fieldIssues.weight.length > 0 && (
-            <div className="text-xs text-red-600">
-              {validation.fieldIssues.weight.join(" ")}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Target URI</Label>
-          <Input
-            value={target}
-            placeholder="e.g., https://example.com/path"
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const raw = e.target.value;
-              const converted = raw.includes(" ") ? raw.replace(/ /g, "%20") : raw;
-              if (converted !== raw) setSpaceConvertedWarning(true);
-              setTarget(converted);
-              apply({ target: converted });
-            }}
-          />
-          <div className="text-xs text-muted-foreground">
-            Must be an absolute URI (include a scheme). Avoid spaces (use %20).
-            Stored as a quoted string.
-          </div>
-          {validation.fieldIssues.target.length > 0 && (
-            <div className="text-xs text-red-600">
-              {validation.fieldIssues.target.join(" ")}
-            </div>
-          )}
-        </div>
-      </div>
-
+    <div className="space-y-2">
       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">
-          Preview (content)
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-muted-foreground">
+            URI builder
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            Format: <code>priority weight "target"</code>
+          </div>
         </div>
-        <pre className="mt-1 whitespace-pre-wrap text-xs">{validation.canonical}</pre>
-        <div className="mt-2 flex flex-wrap justify-end gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setPriority(10);
-              setWeight(1);
-              setTarget("https://example.com/");
-              apply({ priority: 10, weight: 1, target: "https://example.com/" });
-            }}
-          >
-            Example https
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setPriority(10);
-              setWeight(1);
-              setTarget("mailto:admin@example.com");
-              apply({
-                priority: 10,
-                weight: 1,
-                target: "mailto:admin@example.com",
-              });
-            }}
-          >
-            Example mailto
-          </Button>
-        </div>
-      </div>
 
-      <div className="text-xs text-muted-foreground">
-        Lower priority wins; weight is used for load balancing among same-priority
-        records. Target should be an absolute URI.
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
+          <div className="space-y-1 sm:col-span-1">
+            <Label className="text-xs">Priority</Label>
+            <Input
+              type="number"
+              value={priority ?? ""}
+              placeholder="10"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const raw = e.target.value;
+                const val = raw === "" ? undefined : Number.parseInt(raw, 10);
+                const next = Number.isNaN(Number(val)) ? undefined : val;
+                setPriority(next);
+                apply({ priority: next });
+              }}
+            />
+            <div className="text-[11px] text-muted-foreground">
+              Lower wins; same priority enables weighting.
+            </div>
+          </div>
+
+          <div className="space-y-1 sm:col-span-1">
+            <Label className="text-xs">Weight</Label>
+            <Input
+              type="number"
+              value={weight ?? ""}
+              placeholder="1"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const raw = e.target.value;
+                const val = raw === "" ? undefined : Number.parseInt(raw, 10);
+                const next = Number.isNaN(Number(val)) ? undefined : val;
+                setWeight(next);
+                apply({ weight: next });
+              }}
+            />
+            <div className="text-[11px] text-muted-foreground">
+              Used only among records with same priority.
+            </div>
+          </div>
+
+          <div className="space-y-1 sm:col-span-4">
+            <Label className="text-xs">Target URI</Label>
+            <Input
+              value={target}
+              placeholder="e.g., https://example.com/path"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const raw = e.target.value;
+                const converted = raw.includes(" ")
+                  ? raw.replace(/ /g, "%20")
+                  : raw;
+                if (converted !== raw) setSpaceConvertedWarning(true);
+                setTarget(converted);
+                apply({ target: converted });
+              }}
+            />
+            <div className="text-[11px] text-muted-foreground">
+              Stored as a quoted string. Include a scheme; avoid spaces (use %20).
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              const parsed = parseURIContent(record.content);
+              setPriority(parsed.priority);
+              setWeight(parsed.weight);
+              setTarget(parsed.target);
+              setSpaceConvertedWarning(false);
+            }}
+          >
+            Load from content
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => onRecordChange({ ...record, content: validation.canonical })}
+          >
+            Apply canonical to content
+          </Button>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
+          <div className="text-xs font-semibold text-muted-foreground">
+            Preview (canonical)
+          </div>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {validation.canonical}
+          </pre>
+          <div className="mt-2 flex flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPriority(10);
+                setWeight(1);
+                setTarget("https://example.com/");
+                setSpaceConvertedWarning(false);
+                apply({ priority: 10, weight: 1, target: "https://example.com/" });
+              }}
+            >
+              Example https
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPriority(10);
+                setWeight(1);
+                setTarget("mailto:admin@example.com");
+                setSpaceConvertedWarning(false);
+                apply({
+                  priority: 10,
+                  weight: 1,
+                  target: "mailto:admin@example.com",
+                });
+              }}
+            >
+              Example mailto
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+          <div className="text-xs font-semibold text-muted-foreground">
+            Recommendations
+          </div>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+            <li>Keep target under ~2KB for broad resolver compatibility.</li>
+            <li>Prefer percent-encoding over spaces (builder converts spaces to %20).</li>
+            <li>Use multiple records with same priority and different weights for balancing.</li>
+          </ul>
+        </div>
+
+        {validation.issues.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <div className="text-sm font-semibold">URI warnings</div>
+            <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
+              <ul className="list-disc pl-5 text-xs text-foreground/85">
+                {validation.issues.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
-

@@ -185,6 +185,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [globalPerPage, setGlobalPerPage] = useState(50);
   const [zonePerPage, setZonePerPage] = useState<Record<string, number>>({});
+  const [showUnsupportedRecordTypes, setShowUnsupportedRecordTypes] = useState(
+    storageManager.getShowUnsupportedRecordTypes(),
+  );
+  const [zoneShowUnsupportedRecordTypes, setZoneShowUnsupportedRecordTypes] =
+    useState<Record<string, boolean>>(
+      storageManager.getZoneShowUnsupportedRecordTypesMap(),
+    );
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
@@ -242,6 +249,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
   );
+
+  const resolvedShowUnsupportedRecordTypes = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
+    const zoneId = activeTab.zoneId;
+    if (Object.prototype.hasOwnProperty.call(zoneShowUnsupportedRecordTypes, zoneId))
+      return zoneShowUnsupportedRecordTypes[zoneId] === true;
+    return showUnsupportedRecordTypes;
+  }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -447,6 +462,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             auto_refresh_interval?: number;
             default_per_page?: number;
             zone_per_page?: Record<string, number>;
+            show_unsupported_record_types?: boolean;
+            zone_show_unsupported_record_types?: Record<string, boolean>;
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
@@ -463,6 +480,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           if (prefObj.zone_per_page && typeof prefObj.zone_per_page === "object") {
             setZonePerPage(prefObj.zone_per_page);
+          }
+          if (typeof prefObj.show_unsupported_record_types === "boolean") {
+            setShowUnsupportedRecordTypes(prefObj.show_unsupported_record_types);
+          }
+          if (
+            prefObj.zone_show_unsupported_record_types &&
+            typeof prefObj.zone_show_unsupported_record_types === "object"
+          ) {
+            setZoneShowUnsupportedRecordTypes(prefObj.zone_show_unsupported_record_types);
           }
           if (typeof prefObj.reopen_last_tabs === "boolean") {
             setReopenLastTabs(prefObj.reopen_last_tabs);
@@ -493,6 +519,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (last) setSelectedZoneId(last);
     setGlobalPerPage(storageManager.getDefaultPerPage());
     setZonePerPage(storageManager.getZonePerPageMap());
+    setShowUnsupportedRecordTypes(storageManager.getShowUnsupportedRecordTypes());
+    setZoneShowUnsupportedRecordTypes(
+      storageManager.getZoneShowUnsupportedRecordTypesMap(),
+    );
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
@@ -549,6 +579,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   useEffect(() => {
     storageManager.setDefaultPerPage(globalPerPage);
     storageManager.setZonePerPageMap(zonePerPage);
+    storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
+    storageManager.setZoneShowUnsupportedRecordTypesMap(zoneShowUnsupportedRecordTypes);
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
     storageManager.setLastOpenTabs(lastOpenTabs);
@@ -563,6 +595,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             ...(prefs as Record<string, unknown>),
             default_per_page: globalPerPage,
             zone_per_page: zonePerPage,
+            show_unsupported_record_types: showUnsupportedRecordTypes,
+            zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
             last_open_tabs: lastOpenTabs,
@@ -576,6 +610,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [
     globalPerPage,
     zonePerPage,
+    showUnsupportedRecordTypes,
+    zoneShowUnsupportedRecordTypes,
     reopenLastTabs,
     reopenZoneTabs,
     lastOpenTabs,
@@ -1620,6 +1656,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       }
                       onAdd={handleAddRecord}
                       zoneName={activeTab.zoneName}
+                      showUnsupportedRecordTypes={resolvedShowUnsupportedRecordTypes}
                       apiKey={apiKey}
                       email={email}
                     />
@@ -1948,6 +1985,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </Select>
                         <div className="text-xs text-muted-foreground">
                           Overrides the global default for this zone only.
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">
+                        Unsupported record types
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Select
+                          value={
+                            Object.prototype.hasOwnProperty.call(
+                              zoneShowUnsupportedRecordTypes,
+                              activeTab.zoneId,
+                            )
+                              ? zoneShowUnsupportedRecordTypes[activeTab.zoneId]
+                                ? "show"
+                                : "hide"
+                              : "inherit"
+                          }
+                          onValueChange={(v) => {
+                            if (v === "inherit") {
+                              setZoneShowUnsupportedRecordTypes((prev) => {
+                                const next = { ...prev };
+                                delete next[activeTab.zoneId];
+                                return next;
+                              });
+                              notifySaved(
+                                `Zone unsupported record types set to inherit (${
+                                  showUnsupportedRecordTypes ? "show" : "hide"
+                                }).`,
+                              );
+                              return;
+                            }
+                            const enabled = v === "show";
+                            setZoneShowUnsupportedRecordTypes((prev) => ({
+                              ...prev,
+                              [activeTab.zoneId]: enabled,
+                            }));
+                            notifySaved(
+                              enabled
+                                ? "Zone will show unsupported record types in Add Record."
+                                : "Zone will hide unsupported record types in Add Record.",
+                            );
+                          }}
+                        >
+                          <SelectTrigger className="w-48">
+                            <SelectValue placeholder="Inherit" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="inherit">
+                              Inherit ({showUnsupportedRecordTypes ? "Show" : "Hide"})
+                            </SelectItem>
+                            <SelectItem value="hide">Hide</SelectItem>
+                            <SelectItem value="show">Show</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="text-xs text-muted-foreground">
+                          Controls whether non-Cloudflare record types appear in the Type dropdown for this zone.
                         </div>
                       </div>
                     </div>
@@ -2395,6 +2490,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             New zone tabs inherit this value unless overridden.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Unsupported record types</div>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={showUnsupportedRecordTypes}
+                            onCheckedChange={(checked: boolean) => {
+                              setShowUnsupportedRecordTypes(checked);
+                              notifySaved(
+                                checked
+                                  ? "Unsupported record types will show in Add Record."
+                                  : "Add Record will show Cloudflare-supported types only.",
+                              );
+                            }}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            Controls the Type dropdown default. Zones can override this.
                           </div>
                         </div>
                       </div>

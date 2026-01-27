@@ -22,6 +22,8 @@ interface StorageData {
   autoRefreshInterval?: number;
   defaultPerPage?: number;
   zonePerPage?: Record<string, number>;
+  showUnsupportedRecordTypes?: boolean;
+  zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
   reopenLastTabs?: boolean;
   reopenZoneTabs?: Record<string, boolean>;
   lastOpenTabs?: string[];
@@ -545,6 +547,36 @@ export class StorageManager {
 
   getDefaultPerPage(): number {
     return this.data.defaultPerPage ?? 50;
+  }
+
+  setShowUnsupportedRecordTypes(enabled: boolean): void {
+    this.data.showUnsupportedRecordTypes = enabled;
+    this.save();
+  }
+
+  getShowUnsupportedRecordTypes(): boolean {
+    return this.data.showUnsupportedRecordTypes === true;
+  }
+
+  setZoneShowUnsupportedRecordTypes(zoneId: string, enabled: boolean | null): void {
+    if (!this.data.zoneShowUnsupportedRecordTypes) {
+      this.data.zoneShowUnsupportedRecordTypes = {};
+    }
+    if (enabled === null) {
+      delete this.data.zoneShowUnsupportedRecordTypes[zoneId];
+    } else {
+      this.data.zoneShowUnsupportedRecordTypes[zoneId] = enabled;
+    }
+    this.save();
+  }
+
+  setZoneShowUnsupportedRecordTypesMap(map: Record<string, boolean>): void {
+    this.data.zoneShowUnsupportedRecordTypes = { ...map };
+    this.save();
+  }
+
+  getZoneShowUnsupportedRecordTypesMap(): Record<string, boolean> {
+    return { ...(this.data.zoneShowUnsupportedRecordTypes ?? {}) };
   }
 
   setConfirmLogout(enabled: boolean): void {
