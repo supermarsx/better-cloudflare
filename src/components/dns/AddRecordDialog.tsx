@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
+import { KNOWN_TLDS } from "@/lib/tlds";
 import {
   parseSRV,
   composeSRV,
@@ -146,6 +147,7 @@ export function AddRecordDialog({
   const [uriPriority, setUriPriority] = useState<number | undefined>(undefined);
   const [uriWeight, setUriWeight] = useState<number | undefined>(undefined);
   const [uriTarget, setUriTarget] = useState<string>("");
+  const [uriTargetSpaceWarning, setUriTargetSpaceWarning] = useState(false);
 
   const [soaPrimaryNs, setSoaPrimaryNs] = useState<string>("");
   const [soaAdmin, setSoaAdmin] = useState<string>("");
@@ -1020,6 +1022,8 @@ export function AddRecordDialog({
     if (!target) {
       pushUnique(fieldIssues.target, "target is required.");
     } else {
+      if (uriTargetSpaceWarning)
+        pushUnique(fieldIssues.target, "Spaces were converted to %20.");
       if (/\s/.test(target))
         pushUnique(fieldIssues.target, "URI should not contain spaces (use %20).");
       if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target))
@@ -1040,7 +1044,7 @@ export function AddRecordDialog({
     }
 
     return { issues, fieldIssues };
-  }, [record.type, record.content]);
+  }, [record.type, record.content, uriTargetSpaceWarning]);
 
   const validationWarnings = useMemo(() => {
     const warnings: string[] = [];
@@ -1068,6 +1072,26 @@ export function AddRecordDialog({
       return true;
     };
 
+    const ipv4ToInt = (value: string) => {
+      if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return null;
+      const parts = value.split(".").map((p) => Number(p));
+      if (parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+      return (
+        ((parts[0] << 24) >>> 0) |
+        ((parts[1] << 16) >>> 0) |
+        ((parts[2] << 8) >>> 0) |
+        (parts[3] >>> 0)
+      ) >>> 0;
+    };
+
+    const ipv4InCidr = (value: string, base: string, prefix: number) => {
+      const v = ipv4ToInt(value);
+      const b = ipv4ToInt(base);
+      if (v === null || b === null) return false;
+      const mask = prefix === 0 ? 0 : (~((1 << (32 - prefix)) - 1) >>> 0) >>> 0;
+      return ((v & mask) >>> 0) === ((b & mask) >>> 0);
+    };
+
     const isValidIPv4 = (value: string) => {
       const parts = value.split(".");
       if (parts.length !== 4) return false;
@@ -1088,6 +1112,61 @@ export function AddRecordDialog({
       return double ? groups.length <= 7 : groups.length === 8;
     };
 
+    const normalizeIPv6 = (value: string) => {
+      const input = value.trim().toLowerCase();
+      if (!isValidIPv6(input)) return null;
+      const hasDouble = input.includes("::");
+      const parts = input.split("::");
+      const left = parts[0] ? parts[0].split(":").filter(Boolean) : [];
+      const right = hasDouble && parts[1] ? parts[1].split(":").filter(Boolean) : [];
+      const leftNums = left.map((g) => Number.parseInt(g, 16));
+      const rightNums = right.map((g) => Number.parseInt(g, 16));
+      if (
+        leftNums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff) ||
+        rightNums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)
+      )
+        return null;
+      const total = leftNums.length + rightNums.length;
+      if (!hasDouble && total !== 8) return null;
+      if (hasDouble && total > 8) return null;
+      const fill = hasDouble ? new Array(8 - total).fill(0) : [];
+      return [...leftNums, ...fill, ...rightNums];
+    };
+
+    const ipv6InPrefix = (value: string, base: string, prefix: number) => {
+      const v = normalizeIPv6(value);
+      const b = normalizeIPv6(base);
+      if (!v || !b) return false;
+      let bits = prefix;
+      for (let i = 0; i < 8; i++) {
+        if (bits <= 0) return true;
+        const take = Math.min(16, bits);
+        const mask = take === 16 ? 0xffff : ((0xffff << (16 - take)) & 0xffff);
+        if ((v[i] & mask) !== (b[i] & mask)) return false;
+        bits -= take;
+      }
+      return true;
+    };
+
+    const getHostnameTld = (value: string) => {
+      const host = normalizeDnsName(value).toLowerCase();
+      if (!host.includes(".")) return null;
+      const tld = host.split(".").pop();
+      if (!tld) return null;
+      if (!/^[a-z0-9-]{2,63}$/.test(tld)) return null;
+      return tld;
+    };
+
+    const warnInvalidTld = (value: string, context: string) => {
+      const tld = getHostnameTld(value);
+      if (!tld) return;
+      if (!KNOWN_TLDS.has(tld)) {
+        pushUnique(
+          `${context} uses an unknown/invalid TLD “.${tld}” (not in the IANA root zone).`,
+        );
+      }
+    };
+
     const isHex = (value: string) =>
       value.length > 0 && /^[0-9a-fA-F]+$/.test(value);
 
@@ -1095,22 +1174,77 @@ export function AddRecordDialog({
       case "A":
         if (content && !isValidIPv4(content))
           pushUnique("A record content does not look like a valid IPv4 address.");
+        if (content && isValidIPv4(content)) {
+          if (ipv4InCidr(content, "10.0.0.0", 8))
+            pushUnique("IPv4 is private (RFC1918): 10.0.0.0/8.");
+          else if (ipv4InCidr(content, "172.16.0.0", 12))
+            pushUnique("IPv4 is private (RFC1918): 172.16.0.0/12.");
+          else if (ipv4InCidr(content, "192.168.0.0", 16))
+            pushUnique("IPv4 is private (RFC1918): 192.168.0.0/16.");
+          else if (ipv4InCidr(content, "127.0.0.0", 8))
+            pushUnique("IPv4 is loopback: 127.0.0.0/8.");
+          else if (ipv4InCidr(content, "169.254.0.0", 16))
+            pushUnique("IPv4 is link-local: 169.254.0.0/16.");
+          else if (ipv4InCidr(content, "100.64.0.0", 10))
+            pushUnique("IPv4 is CGNAT/shared address space: 100.64.0.0/10.");
+          else if (ipv4InCidr(content, "192.0.2.0", 24))
+            pushUnique("IPv4 is TEST-NET-1 (documentation): 192.0.2.0/24.");
+          else if (ipv4InCidr(content, "198.51.100.0", 24))
+            pushUnique("IPv4 is TEST-NET-2 (documentation): 198.51.100.0/24.");
+          else if (ipv4InCidr(content, "203.0.113.0", 24))
+            pushUnique("IPv4 is TEST-NET-3 (documentation): 203.0.113.0/24.");
+          else if (ipv4InCidr(content, "224.0.0.0", 4))
+            pushUnique("IPv4 is multicast: 224.0.0.0/4.");
+          else if (ipv4InCidr(content, "240.0.0.0", 4))
+            pushUnique("IPv4 is reserved/future use: 240.0.0.0/4.");
+          else if (ipv4InCidr(content, "0.0.0.0", 8))
+            pushUnique("IPv4 is 'this network' (special): 0.0.0.0/8.");
+          else if (ipv4InCidr(content, "255.255.255.255", 32))
+            pushUnique("IPv4 is broadcast address: 255.255.255.255.");
+          else if (ipv4InCidr(content, "192.0.0.0", 24))
+            pushUnique("IPv4 is IETF protocol assignments: 192.0.0.0/24.");
+          else if (ipv4InCidr(content, "198.18.0.0", 15))
+            pushUnique("IPv4 is benchmark testing: 198.18.0.0/15.");
+        }
         break;
       case "AAAA":
         if (content && !isValidIPv6(content))
           pushUnique(
             "AAAA record content does not look like a valid IPv6 address.",
           );
+        if (content && isValidIPv6(content)) {
+          const c = content.trim().toLowerCase();
+          if (c === "::")
+            pushUnique("IPv6 is unspecified address (::).");
+          else if (c === "::1")
+            pushUnique("IPv6 is loopback (::1).");
+          else if (ipv6InPrefix(c, "fc00::", 7))
+            pushUnique("IPv6 is unique local (ULA): fc00::/7.");
+          else if (ipv6InPrefix(c, "fe80::", 10))
+            pushUnique("IPv6 is link-local: fe80::/10.");
+          else if (ipv6InPrefix(c, "ff00::", 8))
+            pushUnique("IPv6 is multicast: ff00::/8.");
+          else if (ipv6InPrefix(c, "2001:db8::", 32))
+            pushUnique("IPv6 is documentation: 2001:db8::/32.");
+          else if (ipv6InPrefix(c, "2002::", 16))
+            pushUnique("IPv6 is 6to4 transition: 2002::/16.");
+          else if (ipv6InPrefix(c, "64:ff9b::", 96))
+            pushUnique("IPv6 is NAT64 well-known prefix: 64:ff9b::/96.");
+        }
         break;
       case "CNAME":
       case "NS":
       case "PTR":
         if (content && !looksLikeHostname(content))
           pushUnique(`${type} content does not look like a hostname.`);
+        if (content && looksLikeHostname(content))
+          warnInvalidTld(content, `${type} content`);
         break;
       case "MX": {
         if (content && !looksLikeHostname(content))
           pushUnique("MX content does not look like a hostname.");
+        if (content && looksLikeHostname(content))
+          warnInvalidTld(content, "MX content");
         const pr = record.priority;
         if (pr === undefined || pr === null || Number.isNaN(Number(pr))) {
           pushUnique("MX priority is missing.");
@@ -1156,6 +1290,8 @@ export function AddRecordDialog({
           pushUnique("SRV port should be between 0 and 65535.");
         if (parsed.target && !looksLikeHostname(parsed.target))
           pushUnique("SRV target does not look like a hostname.");
+        if (parsed.target && looksLikeHostname(parsed.target))
+          warnInvalidTld(parsed.target, "SRV target");
         if (name && !name.startsWith("_"))
           pushUnique("SRV name usually starts with _service._proto.");
         break;
@@ -1215,6 +1351,9 @@ export function AddRecordDialog({
       }
       case "SOA": {
         for (const msg of soaValidation.issues) pushUnique(msg);
+        const parsed = parseSOAContent(record.content);
+        if (parsed.mname) warnInvalidTld(parsed.mname, "SOA mname");
+        if (parsed.rname) warnInvalidTld(parsed.rname, "SOA rname");
         break;
       }
       case "URI": {
@@ -1315,6 +1454,12 @@ export function AddRecordDialog({
         <Button
           variant="outline"
           className="border-border/60 bg-muted/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
+          onClick={() => {
+            setConfirmInvalid(false);
+            setShowDiscardConfirm(false);
+            setUriTargetSpaceWarning(false);
+            onRecordChange(createEmptyDraft());
+          }}
         >
           <Plus className="h-4 w-4 mr-2" />
           Add Record
@@ -2206,6 +2351,10 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">
+                            Lower wins. Use the same value across multiple targets to
+                            enable weighting.
+                          </div>
                           {uriValidation.fieldIssues.priority.length > 0 && (
                             <div className="text-xs text-red-600">
                               {uriValidation.fieldIssues.priority.join(" ")}
@@ -2232,6 +2381,10 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">
+                            Used only among records with the same priority. 0 is
+                            allowed.
+                          </div>
                           {uriValidation.fieldIssues.weight.length > 0 && (
                             <div className="text-xs text-red-600">
                               {uriValidation.fieldIssues.weight.join(" ")}
@@ -2244,18 +2397,38 @@ export function AddRecordDialog({
                             value={uriTarget}
                             placeholder="https://example.com/path"
                             onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                              const v = e.target.value;
-                              setUriTarget(v);
+                              const raw = e.target.value;
+                              if (/\s/.test(raw)) {
+                                const converted = raw.replace(/\s/g, "%20");
+                                setUriTargetSpaceWarning(true);
+                                setUriTarget(converted);
+                                onRecordChange({
+                                  ...record,
+                                  content: composeURI({
+                                    priority: uriPriority,
+                                    weight: uriWeight,
+                                    target: converted,
+                                  }),
+                                });
+                                return;
+                              }
+
+                              setUriTargetSpaceWarning(false);
+                              setUriTarget(raw);
                               onRecordChange({
                                 ...record,
                                 content: composeURI({
                                   priority: uriPriority,
                                   weight: uriWeight,
-                                  target: v,
+                                  target: raw,
                                 }),
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">
+                            Must be an absolute URI (include a scheme). Avoid spaces
+                            (use %20). This field will be stored as a quoted string.
+                          </div>
                           {uriValidation.fieldIssues.target.length > 0 && (
                             <div className="text-xs text-red-600">
                               {uriValidation.fieldIssues.target.join(" ")}
@@ -2494,6 +2667,7 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">Seconds.</div>
                           {soaValidation.fieldIssues.refresh.length > 0 && (
                             <div className="text-xs text-red-600">
                               {soaValidation.fieldIssues.refresh.join(" ")}
@@ -2524,6 +2698,7 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">Seconds.</div>
                           {soaValidation.fieldIssues.retry.length > 0 && (
                             <div className="text-xs text-red-600">
                               {soaValidation.fieldIssues.retry.join(" ")}
@@ -2554,6 +2729,7 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">Seconds.</div>
                           {soaValidation.fieldIssues.expire.length > 0 && (
                             <div className="text-xs text-red-600">
                               {soaValidation.fieldIssues.expire.join(" ")}
@@ -2584,6 +2760,9 @@ export function AddRecordDialog({
                               });
                             }}
                           />
+                          <div className="text-xs text-muted-foreground">
+                            Seconds (negative caching TTL in modern DNS).
+                          </div>
                           {soaValidation.fieldIssues.minimum.length > 0 && (
                             <div className="text-xs text-red-600">
                               {soaValidation.fieldIssues.minimum.join(" ")}
