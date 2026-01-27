@@ -416,6 +416,9 @@ export function AddRecordDialog({
   const [dmarcSubdomainPolicy, setDmarcSubdomainPolicy] = useState<
     "" | "none" | "quarantine" | "reject"
   >("");
+  const [dmarcFo, setDmarcFo] = useState<string>("");
+  const [dmarcRi, setDmarcRi] = useState<number | undefined>(undefined);
+  const [dmarcRf, setDmarcRf] = useState<string>("");
   const [dkimKeyType, setDkimKeyType] = useState<"rsa" | "ed25519">("rsa");
   const [dkimSelector, setDkimSelector] = useState<string>("");
   const [dkimPublicKey, setDkimPublicKey] = useState<string>("");
@@ -711,6 +714,23 @@ export function AddRecordDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, effectiveTxtMode, record.name]);
 
+  useEffect(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "dmarc") return;
+    const parsed = parseDMARC(record.content);
+    if (parsed.policy !== dmarcPolicy) setDmarcPolicy(parsed.policy);
+    if (parsed.rua !== dmarcRua) setDmarcRua(parsed.rua);
+    if (parsed.ruf !== dmarcRuf) setDmarcRuf(parsed.ruf);
+    if (parsed.pct !== dmarcPct) setDmarcPct(parsed.pct);
+    if (parsed.adkim !== dmarcAdkim) setDmarcAdkim(parsed.adkim);
+    if (parsed.aspf !== dmarcAspf) setDmarcAspf(parsed.aspf);
+    if (parsed.subdomainPolicy !== dmarcSubdomainPolicy)
+      setDmarcSubdomainPolicy(parsed.subdomainPolicy);
+    if (parsed.fo !== dmarcFo) setDmarcFo(parsed.fo);
+    if (parsed.rf !== dmarcRf) setDmarcRf(parsed.rf);
+    if (parsed.ri !== dmarcRi) setDmarcRi(parsed.ri);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, effectiveTxtMode, record.content]);
+
   const validateDKIM = useCallback((value: string) => {
     const problems: string[] = [];
     const content = value.trim();
@@ -960,6 +980,110 @@ export function AddRecordDialog({
       .map((s) => s.trim())
       .filter(Boolean);
     const map = new Map<string, string>();
+    const seen = new Map<string, number>();
+    for (const tag of tags) {
+      const [kRaw, ...rest] = tag.split("=");
+      const k = (kRaw ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const v = rest.join("=").trim();
+      seen.set(k, (seen.get(k) ?? 0) + 1);
+      map.set(k, v);
+    }
+    for (const [k, count] of seen) {
+      if (count > 1) problems.push(`Duplicate DMARC tag: ${k}=`);
+    }
+    const allowedTags = new Set([
+      "v",
+      "p",
+      "sp",
+      "adkim",
+      "aspf",
+      "pct",
+      "rua",
+      "ruf",
+      "fo",
+      "rf",
+      "ri",
+    ]);
+    for (const k of map.keys()) {
+      if (!allowedTags.has(k)) problems.push(`Unknown DMARC tag: ${k}=`);
+    }
+    const p = map.get("p");
+    if (!p) problems.push("Missing p= (policy).");
+    else if (!["none", "quarantine", "reject"].includes(p.toLowerCase()))
+      problems.push("p= should be none, quarantine, or reject.");
+    const sp = map.get("sp");
+    if (sp && !["none", "quarantine", "reject"].includes(sp.toLowerCase()))
+      problems.push("sp= should be none, quarantine, or reject.");
+    const adkim = map.get("adkim");
+    if (adkim && !["r", "s"].includes(adkim.toLowerCase()))
+      problems.push("adkim= should be r or s.");
+    const aspf = map.get("aspf");
+    if (aspf && !["r", "s"].includes(aspf.toLowerCase()))
+      problems.push("aspf= should be r or s.");
+    const parseMailtoList = (raw: string, label: "rua" | "ruf") => {
+      const parts = raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const uriRaw of parts) {
+        const uri = uriRaw.split("!")[0]?.trim() ?? "";
+        if (!uri.toLowerCase().startsWith("mailto:"))
+          problems.push(`${label}= URIs should start with mailto:.`);
+      }
+    };
+    const rua = map.get("rua");
+    if (rua) parseMailtoList(rua, "rua");
+    const ruf = map.get("ruf");
+    if (ruf) parseMailtoList(ruf, "ruf");
+    const pct = map.get("pct");
+    if (pct) {
+      const n = Number.parseInt(pct, 10);
+      if (Number.isNaN(n) || n < 0 || n > 100)
+        problems.push("pct= should be 0–100.");
+    }
+    const fo = map.get("fo");
+    if (fo) {
+      const allowed = new Set(["0", "1", "d", "s"]);
+      const parts = fo.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      for (const p of parts) if (!allowed.has(p)) problems.push(`Unknown fo= value: ${p}`);
+    }
+    const rf = map.get("rf");
+    if (rf) {
+      const allowed = new Set(["afrf", "iodef"]);
+      const parts = rf.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      for (const p of parts) if (!allowed.has(p)) problems.push(`Unknown rf= value: ${p}`);
+    }
+    const ri = map.get("ri");
+    if (ri) {
+      const n = Number.parseInt(ri, 10);
+      if (Number.isNaN(n) || n < 60) problems.push("ri= should be a number of seconds (>= 60).");
+    }
+    return { ok: problems.length === 0, problems };
+  }, []);
+
+  const parseDMARC = useCallback((value: string | undefined) => {
+    const content = (value ?? "").trim();
+    if (!content.toLowerCase().startsWith("v=dmarc1")) {
+      return {
+        tags: new Map<string, string>(),
+        policy: "none" as const,
+        subdomainPolicy: "" as "" | "none" | "quarantine" | "reject",
+        adkim: "r" as const,
+        aspf: "r" as const,
+        pct: undefined as number | undefined,
+        rua: "",
+        ruf: "",
+        fo: "",
+        rf: "",
+        ri: undefined as number | undefined,
+      };
+    }
+    const tags = content
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const map = new Map<string, string>();
     for (const tag of tags) {
       const [kRaw, ...rest] = tag.split("=");
       const k = (kRaw ?? "").trim().toLowerCase();
@@ -967,30 +1091,153 @@ export function AddRecordDialog({
       const v = rest.join("=").trim();
       map.set(k, v);
     }
-    const p = map.get("p");
-    if (!p) problems.push("Missing p= (policy).");
-    else if (!["none", "quarantine", "reject"].includes(p.toLowerCase()))
-      problems.push("p= should be none, quarantine, or reject.");
-    const rua = map.get("rua");
-    if (rua) {
-      const parts = rua.split(",").map((s) => s.trim());
-      if (parts.some((u) => u && !u.toLowerCase().startsWith("mailto:")))
-        problems.push("rua= URIs should start with mailto:.");
-    }
-    const ruf = map.get("ruf");
-    if (ruf) {
-      const parts = ruf.split(",").map((s) => s.trim());
-      if (parts.some((u) => u && !u.toLowerCase().startsWith("mailto:")))
-        problems.push("ruf= URIs should start with mailto:.");
-    }
-    const pct = map.get("pct");
-    if (pct) {
-      const n = Number(pct);
-      if (Number.isNaN(n) || n < 0 || n > 100)
-        problems.push("pct= should be 0–100.");
-    }
-    return { ok: problems.length === 0, problems };
+    const policyRaw = (map.get("p") ?? "none").toLowerCase();
+    const policy = (["none", "quarantine", "reject"].includes(policyRaw)
+      ? policyRaw
+      : "none") as "none" | "quarantine" | "reject";
+    const spRaw = (map.get("sp") ?? "").toLowerCase();
+    const subdomainPolicy = (["none", "quarantine", "reject"].includes(spRaw)
+      ? spRaw
+      : "") as "" | "none" | "quarantine" | "reject";
+    const adkimRaw = (map.get("adkim") ?? "r").toLowerCase();
+    const adkim = (adkimRaw === "s" ? "s" : "r") as "r" | "s";
+    const aspfRaw = (map.get("aspf") ?? "r").toLowerCase();
+    const aspf = (aspfRaw === "s" ? "s" : "r") as "r" | "s";
+    const pctRaw = map.get("pct");
+    const pct =
+      pctRaw !== undefined
+        ? (() => {
+            const n = Number.parseInt(pctRaw, 10);
+            return Number.isNaN(n) ? undefined : n;
+          })()
+        : undefined;
+    const rua = map.get("rua") ?? "";
+    const ruf = map.get("ruf") ?? "";
+    const fo = map.get("fo") ?? "";
+    const rf = map.get("rf") ?? "";
+    const riRaw = map.get("ri");
+    const ri =
+      riRaw !== undefined
+        ? (() => {
+            const n = Number.parseInt(riRaw, 10);
+            return Number.isNaN(n) ? undefined : n;
+          })()
+        : undefined;
+    return {
+      tags: map,
+      policy,
+      subdomainPolicy,
+      adkim,
+      aspf,
+      pct,
+      rua,
+      ruf,
+      fo,
+      rf,
+      ri,
+    };
   }, []);
+
+  const buildDMARC = useCallback(
+    (fields: {
+      policy: "none" | "quarantine" | "reject";
+      rua: string;
+      ruf: string;
+      pct: number | undefined;
+      adkim: "r" | "s";
+      aspf: "r" | "s";
+      subdomainPolicy: "" | "none" | "quarantine" | "reject";
+      fo: string;
+      rf: string;
+      ri: number | undefined;
+    }) => {
+      const parts: string[] = ["v=DMARC1", `p=${fields.policy}`];
+      if (fields.subdomainPolicy) parts.push(`sp=${fields.subdomainPolicy}`);
+      if (fields.adkim) parts.push(`adkim=${fields.adkim}`);
+      if (fields.aspf) parts.push(`aspf=${fields.aspf}`);
+      if (fields.pct !== undefined) parts.push(`pct=${fields.pct}`);
+      if (fields.rua.trim()) parts.push(`rua=${fields.rua.trim()}`);
+      if (fields.ruf.trim()) parts.push(`ruf=${fields.ruf.trim()}`);
+      if (fields.fo.trim()) parts.push(`fo=${fields.fo.trim()}`);
+      if (fields.rf.trim()) parts.push(`rf=${fields.rf.trim()}`);
+      if (fields.ri !== undefined) parts.push(`ri=${fields.ri}`);
+      return parts.join("; ") + ";";
+    },
+    [],
+  );
+
+  const dmarcDiagnostics = useMemo(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "dmarc") {
+      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+    }
+    const issues: string[] = [];
+    const nameIssues: string[] = [];
+    const push = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const name = (record.name ?? "").trim();
+    if (!name) {
+      push(nameIssues, 'DMARC: name is usually "_dmarc".');
+    } else if (name !== "_dmarc") {
+      push(nameIssues, 'DMARC: name is usually "_dmarc".');
+    }
+
+    const content = (record.content ?? "").trim();
+    if (!content) {
+      push(issues, "DMARC: content is empty.");
+    } else {
+      const v = validateDMARC(content);
+      for (const p of v.problems) push(issues, `DMARC: ${p}`);
+      if (!content.endsWith(";"))
+        push(issues, "DMARC: consider ending tags with ';' for readability.");
+    }
+
+    const canonical = buildDMARC({
+      policy: dmarcPolicy,
+      rua: dmarcRua,
+      ruf: dmarcRuf,
+      pct: dmarcPct,
+      adkim: dmarcAdkim,
+      aspf: dmarcAspf,
+      subdomainPolicy: dmarcSubdomainPolicy,
+      fo: dmarcFo,
+      rf: dmarcRf,
+      ri: dmarcRi,
+    });
+
+    if (content && content !== canonical) {
+      push(
+        issues,
+        "DMARC: content differs from the builder settings (use Apply canonical to normalize).",
+      );
+    }
+    if (!dmarcRua.trim()) {
+      push(
+        issues,
+        "DMARC: rua= is missing (recommended to receive aggregate reports).",
+      );
+    }
+
+    return { canonical, issues, nameIssues };
+  }, [
+    buildDMARC,
+    dmarcAdkim,
+    dmarcAspf,
+    dmarcFo,
+    dmarcPct,
+    dmarcPolicy,
+    dmarcRf,
+    dmarcRi,
+    dmarcRua,
+    dmarcRuf,
+    dmarcSubdomainPolicy,
+    effectiveTxtMode,
+    record.content,
+    record.name,
+    record.type,
+    validateDMARC,
+  ]);
 
   const addSPFMechanism = () => {
     const mechVal = newSPFValue?.trim();
@@ -1747,9 +1994,7 @@ export function AddRecordDialog({
         } else if (effectiveTxtMode === "dkim") {
           // DKIM warnings are shown in the DKIM builder panel; keep confirmation logic separate.
         } else if (effectiveTxtMode === "dmarc") {
-          const v = validateDMARC(content);
-          if (!v.ok)
-            pushUnique(`DMARC validation issues: ${v.problems.join(", ")}`);
+          // DMARC warnings are shown in the DMARC builder panel; keep confirmation logic separate.
         }
         break;
       case "SRV": {
@@ -1875,8 +2120,15 @@ export function AddRecordDialog({
         if (!combined.includes(w)) combined.push(w);
       }
     }
+    if (record.type === "TXT" && effectiveTxtMode === "dmarc") {
+      for (const w of [...dmarcDiagnostics.nameIssues, ...dmarcDiagnostics.issues]) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
     return combined;
   }, [
+    dmarcDiagnostics.issues,
+    dmarcDiagnostics.nameIssues,
     dkimDiagnostics.issues,
     dkimDiagnostics.nameIssues,
     effectiveTxtMode,
@@ -2356,6 +2608,9 @@ export function AddRecordDialog({
                                 }
                                 placeholder="mailto:dmarc@yourdomain.com"
                               />
+                              <div className="text-[11px] text-muted-foreground">
+                                Aggregate reports (recommended). Multiple: comma-separated.
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">ruf= (optional)</Label>
@@ -2366,6 +2621,9 @@ export function AddRecordDialog({
                                 }
                                 placeholder="mailto:dmarc@yourdomain.com"
                               />
+                              <div className="text-[11px] text-muted-foreground">
+                                Forensic reports (rare; often disabled by providers).
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">pct= (optional)</Label>
@@ -2380,6 +2638,9 @@ export function AddRecordDialog({
                                 }}
                                 placeholder="100"
                               />
+                              <div className="text-[11px] text-muted-foreground">
+                                Apply policy to a percentage of failing mail (0–100).
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">adkim</Label>
@@ -2397,6 +2658,10 @@ export function AddRecordDialog({
                                   <SelectItem value="s">s</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                DKIM alignment: <code>r</code> relaxed, <code>s</code>{" "}
+                                strict.
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">aspf</Label>
@@ -2414,6 +2679,10 @@ export function AddRecordDialog({
                                   <SelectItem value="s">s</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                SPF alignment: <code>r</code> relaxed, <code>s</code>{" "}
+                                strict.
+                              </div>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">sp= (optional)</Label>
@@ -2441,6 +2710,72 @@ export function AddRecordDialog({
                                   <SelectItem value="reject">reject</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Subdomain policy. If omitted, inherits <code>p=</code>.
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">fo= (optional)</Label>
+                              <Select
+                                value={dmarcFo.trim() || "__omit__"}
+                                onValueChange={(value: string) =>
+                                  setDmarcFo(value === "__omit__" ? "" : value)
+                                }
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__omit__">
+                                    Omit (default)
+                                  </SelectItem>
+                                  <SelectItem value="0">0 (default)</SelectItem>
+                                  <SelectItem value="1">1</SelectItem>
+                                  <SelectItem value="d">d</SelectItem>
+                                  <SelectItem value="s">s</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Failure reporting options. Most setups omit this.
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">ri= (optional)</Label>
+                              <Input
+                                type="number"
+                                value={dmarcRi ?? ""}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                  const n = Number.parseInt(e.target.value, 10);
+                                  setDmarcRi(Number.isNaN(n) ? undefined : n);
+                                }}
+                                placeholder="86400"
+                              />
+                              <div className="text-[11px] text-muted-foreground">
+                                Report interval in seconds (often 86400).
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">rf= (optional)</Label>
+                              <Select
+                                value={dmarcRf.trim().toLowerCase() || "__omit__"}
+                                onValueChange={(value: string) =>
+                                  setDmarcRf(value === "__omit__" ? "" : value)
+                                }
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__omit__">
+                                    Omit (default)
+                                  </SelectItem>
+                                  <SelectItem value="afrf">afrf</SelectItem>
+                                  <SelectItem value="iodef">iodef</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Reporting format. Usually omitted / defaults.
+                              </div>
                             </div>
                           </>
                         )}
@@ -3036,48 +3371,168 @@ export function AddRecordDialog({
                         </div>
                       )}
                       {effectiveTxtMode === "dmarc" && (
-                        <div className="flex justify-end">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              onRecordChange({ ...record, name: "_dmarc" });
-                            }}
-                          >
-                            Use _dmarc name
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              const parts: string[] = ["v=DMARC1", `p=${dmarcPolicy}`];
-                              if (dmarcRua.trim()) parts.push(`rua=${dmarcRua.trim()}`);
-                              if (dmarcRuf.trim()) parts.push(`ruf=${dmarcRuf.trim()}`);
-                              if (dmarcPct !== undefined) parts.push(`pct=${dmarcPct}`);
-                              if (dmarcAdkim) parts.push(`adkim=${dmarcAdkim}`);
-                              if (dmarcAspf) parts.push(`aspf=${dmarcAspf}`);
-                              if (dmarcSubdomainPolicy)
-                                parts.push(`sp=${dmarcSubdomainPolicy}`);
-                              onRecordChange({
-                                ...record,
-                                content: parts.join("; ") + ";",
-                              });
-                            }}
-                          >
-                            Build DMARC TXT
-                          </Button>
-                        </div>
-                      )}
-                      {/* DKIM warnings are now shown in the DKIM panel above */}
-                      {record.type === "TXT" && effectiveTxtMode === "dmarc" && (
-                        (() => {
-                          const v = validateDMARC((record.content ?? "").trim());
-                          if (v.ok) return null;
-                          return (
-                            <div className="text-xs text-red-600">
-                              DMARC validation issues: {v.problems.join(", ")}
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                onRecordChange({ ...record, name: "_dmarc" });
+                              }}
+                            >
+                              Use _dmarc name
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const parsed = parseDMARC(record.content);
+                                setDmarcPolicy(parsed.policy);
+                                setDmarcRua(parsed.rua);
+                                setDmarcRuf(parsed.ruf);
+                                setDmarcPct(parsed.pct);
+                                setDmarcAdkim(parsed.adkim);
+                                setDmarcAspf(parsed.aspf);
+                                setDmarcSubdomainPolicy(parsed.subdomainPolicy);
+                                setDmarcFo(parsed.fo);
+                                setDmarcRf(parsed.rf);
+                                setDmarcRi(parsed.ri);
+                              }}
+                            >
+                              Load from content
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                onRecordChange({
+                                  ...record,
+                                  content: buildDMARC({
+                                    policy: dmarcPolicy,
+                                    rua: dmarcRua,
+                                    ruf: dmarcRuf,
+                                    pct: dmarcPct,
+                                    adkim: dmarcAdkim,
+                                    aspf: dmarcAspf,
+                                    subdomainPolicy: dmarcSubdomainPolicy,
+                                    fo: dmarcFo,
+                                    rf: dmarcRf,
+                                    ri: dmarcRi,
+                                  }),
+                                });
+                              }}
+                            >
+                              Build DMARC TXT
+                            </Button>
+                          </div>
+
+                          <div className="rounded-lg border border-border/60 bg-background/20 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Preview (canonical)
                             </div>
-                          );
-                        })()
+                            <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                              {dmarcDiagnostics.canonical}
+                            </pre>
+                          </div>
+
+                          <div className="rounded-lg border border-border/60 bg-background/15 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Recommendations
+                            </div>
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                              <li>
+                                Start with <code>p=none</code> while monitoring reports,
+                                then move to <code>quarantine</code> / <code>reject</code>.
+                              </li>
+                              <li>
+                                Add <code>rua=mailto:</code> so you actually receive
+                                aggregate reports.
+                              </li>
+                              <li>
+                                Use strict alignment (<code>adkim=s</code>,{" "}
+                                <code>aspf=s</code>) only when you’re sure all senders are
+                                aligned.
+                              </li>
+                              <li>
+                                For subdomains, set <code>sp=</code> explicitly if you
+                                want a different policy than the apex.
+                              </li>
+                            </ul>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setDmarcPolicy("none")}
+                              >
+                                Set p=none (rollout)
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setDmarcPolicy("quarantine")}
+                              >
+                                Set p=quarantine
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setDmarcPolicy("reject")}
+                              >
+                                Set p=reject (strict)
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setDmarcAdkim("s");
+                                  setDmarcAspf("s");
+                                }}
+                              >
+                                Set strict alignment
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const addr = `mailto:dmarc@${zoneName}`;
+                                  setDmarcRua(addr);
+                                }}
+                              >
+                                Suggest rua address
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  onRecordChange({
+                                    ...record,
+                                    content: dmarcDiagnostics.canonical,
+                                  });
+                                }}
+                              >
+                                Apply canonical to TXT
+                              </Button>
+                            </div>
+                          </div>
+
+                          {(dmarcDiagnostics.nameIssues.length > 0 ||
+                            dmarcDiagnostics.issues.length > 0) && (
+                            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                              <div className="text-sm font-semibold">
+                                DMARC warnings
+                              </div>
+                              <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
+                                <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                  {dmarcDiagnostics.nameIssues.map((w) => (
+                                    <li key={w}>{w}</li>
+                                  ))}
+                                  {dmarcDiagnostics.issues.map((w) => (
+                                    <li key={w}>{w}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
