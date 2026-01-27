@@ -4,8 +4,34 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
+
+const HINFO_CPU_PRESETS: Array<{ value: string; label: string; desc: string }> =
+  [
+    { value: "x86_64", label: "x86_64", desc: "64-bit x86 (AMD64/Intel 64)." },
+    { value: "arm64", label: "arm64", desc: "64-bit ARM (AArch64)." },
+    { value: "i686", label: "i686", desc: "32-bit x86 (common legacy Linux)." },
+    { value: "ppc64le", label: "ppc64le", desc: "PowerPC 64-bit little-endian." },
+    { value: "riscv64", label: "riscv64", desc: "64-bit RISC-V." },
+  ];
+
+const HINFO_OS_PRESETS: Array<{ value: string; label: string; desc: string }> = [
+  { value: "Linux", label: "Linux", desc: "GNU/Linux." },
+  { value: "Windows", label: "Windows", desc: "Microsoft Windows." },
+  { value: "macOS", label: "macOS", desc: "Apple macOS." },
+  { value: "FreeBSD", label: "FreeBSD", desc: "FreeBSD." },
+  { value: "OpenBSD", label: "OpenBSD", desc: "OpenBSD." },
+  { value: "NetBSD", label: "NetBSD", desc: "NetBSD." },
+  { value: "Solaris", label: "Solaris", desc: "Oracle Solaris / illumos family." },
+];
 
 function parseHinfoContent(value?: string) {
   const raw = (value ?? "").trim();
@@ -58,6 +84,46 @@ export function HinfoBuilder({
 }) {
   const [cpu, setCpu] = useState("");
   const [os, setOs] = useState("");
+
+  const cpuSelectValue = useMemo(() => {
+    const v = cpu.trim();
+    if (!v) return "custom";
+    return HINFO_CPU_PRESETS.some(
+      (p) => p.value.toLowerCase() === v.toLowerCase(),
+    )
+      ? HINFO_CPU_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
+          ?.value ?? "custom"
+      : "custom";
+  }, [cpu]);
+
+  const osSelectValue = useMemo(() => {
+    const v = os.trim();
+    if (!v) return "custom";
+    return HINFO_OS_PRESETS.some(
+      (p) => p.value.toLowerCase() === v.toLowerCase(),
+    )
+      ? HINFO_OS_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
+          ?.value ?? "custom"
+      : "custom";
+  }, [os]);
+
+  const cpuDescriptor = useMemo(() => {
+    const v = cpu.trim();
+    if (!v) return null;
+    return (
+      HINFO_CPU_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
+        ?.desc ?? null
+    );
+  }, [cpu]);
+
+  const osDescriptor = useMemo(() => {
+    const v = os.trim();
+    if (!v) return null;
+    return (
+      HINFO_OS_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
+        ?.desc ?? null
+    );
+  }, [os]);
 
   useEffect(() => {
     if (record.type !== "HINFO") return;
@@ -155,7 +221,31 @@ export function HinfoBuilder({
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-3">
             <Label className="text-xs">CPU</Label>
+            <Select
+              value={cpuSelectValue}
+              onValueChange={(value: string) => {
+                if (value === "custom") return;
+                setCpu(value);
+                onRecordChange({
+                  ...record,
+                  content: `${quoteIfNeeded(value.trim())} ${quoteIfNeeded(os.trim())}`,
+                });
+              }}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Custom…" />
+              </SelectTrigger>
+              <SelectContent>
+                {HINFO_CPU_PRESETS.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">Custom…</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
+              className="mt-2"
               placeholder='e.g., "Intel" or "ARM64"'
               value={cpu}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -167,13 +257,37 @@ export function HinfoBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              A short description of the host CPU (character-string).
+              {cpuDescriptor ?? "A short description of the host CPU (character-string)."}
             </div>
           </div>
 
           <div className="space-y-1 sm:col-span-3">
             <Label className="text-xs">OS</Label>
+            <Select
+              value={osSelectValue}
+              onValueChange={(value: string) => {
+                if (value === "custom") return;
+                setOs(value);
+                onRecordChange({
+                  ...record,
+                  content: `${quoteIfNeeded(cpu.trim())} ${quoteIfNeeded(value.trim())}`,
+                });
+              }}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Custom…" />
+              </SelectTrigger>
+              <SelectContent>
+                {HINFO_OS_PRESETS.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">Custom…</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
+              className="mt-2"
               placeholder='e.g., "Linux" or "Windows"'
               value={os}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -185,7 +299,8 @@ export function HinfoBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              A short description of the operating system (character-string).
+              {osDescriptor ??
+                "A short description of the operating system (character-string)."}
             </div>
           </div>
         </div>
@@ -251,4 +366,3 @@ export function HinfoBuilder({
     </div>
   );
 }
-
