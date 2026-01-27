@@ -19,6 +19,8 @@ fn main() {
         .manage(Storage::default())
         .manage(PasskeyManager::default())
         .invoke_handler(tauri::generate_handler![
+            // App lifecycle
+            commands::restart_app,
             // Authentication & Key Management
             commands::verify_token,
             commands::get_api_keys,

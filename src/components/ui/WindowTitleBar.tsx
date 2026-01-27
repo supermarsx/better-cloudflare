@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/DropdownMenu";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -42,7 +49,13 @@ async function withWindow(action: WindowAction) {
 export function WindowTitleBar() {
   const [isDragging, setIsDragging] = useState(false);
   const [isTopmost, setIsTopmost] = useState(false);
+  const [windowMenuOpen, setWindowMenuOpen] = useState(false);
+  const [windowMenuPos, setWindowMenuPos] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
   const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+  const [confirmRestartOpen, setConfirmRestartOpen] = useState(false);
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [confirmWindowClose, setConfirmWindowClose] = useState(
     storageManager.getConfirmWindowClose(),
@@ -136,6 +149,24 @@ export function WindowTitleBar() {
     void withWindow("toggle-maximize");
   }, []);
 
+  const handleWindowContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Close first so repeated right-clicks feel snappy.
+      setWindowMenuOpen(false);
+
+      const x = event.clientX;
+      const y = event.clientY;
+      setWindowMenuPos({ x, y });
+
+      // Ensure position state is committed before opening.
+      requestAnimationFrame(() => setWindowMenuOpen(true));
+    },
+    [],
+  );
+
   const handleToggleTopmost = useCallback(() => {
     if (!TauriClient.isTauri()) return;
     setIsTopmost((prev) => {
@@ -153,16 +184,160 @@ export function WindowTitleBar() {
     });
   }, []);
 
+  const handleCenterWindow = useCallback(async () => {
+    if (!TauriClient.isTauri()) return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+      await (appWindow as any).center?.();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleMaximize = useCallback(async () => {
+    if (!TauriClient.isTauri()) return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+      await appWindow.maximize();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleMinimize = useCallback(() => {
+    void withWindow("minimize");
+  }, []);
+
+  const handleForceClose = useCallback(async () => {
+    if (!TauriClient.isTauri()) return;
+    try {
+      allowCloseRef.current = true;
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const appWindow = getCurrentWindow();
+      await appWindow.destroy();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleRestart = useCallback(() => {
+    setConfirmRestartOpen(true);
+  }, []);
+
+  const confirmRestart = useCallback(async () => {
+    if (!TauriClient.isTauri()) return;
+    try {
+      await TauriClient.restartApp();
+    } catch {
+      // Fallback: just close and let user manually restart
+      allowCloseRef.current = true;
+      await withWindow("close");
+    }
+  }, []);
+
   return (
     <div
       className="titlebar fixed inset-x-0 top-0 z-[2147483000] flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
       style={{ height: TITLEBAR_HEIGHT_PX }}
     >
+      <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            style={{
+              position: "fixed",
+              left: windowMenuPos.x,
+              top: windowMenuPos.y,
+              width: 1,
+              height: 1,
+              opacity: 0,
+              pointerEvents: "none",
+            }}
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="w-56">
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              handleRestart();
+            }}
+          >
+            Restart Application
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              handleToggleTopmost();
+            }}
+          >
+            {isTopmost ? "Disable Always on Top" : "Enable Always on Top"}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              void withWindow("start-dragging");
+            }}
+          >
+            Move Window
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              void handleCenterWindow();
+            }}
+          >
+            Center Window
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              handleMinimize();
+            }}
+          >
+            Minimize
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              void handleMaximize();
+            }}
+          >
+            Maximize
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              void requestClose();
+            }}
+          >
+            Close
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              setWindowMenuOpen(false);
+              void handleForceClose();
+            }}
+            className="text-destructive focus:text-destructive"
+          >
+            Force Close
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
       <div
         className="titlebar-title flex h-full flex-1 items-center px-4 text-[11px] font-semibold uppercase text-muted-foreground/90 select-none cursor-default"
         data-tauri-drag-region
         onPointerDown={handleDragStart}
         onDoubleClick={handleToggleMaximize}
+        onContextMenu={handleWindowContextMenu}
       >
         Better Cloudflare Console
       </div>
@@ -254,6 +429,33 @@ export function WindowTitleBar() {
               }}
             >
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={confirmRestartOpen} onOpenChange={setConfirmRestartOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Restart Application?</DialogTitle>
+            <DialogDescription>
+              The application will close and attempt to restart. Any unsaved changes may be lost.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4 gap-2 sm:gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setConfirmRestartOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                setConfirmRestartOpen(false);
+                void confirmRestart();
+              }}
+            >
+              Restart
             </Button>
           </DialogFooter>
         </DialogContent>

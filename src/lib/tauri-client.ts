@@ -38,6 +38,10 @@ export class TauriClient {
     return typeof window !== 'undefined' && '__TAURI__' in window;
   }
 
+  static async restartApp(): Promise<void> {
+    return invoke("restart_app");
+  }
+
   // Authentication & Key Management
   static async verifyToken(apiKey: string, email?: string): Promise<boolean> {
     return invoke("verify_token", { apiKey, email });

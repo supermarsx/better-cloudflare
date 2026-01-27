@@ -1,11 +1,25 @@
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
-use tauri::State;
+use tauri::{AppHandle, State};
 use crate::storage::{Preferences, Storage};
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
 use crate::passkey::PasskeyManager;
 use crate::spf;
+
+#[tauri::command]
+pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    std::process::Command::new(exe)
+        .args(args)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    app.exit(0);
+    Ok(())
+}
 
 async fn log_audit(storage: &Storage, entry: serde_json::Value) {
     let mut entry = entry;
