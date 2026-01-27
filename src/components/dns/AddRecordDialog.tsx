@@ -42,6 +42,7 @@ import { SoaBuilder } from "@/components/dns/builders/SoaBuilder";
 import { NaptrBuilder } from "@/components/dns/builders/NaptrBuilder";
 import { SshfpBuilder } from "@/components/dns/builders/SshfpBuilder";
 import { TlsaBuilder } from "@/components/dns/builders/TlsaBuilder";
+import { HinfoBuilder } from "@/components/dns/builders/HinfoBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -859,6 +860,14 @@ export function AddRecordDialog({
                 case "SSHFP":
                   return (
                     <SshfpBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                case "HINFO":
+                  return (
+                    <HinfoBuilder
                       record={record}
                       onRecordChange={onRecordChange}
                       onWarningsChange={setActiveBuilderWarnings}
