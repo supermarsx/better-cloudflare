@@ -975,6 +975,61 @@ export function AddRecordDialog({
       problems.push("Missing v=DMARC1.");
       return { ok: false, problems };
     }
+    const isValidDnsLabel = (label: string) => {
+      if (!label) return false;
+      if (label.length > 63) return false;
+      if (!/^[A-Za-z0-9-]+$/.test(label)) return false;
+      if (label.startsWith("-") || label.endsWith("-")) return false;
+      return true;
+    };
+    const validateEmailAddress = (address: string, label: "rua" | "ruf") => {
+      const a = address.trim();
+      if (!a) {
+        problems.push(`${label}= mailto: is missing an email address.`);
+        return;
+      }
+      if (/\s/.test(a)) {
+        problems.push(`${label}= email address contains whitespace: ${a}`);
+        return;
+      }
+      const at = a.indexOf("@");
+      if (at <= 0 || at !== a.lastIndexOf("@") || at === a.length - 1) {
+        problems.push(`${label}= invalid email address (expected local@domain): ${a}`);
+        return;
+      }
+      const local = a.slice(0, at);
+      const domainRaw = a.slice(at + 1);
+      if (local.length > 64) problems.push(`${label}= local-part is >64 chars: ${a}`);
+      if (local.startsWith(".") || local.endsWith(".") || local.includes(".."))
+        problems.push(`${label}= local-part has invalid dots: ${a}`);
+      if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local))
+        problems.push(`${label}= local-part has unusual characters: ${a}`);
+
+      const domain = normalizeDnsName(domainRaw);
+      if (!domain || domain.length > 253) {
+        problems.push(`${label}= email domain is invalid: ${a}`);
+        return;
+      }
+      if (domain.includes("..")) {
+        problems.push(`${label}= email domain has empty labels: ${a}`);
+        return;
+      }
+      const labels = domain.split(".");
+      if (labels.some((l) => !isValidDnsLabel(l))) {
+        problems.push(`${label}= email domain does not look like a hostname: ${a}`);
+        return;
+      }
+      if (labels.length < 2) {
+        problems.push(`${label}= email domain should be a FQDN: ${a}`);
+        return;
+      }
+      const tld = labels[labels.length - 1]?.toLowerCase() ?? "";
+      if (tld && !KNOWN_TLDS.has(tld)) {
+        problems.push(
+          `${label}= email domain uses an unknown/invalid TLD “.${tld}”: ${a}`,
+        );
+      }
+    };
     const tags = content
       .split(";")
       .map((s) => s.trim())
@@ -1028,8 +1083,13 @@ export function AddRecordDialog({
         .filter(Boolean);
       for (const uriRaw of parts) {
         const uri = uriRaw.split("!")[0]?.trim() ?? "";
-        if (!uri.toLowerCase().startsWith("mailto:"))
+        if (!uri.toLowerCase().startsWith("mailto:")) {
           problems.push(`${label}= URIs should start with mailto:.`);
+          continue;
+        }
+        const after = uri.slice("mailto:".length);
+        const addr = after.split("?")[0]?.trim() ?? "";
+        validateEmailAddress(addr, label);
       }
     };
     const rua = map.get("rua");
@@ -1176,6 +1236,19 @@ export function AddRecordDialog({
       if (!list.includes(msg)) list.push(msg);
     };
 
+    const canonical = buildDMARC({
+      policy: dmarcPolicy,
+      rua: dmarcRua,
+      ruf: dmarcRuf,
+      pct: dmarcPct,
+      adkim: dmarcAdkim,
+      aspf: dmarcAspf,
+      subdomainPolicy: dmarcSubdomainPolicy,
+      fo: dmarcFo,
+      rf: dmarcRf,
+      ri: dmarcRi,
+    });
+
     const name = (record.name ?? "").trim();
     if (!name) {
       push(nameIssues, 'DMARC: name is usually "_dmarc".');
@@ -1193,18 +1266,10 @@ export function AddRecordDialog({
         push(issues, "DMARC: consider ending tags with ';' for readability.");
     }
 
-    const canonical = buildDMARC({
-      policy: dmarcPolicy,
-      rua: dmarcRua,
-      ruf: dmarcRuf,
-      pct: dmarcPct,
-      adkim: dmarcAdkim,
-      aspf: dmarcAspf,
-      subdomainPolicy: dmarcSubdomainPolicy,
-      fo: dmarcFo,
-      rf: dmarcRf,
-      ri: dmarcRi,
-    });
+    if (!content || content !== canonical) {
+      const v = validateDMARC(canonical);
+      for (const p of v.problems) push(issues, `DMARC: ${p}`);
+    }
 
     if (content && content !== canonical) {
       push(
