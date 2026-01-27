@@ -25,7 +25,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
-import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import { KNOWN_TLDS } from "@/lib/tlds";
 import {
   parseTLSA,
@@ -35,7 +34,6 @@ import {
   parseNAPTR,
   composeNAPTR,
 } from "@/lib/dns-parsers";
-import type { SPFGraph, SPFMechanism } from "@/lib/spf";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
@@ -45,6 +43,8 @@ import { DsBuilder } from "@/components/dns/builders/DsBuilder";
 import { DnskeyBuilder } from "@/components/dns/builders/DnskeyBuilder";
 import { SrvBuilder } from "@/components/dns/builders/SrvBuilder";
 import { CaaBuilder } from "@/components/dns/builders/CaaBuilder";
+import { TxtBuilder } from "@/components/dns/builders/TxtBuilder";
+import { SpfBuilder } from "@/components/dns/builders/SpfBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -363,7 +363,8 @@ export function AddRecordDialog({
     });
   }, [record.type, record.content, record.name, zoneName, onRecordChange]);
 
-  // SPF state and builder
+  /*
+  // SPF/TXT helper state and builders (moved to builders/*)
   const parsedSPF = parseSPF(record.content);
   const [newSPFQualifier, setNewSPFQualifier] = useState<string>("");
   const [newSPFMechanism, setNewSPFMechanism] = useState<string>("ip4");
@@ -1339,6 +1340,7 @@ export function AddRecordDialog({
     setNewSPFValue(m.value || "");
     setEditingSPFIndex(index);
   };
+  */
 
   const recordGuide = useMemo(() => {
     const type = record.type;
@@ -2031,13 +2033,6 @@ export function AddRecordDialog({
           pushUnique(
             "TXT content is longer than 255 characters (may need quoting/splitting).",
           );
-        if (effectiveTxtMode === "spf") {
-          // SPF warnings are shown in the SPF builder panel; keep confirmation logic separate.
-        } else if (effectiveTxtMode === "dkim") {
-          // DKIM warnings are shown in the DKIM builder panel; keep confirmation logic separate.
-        } else if (effectiveTxtMode === "dmarc") {
-          // DMARC warnings are shown in the DMARC builder panel; keep confirmation logic separate.
-        }
         break;
       case "SRV": {
         // SRV warnings are shown in the SRV builder panel; keep confirmation logic separate.
@@ -2117,8 +2112,7 @@ export function AddRecordDialog({
         break;
       }
       case "SPF": {
-        const v = validateSPF(record.content);
-        if (!v.ok) pushUnique(`SPF validation issues: ${v.problems.join(", ")}`);
+        // SPF warnings are shown in the SPF builder panel; keep confirmation logic separate.
         break;
       }
     }
@@ -2129,9 +2123,6 @@ export function AddRecordDialog({
     record.name,
     record.content,
     record.priority,
-    effectiveTxtMode,
-    validateDKIM,
-    validateDMARC,
     soaValidation.issues,
     uriValidation.issues,
   ]);
@@ -2144,21 +2135,6 @@ export function AddRecordDialog({
 
   const submissionWarnings = useMemo(() => {
     const combined = [...validationWarnings];
-    if (record.type === "TXT" && effectiveTxtMode === "spf") {
-      for (const w of spfDiagnostics.issues) {
-        if (!combined.includes(w)) combined.push(w);
-      }
-    }
-    if (record.type === "TXT" && effectiveTxtMode === "dkim") {
-      for (const w of [...dkimDiagnostics.nameIssues, ...dkimDiagnostics.issues]) {
-        if (!combined.includes(w)) combined.push(w);
-      }
-    }
-    if (record.type === "TXT" && effectiveTxtMode === "dmarc") {
-      for (const w of [...dmarcDiagnostics.nameIssues, ...dmarcDiagnostics.issues]) {
-        if (!combined.includes(w)) combined.push(w);
-      }
-    }
     for (const w of [
       ...activeBuilderWarnings.nameIssues,
       ...activeBuilderWarnings.issues,
@@ -2169,13 +2145,6 @@ export function AddRecordDialog({
   }, [
     activeBuilderWarnings.issues,
     activeBuilderWarnings.nameIssues,
-    dmarcDiagnostics.issues,
-    dmarcDiagnostics.nameIssues,
-    dkimDiagnostics.issues,
-    dkimDiagnostics.nameIssues,
-    effectiveTxtMode,
-    record.type,
-    spfDiagnostics.issues,
     validationWarnings,
   ]);
 
@@ -2390,16 +2359,6 @@ export function AddRecordDialog({
               Use <code>@</code> for the zone apex. Names are usually relative to{" "}
               <code>{zoneName}</code>.
               {nameHint && <div className="mt-1">{nameHint}</div>}
-              {record.type === "TXT" && effectiveTxtMode === "dmarc" && (
-                <div className="mt-1">
-                  DMARC TXT is usually named <code>_dmarc</code>.
-                </div>
-              )}
-              {record.type === "TXT" && effectiveTxtMode === "dkim" && (
-                <div className="mt-1">
-                  DKIM TXT is usually named <code>&lt;selector&gt;._domainkey</code>.
-                </div>
-              )}
             </div>
           </div>
           <div className="space-y-2">
@@ -2410,6 +2369,17 @@ export function AddRecordDialog({
             {(() => {
               switch (record.type) {
                 case "TXT":
+                  return (
+                    <TxtBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      zoneName={zoneName}
+                      simulateSPF={simulateSPF}
+                      getSPFGraph={getSPFGraph}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                  /*
                   return (
                     <div className="space-y-2">
                       <textarea
@@ -3578,6 +3548,7 @@ export function AddRecordDialog({
                       )}
                     </div>
                   );
+                  */
                 case "DS":
                   return (
                     <DsBuilder
@@ -4381,6 +4352,17 @@ export function AddRecordDialog({
                   );
                 case "SPF":
                   return (
+                    <SpfBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      zoneName={zoneName}
+                      simulateSPF={simulateSPF}
+                      getSPFGraph={getSPFGraph}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
+                  );
+                  /*
+                  return (
                     <div className="space-y-2">
                       <Input
                         aria-label={t("SPF input", "SPF")}
@@ -4559,6 +4541,7 @@ export function AddRecordDialog({
                       </div>
                     </div>
                   );
+                  */
                 default:
                   return (
                     <Input
