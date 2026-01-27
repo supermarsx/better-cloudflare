@@ -26,10 +26,6 @@ import {
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
 import { KNOWN_TLDS } from "@/lib/tlds";
-import {
-  parseTLSA,
-  composeTLSA,
-} from "@/lib/dns-parsers";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
@@ -45,6 +41,7 @@ import { UriBuilder } from "@/components/dns/builders/UriBuilder";
 import { SoaBuilder } from "@/components/dns/builders/SoaBuilder";
 import { NaptrBuilder } from "@/components/dns/builders/NaptrBuilder";
 import { SshfpBuilder } from "@/components/dns/builders/SshfpBuilder";
+import { TlsaBuilder } from "@/components/dns/builders/TlsaBuilder";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -95,41 +92,10 @@ export function AddRecordDialog({
   });
   const openSnapshotRef = useRef<Partial<DNSRecord> | null>(null);
   const wasOpenRef = useRef(false);
-  
-  const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
-    parseTLSA(record.content).usage,
-  );
-  const [tlsaSelector, setTlsaSelector] = useState<number | undefined>(
-    parseTLSA(record.content).selector,
-  );
-  const [tlsaMatchingType, setTlsaMatchingType] = useState<number | undefined>(
-    parseTLSA(record.content).matchingType,
-  );
-  const [tlsaData, setTlsaData] = useState<string>(
-    parseTLSA(record.content).data ?? "",
-  );
 
   function normalizeDnsName(value: string) {
     return value.trim().replace(/\.$/, "");
   }
-
-  useEffect(() => {
-    if (record.type === "TLSA") {
-      const parsed = parseTLSA(record.content);
-      if (parsed.usage !== tlsaUsage) setTlsaUsage(parsed.usage);
-      if (parsed.selector !== tlsaSelector) setTlsaSelector(parsed.selector);
-      if (parsed.matchingType !== tlsaMatchingType)
-        setTlsaMatchingType(parsed.matchingType);
-      if (parsed.data !== tlsaData) setTlsaData(parsed.data ?? "");
-    }
-  }, [
-    record.type,
-    record.content,
-    tlsaUsage,
-    tlsaSelector,
-    tlsaMatchingType,
-    tlsaData,
-  ]);
 
   const recordGuide = useMemo(() => {
     const type = record.type;
@@ -564,24 +530,7 @@ export function AddRecordDialog({
         break;
       }
       case "TLSA": {
-        const parsed = parseTLSA(record.content);
-        if (
-          parsed.usage !== undefined &&
-          ![0, 1, 2, 3].includes(Number(parsed.usage))
-        )
-          pushUnique("TLSA usage is usually 0–3.");
-        if (
-          parsed.selector !== undefined &&
-          ![0, 1].includes(Number(parsed.selector))
-        )
-          pushUnique("TLSA selector is usually 0–1.");
-        if (
-          parsed.matchingType !== undefined &&
-          ![0, 1, 2].includes(Number(parsed.matchingType))
-        )
-          pushUnique("TLSA matching type is usually 0–2.");
-        if (parsed.data && (!isHex(parsed.data) || parsed.data.length % 2 !== 0))
-          pushUnique("TLSA data should be even-length hex.");
+        // TLSA warnings are shown in the TLSA builder panel; keep confirmation logic separate.
         break;
       }
       case "SSHFP": {
@@ -901,82 +850,11 @@ export function AddRecordDialog({
                   );
                 case "TLSA":
                   return (
-                    <div className="grid grid-cols-4 gap-2">
-                      <Input
-                        type="number"
-                        placeholder="usage"
-                        value={tlsaUsage ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          const val = Number.isNaN(n) ? undefined : n;
-                          setTlsaUsage(val);
-                          onRecordChange({
-                            ...record,
-                            content: composeTLSA(
-                              val,
-                              tlsaSelector,
-                              tlsaMatchingType,
-                              tlsaData,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        type="number"
-                        placeholder="selector"
-                        value={tlsaSelector ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          const val = Number.isNaN(n) ? undefined : n;
-                          setTlsaSelector(val);
-                          onRecordChange({
-                            ...record,
-                            content: composeTLSA(
-                              tlsaUsage,
-                              val,
-                              tlsaMatchingType,
-                              tlsaData,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        type="number"
-                        placeholder="matching type"
-                        value={tlsaMatchingType ?? ""}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          const n = Number.parseInt(e.target.value, 10);
-                          const val = Number.isNaN(n) ? undefined : n;
-                          setTlsaMatchingType(val);
-                          onRecordChange({
-                            ...record,
-                            content: composeTLSA(
-                              tlsaUsage,
-                              tlsaSelector,
-                              val,
-                              tlsaData,
-                            ),
-                          });
-                        }}
-                      />
-                      <Input
-                        aria-label={t("TLSA data", "data")}
-                        placeholder="data (hex)"
-                        value={tlsaData}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          setTlsaData(e.target.value);
-                          onRecordChange({
-                            ...record,
-                            content: composeTLSA(
-                              tlsaUsage,
-                              tlsaSelector,
-                              tlsaMatchingType,
-                              e.target.value,
-                            ),
-                          });
-                        }}
-                      />
-                    </div>
+                    <TlsaBuilder
+                      record={record}
+                      onRecordChange={onRecordChange}
+                      onWarningsChange={setActiveBuilderWarnings}
+                    />
                   );
                 case "SSHFP":
                   return (
