@@ -164,6 +164,18 @@ export function AddRecordDialog({
   const [dsAlgorithm, setDsAlgorithm] = useState<number | undefined>(13);
   const [dsDigestType, setDsDigestType] = useState<number | undefined>(2);
   const [dsDigest, setDsDigest] = useState<string>("");
+  const [dsAlgorithmMode, setDsAlgorithmMode] = useState<"preset" | "custom">(
+    "preset",
+  );
+  const [dsDigestTypeMode, setDsDigestTypeMode] = useState<"preset" | "custom">(
+    "preset",
+  );
+  const [dsAlgorithmCustomValue, setDsAlgorithmCustomValue] = useState<
+    number | undefined
+  >(undefined);
+  const [dsDigestTypeCustomValue, setDsDigestTypeCustomValue] = useState<
+    number | undefined
+  >(undefined);
 
   const [soaPrimaryNs, setSoaPrimaryNs] = useState<string>("");
   const [soaAdmin, setSoaAdmin] = useState<string>("");
@@ -447,6 +459,24 @@ export function AddRecordDialog({
     if (parsed.algorithm !== dsAlgorithm) setDsAlgorithm(parsed.algorithm);
     if (parsed.digestType !== dsDigestType) setDsDigestType(parsed.digestType);
     if (parsed.digest !== dsDigest) setDsDigest(parsed.digest);
+    const algIsPreset =
+      parsed.algorithm !== undefined && [8, 13, 14, 15, 16].includes(parsed.algorithm);
+    const digestIsPreset =
+      parsed.digestType !== undefined && [1, 2, 4].includes(parsed.digestType);
+    if (algIsPreset) {
+      if (dsAlgorithmMode !== "preset") setDsAlgorithmMode("preset");
+    } else {
+      if (dsAlgorithmMode !== "custom") setDsAlgorithmMode("custom");
+      if (parsed.algorithm !== dsAlgorithmCustomValue)
+        setDsAlgorithmCustomValue(parsed.algorithm);
+    }
+    if (digestIsPreset) {
+      if (dsDigestTypeMode !== "preset") setDsDigestTypeMode("preset");
+    } else {
+      if (dsDigestTypeMode !== "custom") setDsDigestTypeMode("custom");
+      if (parsed.digestType !== dsDigestTypeCustomValue)
+        setDsDigestTypeCustomValue(parsed.digestType);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
@@ -610,17 +640,19 @@ export function AddRecordDialog({
     return "custom";
   }, [dkimHashAlgs]);
 
-  const dsAlgorithmPreset = useMemo(() => {
+  const dsAlgorithmSelectValue = useMemo(() => {
+    if (dsAlgorithmMode === "custom") return "custom";
     if (dsAlgorithm === undefined || dsAlgorithm === null) return "custom";
     if ([8, 13, 14, 15, 16].includes(dsAlgorithm)) return String(dsAlgorithm);
     return "custom";
-  }, [dsAlgorithm]);
+  }, [dsAlgorithm, dsAlgorithmMode]);
 
-  const dsDigestTypePreset = useMemo(() => {
+  const dsDigestTypeSelectValue = useMemo(() => {
+    if (dsDigestTypeMode === "custom") return "custom";
     if (dsDigestType === undefined || dsDigestType === null) return "custom";
     if ([1, 2, 4].includes(dsDigestType)) return String(dsDigestType);
     return "custom";
-  }, [dsDigestType]);
+  }, [dsDigestType, dsDigestTypeMode]);
 
   const effectiveTxtMode = useMemo(() => {
     if (record.type !== "TXT") return "generic" as const;
@@ -4120,11 +4152,18 @@ export function AddRecordDialog({
                           <div className="space-y-1 sm:col-span-2">
                             <Label className="text-xs">Algorithm</Label>
                             <Select
-                              value={dsAlgorithmPreset}
+                              value={dsAlgorithmSelectValue}
                               onValueChange={(value: string) => {
-                                if (value === "custom") return;
+                                if (value === "custom") {
+                                  setDsAlgorithmMode("custom");
+                                  setDsAlgorithmCustomValue(
+                                    dsAlgorithmCustomValue ?? dsAlgorithm,
+                                  );
+                                  return;
+                                }
                                 const n = Number.parseInt(value, 10);
                                 setDsAlgorithm(Number.isNaN(n) ? undefined : n);
+                                setDsAlgorithmMode("preset");
                               }}
                             >
                               <SelectTrigger className="h-9">
@@ -4139,14 +4178,18 @@ export function AddRecordDialog({
                                 <SelectItem value="custom">Custom…</SelectItem>
                               </SelectContent>
                             </Select>
-                            {dsAlgorithmPreset === "custom" && (
+                            {dsAlgorithmMode === "custom" && (
                               <Input
                                 className="mt-2"
                                 type="number"
-                                value={dsAlgorithm ?? ""}
+                                value={
+                                  dsAlgorithmCustomValue ?? dsAlgorithm ?? ""
+                                }
                                 onChange={(e: ChangeEvent<HTMLInputElement>) => {
                                   const n = Number.parseInt(e.target.value, 10);
-                                  setDsAlgorithm(Number.isNaN(n) ? undefined : n);
+                                  const val = Number.isNaN(n) ? undefined : n;
+                                  setDsAlgorithmCustomValue(val);
+                                  setDsAlgorithm(val);
                                 }}
                                 placeholder="e.g., 13"
                               />
@@ -4155,11 +4198,18 @@ export function AddRecordDialog({
                           <div className="space-y-1 sm:col-span-2">
                             <Label className="text-xs">Digest type</Label>
                             <Select
-                              value={dsDigestTypePreset}
+                              value={dsDigestTypeSelectValue}
                               onValueChange={(value: string) => {
-                                if (value === "custom") return;
+                                if (value === "custom") {
+                                  setDsDigestTypeMode("custom");
+                                  setDsDigestTypeCustomValue(
+                                    dsDigestTypeCustomValue ?? dsDigestType,
+                                  );
+                                  return;
+                                }
                                 const n = Number.parseInt(value, 10);
                                 setDsDigestType(Number.isNaN(n) ? undefined : n);
+                                setDsDigestTypeMode("preset");
                               }}
                             >
                               <SelectTrigger className="h-9">
@@ -4172,14 +4222,18 @@ export function AddRecordDialog({
                                 <SelectItem value="custom">Custom…</SelectItem>
                               </SelectContent>
                             </Select>
-                            {dsDigestTypePreset === "custom" && (
+                            {dsDigestTypeMode === "custom" && (
                               <Input
                                 className="mt-2"
                                 type="number"
-                                value={dsDigestType ?? ""}
+                                value={
+                                  dsDigestTypeCustomValue ?? dsDigestType ?? ""
+                                }
                                 onChange={(e: ChangeEvent<HTMLInputElement>) => {
                                   const n = Number.parseInt(e.target.value, 10);
-                                  setDsDigestType(Number.isNaN(n) ? undefined : n);
+                                  const val = Number.isNaN(n) ? undefined : n;
+                                  setDsDigestTypeCustomValue(val);
+                                  setDsDigestType(val);
                                 }}
                                 placeholder="e.g., 2"
                               />
@@ -4285,6 +4339,8 @@ export function AddRecordDialog({
                               onClick={() => {
                                 setDsAlgorithm(13);
                                 setDsDigestType(2);
+                                setDsAlgorithmMode("preset");
+                                setDsDigestTypeMode("preset");
                               }}
                             >
                               Preset: alg 13 + digest 2
@@ -4292,7 +4348,10 @@ export function AddRecordDialog({
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => setDsDigestType(2)}
+                              onClick={() => {
+                                setDsDigestType(2);
+                                setDsDigestTypeMode("preset");
+                              }}
                             >
                               Prefer SHA-256 (2)
                             </Button>
