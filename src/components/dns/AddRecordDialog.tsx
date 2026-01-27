@@ -392,6 +392,7 @@ export function AddRecordDialog({
   const [newSPFMechanism, setNewSPFMechanism] = useState<string>("ip4");
   const [newSPFValue, setNewSPFValue] = useState<string>("");
   const [editingSPFIndex, setEditingSPFIndex] = useState<number | null>(null);
+  const [spfRedirect, setSpfRedirect] = useState<string>("");
   const [spfSimIp, setSpfSimIp] = useState<string>("");
   const [spfSimResult, setSpfSimResult] = useState<{
     result: string;
@@ -418,6 +419,22 @@ export function AddRecordDialog({
   const [dkimKeyType, setDkimKeyType] = useState<"rsa" | "ed25519">("rsa");
   const [dkimSelector, setDkimSelector] = useState<string>("");
   const [dkimPublicKey, setDkimPublicKey] = useState<string>("");
+  const [dkimTestMode, setDkimTestMode] = useState(false);
+  const [dkimStrictMode, setDkimStrictMode] = useState(false);
+  const [dkimServiceType, setDkimServiceType] = useState<string>("");
+  const [dkimHashAlgs, setDkimHashAlgs] = useState<string>("");
+  const [dkimGranularity, setDkimGranularity] = useState<string>("");
+  const [dkimNotes, setDkimNotes] = useState<string>("");
+
+  const dkimHashPreset = useMemo(() => {
+    const normalized = dkimHashAlgs.trim().toLowerCase();
+    if (!normalized) return "omit";
+    if (normalized === "sha256") return "sha256";
+    if (normalized === "sha1") return "sha1";
+    if (normalized === "sha1:sha256") return "sha1:sha256";
+    if (normalized === "sha256:sha1") return "sha256:sha1";
+    return "custom";
+  }, [dkimHashAlgs]);
 
   const effectiveTxtMode = useMemo(() => {
     if (record.type !== "TXT") return "generic" as const;
@@ -429,6 +446,271 @@ export function AddRecordDialog({
     return "generic" as const;
   }, [record.type, record.content, txtHelperMode]);
 
+  const spfDiagnostics = useMemo(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "spf") {
+      return {
+        canonical: "",
+        issues: [] as string[],
+        lookupEstimate: 0,
+        hasAll: false,
+        allQualifier: "" as "" | "+" | "-" | "~" | "?",
+        hasRedirect: false,
+      };
+    }
+
+    const issues: string[] = [];
+    const push = (msg: string) => {
+      if (!issues.includes(msg)) issues.push(msg);
+    };
+
+    const spf = parseSPF(record.content);
+    if (!spf) {
+      push("SPF: missing v=spf1 prefix.");
+      return {
+        canonical: (record.content ?? "").trim(),
+        issues,
+        lookupEstimate: 0,
+        hasAll: false,
+        allQualifier: "",
+        hasRedirect: false,
+      };
+    }
+
+    const canonical = composeSPF(spf);
+
+    const hasMacro = (value: string) => /%[{_%\-]/.test(value) || value.includes("%");
+    const isValidDnsLabel = (label: string) => {
+      if (!label) return false;
+      if (label.length > 63) return false;
+      if (!/^[A-Za-z0-9-]+$/.test(label)) return false;
+      if (label.startsWith("-") || label.endsWith("-")) return false;
+      return true;
+    };
+    const isValidHostname = (value: string) => {
+      const v = normalizeDnsName(value);
+      if (!v) return false;
+      if (/\s/.test(v)) return false;
+      if (v.length > 253) return false;
+      const labels = v.split(".");
+      if (labels.some((l) => l.length === 0)) return false;
+      return labels.every(isValidDnsLabel);
+    };
+    const tldOf = (value: string) => {
+      const v = normalizeDnsName(value).toLowerCase();
+      if (!v.includes(".")) return null;
+      const tld = v.split(".").pop();
+      return tld && /^[a-z0-9-]{2,63}$/.test(tld) ? tld : null;
+    };
+    const validateDomainSpec = (value: string, context: string) => {
+      if (!value) return;
+      if (hasMacro(value)) {
+        push(`SPF: ${context} contains macros; verify macro syntax.`);
+        return;
+      }
+      if (!isValidHostname(value)) {
+        push(`SPF: ${context} does not look like a valid hostname.`);
+        return;
+      }
+      const tld = tldOf(value);
+      if (tld && !KNOWN_TLDS.has(tld)) {
+        push(`SPF: ${context} has unknown/invalid TLD “.${tld}”.`);
+      }
+    };
+
+    const parseDomainWithCidrs = (value: string) => {
+      const [domainPart, rest] = value.split("/");
+      if (rest === undefined) return { domain: value, v4: undefined, v6: undefined };
+      // support domain/24//64 (RFC 7208)
+      const v4 = Number.parseInt(rest, 10);
+      const v6Match = value.match(/\/\/(\d{1,3})$/);
+      const v6 = v6Match ? Number.parseInt(v6Match[1], 10) : undefined;
+      const domain = domainPart;
+      return {
+        domain,
+        v4: Number.isNaN(v4) ? undefined : v4,
+        v6: Number.isNaN(v6 ?? Number.NaN) ? undefined : v6,
+      };
+    };
+
+    const parseIPv4 = (value: string) => {
+      const parts = value.split(".");
+      if (parts.length !== 4) return null;
+      const nums = parts.map((p) => Number(p));
+      if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+      return nums as [number, number, number, number];
+    };
+
+    const isValidIPv4Cidr = (value: string) => {
+      const [addr, prefixRaw] = value.split("/");
+      if (!parseIPv4(addr)) return false;
+      if (prefixRaw === undefined) return true;
+      if (!/^\d{1,2}$/.test(prefixRaw)) return false;
+      const p = Number(prefixRaw);
+      return p >= 0 && p <= 32;
+    };
+
+    const normalizeIPv6ForSpf = (value: string) => {
+      const input = value.trim().toLowerCase();
+      if (!input.includes(":")) return null;
+      if (!/^[0-9a-f:]+$/.test(input)) return null;
+      const double = input.includes("::");
+      if (double && input.indexOf("::") !== input.lastIndexOf("::")) return null;
+      const [leftRaw, rightRaw] = input.split("::");
+      const left = leftRaw ? leftRaw.split(":").filter(Boolean) : [];
+      const right = double && rightRaw ? rightRaw.split(":").filter(Boolean) : [];
+      const leftNums = left.map((g) => Number.parseInt(g, 16));
+      const rightNums = right.map((g) => Number.parseInt(g, 16));
+      if (
+        leftNums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff) ||
+        rightNums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)
+      )
+        return null;
+      const total = leftNums.length + rightNums.length;
+      if (!double && total !== 8) return null;
+      if (double && total > 8) return null;
+      const fill = double ? new Array(8 - total).fill(0) : [];
+      return [...leftNums, ...fill, ...rightNums];
+    };
+
+    const isValidIPv6Cidr = (value: string) => {
+      const [addr, prefixRaw] = value.split("/");
+      if (!normalizeIPv6ForSpf(addr)) return false;
+      if (prefixRaw === undefined) return true;
+      if (!/^\d{1,3}$/.test(prefixRaw)) return false;
+      const p = Number(prefixRaw);
+      return p >= 0 && p <= 128;
+    };
+
+    let hasAll = false;
+    let allQualifier: "" | "+" | "-" | "~" | "?" = "";
+    let allIndex = -1;
+    const mechCounts = new Map<string, number>();
+
+    for (let i = 0; i < spf.mechanisms.length; i++) {
+      const m = spf.mechanisms[i];
+      mechCounts.set(m.mechanism, (mechCounts.get(m.mechanism) ?? 0) + 1);
+      const qual = (m.qualifier ?? "+") as "+" | "-" | "~" | "?";
+
+      if (!["all", "a", "mx", "ip4", "ip6", "include", "ptr", "exists"].includes(m.mechanism)) {
+        push(`SPF: unknown mechanism "${m.mechanism}".`);
+      }
+
+      if (m.mechanism === "all") {
+        hasAll = true;
+        allQualifier = qual;
+        allIndex = i;
+        if (m.value) push("SPF: all mechanism must not have a value.");
+        if (qual === "+") push("SPF: +all is extremely permissive (allows anyone).");
+      }
+
+      if (m.mechanism === "ptr") {
+        push("SPF: ptr is discouraged (slow/fragile and can exceed lookup limits).");
+      }
+
+      if (m.mechanism === "ip4") {
+        if (!m.value) push("SPF: ip4 requires a value like 192.0.2.0/24.");
+        else if (!isValidIPv4Cidr(m.value))
+          push("SPF: ip4 value must be a valid IPv4 address or CIDR (e.g., 192.0.2.0/24).");
+      }
+
+      if (m.mechanism === "ip6") {
+        if (!m.value) push("SPF: ip6 requires a value like 2001:db8::/32.");
+        else if (!isValidIPv6Cidr(m.value))
+          push("SPF: ip6 value must be a valid IPv6 address or CIDR (e.g., 2001:db8::/32).");
+      }
+
+      if (m.mechanism === "include") {
+        if (!m.value) push("SPF: include requires a domain (include:example.com).");
+        else validateDomainSpec(m.value, "include domain");
+      }
+
+      if (m.mechanism === "exists") {
+        if (!m.value) push("SPF: exists requires a domain (exists:example.com).");
+        else validateDomainSpec(m.value, "exists domain");
+      }
+
+      if (m.mechanism === "a" || m.mechanism === "mx" || m.mechanism === "ptr") {
+        if (m.value) {
+          const parsedVal = parseDomainWithCidrs(m.value);
+          validateDomainSpec(parsedVal.domain, `${m.mechanism} domain`);
+          if (parsedVal.v4 !== undefined && (parsedVal.v4 < 0 || parsedVal.v4 > 32))
+            push(`SPF: ${m.mechanism} IPv4 cidr-length must be 0–32.`);
+          if (parsedVal.v6 !== undefined && (parsedVal.v6 < 0 || parsedVal.v6 > 128))
+            push(`SPF: ${m.mechanism} IPv6 cidr-length must be 0–128.`);
+        }
+      }
+    }
+
+    if (mechCounts.get("all") && (mechCounts.get("all") ?? 0) > 1) {
+      push("SPF: multiple all mechanisms found.");
+    }
+
+    const redirect = spf.modifiers?.find((m) => m.key === "redirect")?.value ?? "";
+    const exp = spf.modifiers?.find((m) => m.key === "exp")?.value ?? "";
+    const hasRedirect = Boolean(redirect);
+    if (spf.modifiers) {
+      const redirectCount = spf.modifiers.filter((m) => m.key === "redirect").length;
+      if (redirectCount > 1) push("SPF: only one redirect modifier is allowed.");
+    }
+    if (redirect) validateDomainSpec(redirect, "redirect domain");
+    if (exp) validateDomainSpec(exp, "exp domain");
+
+    if (hasAll && allIndex !== spf.mechanisms.length - 1) {
+      push("SPF: all should usually be the last mechanism.");
+    }
+
+    if (!hasAll && !hasRedirect) {
+      push("SPF: no all mechanism or redirect= modifier (record may be incomplete).");
+    }
+
+    if (hasRedirect && hasAll) {
+      push("SPF: redirect= will never be used if an all mechanism is present.");
+    }
+
+    // Rough DNS lookup estimate (RFC 7208 limit: 10)
+    const lookupMechs = new Set(["a", "mx", "ptr", "include", "exists"]);
+    const lookupEstimate =
+      spf.mechanisms.filter((m) => lookupMechs.has(m.mechanism)).length +
+      (redirect ? 1 : 0) +
+      (exp ? 1 : 0);
+    if (lookupEstimate > 10) {
+      push(`SPF: estimated DNS lookups ${lookupEstimate}/10 (may cause permerror).`);
+    }
+
+    return { canonical, issues, lookupEstimate, hasAll, allQualifier, hasRedirect };
+  }, [effectiveTxtMode, record.content, record.type]);
+
+  useEffect(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "spf") return;
+    const spf = parseSPF(record.content);
+    const redirect = spf?.modifiers?.find((m) => m.key === "redirect")?.value ?? "";
+    if (redirect !== spfRedirect) setSpfRedirect(redirect);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, effectiveTxtMode, record.content]);
+
+  useEffect(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "dkim") return;
+    const parsed = parseDKIM(record.content);
+    if (parsed.keyType !== dkimKeyType) setDkimKeyType(parsed.keyType);
+    if (parsed.publicKey !== dkimPublicKey) setDkimPublicKey(parsed.publicKey);
+    if (parsed.testMode !== dkimTestMode) setDkimTestMode(parsed.testMode);
+    if (parsed.strictMode !== dkimStrictMode) setDkimStrictMode(parsed.strictMode);
+    if (parsed.serviceType !== dkimServiceType) setDkimServiceType(parsed.serviceType);
+    if (parsed.hashAlgs !== dkimHashAlgs) setDkimHashAlgs(parsed.hashAlgs);
+    if (parsed.granularity !== dkimGranularity) setDkimGranularity(parsed.granularity);
+    if (parsed.notes !== dkimNotes) setDkimNotes(parsed.notes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, effectiveTxtMode, record.content]);
+
+  useEffect(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "dkim") return;
+    if (dkimSelector.trim()) return;
+    const name = (record.name ?? "").trim();
+    const m = /^(.+)\._domainkey$/i.exec(name);
+    if (m?.[1]) setDkimSelector(m[1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.type, effectiveTxtMode, record.name]);
+
   const validateDKIM = useCallback((value: string) => {
     const problems: string[] = [];
     const content = value.trim();
@@ -437,17 +719,29 @@ export function AddRecordDialog({
       problems.push("Missing v=DKIM1.");
       return { ok: false, problems };
     }
+    if (/-----BEGIN\b/i.test(content)) {
+      problems.push("p= looks like it includes a PEM header/footer (use base64 only).");
+    }
     const tags = content
       .split(";")
       .map((s) => s.trim())
       .filter(Boolean);
     const map = new Map<string, string>();
+    const seen = new Map<string, number>();
     for (const tag of tags) {
       const [kRaw, ...rest] = tag.split("=");
       const k = (kRaw ?? "").trim().toLowerCase();
       if (!k) continue;
       const v = rest.join("=").trim();
+      seen.set(k, (seen.get(k) ?? 0) + 1);
       map.set(k, v);
+    }
+    for (const [k, count] of seen) {
+      if (count > 1) problems.push(`Duplicate DKIM tag: ${k}=`);
+    }
+    const allowedTags = new Set(["v", "k", "p", "t", "n", "s", "h", "g"]);
+    for (const k of map.keys()) {
+      if (!allowedTags.has(k)) problems.push(`Unknown DKIM tag: ${k}=`);
     }
     const p = map.get("p");
     if (p === undefined) {
@@ -456,14 +750,202 @@ export function AddRecordDialog({
       const pk = p.replace(/\s+/g, "");
       if (pk.length > 0 && !/^[A-Za-z0-9+/=]+$/.test(pk))
         problems.push("p= contains non-base64 characters.");
+      if (pk.length > 0 && pk.length % 4 !== 0)
+        problems.push("p= base64 length is unusual (not a multiple of 4).");
       if (pk.length === 0)
         problems.push("p= is empty (revoked key). This may be intentional.");
+      if (pk.length > 255)
+        problems.push(
+          "p= is longer than 255 chars; some providers require splitting TXT strings.",
+        );
     }
     const k = map.get("k");
-    if (k && !["rsa", "ed25519"].includes(k.toLowerCase()))
+    if (!k) problems.push("Missing k= (defaults to rsa, but most providers publish it).");
+    else if (!["rsa", "ed25519"].includes(k.toLowerCase()))
       problems.push("k= is usually rsa or ed25519.");
+    const v = map.get("v");
+    if (v && v.toUpperCase() !== "DKIM1") problems.push("v= should be DKIM1.");
+    const t = map.get("t");
+    if (t) {
+      const flags = t.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const allowed = new Set(["y", "s"]);
+      for (const f of flags) if (!allowed.has(f)) problems.push(`Unknown t= flag: ${f}`);
+    }
+    const s = map.get("s");
+    if (s && !["*", "email"].includes(s.trim().toLowerCase()))
+      problems.push("s= is usually '*' or 'email'.");
+    const h = map.get("h");
+    if (h) {
+      const parts = h.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const allowed = new Set(["sha1", "sha256"]);
+      for (const alg of parts) if (!allowed.has(alg)) problems.push(`Unknown h= algorithm: ${alg}`);
+    }
+    const g = map.get("g");
+    if (g) {
+      if (/\s/.test(g)) problems.push("g= contains whitespace.");
+      if (g.includes("@")) problems.push("g= should be a local-part pattern (no @domain).");
+    }
     return { ok: problems.length === 0, problems };
   }, []);
+
+  const parseDKIM = useCallback((value: string | undefined) => {
+    const content = (value ?? "").trim();
+    if (!content.toLowerCase().startsWith("v=dkim1")) {
+      return {
+        tags: new Map<string, string>(),
+        keyType: "rsa" as const,
+        publicKey: "",
+        testMode: false,
+        strictMode: false,
+        serviceType: "",
+        hashAlgs: "",
+        granularity: "",
+        notes: "",
+      };
+    }
+    const parts = content
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const tags = new Map<string, string>();
+    for (const part of parts) {
+      const [kRaw, ...rest] = part.split("=");
+      const k = (kRaw ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const v = rest.join("=").trim();
+      tags.set(k, v);
+    }
+    const keyType = (tags.get("k")?.toLowerCase() === "ed25519"
+      ? "ed25519"
+      : "rsa") as "rsa" | "ed25519";
+    const publicKey = tags.get("p") ?? "";
+    const t = tags.get("t") ?? "";
+    const flags = t.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const testMode = flags.includes("y");
+    const strictMode = flags.includes("s");
+    const notes = tags.get("n") ?? "";
+    const serviceType = tags.get("s") ?? "";
+    const hashAlgs = tags.get("h") ?? "";
+    const granularity = tags.get("g") ?? "";
+    return {
+      tags,
+      keyType,
+      publicKey,
+      testMode,
+      strictMode,
+      serviceType,
+      hashAlgs,
+      granularity,
+      notes,
+    };
+  }, []);
+
+  const buildDKIM = useCallback(
+    (fields: {
+      keyType: "rsa" | "ed25519";
+      publicKey: string;
+      testMode: boolean;
+      strictMode: boolean;
+      serviceType: string;
+      hashAlgs: string;
+      granularity: string;
+      notes: string;
+    }) => {
+      const tags: string[] = ["v=DKIM1"];
+      if (fields.keyType) tags.push(`k=${fields.keyType}`);
+      tags.push(`p=${fields.publicKey.trim().replace(/\s+/g, "")}`);
+      const tFlags: string[] = [];
+      if (fields.testMode) tFlags.push("y");
+      if (fields.strictMode) tFlags.push("s");
+      if (tFlags.length) tags.push(`t=${tFlags.join(":")}`);
+      if (fields.serviceType.trim()) tags.push(`s=${fields.serviceType.trim()}`);
+      if (fields.hashAlgs.trim()) tags.push(`h=${fields.hashAlgs.trim()}`);
+      if (fields.granularity.trim()) tags.push(`g=${fields.granularity.trim()}`);
+      if (fields.notes.trim()) tags.push(`n=${fields.notes.trim()}`);
+      return tags.join("; ") + ";";
+    },
+    [],
+  );
+
+  const dkimDiagnostics = useMemo(() => {
+    if (record.type !== "TXT" || effectiveTxtMode !== "dkim") {
+      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+    }
+    const issues: string[] = [];
+    const nameIssues: string[] = [];
+    const push = (list: string[], msg: string) => {
+      if (!list.includes(msg)) list.push(msg);
+    };
+
+    const content = (record.content ?? "").trim();
+    if (!content) {
+      push(issues, "DKIM: content is empty.");
+    } else {
+      const v = validateDKIM(content);
+      for (const p of v.problems) push(issues, `DKIM: ${p}`);
+      if (!content.endsWith(";"))
+        push(issues, "DKIM: consider ending tags with ';' for readability.");
+    }
+
+    const selector = dkimSelector.trim();
+    const name = (record.name ?? "").trim();
+    if (!selector) {
+      push(nameIssues, "DKIM: selector is missing.");
+    } else {
+      const expected = `${selector}._domainkey`;
+      if (name && name !== expected) {
+        push(
+          nameIssues,
+          `DKIM: name is usually "${expected}" for selector "${selector}".`,
+        );
+      }
+      if (!/^[A-Za-z0-9-_]+$/.test(selector))
+        push(nameIssues, "DKIM: selector contains unusual characters.");
+    }
+
+    const pk = dkimPublicKey.trim().replace(/\s+/g, "");
+    if (dkimKeyType === "ed25519" && pk) {
+      // 32 bytes => 44 base64 chars (incl padding) is common; warn if wildly off.
+      if (pk.length < 40 || pk.length > 64) {
+        push(
+          issues,
+          "DKIM: ed25519 p= length looks unusual (expected ~44 base64 chars).",
+        );
+      }
+    }
+    if (dkimKeyType === "rsa" && pk) {
+      if (pk.length < 200) push(issues, "DKIM: rsa p= looks unusually short.");
+    }
+
+    const canonical = buildDKIM({
+      keyType: dkimKeyType,
+      publicKey: dkimPublicKey,
+      testMode: dkimTestMode,
+      strictMode: dkimStrictMode,
+      serviceType: dkimServiceType,
+      hashAlgs: dkimHashAlgs,
+      granularity: dkimGranularity,
+      notes: dkimNotes,
+    });
+
+    return { canonical, issues, nameIssues };
+  }, [
+    buildDKIM,
+    dkimGranularity,
+    dkimHashAlgs,
+    dkimKeyType,
+    dkimNotes,
+    dkimPublicKey,
+    dkimSelector,
+    dkimServiceType,
+    dkimStrictMode,
+    dkimTestMode,
+    effectiveTxtMode,
+    record.content,
+    record.name,
+    record.type,
+    validateDKIM,
+  ]);
 
   const validateDMARC = useCallback((value: string) => {
     const problems: string[] = [];
@@ -1261,13 +1743,9 @@ export function AddRecordDialog({
             "TXT content is longer than 255 characters (may need quoting/splitting).",
           );
         if (effectiveTxtMode === "spf") {
-          const v = validateSPF(content);
-          if (!v.ok)
-            pushUnique(`SPF validation issues: ${v.problems.join(", ")}`);
+          // SPF warnings are shown in the SPF builder panel; keep confirmation logic separate.
         } else if (effectiveTxtMode === "dkim") {
-          const v = validateDKIM(content);
-          if (!v.ok)
-            pushUnique(`DKIM validation issues: ${v.problems.join(", ")}`);
+          // DKIM warnings are shown in the DKIM builder panel; keep confirmation logic separate.
         } else if (effectiveTxtMode === "dmarc") {
           const v = validateDMARC(content);
           if (!v.ok)
@@ -1385,8 +1863,30 @@ export function AddRecordDialog({
     setShowDiscardConfirm(false);
   }, [open, record.type, record.name, record.content, record.priority]);
 
+  const submissionWarnings = useMemo(() => {
+    const combined = [...validationWarnings];
+    if (record.type === "TXT" && effectiveTxtMode === "spf") {
+      for (const w of spfDiagnostics.issues) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
+    if (record.type === "TXT" && effectiveTxtMode === "dkim") {
+      for (const w of [...dkimDiagnostics.nameIssues, ...dkimDiagnostics.issues]) {
+        if (!combined.includes(w)) combined.push(w);
+      }
+    }
+    return combined;
+  }, [
+    dkimDiagnostics.issues,
+    dkimDiagnostics.nameIssues,
+    effectiveTxtMode,
+    record.type,
+    spfDiagnostics.issues,
+    validationWarnings,
+  ]);
+
   const handleCreateRecord = () => {
-    if (validationWarnings.length === 0) {
+    if (submissionWarnings.length === 0) {
       onAdd();
       return;
     }
@@ -1465,13 +1965,7 @@ export function AddRecordDialog({
           Add Record
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Add DNS Record</DialogTitle>
-          <DialogDescription>
-            Create a new DNS record for {zoneName}
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[calc(100dvh-var(--app-top-inset)-2rem)]">
         {showDiscardConfirm && (
           <div className="absolute inset-0 z-50 grid place-items-center rounded-xl bg-background/55 backdrop-blur-sm">
             <div className="glass-surface glass-sheen w-[min(520px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/80 p-5 shadow-[0_26px_70px_hsl(0_0%_0%_/_0.42)]">
@@ -1501,7 +1995,17 @@ export function AddRecordDialog({
             </div>
           </div>
         )}
-        <div className="space-y-4">
+        <div className="flex h-full flex-col">
+          <div className="p-6 pb-4 pr-12">
+            <DialogHeader>
+              <DialogTitle>Add DNS Record</DialogTitle>
+              <DialogDescription>
+                Create a new DNS record for {zoneName}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="scrollbar-themed min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6">
+            <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>{t("Type", "Type")}</Label>
@@ -1666,9 +2170,12 @@ export function AddRecordDialog({
                                   <SelectItem value="ed25519">ed25519</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Match the key type your provider generated.
+                              </div>
                             </div>
                             <div className="space-y-1">
-                              <Label className="text-xs">Selector (name)</Label>
+                              <Label className="text-xs">Selector</Label>
                               <Input
                                 value={dkimSelector}
                                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
@@ -1676,6 +2183,9 @@ export function AddRecordDialog({
                                 }
                                 placeholder="e.g., default"
                               />
+                              <div className="text-[11px] text-muted-foreground">
+                                Published at <code>&lt;selector&gt;._domainkey</code>.
+                              </div>
                             </div>
                             <div className="space-y-1 sm:col-span-1">
                               <Label className="text-xs">Public key (p=)</Label>
@@ -1686,6 +2196,133 @@ export function AddRecordDialog({
                                 }
                                 placeholder="base64 public key"
                               />
+                              <div className="text-[11px] text-muted-foreground">
+                                Paste the base64 key only (no PEM header/footer).
+                              </div>
+                            </div>
+                            <div className="space-y-1 sm:col-span-1">
+                              <Label className="text-xs">Mode</Label>
+                              <Select
+                                value={
+                                  dkimTestMode && dkimStrictMode
+                                    ? "test+strict"
+                                    : dkimTestMode
+                                      ? "test"
+                                      : dkimStrictMode
+                                        ? "strict"
+                                        : "prod"
+                                }
+                                onValueChange={(value: string) => {
+                                  if (value === "prod") {
+                                    setDkimTestMode(false);
+                                    setDkimStrictMode(false);
+                                  } else if (value === "test") {
+                                    setDkimTestMode(true);
+                                    setDkimStrictMode(false);
+                                  } else if (value === "strict") {
+                                    setDkimTestMode(false);
+                                    setDkimStrictMode(true);
+                                  } else {
+                                    setDkimTestMode(true);
+                                    setDkimStrictMode(true);
+                                  }
+                                }}
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="prod">Production</SelectItem>
+                                  <SelectItem value="test">Test (t=y)</SelectItem>
+                                  <SelectItem value="strict">Strict (t=s)</SelectItem>
+                                  <SelectItem value="test+strict">
+                                    Test + Strict (t=y:s)
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Use test while rolling out; remove once verified.
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Service (s=, optional)</Label>
+                              <Input
+                                value={dkimServiceType}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDkimServiceType(e.target.value)
+                                }
+                                placeholder="* or email"
+                              />
+                              <div className="text-[11px] text-muted-foreground">
+                                Most records omit this. Common values are <code>*</code>{" "}
+                                or <code>email</code>.
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Hash algs (h=, optional)</Label>
+                              <Select
+                                value={dkimHashPreset}
+                                onValueChange={(value: string) => {
+                                  if (value === "omit") setDkimHashAlgs("");
+                                  else if (value === "custom") {
+                                    if (!dkimHashAlgs.trim()) setDkimHashAlgs("sha256");
+                                  } else setDkimHashAlgs(value);
+                                }}
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="omit">Omit (default)</SelectItem>
+                                  <SelectItem value="sha256">sha256</SelectItem>
+                                  <SelectItem value="sha1">sha1</SelectItem>
+                                  <SelectItem value="sha1:sha256">sha1:sha256</SelectItem>
+                                  <SelectItem value="sha256:sha1">sha256:sha1</SelectItem>
+                                  <SelectItem value="custom">Custom…</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              {dkimHashPreset === "custom" && (
+                                <Input
+                                  className="mt-2"
+                                  value={dkimHashAlgs}
+                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                    setDkimHashAlgs(e.target.value)
+                                  }
+                                  placeholder="e.g., sha256 or sha1:sha256"
+                                />
+                              )}
+                              <div className="text-[11px] text-muted-foreground">
+                                Rarely needed; defaults apply. Use colon-separated
+                                values.
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">
+                                Granularity (g=, optional)
+                              </Label>
+                              <Input
+                                value={dkimGranularity}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDkimGranularity(e.target.value)
+                                }
+                                placeholder="*"
+                              />
+                              <div className="text-[11px] text-muted-foreground">
+                                Local-part pattern only (no <code>@domain</code>).
+                              </div>
+                            </div>
+                            <div className="space-y-1 sm:col-span-3">
+                              <Label className="text-xs">Notes (n=, optional)</Label>
+                              <Input
+                                value={dkimNotes}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setDkimNotes(e.target.value)
+                                }
+                                placeholder="optional comment"
+                              />
+                              <div className="text-[11px] text-muted-foreground">
+                                Rarely needed; keep it short.
+                              </div>
                             </div>
                           </>
                         )}
@@ -1811,59 +2448,134 @@ export function AddRecordDialog({
                       </div>
                       {effectiveTxtMode === "spf" && (
                         <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
-                          <div className="text-xs font-semibold text-muted-foreground">
-                            SPF builder
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              SPF builder
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              Est. DNS lookups: {spfDiagnostics.lookupEstimate}/10
+                            </div>
                           </div>
-                          <div className="flex space-x-2 mt-2">
-                            <Select
-                              value={newSPFQualifier || "+"}
-                              onValueChange={(value: string) =>
-                                setNewSPFQualifier(value === "+" ? "" : value)
-                              }
-                            >
-                              <SelectTrigger className="h-8 w-16">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="+">+</SelectItem>
-                                <SelectItem value="-">-</SelectItem>
-                                <SelectItem value="~">~</SelectItem>
-                                <SelectItem value="?">?</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={newSPFMechanism}
-                              onValueChange={(value: string) =>
-                                setNewSPFMechanism(value)
-                              }
-                            >
-                              <SelectTrigger className="h-8 w-28">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="ip4">ip4</SelectItem>
-                                <SelectItem value="ip6">ip6</SelectItem>
-                                <SelectItem value="a">a</SelectItem>
-                                <SelectItem value="mx">mx</SelectItem>
-                                <SelectItem value="include">include</SelectItem>
-                                <SelectItem value="all">all</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Input
-                              placeholder="value (optional)"
-                              value={newSPFValue}
-                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                                setNewSPFValue(e.target.value)
-                              }
-                            />
+
+                          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
+                            <div className="space-y-1 sm:col-span-1">
+                              <Label className="text-xs">Qualifier</Label>
+                              <Select
+                                value={newSPFQualifier || "+"}
+                                onValueChange={(value: string) =>
+                                  setNewSPFQualifier(value === "+" ? "" : value)
+                                }
+                              >
+                                <SelectTrigger className="h-8">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="+">+ pass</SelectItem>
+                                  <SelectItem value="-">- fail</SelectItem>
+                                  <SelectItem value="~">~ softfail</SelectItem>
+                                  <SelectItem value="?">? neutral</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                Result if it matches.
+                              </div>
+                            </div>
+
+                            <div className="space-y-1 sm:col-span-2">
+                              <Label className="text-xs">Mechanism</Label>
+                              <Select
+                                value={newSPFMechanism}
+                                onValueChange={(value: string) =>
+                                  setNewSPFMechanism(value)
+                                }
+                              >
+                                <SelectTrigger className="h-8">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="ip4">ip4</SelectItem>
+                                  <SelectItem value="ip6">ip6</SelectItem>
+                                  <SelectItem value="a">a</SelectItem>
+                                  <SelectItem value="mx">mx</SelectItem>
+                                  <SelectItem value="include">include</SelectItem>
+                                  <SelectItem value="exists">exists</SelectItem>
+                                  <SelectItem value="ptr">ptr</SelectItem>
+                                  <SelectItem value="all">all</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-[11px] text-muted-foreground">
+                                {(() => {
+                                  switch (newSPFMechanism) {
+                                    case "ip4":
+                                      return "Authorize an IPv4 netblock.";
+                                    case "ip6":
+                                      return "Authorize an IPv6 netblock.";
+                                    case "a":
+                                      return "Authorize A/AAAA of a domain.";
+                                    case "mx":
+                                      return "Authorize MX hosts of a domain.";
+                                    case "include":
+                                      return "Include another domain’s SPF.";
+                                    case "exists":
+                                      return "Match if an A lookup succeeds.";
+                                    case "ptr":
+                                      return "Discouraged (reverse DNS).";
+                                    case "all":
+                                      return "Catch-all (usually last).";
+                                    default:
+                                      return "";
+                                  }
+                                })()}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1 sm:col-span-3">
+                              <Label className="text-xs">Value</Label>
+                              <Input
+                                className="h-8"
+                                placeholder={(() => {
+                                  switch (newSPFMechanism) {
+                                    case "ip4":
+                                      return "e.g., 192.0.2.0/24";
+                                    case "ip6":
+                                      return "e.g., 2001:db8::/32";
+                                    case "include":
+                                      return "e.g., _spf.example.com";
+                                    case "exists":
+                                      return "e.g., exists.example.com";
+                                    case "a":
+                                    case "mx":
+                                    case "ptr":
+                                      return "optional: example.com/24//64";
+                                    case "all":
+                                      return "(no value)";
+                                    default:
+                                      return "";
+                                  }
+                                })()}
+                                value={newSPFValue}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  setNewSPFValue(e.target.value)
+                                }
+                              />
+                              <div className="text-[11px] text-muted-foreground">
+                                {newSPFMechanism === "all"
+                                  ? "Leave empty."
+                                  : "Enter the mechanism parameter (if required)."}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-2 flex justify-end">
                             <Button onClick={addSPFMechanism}>
                               {editingSPFIndex !== null ? "Update" : "Add"}
                             </Button>
                           </div>
+
                           {parsedSPF?.mechanisms && parsedSPF.mechanisms.length > 0 && (
                             <div className="mt-3 space-y-2">
                               <div className="text-xs font-semibold text-muted-foreground">
-                                Mechanisms
+                                Directives
                               </div>
                               {parsedSPF.mechanisms.map((m, i) => (
                                 <div
@@ -1876,6 +2588,30 @@ export function AddRecordDialog({
                                         (m.mechanism ?? "") +
                                         (m.value ? `:${m.value}` : "")}
                                     </code>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {(() => {
+                                      switch (m.mechanism) {
+                                        case "ip4":
+                                          return "IPv4 netblock.";
+                                        case "ip6":
+                                          return "IPv6 netblock.";
+                                        case "a":
+                                          return "A/AAAA of domain.";
+                                        case "mx":
+                                          return "MX of domain.";
+                                        case "include":
+                                          return "Include domain SPF.";
+                                        case "exists":
+                                          return "A lookup exists.";
+                                        case "ptr":
+                                          return "Reverse DNS (discouraged).";
+                                        case "all":
+                                          return "Catch-all.";
+                                        default:
+                                          return "";
+                                      }
+                                    })()}
                                   </div>
                                   <Button
                                     size="sm"
@@ -1895,20 +2631,231 @@ export function AddRecordDialog({
                               ))}
                             </div>
                           )}
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            Preview:
+
+                          <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Preview (canonical)
+                            </div>
+                            <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                              {spfDiagnostics.canonical ||
+                                composeSPF(
+                                  parsedSPF ?? { version: "v=spf1", mechanisms: [] },
+                                )}
+                            </pre>
                           </div>
-                          <pre className="mt-1 whitespace-pre-wrap text-xs">
-                            {composeSPF(
-                              parsedSPF ?? { version: "v=spf1", mechanisms: [] },
-                            )}
-                          </pre>
-                          {!validateSPF(record.content).ok && (
-                            <div className="mt-2 text-xs text-red-600">
-                              SPF validation issues:{" "}
-                              {validateSPF(record.content).problems.join(", ")}
+
+                          <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Recommendations
+                            </div>
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                              <li>
+                                Keep <code>all</code> last; avoid <code>+all</code>.
+                              </li>
+                              <li>
+                                Prefer <code>~all</code> while rolling out; move to{" "}
+                                <code>-all</code> once you’re confident.
+                              </li>
+                              <li>
+                                Avoid <code>ptr</code>; it’s discouraged and can blow
+                                past lookup limits.
+                              </li>
+                              <li>
+                                Stay at ≤10 DNS lookups (includes <code>include</code>,{" "}
+                                <code>a</code>, <code>mx</code>, <code>exists</code>,{" "}
+                                <code>ptr</code>, and <code>redirect</code>).
+                              </li>
+                              <li>
+                                Use <code>redirect=</code> to centralize policy when you
+                                don’t want to copy directives everywhere.
+                              </li>
+                            </ul>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const parsed = parseSPF(record.content) ?? {
+                                    version: "v=spf1",
+                                    mechanisms: [],
+                                  };
+                                  const mechs = [...parsed.mechanisms].filter(
+                                    (m) => m.mechanism !== "all",
+                                  );
+                                  mechs.push({
+                                    qualifier: "~",
+                                    mechanism: "all",
+                                  });
+                                  onRecordChange({
+                                    ...record,
+                                    content: composeSPF({
+                                      version: parsed.version,
+                                      mechanisms: mechs as SPFMechanism[],
+                                      modifiers: parsed.modifiers,
+                                    }),
+                                  });
+                                }}
+                              >
+                                Set ~all (recommended)
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const parsed = parseSPF(record.content) ?? {
+                                    version: "v=spf1",
+                                    mechanisms: [],
+                                  };
+                                  const mechs = [...parsed.mechanisms].filter(
+                                    (m) => m.mechanism !== "all",
+                                  );
+                                  mechs.push({
+                                    qualifier: "-",
+                                    mechanism: "all",
+                                  });
+                                  onRecordChange({
+                                    ...record,
+                                    content: composeSPF({
+                                      version: parsed.version,
+                                      mechanisms: mechs as SPFMechanism[],
+                                      modifiers: parsed.modifiers,
+                                    }),
+                                  });
+                                }}
+                              >
+                                Set -all (strict)
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const parsed = parseSPF(record.content) ?? {
+                                    version: "v=spf1",
+                                    mechanisms: [],
+                                  };
+                                  const mechs = [...parsed.mechanisms];
+                                  const all = mechs.filter((m) => m.mechanism === "all");
+                                  const rest = mechs.filter((m) => m.mechanism !== "all");
+                                  onRecordChange({
+                                    ...record,
+                                    content: composeSPF({
+                                      version: parsed.version,
+                                      mechanisms: [...rest, ...all] as SPFMechanism[],
+                                      modifiers: parsed.modifiers,
+                                    }),
+                                  });
+                                }}
+                              >
+                                Move all to end
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const parsed = parseSPF(record.content) ?? {
+                                    version: "v=spf1",
+                                    mechanisms: [],
+                                  };
+                                  const mechs = parsed.mechanisms.filter(
+                                    (m) => m.mechanism !== "ptr",
+                                  );
+                                  onRecordChange({
+                                    ...record,
+                                    content: composeSPF({
+                                      version: parsed.version,
+                                      mechanisms: mechs,
+                                      modifiers: parsed.modifiers,
+                                    }),
+                                  });
+                                }}
+                              >
+                                Remove ptr
+                              </Button>
+                            </div>
+                          </div>
+
+                          {spfDiagnostics.issues.length > 0 && (
+                            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                              <div className="text-sm font-semibold">
+                                SPF warnings
+                              </div>
+                              <div className="mt-2 max-h-40 overflow-auto pr-2">
+                                <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                  {spfDiagnostics.issues.map((w) => (
+                                    <li key={w}>{w}</li>
+                                  ))}
+                                </ul>
+                              </div>
                             </div>
                           )}
+
+                          <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Redirect (optional)
+                            </div>
+                            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-5">
+                              <div className="sm:col-span-4">
+                                <Input
+                                  className="h-8"
+                                  value={spfRedirect}
+                                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                    const next = e.target.value.trim();
+                                    setSpfRedirect(next);
+                                    const parsed = parseSPF(record.content) ?? {
+                                      version: "v=spf1",
+                                      mechanisms: [],
+                                    };
+                                    const mods = (parsed.modifiers ?? []).filter(
+                                      (m) => m.key !== "redirect",
+                                    );
+                                    if (next) mods.push({ key: "redirect", value: next });
+                                    onRecordChange({
+                                      ...record,
+                                      content: composeSPF({
+                                        version: parsed.version,
+                                        mechanisms: parsed.mechanisms,
+                                        modifiers: mods.length ? mods : undefined,
+                                      }),
+                                    });
+                                  }}
+                                  placeholder="e.g., _spf.example.com"
+                                />
+                              </div>
+                              <div className="sm:col-span-1">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 w-full"
+                                  onClick={() => {
+                                    setSpfRedirect("");
+                                    const parsed = parseSPF(record.content) ?? {
+                                      version: "v=spf1",
+                                      mechanisms: [],
+                                    };
+                                    const mods = (parsed.modifiers ?? []).filter(
+                                      (m) => m.key !== "redirect",
+                                    );
+                                    onRecordChange({
+                                      ...record,
+                                      content: composeSPF({
+                                        version: parsed.version,
+                                        mechanisms: parsed.mechanisms,
+                                        modifiers: mods.length ? mods : undefined,
+                                      }),
+                                    });
+                                  }}
+                                  disabled={!spfRedirect}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="mt-2 text-[11px] text-muted-foreground">
+                              Used only if no mechanism matches. Don’t combine with
+                              an <code>all</code> mechanism (redirect would never run).
+                            </div>
+                          </div>
+
                           <div className="mt-2 flex justify-end">
                             <Button
                               size="sm"
@@ -1930,39 +2877,163 @@ export function AddRecordDialog({
                         </div>
                       )}
                       {effectiveTxtMode === "dkim" && (
-                        <div className="flex justify-end">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              const selector = dkimSelector.trim();
-                              if (!selector) return;
-                              onRecordChange({
-                                ...record,
-                                name: `${selector}._domainkey`,
-                              });
-                            }}
-                            disabled={!dkimSelector.trim()}
-                          >
-                            Use DKIM name
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              const p = dkimPublicKey.trim();
-                              const parts = [
-                                "v=DKIM1",
-                                `k=${dkimKeyType}`,
-                                `p=${p}`,
-                              ];
-                              onRecordChange({
-                                ...record,
-                                content: parts.join("; ") + ";",
-                              });
-                            }}
-                          >
-                            Build DKIM TXT
-                          </Button>
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const selector = dkimSelector.trim();
+                                if (!selector) return;
+                                onRecordChange({
+                                  ...record,
+                                  name: `${selector}._domainkey`,
+                                });
+                              }}
+                              disabled={!dkimSelector.trim()}
+                            >
+                              Use DKIM name
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const parsed = parseDKIM(record.content);
+                                setDkimKeyType(parsed.keyType);
+                                setDkimPublicKey(parsed.publicKey);
+                                setDkimTestMode(parsed.testMode);
+                                setDkimStrictMode(parsed.strictMode);
+                                setDkimServiceType(parsed.serviceType);
+                                setDkimHashAlgs(parsed.hashAlgs);
+                                setDkimGranularity(parsed.granularity);
+                                setDkimNotes(parsed.notes);
+                              }}
+                            >
+                              Load from content
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                onRecordChange({
+                                  ...record,
+                                  content: buildDKIM({
+                                    keyType: dkimKeyType,
+                                    publicKey: dkimPublicKey,
+                                    testMode: dkimTestMode,
+                                    strictMode: dkimStrictMode,
+                                    serviceType: dkimServiceType,
+                                    hashAlgs: dkimHashAlgs,
+                                    granularity: dkimGranularity,
+                                    notes: dkimNotes,
+                                  }),
+                                });
+                              }}
+                            >
+                              Build DKIM TXT
+                            </Button>
+                          </div>
+
+                          <div className="rounded-lg border border-border/60 bg-background/20 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Preview (canonical)
+                            </div>
+                            <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+                              {dkimDiagnostics.canonical}
+                            </pre>
+                          </div>
+
+                          <div className="rounded-lg border border-border/60 bg-background/15 p-3">
+                            <div className="text-xs font-semibold text-muted-foreground">
+                              Recommendations
+                            </div>
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
+                              <li>
+                                Keep the name as <code>&lt;selector&gt;._domainkey</code>{" "}
+                                (relative to <code>{zoneName}</code>).
+                              </li>
+                              <li>
+                                Use <code>t=y</code> during rollout; remove once you’ve
+                                confirmed mail is signing and passing.
+                              </li>
+                              <li>
+                                Prefer <code>sha256</code>; avoid custom <code>h=</code>{" "}
+                                unless your provider requires it.
+                              </li>
+                              <li>
+                                If <code>p=</code> is very long, some providers require
+                                splitting into multiple quoted TXT chunks.
+                              </li>
+                            </ul>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setDkimTestMode(true);
+                                }}
+                              >
+                                Enable test (t=y)
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setDkimTestMode(false);
+                                }}
+                              >
+                                Disable test
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setDkimPublicKey((v) => v.replace(/\s+/g, ""));
+                                }}
+                              >
+                                Normalize p= whitespace
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  onRecordChange({
+                                    ...record,
+                                    content: buildDKIM({
+                                      keyType: dkimKeyType,
+                                      publicKey: dkimPublicKey,
+                                      testMode: dkimTestMode,
+                                      strictMode: dkimStrictMode,
+                                      serviceType: dkimServiceType,
+                                      hashAlgs: dkimHashAlgs,
+                                      granularity: dkimGranularity,
+                                      notes: dkimNotes,
+                                    }),
+                                  });
+                                }}
+                              >
+                                Apply canonical to TXT
+                              </Button>
+                            </div>
+                          </div>
+
+                          {(dkimDiagnostics.nameIssues.length > 0 ||
+                            dkimDiagnostics.issues.length > 0) && (
+                            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                              <div className="text-sm font-semibold">
+                                DKIM warnings
+                              </div>
+                              <div className="mt-2 max-h-40 overflow-auto pr-2">
+                                <ul className="list-disc pl-5 text-xs text-foreground/85">
+                                  {dkimDiagnostics.nameIssues.map((w) => (
+                                    <li key={w}>{w}</li>
+                                  ))}
+                                  {dkimDiagnostics.issues.map((w) => (
+                                    <li key={w}>{w}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                       {effectiveTxtMode === "dmarc" && (
@@ -1997,17 +3068,7 @@ export function AddRecordDialog({
                           </Button>
                         </div>
                       )}
-                      {record.type === "TXT" && effectiveTxtMode === "dkim" && (
-                        (() => {
-                          const v = validateDKIM((record.content ?? "").trim());
-                          if (v.ok) return null;
-                          return (
-                            <div className="text-xs text-red-600">
-                              DKIM validation issues: {v.problems.join(", ")}
-                            </div>
-                          );
-                        })()
-                      )}
+                      {/* DKIM warnings are now shown in the DKIM panel above */}
                       {record.type === "TXT" && effectiveTxtMode === "dmarc" && (
                         (() => {
                           const v = validateDMARC((record.content ?? "").trim());
@@ -3105,7 +4166,7 @@ export function AddRecordDialog({
               <div className="text-sm font-semibold">
                 Potential validation issues
               </div>
-              <div className="mt-2 max-h-44 overflow-auto pr-2">
+              <div className="scrollbar-themed mt-2 max-h-44 overflow-auto pr-2">
                 <ul className="list-disc pl-5 text-xs text-foreground/85">
                   {validationWarnings.map((w) => (
                     <li key={w}>{w}</li>
@@ -3118,26 +4179,30 @@ export function AddRecordDialog({
               </div>
             </div>
           )}
-          <Button
-            onClick={handleCreateRecord}
-            className="w-full"
-            variant={validationWarnings.length > 0 ? "outline" : "default"}
-          >
-            {validationWarnings.length > 0
-              ? confirmInvalid
-                ? "Create Anyway"
-                : "Review Warnings"
-              : "Create Record"}
-          </Button>
-          {validationWarnings.length > 0 && confirmInvalid && (
+        </div>
+          </div>
+          <div className="border-t border-border/40 bg-popover/20 p-4">
             <Button
-              onClick={() => setConfirmInvalid(false)}
+              onClick={handleCreateRecord}
               className="w-full"
-              variant="ghost"
+              variant={submissionWarnings.length > 0 ? "outline" : "default"}
             >
-              Go Back
+              {submissionWarnings.length > 0
+                ? confirmInvalid
+                  ? "Create Anyway"
+                  : "Review Warnings"
+                : "Create Record"}
             </Button>
-          )}
+            {submissionWarnings.length > 0 && confirmInvalid && (
+              <Button
+                onClick={() => setConfirmInvalid(false)}
+                className="mt-2 w-full"
+                variant="ghost"
+              >
+                Go Back
+              </Button>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

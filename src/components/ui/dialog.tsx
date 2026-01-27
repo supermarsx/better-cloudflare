@@ -14,7 +14,14 @@ import { cn } from "@/lib/utils";
  * components should be used together to provide consistent styling and
  * accessible markup for modal dialogs in the app.
  */
-const Dialog = DialogPrimitive.Root;
+const Dialog = ({
+  modal,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) => {
+  const isTauri =
+    typeof window !== "undefined" && (window as unknown as { __TAURI__?: unknown }).__TAURI__ != null;
+  return <DialogPrimitive.Root modal={modal ?? !isTauri} {...props} />;
+};
 
 const DialogTrigger = DialogPrimitive.Trigger;
 
@@ -42,8 +49,22 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
 >(({ className, children, ...props }, ref) => (
   <DialogPortal>
+    {/**
+     * In Tauri we render dialogs as non-modal so the native titlebar / drag region
+     * stays interactive. Radix only renders Overlay/scroll-lock behavior for modal
+     * dialogs, so we provide our own backdrop here.
+     */}
+    {(() => {
+      const isTauri =
+        typeof window !== "undefined" &&
+        (window as unknown as { __TAURI__?: unknown }).__TAURI__ != null;
+      return (
     <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
-      <DialogOverlay />
+      {isTauri ? (
+        <div className="absolute inset-0 bg-background/70 backdrop-blur-md" />
+      ) : (
+        <DialogOverlay />
+      )}
       <div className="absolute inset-0 overflow-y-auto">
         <div className="flex min-h-full items-center justify-center p-4 pt-4">
           <DialogPrimitive.Content
@@ -61,7 +82,7 @@ const DialogContent = React.forwardRef<
                 document.documentElement,
               ).getPropertyValue("--app-top-inset");
               const insetPx = Number.parseFloat(insetStr) || 0;
-              if (originalEvent.clientY < insetPx) {
+              if (originalEvent.clientY <= insetPx) {
                 event.preventDefault();
               }
             }}
@@ -74,7 +95,7 @@ const DialogContent = React.forwardRef<
                 document.documentElement,
               ).getPropertyValue("--app-top-inset");
               const insetPx = Number.parseFloat(insetStr) || 0;
-              if (originalEvent.clientY < insetPx) {
+              if (originalEvent.clientY <= insetPx) {
                 event.preventDefault();
               }
             }}
@@ -89,6 +110,8 @@ const DialogContent = React.forwardRef<
         </div>
       </div>
     </div>
+      );
+    })()}
   </DialogPortal>
 ));
 DialogContent.displayName = DialogPrimitive.Content.displayName;
