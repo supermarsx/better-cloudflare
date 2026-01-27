@@ -2,7 +2,7 @@
  * Dialog used to collect DNS record properties required to create a new
  * record via the API.
  */
-import type { ChangeEvent, SelectHTMLAttributes } from "react";
+import type { ChangeEvent } from "react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,28 +41,7 @@ import type { SPFGraph, SPFMechanism } from "@/lib/spf";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
-import { ChevronDown, Plus } from "lucide-react";
-
-function StyledNativeSelect({
-  className,
-  children,
-  ...props
-}: SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <div className="relative">
-      <select
-        className={[
-          "ui-focus glass-surface glass-sheen glass-surface-hover w-full rounded-md border border-border/60 bg-background/10 px-2 pr-9 text-sm text-foreground focus-visible:outline-none appearance-none",
-          className ?? "",
-        ].join(" ")}
-        {...props}
-      >
-        {children}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 opacity-70" />
-    </div>
-  );
-}
+import { Plus } from "lucide-react";
 
 /**
  * Props for the AddRecordDialog component which collects fields to create a
@@ -1651,38 +1630,42 @@ export function AddRecordDialog({
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                         <div className="space-y-1">
                           <Label className="text-xs">TXT helper</Label>
-                          <StyledNativeSelect
-                            className="h-9"
+                          <Select
                             value={txtHelperMode}
-                            onChange={(e) =>
-                              setTxtHelperMode(
-                                e.target.value as typeof txtHelperMode,
-                              )
+                            onValueChange={(value: string) =>
+                              setTxtHelperMode(value as typeof txtHelperMode)
                             }
                           >
-                            <option value="auto">Auto-detect</option>
-                            <option value="generic">Generic</option>
-                            <option value="spf">SPF</option>
-                            <option value="dkim">DKIM</option>
-                            <option value="dmarc">DMARC</option>
-                          </StyledNativeSelect>
+                            <SelectTrigger className="h-9">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">Auto-detect</SelectItem>
+                              <SelectItem value="generic">Generic</SelectItem>
+                              <SelectItem value="spf">SPF</SelectItem>
+                              <SelectItem value="dkim">DKIM</SelectItem>
+                              <SelectItem value="dmarc">DMARC</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                         {effectiveTxtMode === "dkim" && (
                           <>
                             <div className="space-y-1">
                               <Label className="text-xs">Key type</Label>
-                              <StyledNativeSelect
-                                className="h-9"
+                              <Select
                                 value={dkimKeyType}
-                                onChange={(e) =>
-                                  setDkimKeyType(
-                                    e.target.value as typeof dkimKeyType,
-                                  )
+                                onValueChange={(value: string) =>
+                                  setDkimKeyType(value as typeof dkimKeyType)
                                 }
                               >
-                                <option value="rsa">rsa</option>
-                                <option value="ed25519">ed25519</option>
-                              </StyledNativeSelect>
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="rsa">rsa</SelectItem>
+                                  <SelectItem value="ed25519">ed25519</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">Selector (name)</Label>
@@ -1710,19 +1693,23 @@ export function AddRecordDialog({
                           <>
                             <div className="space-y-1">
                               <Label className="text-xs">Policy (p=)</Label>
-                              <StyledNativeSelect
-                                className="h-9"
+                              <Select
                                 value={dmarcPolicy}
-                                onChange={(e) =>
-                                  setDmarcPolicy(
-                                    e.target.value as typeof dmarcPolicy,
-                                  )
+                                onValueChange={(value: string) =>
+                                  setDmarcPolicy(value as typeof dmarcPolicy)
                                 }
                               >
-                                <option value="none">none</option>
-                                <option value="quarantine">quarantine</option>
-                                <option value="reject">reject</option>
-                              </StyledNativeSelect>
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">none</SelectItem>
+                                  <SelectItem value="quarantine">
+                                    quarantine
+                                  </SelectItem>
+                                  <SelectItem value="reject">reject</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">rua= (optional)</Label>
@@ -1760,50 +1747,64 @@ export function AddRecordDialog({
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">adkim</Label>
-                              <StyledNativeSelect
-                                className="h-9"
+                              <Select
                                 value={dmarcAdkim}
-                                onChange={(e) =>
-                                  setDmarcAdkim(
-                                    e.target.value as typeof dmarcAdkim,
-                                  )
+                                onValueChange={(value: string) =>
+                                  setDmarcAdkim(value as typeof dmarcAdkim)
                                 }
                               >
-                                <option value="r">r</option>
-                                <option value="s">s</option>
-                              </StyledNativeSelect>
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="r">r</SelectItem>
+                                  <SelectItem value="s">s</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">aspf</Label>
-                              <StyledNativeSelect
-                                className="h-9"
+                              <Select
                                 value={dmarcAspf}
-                                onChange={(e) =>
-                                  setDmarcAspf(
-                                    e.target.value as typeof dmarcAspf,
-                                  )
+                                onValueChange={(value: string) =>
+                                  setDmarcAspf(value as typeof dmarcAspf)
                                 }
                               >
-                                <option value="r">r</option>
-                                <option value="s">s</option>
-                              </StyledNativeSelect>
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="r">r</SelectItem>
+                                  <SelectItem value="s">s</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="space-y-1">
                               <Label className="text-xs">sp= (optional)</Label>
-                              <StyledNativeSelect
-                                className="h-9"
-                                value={dmarcSubdomainPolicy}
-                                onChange={(e) =>
+                              <Select
+                                value={dmarcSubdomainPolicy || "__inherit__"}
+                                onValueChange={(value: string) =>
                                   setDmarcSubdomainPolicy(
-                                    e.target.value as typeof dmarcSubdomainPolicy,
+                                    value === "__inherit__"
+                                      ? ""
+                                      : (value as typeof dmarcSubdomainPolicy),
                                   )
                                 }
                               >
-                                <option value="">(inherit)</option>
-                                <option value="none">none</option>
-                                <option value="quarantine">quarantine</option>
-                                <option value="reject">reject</option>
-                              </StyledNativeSelect>
+                                <SelectTrigger className="h-9">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__inherit__">
+                                    (inherit)
+                                  </SelectItem>
+                                  <SelectItem value="none">none</SelectItem>
+                                  <SelectItem value="quarantine">
+                                    quarantine
+                                  </SelectItem>
+                                  <SelectItem value="reject">reject</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                           </>
                         )}
@@ -1814,28 +1815,40 @@ export function AddRecordDialog({
                             SPF builder
                           </div>
                           <div className="flex space-x-2 mt-2">
-                            <StyledNativeSelect
-                              className="h-8"
-                              value={newSPFQualifier}
-                              onChange={(e) => setNewSPFQualifier(e.target.value)}
+                            <Select
+                              value={newSPFQualifier || "+"}
+                              onValueChange={(value: string) =>
+                                setNewSPFQualifier(value === "+" ? "" : value)
+                              }
                             >
-                              <option value="">+</option>
-                              <option value="-">-</option>
-                              <option value="~">~</option>
-                              <option value="?">?</option>
-                            </StyledNativeSelect>
-                            <StyledNativeSelect
-                              className="h-8"
+                              <SelectTrigger className="h-8 w-16">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="+">+</SelectItem>
+                                <SelectItem value="-">-</SelectItem>
+                                <SelectItem value="~">~</SelectItem>
+                                <SelectItem value="?">?</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Select
                               value={newSPFMechanism}
-                              onChange={(e) => setNewSPFMechanism(e.target.value)}
+                              onValueChange={(value: string) =>
+                                setNewSPFMechanism(value)
+                              }
                             >
-                              <option value="ip4">ip4</option>
-                              <option value="ip6">ip6</option>
-                              <option value="a">a</option>
-                              <option value="mx">mx</option>
-                              <option value="include">include</option>
-                              <option value="all">all</option>
-                            </StyledNativeSelect>
+                              <SelectTrigger className="h-8 w-28">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="ip4">ip4</SelectItem>
+                                <SelectItem value="ip6">ip6</SelectItem>
+                                <SelectItem value="a">a</SelectItem>
+                                <SelectItem value="mx">mx</SelectItem>
+                                <SelectItem value="include">include</SelectItem>
+                                <SelectItem value="all">all</SelectItem>
+                              </SelectContent>
+                            </Select>
                             <Input
                               placeholder="value (optional)"
                               value={newSPFValue}
@@ -2869,28 +2882,40 @@ export function AddRecordDialog({
                         placeholder="v=spf1 ip4:... ~all"
                       />
                       <div className="flex space-x-2">
-                        <StyledNativeSelect
-                          className="h-8 w-auto"
-                          value={newSPFQualifier}
-                          onChange={(e) => setNewSPFQualifier(e.target.value)}
+                        <Select
+                          value={newSPFQualifier || "+"}
+                          onValueChange={(value: string) =>
+                            setNewSPFQualifier(value === "+" ? "" : value)
+                          }
                         >
-                          <option value="">+</option>
-                          <option value="-">-</option>
-                          <option value="~">~</option>
-                          <option value="?">?</option>
-                        </StyledNativeSelect>
-                        <StyledNativeSelect
-                          className="h-8 w-auto"
+                          <SelectTrigger className="h-8 w-16">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="+">+</SelectItem>
+                            <SelectItem value="-">-</SelectItem>
+                            <SelectItem value="~">~</SelectItem>
+                            <SelectItem value="?">?</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
                           value={newSPFMechanism}
-                          onChange={(e) => setNewSPFMechanism(e.target.value)}
+                          onValueChange={(value: string) =>
+                            setNewSPFMechanism(value)
+                          }
                         >
-                          <option value="ip4">ip4</option>
-                          <option value="ip6">ip6</option>
-                          <option value="a">a</option>
-                          <option value="mx">mx</option>
-                          <option value="include">include</option>
-                          <option value="all">all</option>
-                        </StyledNativeSelect>
+                          <SelectTrigger className="h-8 w-28">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ip4">ip4</SelectItem>
+                            <SelectItem value="ip6">ip6</SelectItem>
+                            <SelectItem value="a">a</SelectItem>
+                            <SelectItem value="mx">mx</SelectItem>
+                            <SelectItem value="include">include</SelectItem>
+                            <SelectItem value="all">all</SelectItem>
+                          </SelectContent>
+                        </Select>
                         <Input
                           placeholder="value (optional)"
                           value={newSPFValue}

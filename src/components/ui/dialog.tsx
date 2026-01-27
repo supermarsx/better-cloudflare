@@ -42,16 +42,42 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
 >(({ className, children, ...props }, ref) => (
   <DialogPortal>
-    <div className="fixed inset-0 z-50">
+    <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
       <DialogOverlay />
       <div className="absolute inset-0 overflow-y-auto">
-        <div className="flex min-h-[calc(100vh-var(--app-top-inset))] items-center justify-center p-4 pt-[calc(var(--app-top-inset)+1rem)]">
+        <div className="flex min-h-full items-center justify-center p-4 pt-4">
           <DialogPrimitive.Content
             ref={ref}
             className={cn(
               "glass-surface glass-sheen glass-fade relative z-10 grid w-full max-w-lg gap-4 bg-popover/70 p-6 text-foreground duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-xl",
               className,
             )}
+            onPointerDownOutside={(event) => {
+              props.onPointerDownOutside?.(event);
+              if (event.defaultPrevented) return;
+              const originalEvent = event.detail.originalEvent;
+              if (!(originalEvent instanceof PointerEvent)) return;
+              const insetStr = getComputedStyle(
+                document.documentElement,
+              ).getPropertyValue("--app-top-inset");
+              const insetPx = Number.parseFloat(insetStr) || 0;
+              if (originalEvent.clientY < insetPx) {
+                event.preventDefault();
+              }
+            }}
+            onInteractOutside={(event) => {
+              props.onInteractOutside?.(event);
+              if (event.defaultPrevented) return;
+              const originalEvent = event.detail.originalEvent;
+              if (!(originalEvent instanceof PointerEvent)) return;
+              const insetStr = getComputedStyle(
+                document.documentElement,
+              ).getPropertyValue("--app-top-inset");
+              const insetPx = Number.parseFloat(insetStr) || 0;
+              if (originalEvent.clientY < insetPx) {
+                event.preventDefault();
+              }
+            }}
             {...props}
           >
             {children}
