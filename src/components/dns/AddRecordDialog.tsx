@@ -1965,7 +1965,7 @@ export function AddRecordDialog({
           Add Record
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[calc(100dvh-var(--app-top-inset)-2rem)]">
+      <DialogContent className="flex max-w-3xl flex-col p-0 overflow-hidden max-h-[calc(100dvh-var(--app-top-inset)-2rem)]">
         {showDiscardConfirm && (
           <div className="absolute inset-0 z-50 grid place-items-center rounded-xl bg-background/55 backdrop-blur-sm">
             <div className="glass-surface glass-sheen w-[min(520px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/80 p-5 shadow-[0_26px_70px_hsl(0_0%_0%_/_0.42)]">
@@ -1995,17 +1995,16 @@ export function AddRecordDialog({
             </div>
           </div>
         )}
-        <div className="flex h-full flex-col">
-          <div className="p-6 pb-4 pr-12">
-            <DialogHeader>
-              <DialogTitle>Add DNS Record</DialogTitle>
-              <DialogDescription>
-                Create a new DNS record for {zoneName}
-              </DialogDescription>
-            </DialogHeader>
-          </div>
-          <div className="scrollbar-themed min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6">
-            <div className="space-y-4">
+        <div className="p-6 pb-4 pr-12">
+          <DialogHeader>
+            <DialogTitle>Add DNS Record</DialogTitle>
+            <DialogDescription>
+              Create a new DNS record for {zoneName}
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+        <div className="scrollbar-themed min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6">
+          <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>{t("Type", "Type")}</Label>
@@ -4180,29 +4179,28 @@ export function AddRecordDialog({
             </div>
           )}
         </div>
-          </div>
-          <div className="border-t border-border/40 bg-popover/20 p-4">
+        </div>
+        <div className="border-t border-border/40 bg-popover/20 p-4">
+          <Button
+            onClick={handleCreateRecord}
+            className="w-full"
+            variant={submissionWarnings.length > 0 ? "outline" : "default"}
+          >
+            {submissionWarnings.length > 0
+              ? confirmInvalid
+                ? "Create Anyway"
+                : "Review Warnings"
+              : "Create Record"}
+          </Button>
+          {submissionWarnings.length > 0 && confirmInvalid && (
             <Button
-              onClick={handleCreateRecord}
-              className="w-full"
-              variant={submissionWarnings.length > 0 ? "outline" : "default"}
+              onClick={() => setConfirmInvalid(false)}
+              className="mt-2 w-full"
+              variant="ghost"
             >
-              {submissionWarnings.length > 0
-                ? confirmInvalid
-                  ? "Create Anyway"
-                  : "Review Warnings"
-                : "Create Record"}
+              Go Back
             </Button>
-            {submissionWarnings.length > 0 && confirmInvalid && (
-              <Button
-                onClick={() => setConfirmInvalid(false)}
-                className="mt-2 w-full"
-                variant="ghost"
-              >
-                Go Back
-              </Button>
-            )}
-          </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
