@@ -105,6 +105,7 @@ export class CloudflareAPI {
       type: record.type,
       name: record.name,
       content: record.content,
+      comment: record.comment,
       ttl: record.ttl === "auto" ? 1 : record.ttl,
       priority: record.priority,
       proxied: record.proxied,

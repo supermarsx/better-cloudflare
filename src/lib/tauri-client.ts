@@ -21,6 +21,7 @@ export interface TauriDNSRecord {
   type: string;
   name: string;
   content: string;
+  comment?: string;
   ttl?: number;
   priority?: number;
   proxied?: boolean;

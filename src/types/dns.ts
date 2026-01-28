@@ -12,6 +12,8 @@ export interface DNSRecord {
   name: string;
   /** Record content (IP, host, text, etc.) */
   content: string;
+  /** Optional comment/annotation for the record (Cloudflare-supported). */
+  comment?: string;
   /** Time-to-live in seconds or 'auto' */
   ttl: number | "auto";
   /** Optional priority (used for MX records) */

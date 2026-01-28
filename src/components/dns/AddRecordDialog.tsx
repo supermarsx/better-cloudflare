@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -760,6 +761,7 @@ export function AddRecordDialog({
       type: prefillType ? (prefillType as RecordType) : "A",
       name: "",
       content: "",
+      comment: "",
       ttl: 300,
       proxied: false,
       priority: undefined,
@@ -1238,6 +1240,27 @@ export function AddRecordDialog({
                   );
               }
             })()}
+          </div>
+          <div className="space-y-2">
+            <Label>{t("Comment", "Comment")}</Label>
+            <Textarea
+              aria-label={t("Comment input", "Comment")}
+              value={record.comment ?? ""}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                onRecordChange({
+                  ...record,
+                  comment: e.target.value,
+                })
+              }
+              placeholder={t(
+                "Optional: add a note for this record",
+                "Optional: add a note for this record",
+              )}
+              className="min-h-16 resize-y"
+            />
+            <div className="text-xs text-muted-foreground">
+              Visible in Cloudflare and helps document why this record exists.
+            </div>
           </div>
           {record.type === "MX" && (
             <div className="space-y-2">
