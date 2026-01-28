@@ -50,6 +50,16 @@ export interface Zone {
 }
 
 /**
+ * Cloudflare Zone setting object (from `/zones/:id/settings/:setting_id`).
+ */
+export interface ZoneSetting<T = unknown> {
+  id: string;
+  value: T;
+  editable?: boolean;
+  modified_on?: string;
+}
+
+/**
  * Supported encryption algorithms used by the CryptoManager when encrypting
  * API keys in storage. AES-GCM is preferred for authenticated encryption.
  */

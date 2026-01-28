@@ -451,6 +451,74 @@ pub async fn export_dns_records(
     Ok(data)
 }
 
+#[tauri::command]
+pub async fn purge_cache(
+    storage: State<'_, Storage>,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    purge_everything: bool,
+    files: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    let client = CloudflareClient::new(&api_key, email.as_deref());
+    let result = client
+        .purge_cache(&zone_id, purge_everything, files.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "cache:purge",
+            "resource": zone_id,
+            "purge_everything": purge_everything,
+            "files_count": files.as_ref().map(|v| v.len()).unwrap_or(0),
+        }),
+    )
+    .await;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_zone_setting(
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    setting_id: String,
+) -> Result<serde_json::Value, String> {
+    let client = CloudflareClient::new(&api_key, email.as_deref());
+    client
+        .get_zone_setting(&zone_id, &setting_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_zone_setting(
+    storage: State<'_, Storage>,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    setting_id: String,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = CloudflareClient::new(&api_key, email.as_deref());
+    let result = client
+        .update_zone_setting(&zone_id, &setting_id, value.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "zone_setting:update",
+            "resource": setting_id,
+            "zone_id": zone_id,
+            "value": value,
+        }),
+    )
+    .await;
+    Ok(result)
+}
+
 // Vault Operations
 #[tauri::command]
 pub async fn store_vault_secret(

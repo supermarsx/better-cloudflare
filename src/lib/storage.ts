@@ -20,6 +20,7 @@ interface StorageData {
   lastZone?: string;
   lastActiveTabId?: string;
   dnsTableColumns?: string[];
+  zoneDnsTableColumns?: Record<string, string[]>;
   vaultEnabled?: boolean;
   autoRefreshInterval?: number;
   defaultPerPage?: number;
@@ -716,6 +717,16 @@ export class StorageManager {
     return [...(this.data.dnsTableColumns ?? [])];
   }
 
+  setZoneDnsTableColumnsMap(map: Record<string, string[]>): void {
+    this.data.zoneDnsTableColumns = { ...map };
+    this.save();
+    this.dispatchPreferencesChanged({ zoneDnsTableColumns: map });
+  }
+
+  getZoneDnsTableColumnsMap(): Record<string, string[]> {
+    return { ...(this.data.zoneDnsTableColumns ?? {}) };
+  }
+
   clearSettings(): void {
     delete this.data.lastZone;
     delete this.data.autoRefreshInterval;
@@ -730,6 +741,7 @@ export class StorageManager {
     delete this.data.lastOpenTabs;
     delete this.data.lastActiveTabId;
     delete this.data.dnsTableColumns;
+    delete this.data.zoneDnsTableColumns;
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;

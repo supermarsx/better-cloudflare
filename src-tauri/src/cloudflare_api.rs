@@ -1,6 +1,7 @@
 use reqwest::Client;
 use serde_json::Value;
 use thiserror::Error;
+use serde_json::json;
 
 #[derive(Error, Debug)]
 pub enum CloudflareError {
@@ -264,6 +265,108 @@ impl CloudflareClient {
             }
             _ => Err(CloudflareError::ApiError("Unsupported format".to_string())),
         }
+    }
+
+    pub async fn purge_cache(
+        &self,
+        zone_id: &str,
+        purge_everything: bool,
+        files: Option<Vec<String>>,
+    ) -> Result<Value, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/purge_cache",
+            zone_id
+        );
+        let body = if purge_everything {
+            json!({ "purge_everything": true })
+        } else {
+            json!({ "files": files.unwrap_or_default() })
+        };
+
+        let req = self.apply_auth(self.client.post(&url).json(&body));
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        if json["success"].as_bool() != Some(true) {
+            let err = json["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Failed to purge cache");
+            return Err(CloudflareError::ApiError(err.to_string()));
+        }
+        Ok(json["result"].clone())
+    }
+
+    pub async fn get_zone_setting(
+        &self,
+        zone_id: &str,
+        setting_id: &str,
+    ) -> Result<Value, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/settings/{}",
+            zone_id, setting_id
+        );
+        let req = self.apply_auth(self.client.get(&url));
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        if json["success"].as_bool() != Some(true) {
+            let err = json["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Failed to get zone setting");
+            return Err(CloudflareError::ApiError(err.to_string()));
+        }
+        Ok(json["result"].clone())
+    }
+
+    pub async fn update_zone_setting(
+        &self,
+        zone_id: &str,
+        setting_id: &str,
+        value: Value,
+    ) -> Result<Value, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/settings/{}",
+            zone_id, setting_id
+        );
+        let body = json!({ "value": value });
+        let req = self.apply_auth(self.client.patch(&url).json(&body));
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        if json["success"].as_bool() != Some(true) {
+            let err = json["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Failed to update zone setting");
+            return Err(CloudflareError::ApiError(err.to_string()));
+        }
+        Ok(json["result"].clone())
     }
 }
 

@@ -5,7 +5,7 @@
  * the local API proxy server and handles timeouts, request headers and
  * JSON parsing with reasonable defaults.
  */
-import type { DNSRecord, Zone } from "@/types/dns";
+import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 import { getEnv } from "./env";
 import { isDesktop } from "./environment";
 import { TauriClient } from "./tauri-client";
@@ -528,5 +528,64 @@ export class ServerClient {
     if (perPage) q.push(`per_page=${perPage}`);
     const query = q.length ? `?${q.join("&")}` : "";
     return this.request(`/zones/${zoneId}/dns_records/export${query}`);
+  }
+
+  async purgeCache(
+    zoneId: string,
+    payload: { purge_everything?: boolean; files?: string[] },
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.purgeCache(
+        this.apiKey,
+        this.email,
+        zoneId,
+        payload.purge_everything === true,
+        payload.files,
+      );
+    }
+    return this.request(`/zones/${zoneId}/purge_cache`, {
+      method: "POST",
+      body: payload,
+      signal,
+    });
+  }
+
+  async getZoneSetting<T = unknown>(
+    zoneId: string,
+    settingId: string,
+    signal?: AbortSignal,
+  ): Promise<ZoneSetting<T>> {
+    if (isDesktop()) {
+      return TauriClient.getZoneSetting(
+        this.apiKey,
+        this.email,
+        zoneId,
+        settingId,
+      ) as Promise<ZoneSetting<T>>;
+    }
+    return this.request(`/zones/${zoneId}/settings/${settingId}`, { signal });
+  }
+
+  async updateZoneSetting<T = unknown>(
+    zoneId: string,
+    settingId: string,
+    value: T,
+    signal?: AbortSignal,
+  ): Promise<ZoneSetting<T>> {
+    if (isDesktop()) {
+      return TauriClient.updateZoneSetting(
+        this.apiKey,
+        this.email,
+        zoneId,
+        settingId,
+        value,
+      ) as Promise<ZoneSetting<T>>;
+    }
+    return this.request(`/zones/${zoneId}/settings/${settingId}`, {
+      method: "PATCH",
+      body: { value },
+      signal,
+    });
   }
 }

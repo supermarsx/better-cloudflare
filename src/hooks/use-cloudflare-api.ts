@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { ServerClient } from "../lib/server-client";
 import type { SPFGraph } from "@/lib/spf";
-import type { DNSRecord, Zone } from "../types/dns";
+import type { DNSRecord, Zone, ZoneSetting } from "../types/dns";
 
 /**
  * React hook exposing a higher-level API for interacting with the
@@ -176,6 +176,43 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  const purgeCache = useCallback(
+    (
+      zoneId: string,
+      payload: { purge_everything?: boolean; files?: string[] },
+      signal?: AbortSignal,
+    ): Promise<unknown> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.purgeCache(zoneId, payload, signal);
+    },
+    [api],
+  );
+
+  const getZoneSetting = useCallback(
+    <T = unknown>(
+      zoneId: string,
+      settingId: string,
+      signal?: AbortSignal,
+    ): Promise<ZoneSetting<T>> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getZoneSetting<T>(zoneId, settingId, signal);
+    },
+    [api],
+  );
+
+  const updateZoneSetting = useCallback(
+    <T = unknown>(
+      zoneId: string,
+      settingId: string,
+      value: T,
+      signal?: AbortSignal,
+    ): Promise<ZoneSetting<T>> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.updateZoneSetting<T>(zoneId, settingId, value, signal);
+    },
+    [api],
+  );
+
   const simulateSPF = useCallback(
     (
       domain: string,
@@ -213,5 +250,8 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     getPasskeyAuthOptions,
     authenticatePasskey,
     exportDNSRecords,
+    purgeCache,
+    getZoneSetting,
+    updateZoneSetting,
   };
 }

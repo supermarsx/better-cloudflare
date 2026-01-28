@@ -33,6 +33,13 @@ export interface TauriDNSRecord {
 
 export type TauriDNSRecordInput = Partial<TauriDNSRecord>;
 
+export interface TauriZoneSetting<T = unknown> {
+  id: string;
+  value: T;
+  editable?: boolean;
+  modified_on?: string;
+}
+
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
@@ -171,6 +178,47 @@ export class TauriClient {
       format,
       page,
       per_page: perPage,
+    });
+  }
+
+  static async purgeCache(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    purgeEverything: boolean,
+    files?: string[],
+  ): Promise<unknown> {
+    return invoke("purge_cache", {
+      apiKey,
+      email,
+      zoneId,
+      purgeEverything,
+      files,
+    });
+  }
+
+  static async getZoneSetting<T = unknown>(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+  ): Promise<TauriZoneSetting<T>> {
+    return invoke("get_zone_setting", { apiKey, email, zoneId, settingId });
+  }
+
+  static async updateZoneSetting<T = unknown>(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+    value: T,
+  ): Promise<TauriZoneSetting<T>> {
+    return invoke("update_zone_setting", {
+      apiKey,
+      email,
+      zoneId,
+      settingId,
+      value,
     });
   }
 

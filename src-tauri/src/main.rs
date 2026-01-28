@@ -37,7 +37,12 @@ fn main() {
             commands::delete_dns_record,
             commands::create_bulk_dns_records,
             commands::export_dns_records,
-            
+
+            // Cache / Zone Settings
+            commands::purge_cache,
+            commands::get_zone_setting,
+            commands::update_zone_setting,
+             
             // Vault Operations
             commands::store_vault_secret,
             commands::get_vault_secret,
