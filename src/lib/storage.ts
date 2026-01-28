@@ -19,6 +19,7 @@ interface StorageData {
   currentSession?: string;
   lastZone?: string;
   lastActiveTabId?: string;
+  dnsTableColumns?: string[];
   vaultEnabled?: boolean;
   autoRefreshInterval?: number;
   defaultPerPage?: number;
@@ -705,6 +706,16 @@ export class StorageManager {
     return this.data.lastActiveTabId ?? "";
   }
 
+  setDnsTableColumns(columns: string[]): void {
+    this.data.dnsTableColumns = [...columns];
+    this.save();
+    this.dispatchPreferencesChanged({ dnsTableColumns: columns });
+  }
+
+  getDnsTableColumns(): string[] {
+    return [...(this.data.dnsTableColumns ?? [])];
+  }
+
   clearSettings(): void {
     delete this.data.lastZone;
     delete this.data.autoRefreshInterval;
@@ -718,6 +729,7 @@ export class StorageManager {
     delete this.data.reopenZoneTabs;
     delete this.data.lastOpenTabs;
     delete this.data.lastActiveTabId;
+    delete this.data.dnsTableColumns;
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;

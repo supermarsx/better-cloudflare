@@ -4,6 +4,7 @@
  * list and dialogs for creating/importing records.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
+import type { DragEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +27,7 @@ import { storageManager } from "@/lib/storage";
 import {
   ClipboardPaste,
   Copy,
+  Columns2,
   FileDown,
   FileUp,
   Filter,
@@ -47,12 +49,30 @@ import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
-
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/DropdownMenu";
 
 type ActionTab = "records" | "import" | "zone-settings";
 type TabKind = "zone" | "settings" | "audit" | "tags";
-type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
+type SortKey = "type" | "name" | "content" | "comment" | "tags" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
+
+type RecordTableColumnId =
+  | "select"
+  | "type"
+  | "name"
+  | "content"
+  | "comment"
+  | "tags"
+  | "ttl"
+  | "proxied"
+  | "actions";
 
 type ZoneTab = {
   kind: TabKind;
@@ -117,9 +137,70 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
   type: "A",
   name: "",
   content: "",
+  comment: "",
   ttl: 300,
   proxied: false,
 });
+
+const DEFAULT_RECORD_TABLE_COLUMNS: RecordTableColumnId[] = [
+  "select",
+  "type",
+  "name",
+  "content",
+  "comment",
+  "tags",
+  "ttl",
+  "proxied",
+  "actions",
+];
+
+const RECORD_TABLE_COLUMN_TEMPLATES: Record<RecordTableColumnId, string> = {
+  select: "24px",
+  type: "56px",
+  name: "minmax(140px,1.2fr)",
+  content: "minmax(180px,2fr)",
+  comment: "minmax(160px,1.4fr)",
+  tags: "minmax(120px,1fr)",
+  ttl: "92px",
+  proxied: "78px",
+  actions: "92px",
+};
+
+function normalizeRecordTableColumns(
+  value: unknown,
+): RecordTableColumnId[] {
+  const raw = Array.isArray(value) ? value : [];
+  const allowed = new Set<RecordTableColumnId>([
+    "select",
+    "type",
+    "name",
+    "content",
+    "comment",
+    "tags",
+    "ttl",
+    "proxied",
+    "actions",
+  ]);
+  const normalized = raw
+    .filter((v): v is RecordTableColumnId => typeof v === "string" && allowed.has(v as RecordTableColumnId))
+    .filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+  const ensure = (id: RecordTableColumnId) => {
+    if (!normalized.includes(id)) normalized.push(id);
+  };
+  // Always keep required columns.
+  ensure("select");
+  ensure("type");
+  ensure("name");
+  ensure("content");
+  ensure("ttl");
+  ensure("proxied");
+  ensure("actions");
+
+  // Default order when no valid saved data.
+  if (normalized.length < 7) return [...DEFAULT_RECORD_TABLE_COLUMNS];
+  return normalized;
+}
 
 const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   kind: "zone",
@@ -220,6 +301,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
   const [lastActiveTabId, setLastActiveTabId] = useState<string>("");
+  const [recordTableColumns, setRecordTableColumns] = useState<RecordTableColumnId[]>(
+    () => normalizeRecordTableColumns(storageManager.getDnsTableColumns()),
+  );
+  const [dragHeaderId, setDragHeaderId] = useState<RecordTableColumnId | null>(null);
+  const [dragHeaderOverId, setDragHeaderOverId] = useState<RecordTableColumnId | null>(null);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
@@ -269,6 +355,96 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       activeTab.records.find((r) => r.id === pendingDeleteRecordId) ?? null
     );
   }, [activeTab, pendingDeleteRecordId]);
+
+  const recordTableGridTemplate = useMemo(
+    () =>
+      recordTableColumns
+        .map((id) => RECORD_TABLE_COLUMN_TEMPLATES[id])
+        .filter(Boolean)
+        .join(" "),
+    [recordTableColumns],
+  );
+
+  const setOptionalColumnEnabled = useCallback(
+    (id: "comment" | "tags", enabled: boolean) => {
+      setRecordTableColumns((prev) => {
+        const has = prev.includes(id);
+        if (enabled && has) return prev;
+        if (!enabled && !has) return prev;
+
+        if (!enabled) return normalizeRecordTableColumns(prev.filter((c) => c !== id));
+
+        const next = [...prev];
+        const contentIdx = next.indexOf("content");
+        const insertAt = (() => {
+          if (id === "comment") return contentIdx >= 0 ? contentIdx + 1 : next.length - 1;
+          const commentIdx = next.indexOf("comment");
+          if (commentIdx >= 0) return commentIdx + 1;
+          return contentIdx >= 0 ? contentIdx + 1 : next.length - 1;
+        })();
+        next.splice(Math.min(Math.max(insertAt, 0), next.length), 0, id);
+        return normalizeRecordTableColumns(next);
+      });
+    },
+    [],
+  );
+
+  const reorderRecordTableColumns = useCallback((from: RecordTableColumnId, to: RecordTableColumnId) => {
+    setRecordTableColumns((prev) => {
+      const fromIdx = prev.indexOf(from);
+      const toIdx = prev.indexOf(to);
+      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
+      const next = [...prev];
+      next.splice(fromIdx, 1);
+      const dest = fromIdx < toIdx ? Math.max(toIdx - 1, 0) : toIdx;
+      next.splice(dest, 0, from);
+      return normalizeRecordTableColumns(next);
+    });
+  }, []);
+
+  const onHeaderDragStart = useCallback(
+    (id: RecordTableColumnId) => (event: DragEvent) => {
+      setDragHeaderId(id);
+      setDragHeaderOverId(id);
+      try {
+        event.dataTransfer.setData("text/plain", id);
+        event.dataTransfer.effectAllowed = "move";
+      } catch {}
+    },
+    [],
+  );
+
+  const onHeaderDragOver = useCallback(
+    (id: RecordTableColumnId) => (event: DragEvent) => {
+      if (!dragHeaderId) return;
+      event.preventDefault();
+      setDragHeaderOverId(id);
+    },
+    [dragHeaderId],
+  );
+
+  const onHeaderDrop = useCallback(
+    (id: RecordTableColumnId) => (event: DragEvent) => {
+      event.preventDefault();
+      const raw = (() => {
+        try {
+          return event.dataTransfer.getData("text/plain");
+        } catch {
+          return "";
+        }
+      })();
+      const from = (dragHeaderId ?? (raw as RecordTableColumnId)) as RecordTableColumnId | null;
+      if (from) reorderRecordTableColumns(from, id);
+      setDragHeaderId(null);
+      setDragHeaderOverId(null);
+    },
+    [dragHeaderId, reorderRecordTableColumns],
+  );
+
+  const onHeaderDragEnd = useCallback(() => {
+    setDragHeaderId(null);
+    setDragHeaderOverId(null);
+  }, []);
 
   const resolvedShowUnsupportedRecordTypes = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
@@ -498,6 +674,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
             last_active_tab?: string;
+            dns_table_columns?: string[];
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
@@ -542,6 +719,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.last_active_tab === "string") {
             setLastActiveTabId(prefObj.last_active_tab);
           }
+          if (Array.isArray(prefObj.dns_table_columns)) {
+            setRecordTableColumns(
+              normalizeRecordTableColumns(prefObj.dns_table_columns),
+            );
+          }
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
           }
@@ -572,6 +754,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
     setLastActiveTabId(storageManager.getLastActiveTabId());
+    setRecordTableColumns(
+      normalizeRecordTableColumns(storageManager.getDnsTableColumns()),
+    );
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
@@ -631,6 +816,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setZoneConfirmDeleteRecordMap(zoneConfirmDeleteRecord);
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
+    storageManager.setDnsTableColumns(recordTableColumns as string[]);
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
@@ -648,6 +834,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_confirm_delete_record: zoneConfirmDeleteRecord,
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
+            dns_table_columns: recordTableColumns,
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
@@ -664,6 +851,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     zoneConfirmDeleteRecord,
     reopenLastTabs,
     reopenZoneTabs,
+    recordTableColumns,
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
@@ -801,6 +989,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const cmpText = (a: string, b: string) =>
       a.localeCompare(b, undefined, { sensitivity: "base" });
 
+    const tagKeyById: Record<string, string> | null =
+      activeTab.sortKey === "tags"
+        ? Object.fromEntries(
+            base.map((r) => [
+              r.id,
+              storageManager
+                .getRecordTags(activeTab.zoneId, r.id)
+                .join(",")
+                .toLowerCase(),
+            ]),
+          )
+        : null;
+
     const sorted = [...base].sort((a, b) => {
       switch (activeTab.sortKey) {
         case "type":
@@ -809,6 +1010,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           return dir * cmpText(a.name ?? "", b.name ?? "");
         case "content":
           return dir * cmpText(a.content ?? "", b.content ?? "");
+        case "comment":
+          return dir * cmpText(a.comment ?? "", b.comment ?? "");
+        case "tags":
+          return dir * cmpText(tagKeyById?.[a.id] ?? "", tagKeyById?.[b.id] ?? "");
         case "ttl":
           return dir * (getTtl(a) - getTtl(b));
         case "proxied":
@@ -819,7 +1024,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
 
     return sorted;
-  }, [activeTab]);
+  }, [activeTab, tagsVersion]);
 
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
@@ -1296,6 +1501,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       type: record.type,
       name: record.name,
       content: record.content,
+      comment: record.comment,
       ttl: record.ttl,
       priority: record.priority,
       proxied: record.proxied,
@@ -1368,6 +1574,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       zoneConfirmDeleteRecord: {} as Record<string, boolean>,
       reopenLastTabs: false,
       reopenZoneTabs: {} as Record<string, boolean>,
+      dnsTableColumns: [...DEFAULT_RECORD_TABLE_COLUMNS] as RecordTableColumnId[],
       confirmLogout: true,
       idleLogoutMs: null as number | null,
       confirmWindowClose: true,
@@ -1385,6 +1592,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setZoneConfirmDeleteRecord(DEFAULT_SETTINGS.zoneConfirmDeleteRecord);
     setReopenLastTabs(DEFAULT_SETTINGS.reopenLastTabs);
     setReopenZoneTabs(DEFAULT_SETTINGS.reopenZoneTabs);
+    setRecordTableColumns(DEFAULT_SETTINGS.dnsTableColumns);
     setConfirmLogout(DEFAULT_SETTINGS.confirmLogout);
     setIdleLogoutMs(DEFAULT_SETTINGS.idleLogoutMs);
     setConfirmWindowClose(DEFAULT_SETTINGS.confirmWindowClose);
@@ -1414,6 +1622,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         zoneConfirmDeleteRecord,
         reopenLastTabs,
         reopenZoneTabs,
+        dnsTableColumns: recordTableColumns,
         confirmLogout,
         idleLogoutMs,
         confirmWindowClose,
@@ -1429,6 +1638,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.setZoneConfirmDeleteRecordMap(snapshot.zoneConfirmDeleteRecord);
       storageManager.setReopenLastTabs(snapshot.reopenLastTabs);
       storageManager.setReopenZoneTabs(snapshot.reopenZoneTabs);
+      storageManager.setDnsTableColumns(snapshot.dnsTableColumns as string[]);
       storageManager.setConfirmLogout(snapshot.confirmLogout);
       storageManager.setIdleLogoutMs(snapshot.idleLogoutMs);
       storageManager.setConfirmWindowClose(snapshot.confirmWindowClose);
@@ -1451,6 +1661,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         zone_confirm_delete_record: snapshot.zoneConfirmDeleteRecord,
         reopen_last_tabs: snapshot.reopenLastTabs,
         reopen_zone_tabs: snapshot.reopenZoneTabs,
+        dns_table_columns: snapshot.dnsTableColumns,
         confirm_logout: snapshot.confirmLogout,
         idle_logout_ms: snapshot.idleLogoutMs ?? null,
         confirm_window_close: snapshot.confirmWindowClose,
@@ -1468,6 +1679,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       globalPerPage,
       idleLogoutMs,
       lastOpenTabs,
+      recordTableColumns,
       reopenLastTabs,
       reopenZoneTabs,
       showUnsupportedRecordTypes,
@@ -2036,49 +2248,146 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   ) : (
                     <div className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl">
-                      <div className="ui-table-head">
-                        <span />
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("type")}
-                        >
-                          Type{" "}
-                          <span className="opacity-70">{sortIndicator("type")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("name")}
-                        >
-                          Name{" "}
-                          <span className="opacity-70">{sortIndicator("name")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("content")}
-                        >
-                          Content{" "}
-                          <span className="opacity-70">{sortIndicator("content")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("ttl")}
-                        >
-                          TTL{" "}
-                          <span className="opacity-70">{sortIndicator("ttl")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("proxied")}
-                        >
-                          Proxy{" "}
-                          <span className="opacity-70">{sortIndicator("proxied")}</span>
-                        </button>
-                        <span className="text-right">Actions</span>
+                      <div
+                        className="ui-table-head"
+                        style={{ gridTemplateColumns: recordTableGridTemplate }}
+                      >
+                        {recordTableColumns.map((colId) => {
+                          const sortKey: SortKey | null = (() => {
+                            switch (colId) {
+                              case "type":
+                                return "type";
+                              case "name":
+                                return "name";
+                              case "content":
+                                return "content";
+                              case "comment":
+                                return "comment";
+                              case "tags":
+                                return "tags";
+                              case "ttl":
+                                return "ttl";
+                              case "proxied":
+                                return "proxied";
+                              default:
+                                return null;
+                            }
+                          })();
+
+                          const label = (() => {
+                            switch (colId) {
+                              case "select":
+                                return "";
+                              case "type":
+                                return "Type";
+                              case "name":
+                                return "Name";
+                              case "content":
+                                return "Content";
+                              case "comment":
+                                return "Comment";
+                              case "tags":
+                                return "Tags";
+                              case "ttl":
+                                return "TTL";
+                              case "proxied":
+                                return "Proxy";
+                              case "actions":
+                                return "Actions";
+                              default:
+                                return colId;
+                            }
+                          })();
+
+                          const isOver = dragHeaderOverId === colId && dragHeaderId && dragHeaderId !== colId;
+
+                          return (
+                            <div
+                              key={colId}
+                              className={cn(
+                                "flex min-w-0 items-center gap-1",
+                                colId === "actions" && "justify-end gap-2",
+                                isOver &&
+                                  "rounded-md bg-accent/35 shadow-[inset_0_0_0_1px_hsl(var(--primary)_/_0.16)]",
+                              )}
+                              onDragOver={onHeaderDragOver(colId)}
+                              onDrop={onHeaderDrop(colId)}
+                            >
+                              {colId !== "select" && (
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center text-muted-foreground/80 hover:text-foreground",
+                                    "cursor-grab active:cursor-grabbing",
+                                  )}
+                                  draggable
+                                  onDragStart={onHeaderDragStart(colId)}
+                                  onDragEnd={onHeaderDragEnd}
+                                  onClick={(e) => e.preventDefault()}
+                                >
+                                  <GripVertical className="h-3.5 w-3.5" />
+                                </span>
+                              )}
+
+                              {sortKey ? (
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "min-w-0 flex-1 text-left hover:text-foreground",
+                                    colId === "actions" && "flex-initial text-right",
+                                  )}
+                                  onClick={() => toggleSort(sortKey)}
+                                >
+                                  {label}{" "}
+                                  <span className="opacity-70">{sortIndicator(sortKey)}</span>
+                                </button>
+                              ) : (
+                                <span className={cn("min-w-0", colId === "actions" && "text-right")}>
+                                  {label}
+                                </span>
+                              )}
+
+                              {colId === "actions" && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-8 w-8 hover:text-foreground"
+                                      aria-label="Columns"
+                                    >
+                                      <Columns2 className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem disabled>
+                                      <span className="flex items-center gap-2">
+                                        <Columns2 className="h-4 w-4" />
+                                        Columns
+                                      </span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuCheckboxItem
+                                      checked={recordTableColumns.includes("comment")}
+                                      onCheckedChange={(checked) =>
+                                        setOptionalColumnEnabled("comment", checked === true)
+                                      }
+                                    >
+                                      Comment
+                                    </DropdownMenuCheckboxItem>
+                                    <DropdownMenuCheckboxItem
+                                      checked={recordTableColumns.includes("tags")}
+                                      onCheckedChange={(checked) =>
+                                        setOptionalColumnEnabled("tags", checked === true)
+                                      }
+                                    >
+                                      Tags
+                                    </DropdownMenuCheckboxItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                       {filteredRecords.map((record) => {
                         const isSelected = activeTab.selectedIds.includes(
@@ -2089,6 +2398,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             key={record.id}
                             zoneId={activeTab.zoneId}
                             record={record}
+                            columns={recordTableColumns}
+                            gridTemplateColumns={recordTableGridTemplate}
                             isEditing={activeTab.editingRecord === record.id}
                             isSelected={isSelected}
                             onSelectChange={(checked) =>

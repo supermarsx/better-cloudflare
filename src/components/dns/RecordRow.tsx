@@ -65,6 +65,20 @@ export interface RecordRowProps {
   zoneId: string;
   /** The DNS record to display or edit */
   record: DNSRecord;
+  /** Visible table columns in order (controls rendering of row cells). */
+  columns?: Array<
+    | "select"
+    | "type"
+    | "name"
+    | "content"
+    | "comment"
+    | "tags"
+    | "ttl"
+    | "proxied"
+    | "actions"
+  >;
+  /** Optional grid template columns string (keeps header/rows aligned). */
+  gridTemplateColumns?: string;
   /** Whether the row is currently in edit mode */
   isEditing: boolean;
   /** Whether the record is selected for bulk actions */
@@ -93,6 +107,8 @@ export interface RecordRowProps {
 export function RecordRow({
   zoneId,
   record,
+  columns,
+  gridTemplateColumns,
   isEditing,
   isSelected = false,
   onEdit,
@@ -1036,11 +1052,23 @@ export function RecordRow({
     );
   }
 
+  const visibleColumns = (columns ??
+    ([
+      "select",
+      "type",
+      "name",
+      "content",
+      "ttl",
+      "proxied",
+      "actions",
+    ] as const)) as NonNullable<RecordRowProps["columns"]>;
+
   return (
     <ContextMenu onOpenChange={setContextMenuOpen}>
       <ContextMenuTrigger asChild>
         <div
           className="ui-focus ui-table-row group focus-visible:outline-none"
+          style={gridTemplateColumns ? { gridTemplateColumns } : undefined}
           role="button"
           tabIndex={0}
           data-selected={isSelected}
@@ -1052,126 +1080,199 @@ export function RecordRow({
             }
           }}
         >
-      <div className="flex items-center justify-center">
-        <input
-          type="checkbox"
-          checked={isSelected}
-          onChange={(event) => onSelectChange?.(event.target.checked)}
-          onClick={(event) => event.stopPropagation()}
-          className="checkbox-themed"
-          aria-label="Select record"
-        />
-      </div>
-
-      <div className="min-w-0">
-        <Tooltip tip={getRecordTypeLabel(record.type as RecordType)} side="top">
-          <Tag data-record-type={record.type}>{record.type}</Tag>
-        </Tooltip>
-      </div>
-
-      <Tooltip tip={record.name} side="top">
-        <div
-          className="min-w-0 truncate font-mono text-[11px]"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (record.name.length > MAX_PREVIEW_CHARS) {
-              setExpandedName((prev) => !prev);
+          {visibleColumns.map((col) => {
+            switch (col) {
+              case "select":
+                return (
+                  <div
+                    key={col}
+                    className="flex items-center justify-center"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={(event) => onSelectChange?.(event.target.checked)}
+                      onClick={(event) => event.stopPropagation()}
+                      className="checkbox-themed"
+                      aria-label="Select record"
+                    />
+                  </div>
+                );
+              case "type":
+                return (
+                  <div key={col} className="min-w-0">
+                    <Tooltip
+                      tip={getRecordTypeLabel(record.type as RecordType)}
+                      side="top"
+                    >
+                      <Tag data-record-type={record.type}>{record.type}</Tag>
+                    </Tooltip>
+                  </div>
+                );
+              case "name":
+                return (
+                  <Tooltip key={col} tip={record.name} side="top">
+                    <div
+                      className="min-w-0 truncate font-mono text-[11px]"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (record.name.length > MAX_PREVIEW_CHARS) {
+                          setExpandedName((prev) => !prev);
+                        }
+                      }}
+                      role={
+                        record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined
+                      }
+                      tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
+                    >
+                      {truncate(record.name)}
+                    </div>
+                  </Tooltip>
+                );
+              case "content":
+                return (
+                  <Tooltip key={col} tip={record.content} side="top">
+                    <div
+                      className="min-w-0 truncate text-[10px] text-muted-foreground"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (record.content.length > MAX_PREVIEW_CHARS) {
+                          setExpandedContent((prev) => !prev);
+                        }
+                      }}
+                      role={
+                        record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined
+                      }
+                      tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
+                    >
+                      {truncate(record.content)}
+                    </div>
+                  </Tooltip>
+                );
+              case "comment": {
+                const c = (record.comment ?? "").trim();
+                if (!c) {
+                  return (
+                    <div key={col} className="text-[10px] text-muted-foreground/80">
+                      —
+                    </div>
+                  );
+                }
+                return (
+                  <Tooltip key={col} tip={c} side="top">
+                    <div className="min-w-0 truncate text-[10px] text-muted-foreground">
+                      {truncate(c)}
+                    </div>
+                  </Tooltip>
+                );
+              }
+              case "tags": {
+                const preview = tags.slice(0, 2);
+                const remaining = Math.max(0, tags.length - preview.length);
+                return (
+                  <div
+                    key={col}
+                    className="flex min-w-0 flex-wrap items-center gap-1"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {preview.length ? (
+                      <>
+                        {preview.map((t) => (
+                          <Tag key={t} className="text-[8px] px-1.5 py-0.5">
+                            {t}
+                          </Tag>
+                        ))}
+                        {remaining > 0 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            +{remaining}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground/70">—</span>
+                    )}
+                  </div>
+                );
+              }
+              case "ttl":
+                return (
+                  <div
+                    key={col}
+                    className="text-[10px] text-muted-foreground whitespace-nowrap"
+                  >
+                    TTL {record.ttl === 1 ? "Auto" : record.ttl}
+                    {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
+                  </div>
+                );
+              case "proxied":
+                return (
+                  <div
+                    key={col}
+                    className="flex items-center gap-0.5"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {record.proxied ? (
+                      <Tag variant="primary" className="ui-tag-proxied">
+                        Proxied
+                      </Tag>
+                    ) : (
+                      <span className="text-xs text-muted-foreground/80">—</span>
+                    )}
+                    {(record.type === "A" ||
+                      record.type === "AAAA" ||
+                      record.type === "CNAME") && (
+                      <Switch
+                        size="xs"
+                        checked={record.proxied || false}
+                        onCheckedChange={(checked: boolean) => {
+                          onToggleProxy?.(checked);
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                      />
+                    )}
+                  </div>
+                );
+              case "actions":
+                return (
+                  <div
+                    key={col}
+                    className="flex justify-end opacity-0 transition-opacity group-hover:opacity-100"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <DropdownMenu open={dotMenuOpen} onOpenChange={setDotMenuOpen}>
+                      <Tooltip tip="Actions" side="top">
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="ui-icon-button h-7 w-7 p-0"
+                            aria-label="Record actions"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </Tooltip>
+                      <DropdownMenuContent
+                        align="end"
+                        sideOffset={6}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {renderActionsMenuItems()}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                );
+              default:
+                return null;
             }
-          }}
-          role={record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-          tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
-        >
-          {truncate(record.name)}
-        </div>
-      </Tooltip>
-
-      <Tooltip tip={record.content} side="top">
-        <div
-          className="min-w-0 truncate text-[10px] text-muted-foreground"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (record.content.length > MAX_PREVIEW_CHARS) {
-              setExpandedContent((prev) => !prev);
-            }
-          }}
-          role={record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined}
-          tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
-        >
-          {truncate(record.content)}
-        </div>
-      </Tooltip>
-
-      <div className="flex items-center gap-2 text-[10px] text-muted-foreground whitespace-nowrap">
-        <span>
-          TTL {record.ttl === 1 ? "Auto" : record.ttl}
-          {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
-        </span>
-        {!!(record.comment ?? "").trim() && (
-          <Tooltip tip={record.comment ?? ""} side="top">
-            <button
-              type="button"
-              className="ui-icon-button h-5 w-5 p-0"
-              aria-label="View comment"
-              onClick={(event) => event.stopPropagation()}
-              onDoubleClick={(event) => event.stopPropagation()}
-            >
-              <MessageSquare className="h-3 w-3" />
-            </button>
-          </Tooltip>
-        )}
-      </div>
-
-      <div
-        className="flex items-center gap-0.5"
-        onClick={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => event.stopPropagation()}
-      >
-        {record.proxied ? (
-          <Tag variant="primary" className="ui-tag-proxied">
-            Proxied
-          </Tag>
-        ) : (
-          <span className="text-xs text-muted-foreground/80">—</span>
-        )}
-        {(record.type === "A" ||
-          record.type === "AAAA" ||
-          record.type === "CNAME") && (
-          <Switch
-            size="xs"
-            checked={record.proxied || false}
-            onCheckedChange={(checked: boolean) => {
-              onToggleProxy?.(checked);
-            }}
-            onClick={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-          />
-        )}
-      </div>
-
-      <div className="flex justify-end opacity-0 transition-opacity group-hover:opacity-100">
-        <DropdownMenu open={dotMenuOpen} onOpenChange={setDotMenuOpen}>
-          <Tooltip tip="Actions" side="top">
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ui-icon-button h-7 w-7 p-0"
-                aria-label="Record actions"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-          </Tooltip>
-          <DropdownMenuContent
-            align="end"
-            sideOffset={6}
-            onClick={(event) => event.stopPropagation()}
-          >
-            {renderActionsMenuItems()}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+          })}
       {(expandedName || expandedContent) && (
         <div className="glass-surface glass-sheen glass-fade col-span-full relative mt-2 space-y-2 rounded-lg px-3 py-2 text-xs text-foreground/80">
           <div
