@@ -192,13 +192,9 @@ function normalizeRecordTableColumns(
   ensure("select");
   ensure("type");
   ensure("name");
-  ensure("content");
-  ensure("ttl");
-  ensure("proxied");
-  ensure("actions");
 
   // Default order when no valid saved data.
-  if (normalized.length < 7) return [...DEFAULT_RECORD_TABLE_COLUMNS];
+  if (normalized.length <= 4 && raw.length === 0) return [...DEFAULT_RECORD_TABLE_COLUMNS];
   return normalized;
 }
 
@@ -365,8 +361,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [recordTableColumns],
   );
 
-  const setOptionalColumnEnabled = useCallback(
-    (id: "comment" | "tags", enabled: boolean) => {
+  const setColumnEnabled = useCallback(
+    (
+      id: "comment" | "tags" | "content" | "ttl" | "proxied" | "actions",
+      enabled: boolean,
+    ) => {
       setRecordTableColumns((prev) => {
         const has = prev.includes(id);
         if (enabled && has) return prev;
@@ -375,13 +374,38 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (!enabled) return normalizeRecordTableColumns(prev.filter((c) => c !== id));
 
         const next = [...prev];
+        const nameIdx = next.indexOf("name");
         const contentIdx = next.indexOf("content");
+        const commentIdx = next.indexOf("comment");
+        const tagsIdx = next.indexOf("tags");
+        const ttlIdx = next.indexOf("ttl");
+
         const insertAt = (() => {
-          if (id === "comment") return contentIdx >= 0 ? contentIdx + 1 : next.length - 1;
-          const commentIdx = next.indexOf("comment");
-          if (commentIdx >= 0) return commentIdx + 1;
-          return contentIdx >= 0 ? contentIdx + 1 : next.length - 1;
+          switch (id) {
+            case "content":
+              return nameIdx >= 0 ? nameIdx + 1 : 3;
+            case "comment":
+              return contentIdx >= 0 ? contentIdx + 1 : (nameIdx >= 0 ? nameIdx + 1 : next.length - 1);
+            case "tags":
+              if (commentIdx >= 0) return commentIdx + 1;
+              return contentIdx >= 0 ? contentIdx + 1 : (nameIdx >= 0 ? nameIdx + 1 : next.length - 1);
+            case "ttl":
+              if (tagsIdx >= 0) return tagsIdx + 1;
+              if (commentIdx >= 0) return commentIdx + 1;
+              return contentIdx >= 0 ? contentIdx + 1 : (nameIdx >= 0 ? nameIdx + 1 : next.length - 1);
+            case "proxied":
+              if (ttlIdx >= 0) return ttlIdx + 1;
+              if (tagsIdx >= 0) return tagsIdx + 1;
+              if (commentIdx >= 0) return commentIdx + 1;
+              if (contentIdx >= 0) return contentIdx + 1;
+              return next.length - 1;
+            case "actions":
+              return next.length;
+            default:
+              return next.length - 1;
+          }
         })();
+
         next.splice(Math.min(Math.max(insertAt, 0), next.length), 0, id);
         return normalizeRecordTableColumns(next);
       });
@@ -2219,6 +2243,71 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <ClipboardPaste className="h-4 w-4 mr-2" />
                       Paste {copyBuffer ? `${copyBuffer.records.length}` : ""}
                     </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button size="sm" variant="outline">
+                          <Columns2 className="h-4 w-4 mr-2" />
+                          Columns
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem disabled>
+                          <span className="flex items-center gap-2">
+                            <Columns2 className="h-4 w-4" />
+                            Columns
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("content")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("content", checked === true)
+                          }
+                        >
+                          Content
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("comment")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("comment", checked === true)
+                          }
+                        >
+                          Comment
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("tags")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("tags", checked === true)
+                          }
+                        >
+                          Tags
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("ttl")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("ttl", checked === true)
+                          }
+                        >
+                          TTL
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("proxied")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("proxied", checked === true)
+                          }
+                        >
+                          Proxy
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuCheckboxItem
+                          checked={recordTableColumns.includes("actions")}
+                          onCheckedChange={(checked) =>
+                            setColumnEnabled("actions", checked === true)
+                          }
+                        >
+                          Actions
+                        </DropdownMenuCheckboxItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     {copyBuffer && (
                       <div className="text-xs text-muted-foreground">
                         Buffer: {copyBuffer.records.length} from {" "}
@@ -2344,46 +2433,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 <span className={cn("min-w-0", colId === "actions" && "text-right")}>
                                   {label}
                                 </span>
-                              )}
-
-                              {colId === "actions" && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant="ghost"
-                                      className="h-8 w-8 hover:text-foreground"
-                                      aria-label="Columns"
-                                    >
-                                      <Columns2 className="h-4 w-4" />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem disabled>
-                                      <span className="flex items-center gap-2">
-                                        <Columns2 className="h-4 w-4" />
-                                        Columns
-                                      </span>
-                                    </DropdownMenuItem>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuCheckboxItem
-                                      checked={recordTableColumns.includes("comment")}
-                                      onCheckedChange={(checked) =>
-                                        setOptionalColumnEnabled("comment", checked === true)
-                                      }
-                                    >
-                                      Comment
-                                    </DropdownMenuCheckboxItem>
-                                    <DropdownMenuCheckboxItem
-                                      checked={recordTableColumns.includes("tags")}
-                                      onCheckedChange={(checked) =>
-                                        setOptionalColumnEnabled("tags", checked === true)
-                                      }
-                                    >
-                                      Tags
-                                    </DropdownMenuCheckboxItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
                               )}
                             </div>
                           );

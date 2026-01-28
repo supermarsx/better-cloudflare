@@ -1249,12 +1249,12 @@ export function RecordRow({
                       <Tooltip tip="Actions" side="top">
                         <DropdownMenuTrigger asChild>
                           <Button
-                            size="sm"
-                            variant="ghost"
-                            className="ui-icon-button h-7 w-7 p-0"
-                            aria-label="Record actions"
-                            onClick={(event) => event.stopPropagation()}
-                          >
+                              size="sm"
+                              variant="ghost"
+                              className="ui-icon-button h-7 w-7 p-0"
+                              aria-label="Record Actions"
+                              onClick={(event) => event.stopPropagation()}
+                            >
                             <MoreHorizontal className="h-3.5 w-3.5" />
                           </Button>
                         </DropdownMenuTrigger>
