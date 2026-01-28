@@ -3815,6 +3815,148 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
+              {activeTab.kind === "zone" && actionTab === "dns-options" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">DNS options</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-muted-foreground">
+                        DNSSEC and related settings for {activeTab.zoneName}.
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleFetchDnssec()}
+                          disabled={!apiKey || dnsOptionsLoading}
+                        >
+                          Refresh
+                        </Button>
+                      </div>
+                    </div>
+
+                    {dnsOptionsError && (
+                      <div className="text-xs text-destructive">{dnsOptionsError}</div>
+                    )}
+
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-semibold">DNSSEC</div>
+                        {dnsOptionsLoading && (
+                          <div className="text-xs text-muted-foreground">Loading…</div>
+                        )}
+                      </div>
+                      {dnssecInfo ? (
+                        <div className="mt-3 space-y-3">
+                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                            <div className="font-medium text-sm">Status</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <div className="rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs">
+                                {String((dnssecInfo as { status?: unknown }).status ?? "unknown")}
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  void handleUpdateDnssec({
+                                    status:
+                                      (dnssecInfo as { status?: unknown }).status === "active"
+                                        ? "disabled"
+                                        : "active",
+                                  })
+                                }
+                                disabled={!apiKey || dnsOptionsLoading}
+                              >
+                                {(dnssecInfo as { status?: unknown }).status === "active"
+                                  ? "Disable"
+                                  : "Enable"}
+                              </Button>
+                              <div className="text-xs text-muted-foreground">
+                                Enabling DNSSEC publishes DS details for your registrar.
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                            <div className="font-medium text-sm">Multi-signer DNSSEC</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Switch
+                                checked={
+                                  (dnssecInfo as { dnssec_multi_signer?: unknown })
+                                    .dnssec_multi_signer === true
+                                }
+                                onCheckedChange={(checked: boolean) =>
+                                  void handleUpdateDnssec({ dnssec_multi_signer: checked })
+                                }
+                                disabled={!apiKey || dnsOptionsLoading}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Use multi-signer mode when running DNS with multiple providers.
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                            <div className="font-medium text-sm">Presigned DNSSEC</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Switch
+                                checked={
+                                  (dnssecInfo as { dnssec_presigned?: unknown })
+                                    .dnssec_presigned === true
+                                }
+                                onCheckedChange={(checked: boolean) =>
+                                  void handleUpdateDnssec({ dnssec_presigned: checked })
+                                }
+                                disabled={!apiKey || dnsOptionsLoading}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                For secondary/multi-provider setups with an external signer.
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                            <div className="font-medium text-sm">Use NSEC3</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Switch
+                                checked={
+                                  (dnssecInfo as { dnssec_use_nsec3?: unknown })
+                                    .dnssec_use_nsec3 === true
+                                }
+                                onCheckedChange={(checked: boolean) =>
+                                  void handleUpdateDnssec({ dnssec_use_nsec3: checked })
+                                }
+                                disabled={!apiKey || dnsOptionsLoading}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Uses NSEC3 for authenticated denial of existence (if supported).
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
+                            <div className="font-medium text-sm">DS record</div>
+                            <div className="space-y-1">
+                              <div className="text-xs text-muted-foreground">
+                                Registrar DS values (copy/paste).
+                              </div>
+                              <pre className="whitespace-pre-wrap break-all rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px] leading-5 text-foreground/90">
+                                {String((dnssecInfo as { ds?: unknown }).ds ?? "—")}
+                              </pre>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-sm text-muted-foreground">
+                          DNSSEC info unavailable.
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
               {activeTab.kind === "audit" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
