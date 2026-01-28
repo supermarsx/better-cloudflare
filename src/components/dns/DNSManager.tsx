@@ -59,7 +59,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 
-type ActionTab = "records" | "import" | "zone-settings";
+type ActionTab = "records" | "import" | "zone-settings" | "cache" | "ssl-tls";
 type TabKind = "zone" | "settings" | "audit" | "tags";
 type SortKey = "type" | "name" | "content" | "comment" | "tags" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -110,7 +110,7 @@ interface DNSManagerProps {
   onLogout: () => void;
 }
 
-const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: string }[] = [
+const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
   {
     id: "records",
     label: "Records",
@@ -125,6 +125,16 @@ const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: strin
     id: "zone-settings",
     label: "Zone Settings",
     hint: "Override defaults for this zone",
+  },
+  {
+    id: "cache",
+    label: "Cache",
+    hint: "Purge cache and toggle Cloudflare caching settings",
+  },
+  {
+    id: "ssl-tls",
+    label: "SSL/TLS",
+    hint: "Manage zone SSL and TLS settings",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -344,6 +354,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [showPurgeUrlsConfirm, setShowPurgeUrlsConfirm] = useState(false);
   const [pendingPurgeUrls, setPendingPurgeUrls] = useState<string[]>([]);
   const [pendingPurgeIssues, setPendingPurgeIssues] = useState<string[]>([]);
+  const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
+  const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
+  const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
+  const [zoneMinTlsVersion, setZoneMinTlsVersion] = useState<ZoneSetting<string> | null>(null);
+  const [zoneTls13, setZoneTls13] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAlwaysUseHttps, setZoneAlwaysUseHttps] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAutoHttpsRewrites, setZoneAutoHttpsRewrites] = useState<ZoneSetting<string> | null>(null);
+  const [zoneOpportunisticEncryption, setZoneOpportunisticEncryption] =
+    useState<ZoneSetting<string> | null>(null);
   const {
     getZones,
     getDNSRecords,
@@ -766,7 +785,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "zone-settings") return;
+    if (actionTab !== "cache") return;
     if (!getZoneSetting) return;
 
     let cancelled = false;
@@ -798,6 +817,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       .finally(() => {
         if (cancelled) return;
         setCacheSettingsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "ssl-tls") return;
+    if (!getZoneSetting) return;
+
+    let cancelled = false;
+    setSslSettingsLoading(true);
+    setSslSettingsError(null);
+    setZoneSslMode(null);
+    setZoneMinTlsVersion(null);
+    setZoneTls13(null);
+    setZoneAlwaysUseHttps(null);
+    setZoneAutoHttpsRewrites(null);
+    setZoneOpportunisticEncryption(null);
+
+    Promise.allSettled([
+      getZoneSetting<string>(activeTab.zoneId, "ssl"),
+      getZoneSetting<string>(activeTab.zoneId, "min_tls_version"),
+      getZoneSetting<string>(activeTab.zoneId, "tls_1_3"),
+      getZoneSetting<string>(activeTab.zoneId, "always_use_https"),
+      getZoneSetting<string>(activeTab.zoneId, "automatic_https_rewrites"),
+      getZoneSetting<string>(activeTab.zoneId, "opportunistic_encryption"),
+    ])
+      .then((results) => {
+        if (cancelled) return;
+        const [ssl, minTls, tls13, alwaysHttps, rewrites, oppEnc] = results;
+        if (ssl.status === "fulfilled") setZoneSslMode(ssl.value);
+        if (minTls.status === "fulfilled") setZoneMinTlsVersion(minTls.value);
+        if (tls13.status === "fulfilled") setZoneTls13(tls13.value);
+        if (alwaysHttps.status === "fulfilled") setZoneAlwaysUseHttps(alwaysHttps.value);
+        if (rewrites.status === "fulfilled") setZoneAutoHttpsRewrites(rewrites.value);
+        if (oppEnc.status === "fulfilled") setZoneOpportunisticEncryption(oppEnc.value);
+        const errors = results
+          .filter((r) => r.status === "rejected")
+          .map((r) => (r as PromiseRejectedResult).reason)
+          .map((e) => (e instanceof Error ? e.message : String(e)))
+          .filter(Boolean);
+        if (errors.length) setSslSettingsError(errors.join(" | "));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSslSettingsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setSslSettingsLoading(false);
       });
 
     return () => {
@@ -1842,6 +1914,60 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
     }
   }, [activeTab, pendingPurgeUrls, purgeCache, toast]);
+
+  const handleSetSslTlsSetting = useCallback(
+    async (
+      settingId:
+        | "ssl"
+        | "min_tls_version"
+        | "tls_1_3"
+        | "always_use_https"
+        | "automatic_https_rewrites"
+        | "opportunistic_encryption",
+      value: string,
+    ) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setSslSettingsLoading(true);
+        setSslSettingsError(null);
+        const next = await updateZoneSetting<string>(activeTab.zoneId, settingId, value);
+        switch (settingId) {
+          case "ssl":
+            setZoneSslMode(next);
+            break;
+          case "min_tls_version":
+            setZoneMinTlsVersion(next);
+            break;
+          case "tls_1_3":
+            setZoneTls13(next);
+            break;
+          case "always_use_https":
+            setZoneAlwaysUseHttps(next);
+            break;
+          case "automatic_https_rewrites":
+            setZoneAutoHttpsRewrites(next);
+            break;
+          case "opportunistic_encryption":
+            setZoneOpportunisticEncryption(next);
+            break;
+        }
+        toast({
+          title: "Saved",
+          description: `${settingId.replace(/_/g, " ")} updated.`,
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description:
+            "Failed to update SSL/TLS setting: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setSslSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
 
   const handleLogout = () => {
     storageManager.clearSession();
@@ -3160,107 +3286,285 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     </div>
 
-                    <div className="mt-4 rounded-xl border border-border/50 bg-muted/20 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-medium">Cloudflare cache controls</div>
-                        {cacheSettingsLoading && (
-                          <div className="text-xs text-muted-foreground">Loading…</div>
-                        )}
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "cache" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Cache</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-muted-foreground">
+                        Cloudflare cache controls for {activeTab.zoneName}.
                       </div>
-                      {cacheSettingsError && (
-                        <div className="mt-2 text-xs text-destructive">
-                          {cacheSettingsError}
-                        </div>
+                      {cacheSettingsLoading && (
+                        <div className="text-xs text-muted-foreground">Loading…</div>
                       )}
+                    </div>
+                    {cacheSettingsError && (
+                      <div className="text-xs text-destructive">{cacheSettingsError}</div>
+                    )}
 
-                      <div className="mt-3 grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                        <div className="font-medium text-sm">Development mode</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          {zoneDevMode ? (
-                            <Switch
-                              checked={zoneDevMode.value === "on"}
-                              onCheckedChange={(checked: boolean) =>
-                                handleSetDevelopmentMode(checked)
-                              }
-                              disabled={!apiKey || cacheSettingsLoading}
-                            />
-                          ) : (
-                            <div className="text-xs text-muted-foreground">
-                              Unavailable.
-                            </div>
-                          )}
-                          <div className="text-xs text-muted-foreground">
-                            Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).
-                          </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Development mode</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneDevMode ? (
+                          <Switch
+                            checked={zoneDevMode.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetDevelopmentMode(checked)
+                            }
+                            disabled={!apiKey || cacheSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).
                         </div>
                       </div>
+                    </div>
 
-                      <div className="mt-3 grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                        <div className="font-medium text-sm">Cache level</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          {zoneCacheLevel ? (
-                            <Select
-                              value={zoneCacheLevel.value ?? "basic"}
-                              onValueChange={(v) => handleSetCacheLevel(v)}
-                              disabled={!apiKey || cacheSettingsLoading}
-                            >
-                              <SelectTrigger className="w-48">
-                                <SelectValue placeholder="Cache level" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="basic">Basic</SelectItem>
-                                <SelectItem value="aggressive">Aggressive</SelectItem>
-                                <SelectItem value="simplified">Simplified</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <div className="text-xs text-muted-foreground">
-                              Unavailable.
-                            </div>
-                          )}
-                          <div className="text-xs text-muted-foreground">
-                            Controls how aggressively Cloudflare caches your content.
-                          </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Cache level</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneCacheLevel ? (
+                          <Select
+                            value={zoneCacheLevel.value ?? "basic"}
+                            onValueChange={(v) => handleSetCacheLevel(v)}
+                            disabled={!apiKey || cacheSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="Cache level" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {zoneCacheLevel.value &&
+                              !["basic", "aggressive", "simplified"].includes(
+                                zoneCacheLevel.value,
+                              ) ? (
+                                <SelectItem value={zoneCacheLevel.value}>
+                                  {zoneCacheLevel.value} (current)
+                                </SelectItem>
+                              ) : null}
+                              <SelectItem value="basic">Basic</SelectItem>
+                              <SelectItem value="aggressive">Aggressive</SelectItem>
+                              <SelectItem value="simplified">Simplified</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Controls how aggressively Cloudflare caches your content.
                         </div>
                       </div>
+                    </div>
 
-                      <div className="mt-3 grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
-                        <div className="font-medium text-sm">Purge cache</div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
+                      <div className="font-medium text-sm">Purge cache</div>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => setShowPurgeEverythingConfirm(true)}
+                            disabled={!apiKey}
+                          >
+                            Purge everything
+                          </Button>
+                        </div>
                         <div className="space-y-2">
-                          <div className="flex flex-wrap gap-2">
+                          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                            Purge URLs (one per line)
+                          </Label>
+                          <Textarea
+                            value={purgeUrlsInput}
+                            onChange={(e) => setPurgeUrlsInput(e.target.value)}
+                            placeholder={`https://${activeTab.zoneName}/path\nhttps://${activeTab.zoneName}/asset.js`}
+                            className="min-h-24 resize-y"
+                          />
+                          <div className="flex flex-wrap items-center gap-2">
                             <Button
                               size="sm"
-                              variant="destructive"
-                              onClick={() => setShowPurgeEverythingConfirm(true)}
-                              disabled={!apiKey}
+                              variant="outline"
+                              onClick={() => preparePurgeUrls()}
+                              disabled={!apiKey || !purgeUrlsInput.trim()}
                             >
-                              Purge everything
+                              Purge URLs…
                             </Button>
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                              Purge URLs (one per line)
-                            </Label>
-                            <Textarea
-                              value={purgeUrlsInput}
-                              onChange={(e) => setPurgeUrlsInput(e.target.value)}
-                              placeholder={`https://${activeTab.zoneName}/path\nhttps://${activeTab.zoneName}/asset.js`}
-                              className="min-h-24 resize-y"
-                            />
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => preparePurgeUrls()}
-                                disabled={!apiKey || !purgeUrlsInput.trim()}
-                              >
-                                Purge URLs…
-                              </Button>
-                              <div className="text-xs text-muted-foreground">
-                                Validations warn, but you can still force purge.
-                              </div>
+                            <div className="text-xs text-muted-foreground">
+                              Validations warn, but you can still force purge.
                             </div>
                           </div>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "ssl-tls" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">SSL/TLS</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-muted-foreground">
+                        SSL/TLS controls for {activeTab.zoneName}.
+                      </div>
+                      {sslSettingsLoading && (
+                        <div className="text-xs text-muted-foreground">Loading…</div>
+                      )}
+                    </div>
+                    {sslSettingsError && (
+                      <div className="text-xs text-destructive">{sslSettingsError}</div>
+                    )}
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Encryption mode</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneSslMode ? (
+                          <Select
+                            value={zoneSslMode.value ?? "off"}
+                            onValueChange={(v) => handleSetSslTlsSetting("ssl", v)}
+                            disabled={!apiKey || sslSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="SSL mode" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="off">Off</SelectItem>
+                              <SelectItem value="flexible">Flexible</SelectItem>
+                              <SelectItem value="full">Full</SelectItem>
+                              <SelectItem value="strict">Full (strict)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Controls how Cloudflare connects to your origin.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Minimum TLS version</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneMinTlsVersion ? (
+                          <Select
+                            value={zoneMinTlsVersion.value ?? "1.2"}
+                            onValueChange={(v) =>
+                              handleSetSslTlsSetting("min_tls_version", v)
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="Min TLS" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1.0">1.0</SelectItem>
+                              <SelectItem value="1.1">1.1</SelectItem>
+                              <SelectItem value="1.2">1.2</SelectItem>
+                              <SelectItem value="1.3">1.3</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Affects client connections to Cloudflare edge.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">TLS 1.3</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneTls13 ? (
+                          <Switch
+                            checked={zoneTls13.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting("tls_1_3", checked ? "on" : "off")
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Enables TLS 1.3 for client connections.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Always Use HTTPS</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneAlwaysUseHttps ? (
+                          <Switch
+                            checked={zoneAlwaysUseHttps.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "always_use_https",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Redirect HTTP to HTTPS at the edge.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Automatic HTTPS Rewrites</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneAutoHttpsRewrites ? (
+                          <Switch
+                            checked={zoneAutoHttpsRewrites.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "automatic_https_rewrites",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Rewrites mixed content links to HTTPS when possible.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Opportunistic encryption</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneOpportunisticEncryption ? (
+                          <Switch
+                            checked={zoneOpportunisticEncryption.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "opportunistic_encryption",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Enables opportunistic encryption to the edge when supported.
                         </div>
                       </div>
                     </div>
@@ -3686,6 +3990,79 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             New zone tabs inherit this value unless overridden.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Record columns</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button size="sm" variant="outline">
+                                <Columns2 className="h-4 w-4 mr-2" />
+                                Configure…
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start">
+                              <DropdownMenuItem disabled>
+                                <span className="flex items-center gap-2">
+                                  <Columns2 className="h-4 w-4" />
+                                  Global columns
+                                </span>
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("content")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("content", checked === true)
+                                }
+                              >
+                                Content
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("comment")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("comment", checked === true)
+                                }
+                              >
+                                Comment
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("tags")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("tags", checked === true)
+                                }
+                              >
+                                Tags
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("ttl")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("ttl", checked === true)
+                                }
+                              >
+                                TTL
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("proxied")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("proxied", checked === true)
+                                }
+                              >
+                                Proxy
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuCheckboxItem
+                                checked={resolvedRecordTableColumns.includes("actions")}
+                                onCheckedChange={(checked) =>
+                                  setColumnEnabled("actions", checked === true)
+                                }
+                              >
+                                Actions
+                              </DropdownMenuCheckboxItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <div className="text-xs text-muted-foreground">
+                            Applies to all zones unless overridden in Zone Settings.
                           </div>
                         </div>
                       </div>
