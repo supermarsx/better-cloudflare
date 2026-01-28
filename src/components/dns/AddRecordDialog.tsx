@@ -103,6 +103,23 @@ export function AddRecordDialog({
   const isCustomTTL =
     ttlValue !== undefined && !getTTLPresets().includes(ttlValue as TTLValue);
 
+  const formatTtlLabel = useCallback((ttl: TTLValue) => {
+    if (ttl === "auto") return "Auto";
+    const seconds = Number(ttl);
+    if (!Number.isFinite(seconds) || seconds <= 0) return `${ttl}`;
+    if (seconds < 60) return `${seconds} sec (${seconds}s)`;
+    if (seconds < 3600) {
+      const m = Math.round(seconds / 60);
+      return `${m} min (${seconds}s)`;
+    }
+    if (seconds < 86400) {
+      const h = Math.round(seconds / 3600);
+      return `${h} hour${h === 1 ? "" : "s"} (${seconds}s)`;
+    }
+    const d = Math.round(seconds / 86400);
+    return `${d} day${d === 1 ? "" : "s"} (${seconds}s)`;
+  }, []);
+
   const [confirmInvalid, setConfirmInvalid] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
@@ -800,7 +817,7 @@ export function AddRecordDialog({
                 <SelectContent>
                   {getTTLPresets().map((ttl) => (
                     <SelectItem key={ttl} value={String(ttl)}>
-                      {ttl === "auto" ? "Auto" : ttl}
+                      {formatTtlLabel(ttl)}
                     </SelectItem>
                   ))}
                   <SelectItem value="custom">Custom</SelectItem>
