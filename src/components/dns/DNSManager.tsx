@@ -870,6 +870,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return;
     }
 
+    const inFlight = toast({
+      title: "Creating record…",
+      description: `${draft.type} ${draft.name}`,
+    });
     try {
       const createdRecord = await createDNSRecord(activeTab.zoneId, draft);
       updateTab(activeTab.id, (prev) => ({
@@ -878,12 +882,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         newRecord: createEmptyRecord(),
         showAddRecord: false,
       }));
-      toast({
-        title: "Success",
-        description: "DNS record created successfully",
+      inFlight.update({
+        id: inFlight.id,
+        title: "Record created",
+        description: `${createdRecord.type} ${createdRecord.name}`,
       });
     } catch (error) {
-      toast({
+      inFlight.update({
+        id: inFlight.id,
         title: "Error",
         description: "Failed to create DNS record: " + (error as Error).message,
         variant: "destructive",
@@ -893,6 +899,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleUpdateRecord = async (record: DNSRecord) => {
     if (!activeTab) return;
+    const inFlight = toast({
+      title: "Saving changes…",
+      description: `${record.type} ${record.name}`,
+    });
     try {
       const updatedRecord = await updateDNSRecord(
         activeTab.zoneId,
@@ -906,12 +916,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ),
         editingRecord: null,
       }));
-      toast({
-        title: "Success",
-        description: "DNS record updated successfully",
+      inFlight.update({
+        id: inFlight.id,
+        title: "Record updated",
+        description: `${updatedRecord.type} ${updatedRecord.name}`,
       });
     } catch (error) {
-      toast({
+      inFlight.update({
+        id: inFlight.id,
         title: "Error",
         description: "Failed to update DNS record: " + (error as Error).message,
         variant: "destructive",
@@ -921,6 +933,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
     if (!activeTab) return;
+    const inFlight = toast({
+      title: "Updating proxy…",
+      description: `${record.type} ${record.name}`,
+    });
     try {
       const updatedRecord = await updateDNSRecord(
         activeTab.zoneId,
@@ -936,8 +952,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           r.id === record.id ? updatedRecord : r,
         ),
       }));
+      inFlight.update({
+        id: inFlight.id,
+        title: "Proxy updated",
+        description: `${updatedRecord.type} ${updatedRecord.name} is now ${
+          proxied ? "proxied" : "DNS-only"
+        }`,
+      });
     } catch (error) {
-      toast({
+      inFlight.update({
+        id: inFlight.id,
         title: "Error",
         description: "Failed to update proxy: " + (error as Error).message,
         variant: "destructive",
@@ -947,6 +971,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const deleteRecordNow = async (recordId: string) => {
     if (!activeTab) return;
+    const deleting = activeTab.records.find((r) => r.id === recordId);
+    const inFlight = toast({
+      title: "Deleting record…",
+      description: deleting ? `${deleting.type} ${deleting.name}` : undefined,
+    });
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
       updateTab(activeTab.id, (prev) => ({
@@ -954,12 +983,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         records: prev.records.filter((r) => r.id !== recordId),
         selectedIds: prev.selectedIds.filter((id) => id !== recordId),
       }));
-      toast({
-        title: "Success",
-        description: "DNS record deleted successfully",
+      inFlight.update({
+        id: inFlight.id,
+        title: "Record deleted",
+        description: deleting ? `${deleting.type} ${deleting.name}` : undefined,
       });
     } catch (error) {
-      toast({
+      inFlight.update({
+        id: inFlight.id,
         title: "Error",
         description: "Failed to delete DNS record: " + (error as Error).message,
         variant: "destructive",
