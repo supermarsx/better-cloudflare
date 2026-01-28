@@ -44,16 +44,15 @@ export function LanguageSelector() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 rounded-full border border-border/70 bg-card/70 text-foreground/70 hover:text-foreground hover:border-primary/40 hover:bg-accent/70 shadow-sm transition-all duration-300 group relative overflow-hidden"
+          className="ui-icon-button h-8 w-8"
           aria-label={t("Select language")}
         >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.2),transparent)] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-          <Globe className="h-4 w-4 group-hover:rotate-180 transition-transform duration-700 ease-in-out" />
+          <Globe className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="bg-popover/95 border border-border/60 backdrop-blur-xl text-foreground shadow-[0_12px_28px_rgba(0,0,0,0.18)]"
+        className="bg-popover/70 text-foreground"
       >
         {availableLanguages.map((lng) => (
           <DropdownMenuItem

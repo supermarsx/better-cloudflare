@@ -35,10 +35,7 @@ export function LoginActionButtons({
         variant={hasKeys ? "secondary" : "default"}
         size={hasKeys ? "sm" : "default"}
         onClick={onAddKey}
-        className={hasKeys 
-          ? "w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
-          : "w-full bg-primary text-primary-foreground font-semibold shadow-[0_12px_24px_rgba(0,0,0,0.2)] hover:brightness-110 transition-all duration-300"
-        }
+        className="w-full"
       >
         {!hasKeys && <Plus className="h-4 w-4 mr-2" />}
         Add New Key
@@ -48,7 +45,7 @@ export function LoginActionButtons({
           <Button
             variant="secondary"
             size="sm"
-            className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
+            className="w-full"
             disabled={!canManage}
           >
             Manage Key
@@ -56,7 +53,7 @@ export function LoginActionButtons({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="center"
-          className="bg-popover/95 border border-border text-foreground shadow-[0_0_20px_rgba(0,0,0,0.15)]"
+          className="bg-popover/70 text-foreground"
         >
           <DropdownMenuItem
             onClick={() => selectedKey && onEditKey(selectedKey)}
@@ -78,7 +75,7 @@ export function LoginActionButtons({
         variant="secondary"
         size="sm"
         onClick={onSettings}
-        className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
+        className="w-full"
       >
         Settings
       </Button>

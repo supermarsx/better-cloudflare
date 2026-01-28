@@ -97,7 +97,7 @@ export function LoginKeySelector({
 
       <Button
         onClick={onLogin}
-        className="w-full h-12 text-lg font-semibold shadow-[0_0_20px_rgba(255,80,0,0.3)] hover:shadow-[0_0_30px_rgba(255,80,0,0.5)] transition-all duration-300"
+        className="w-full h-12 text-lg font-semibold"
         disabled={isLoading || !selectedKeyId || !password}
       >
         {isLoading ? t("Logging in...") : t("Login")}

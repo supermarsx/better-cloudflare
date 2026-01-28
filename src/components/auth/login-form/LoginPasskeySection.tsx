@@ -42,7 +42,7 @@ export function LoginPasskeySection({
           size="sm"
           onClick={onRegister}
           disabled={!selectedKeyId || !password || registerLoading}
-          className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
+          className="w-full"
         >
           <Fingerprint className="h-4 w-4 mr-1" />
           {registerLoading ? "Registering..." : "Register Passkey"}
@@ -53,7 +53,7 @@ export function LoginPasskeySection({
           size="sm"
           onClick={onUsePasskey}
           disabled={!selectedKeyId || authLoading}
-          className="w-full bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
+          className="w-full"
         >
           {authLoading ? "Authenticating..." : "Use Passkey"}
         </Button>
@@ -63,7 +63,7 @@ export function LoginPasskeySection({
           size="sm"
           onClick={onManagePasskeys}
           disabled={!selectedKeyId || !password}
-          className="col-span-2 bg-card/70 border border-border text-foreground/80 hover:bg-accent/70 hover:text-foreground hover:border-primary/30 hover:shadow-[0_0_14px_rgba(0,0,0,0.12)] transition-all"
+          className="col-span-2"
         >
           Manage Passkeys
         </Button>

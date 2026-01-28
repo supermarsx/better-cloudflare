@@ -14,7 +14,7 @@ export function LoginVaultSection({ onRemoveVaultSecret }: LoginVaultSectionProp
         variant="destructive"
         size="sm"
         onClick={onRemoveVaultSecret}
-        className="w-full bg-destructive/10 border border-destructive/30 text-destructive-foreground/80 hover:bg-destructive/20 hover:text-destructive-foreground transition-colors"
+        className="w-full"
       >
         {t("Remove Vault Secret")}
       </Button>

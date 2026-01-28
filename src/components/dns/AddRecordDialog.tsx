@@ -799,7 +799,7 @@ export function AddRecordDialog({
       <DialogTrigger asChild>
         <Button
           variant="outline"
-          className="border-border/60 bg-muted/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
+          size="sm"
           onClick={() => {
             setConfirmInvalid(false);
             setShowDiscardConfirm(false);
@@ -1299,7 +1299,7 @@ export function AddRecordDialog({
           <Button
             onClick={handleCreateRecord}
             className="w-full"
-            variant={submissionWarnings.length > 0 ? "outline" : "default"}
+            variant="default"
           >
             {submissionWarnings.length > 0
               ? confirmInvalid

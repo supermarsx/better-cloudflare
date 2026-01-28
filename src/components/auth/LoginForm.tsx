@@ -212,7 +212,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
                 Cancel
               </Button>
               <Button
-                className="flex-1 bg-red-500/80 text-white hover:bg-red-500 hover:text-white shadow-[0_0_18px_rgba(255,80,80,0.25)] hover:shadow-[0_0_26px_rgba(255,90,90,0.45)] transition"
+                className="flex-1"
                 variant="destructive"
                 onClick={confirmDeleteKey}
               >

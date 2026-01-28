@@ -1384,9 +1384,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <Tooltip tip="Audit log" side="bottom">
                       <Button
                         onClick={() => openActionTab("audit")}
-                        variant="outline"
+                        variant="ghost"
                         size="icon"
-                        className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                        className="ui-icon-button h-8 w-8"
                         aria-label="Audit log"
                       >
                         <Shield className="h-4 w-4" />
@@ -1396,9 +1396,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Tooltip tip="Settings" side="bottom">
                     <Button
                       onClick={() => openActionTab("settings")}
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      className="ui-icon-button h-8 w-8"
                       aria-label="Settings"
                     >
                       <Settings className="h-4 w-4" />
@@ -1407,9 +1407,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Tooltip tip="Tags" side="bottom">
                     <Button
                       onClick={() => openActionTab("tags")}
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      className="ui-icon-button h-8 w-8"
                       aria-label="Tags"
                     >
                       <Tags className="h-4 w-4" />
@@ -1418,9 +1418,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Tooltip tip="Logout" side="bottom">
                     <Button
                       onClick={handleLogout}
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      className="ui-icon-button h-8 w-8"
                       aria-label="Logout"
                     >
                       <LogOut className="h-4 w-4" />
@@ -2814,7 +2814,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </Button>
             <Button
               variant="destructive"
-              className="flex-1 bg-red-500/80 text-white hover:bg-red-500 hover:text-white shadow-[0_0_18px_rgba(255,80,80,0.25)] hover:shadow-[0_0_26px_rgba(255,90,90,0.45)] transition"
+              className="flex-1"
               onClick={async () => {
                 if (!isDesktop()) return;
                 await TauriClient.clearAuditEntries();
