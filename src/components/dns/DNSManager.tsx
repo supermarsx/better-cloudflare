@@ -907,12 +907,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "dns-options") return;
-    void handleFetchDnssec();
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, handleFetchDnssec]);
-
-  useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
@@ -2009,6 +2003,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [activeTab, toast, updateDnssec],
   );
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "dns-options") return;
+    void handleFetchDnssec();
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, handleFetchDnssec]);
 
   const preparePurgeUrls = useCallback(() => {
     const raw = purgeUrlsInput;
