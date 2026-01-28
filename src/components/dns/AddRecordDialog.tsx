@@ -120,6 +120,9 @@ export function AddRecordDialog({
     return `${d} day${d === 1 ? "" : "s"} (${seconds}s)`;
   }, []);
 
+  const [ttlMode, setTtlMode] = useState<"preset" | "custom">(
+    isCustomTTL ? "custom" : "preset",
+  );
   const [confirmInvalid, setConfirmInvalid] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
@@ -128,6 +131,19 @@ export function AddRecordDialog({
   });
   const openSnapshotRef = useRef<Partial<DNSRecord> | null>(null);
   const wasOpenRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setTtlMode(isCustomTTL ? "custom" : "preset");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    // If the user explicitly chose custom, keep it even if they type a preset value.
+    if (ttlMode === "custom") return;
+    setTtlMode(isCustomTTL ? "custom" : "preset");
+  }, [isCustomTTL, open, ttlMode]);
 
   const recordTypeOptions = useMemo(() => {
     const base = showUnsupportedRecordTypes
@@ -141,6 +157,53 @@ export function AddRecordDialog({
       String(a).localeCompare(String(b), undefined, { sensitivity: "base" }),
     );
   }, [record.type, showUnsupportedRecordTypes]);
+
+  const ttlSuggestions = useMemo(() => {
+    const type = record.type as RecordType | undefined;
+    const proxied = !!record.proxied;
+
+    const uniq = (values: TTLValue[]) =>
+      Array.from(new Set(values.map((v) => String(v)))).map((v) =>
+        v === "auto" ? "auto" : Number(v),
+      ) as TTLValue[];
+
+    if (!type) return uniq([300, 3600]);
+
+    switch (type) {
+      case "A":
+      case "AAAA":
+      case "CNAME":
+        return uniq(proxied ? ["auto", 300, 120] : [300, 120, 3600]);
+      case "MX":
+      case "NS":
+        return uniq([3600, 86400]);
+      case "TXT":
+      case "SPF":
+        return uniq([300, 3600]);
+      case "SRV":
+        return uniq([300, 3600]);
+      case "CAA":
+      case "DS":
+      case "DNSKEY":
+      case "CDNSKEY":
+      case "RRSIG":
+      case "NSEC":
+      case "TLSA":
+      case "SSHFP":
+      case "SMIMEA":
+      case "OPENPGPKEY":
+        return uniq([3600, 86400]);
+      case "SOA":
+        return uniq([3600, 86400]);
+      case "SVCB":
+      case "HTTPS":
+      case "URI":
+      case "NAPTR":
+        return uniq([300, 3600]);
+      default:
+        return uniq([300, 3600]);
+    }
+  }, [record.proxied, record.type]);
 
   function normalizeDnsName(value: string) {
     return value.trim().replace(/\.$/, "");
@@ -797,20 +860,26 @@ export function AddRecordDialog({
             </div>
             <div className="space-y-2">
               <Label>{t("TTL", "TTL")}</Label>
-              <Select
-                aria-label={t("TTL select", "TTL")}
-                value={isCustomTTL ? "custom" : String(ttlValue)}
-                onValueChange={(value: string) => {
-                  if (value === "custom") {
-                    onRecordChange({ ...record, ttl: 300 });
-                  } else {
-                    onRecordChange({
-                      ...record,
-                      ttl: value === "auto" ? "auto" : Number(value),
-                    });
-                  }
-                }}
-              >
+                <Select
+                  aria-label={t("TTL select", "TTL")}
+                  value={ttlMode === "custom" ? "custom" : String(ttlValue)}
+                  onValueChange={(value: string) => {
+                    if (value === "custom") {
+                      setTtlMode("custom");
+                      if (typeof record.ttl === "number") {
+                        onRecordChange({ ...record, ttl: record.ttl });
+                      } else {
+                        onRecordChange({ ...record, ttl: 300 });
+                      }
+                    } else {
+                      setTtlMode("preset");
+                      onRecordChange({
+                        ...record,
+                        ttl: value === "auto" ? "auto" : Number(value),
+                      });
+                    }
+                  }}
+                >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -823,7 +892,37 @@ export function AddRecordDialog({
                   <SelectItem value="custom">Custom</SelectItem>
                 </SelectContent>
               </Select>
-              {isCustomTTL && (
+              {record.type && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="text-xs text-muted-foreground">
+                    Suggested:
+                  </div>
+                  {ttlSuggestions.map((ttl) => (
+                    <Button
+                      key={String(ttl)}
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => {
+                        if (ttl === "auto") {
+                          setTtlMode("preset");
+                          onRecordChange({ ...record, ttl: "auto" });
+                          return;
+                        }
+                        if (getTTLPresets().includes(ttl)) {
+                          setTtlMode("preset");
+                        } else {
+                          setTtlMode("custom");
+                        }
+                        onRecordChange({ ...record, ttl });
+                      }}
+                    >
+                      {formatTtlLabel(ttl)}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {ttlMode === "custom" && (
                 <Input
                   type="number"
                   value={typeof record.ttl === "number" ? record.ttl : ""}
