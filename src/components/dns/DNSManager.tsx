@@ -1536,11 +1536,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                         data-active={isActive}
                         className={cn(
-                          "ui-tab cursor-grab",
+                          "ui-tab cursor-pointer hover:cursor-pointer",
+                          dragTabId === tab.id && "cursor-grabbing",
                           dragOverId === tab.id && "ring-1 ring-primary/30",
                         )}
                       >
-                        <GripVertical className="h-3 w-3 text-muted-foreground/60" />
+                        <span className="cursor-grab active:cursor-grabbing">
+                          <GripVertical className="h-3 w-3 text-muted-foreground/60" />
+                        </span>
                         <span className="max-w-[140px] truncate">
                           {tab.zoneName}
                         </span>
