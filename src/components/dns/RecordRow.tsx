@@ -24,6 +24,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import { storageManager } from "@/lib/storage";
@@ -90,6 +97,8 @@ export function RecordRow({
   const [editedRecord, setEditedRecord] = useState(record);
   const [expandedName, setExpandedName] = useState(false);
   const [expandedContent, setExpandedContent] = useState(false);
+  const [dotMenuOpen, setDotMenuOpen] = useState(false);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [tags, setTags] = useState<string[]>(() =>
     storageManager.getRecordTags(zoneId, record.id),
   );
@@ -286,6 +295,74 @@ export function RecordRow({
     value.length > MAX_PREVIEW_CHARS
       ? `${value.slice(0, MAX_PREVIEW_CHARS)}...`
       : value;
+
+  const renderActionsMenuItems = useCallback(() => {
+    return (
+      <>
+        <DropdownMenuItem
+          onSelect={() => {
+            onEdit();
+          }}
+        >
+          <Edit2 className="mr-2 h-3.5 w-3.5" />
+          Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!onCopy}
+          onSelect={() => {
+            onCopy?.();
+          }}
+        >
+          <Copy className="mr-2 h-3.5 w-3.5" />
+          Copy
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => {
+            onDelete();
+          }}
+        >
+          <Trash2 className="mr-2 h-3.5 w-3.5" />
+          Delete
+        </DropdownMenuItem>
+      </>
+    );
+  }, [onCopy, onDelete, onEdit]);
+
+  const renderContextMenuItems = useCallback(() => {
+    return (
+      <>
+        <ContextMenuItem
+          onSelect={() => {
+            onEdit();
+          }}
+        >
+          <Edit2 className="mr-2 h-3.5 w-3.5" />
+          Edit
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!onCopy}
+          onSelect={() => {
+            onCopy?.();
+          }}
+        >
+          <Copy className="mr-2 h-3.5 w-3.5" />
+          Copy
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => {
+            onDelete();
+          }}
+        >
+          <Trash2 className="mr-2 h-3.5 w-3.5" />
+          Delete
+        </ContextMenuItem>
+      </>
+    );
+  }, [onCopy, onDelete, onEdit]);
 
   if (isEditing) {
     return (
@@ -932,18 +1009,21 @@ export function RecordRow({
   }
 
   return (
-    <div
-      className="ui-focus ui-table-row group focus-visible:outline-none"
-      role="button"
-      tabIndex={0}
-      data-selected={isSelected}
-      onDoubleClick={() => onEdit()}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          onEdit();
-        }
-      }}
-    >
+    <ContextMenu onOpenChange={setContextMenuOpen}>
+      <ContextMenuTrigger asChild>
+        <div
+          className="ui-focus ui-table-row group focus-visible:outline-none"
+          role="button"
+          tabIndex={0}
+          data-selected={isSelected}
+          data-context-open={contextMenuOpen ? "true" : "false"}
+          onDoubleClick={() => onEdit()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              onEdit();
+            }
+          }}
+        >
       <div className="flex items-center justify-center">
         <input
           type="checkbox"
@@ -1026,7 +1106,7 @@ export function RecordRow({
       </div>
 
       <div className="flex justify-end opacity-0 transition-opacity group-hover:opacity-100">
-        <DropdownMenu>
+        <DropdownMenu open={dotMenuOpen} onOpenChange={setDotMenuOpen}>
           <Tooltip tip="Actions" side="top">
             <DropdownMenuTrigger asChild>
               <Button
@@ -1045,33 +1125,7 @@ export function RecordRow({
             sideOffset={6}
             onClick={(event) => event.stopPropagation()}
           >
-            <DropdownMenuItem
-              onSelect={() => {
-                onEdit();
-              }}
-            >
-              <Edit2 className="mr-2 h-3.5 w-3.5" />
-              Edit
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={!onCopy}
-              onSelect={() => {
-                onCopy?.();
-              }}
-            >
-              <Copy className="mr-2 h-3.5 w-3.5" />
-              Copy
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onSelect={() => {
-                onDelete();
-              }}
-            >
-              <Trash2 className="mr-2 h-3.5 w-3.5" />
-              Delete
-            </DropdownMenuItem>
+            {renderActionsMenuItems()}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -1187,6 +1241,11 @@ export function RecordRow({
           </div>
         </div>
       )}
-    </div>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent onClick={(event) => event.stopPropagation()}>
+        {renderContextMenuItems()}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

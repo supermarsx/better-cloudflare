@@ -216,6 +216,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
+  const [lastActiveTabId, setLastActiveTabId] = useState<string>("");
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
@@ -493,6 +494,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
+            last_active_tab?: string;
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
@@ -534,6 +536,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(prefObj.last_open_tabs);
           }
+          if (typeof prefObj.last_active_tab === "string") {
+            setLastActiveTabId(prefObj.last_active_tab);
+          }
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
           }
@@ -563,6 +568,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
+    setLastActiveTabId(storageManager.getLastActiveTabId());
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
@@ -622,7 +628,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setZoneConfirmDeleteRecordMap(zoneConfirmDeleteRecord);
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
-    storageManager.setLastOpenTabs(lastOpenTabs);
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
@@ -640,7 +645,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_confirm_delete_record: zoneConfirmDeleteRecord,
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
-            last_open_tabs: lastOpenTabs,
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
@@ -657,7 +661,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     zoneConfirmDeleteRecord,
     reopenLastTabs,
     reopenZoneTabs,
-    lastOpenTabs,
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
@@ -684,28 +687,52 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setRestoredTabs(true);
       return;
     }
-    eligible.forEach((zoneId) => openZoneTab(zoneId));
+    const preferred =
+      lastActiveTabId && eligible.includes(lastActiveTabId)
+        ? lastActiveTabId
+        : "";
+    const ordered = preferred
+      ? [...eligible.filter((id) => id !== preferred), preferred]
+      : eligible;
+    ordered.forEach((zoneId) => openZoneTab(zoneId));
     setRestoredTabs(true);
-  }, [reopenLastTabs, restoredTabs, availableZones, lastOpenTabs, reopenZoneTabs, openZoneTab]);
+  }, [
+    reopenLastTabs,
+    restoredTabs,
+    availableZones,
+    lastOpenTabs,
+    reopenZoneTabs,
+    openZoneTab,
+    lastActiveTabId,
+  ]);
 
   useEffect(() => {
+    if (reopenLastTabs && !restoredTabs) return;
     const openZoneIds = tabs
       .filter((tab) => tab.kind === "zone")
       .map((tab) => tab.zoneId);
     setLastOpenTabs(openZoneIds);
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            last_open_tabs: openZoneIds,
-          }),
-        )
-        .catch(() => {});
+      TauriClient.updatePreferenceFields({ last_open_tabs: openZoneIds }).catch(
+        () => {},
+      );
       return;
     }
     storageManager.setLastOpenTabs(openZoneIds);
-  }, [tabs]);
+  }, [reopenLastTabs, restoredTabs, tabs]);
+
+  useEffect(() => {
+    if (reopenLastTabs && !restoredTabs) return;
+    if (!activeTabId) return;
+    setLastActiveTabId(activeTabId);
+    if (isDesktop()) {
+      TauriClient.updatePreferenceFields({ last_active_tab: activeTabId }).catch(
+        () => {},
+      );
+      return;
+    }
+    storageManager.setLastActiveTabId(activeTabId);
+  }, [activeTabId, reopenLastTabs, restoredTabs]);
 
   useEffect(() => {
     if (!idleLogoutMs || idleLogoutMs <= 0) return;

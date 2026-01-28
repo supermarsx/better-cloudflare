@@ -18,6 +18,7 @@ interface StorageData {
   apiKeys: ApiKey[];
   currentSession?: string;
   lastZone?: string;
+  lastActiveTabId?: string;
   vaultEnabled?: boolean;
   autoRefreshInterval?: number;
   defaultPerPage?: number;
@@ -688,6 +689,20 @@ export class StorageManager {
 
   getLastOpenTabs(): string[] {
     return [...(this.data.lastOpenTabs ?? [])];
+  }
+
+  setLastActiveTabId(id: string | null): void {
+    if (!id) {
+      delete this.data.lastActiveTabId;
+      this.save();
+      return;
+    }
+    this.data.lastActiveTabId = id;
+    this.save();
+  }
+
+  getLastActiveTabId(): string {
+    return this.data.lastActiveTabId ?? "";
   }
 
   /**
