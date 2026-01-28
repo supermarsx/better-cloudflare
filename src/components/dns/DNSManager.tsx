@@ -210,6 +210,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditOrder, setAuditOrder] = useState("newest");
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
+  const [showResetSettingsConfirm, setShowResetSettingsConfirm] = useState(false);
+  const [showClearSettingsConfirm, setShowClearSettingsConfirm] = useState(false);
+  const [showClearAllDataConfirm, setShowClearAllDataConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showDeleteRecordConfirm, setShowDeleteRecordConfirm] = useState(false);
   const [pendingDeleteRecordId, setPendingDeleteRecordId] = useState<string | null>(null);
@@ -1353,6 +1356,206 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setShowLogoutConfirm(false);
     onLogout();
   };
+
+  const DEFAULT_SETTINGS = useMemo(
+    () => ({
+      autoRefreshInterval: null as number | null,
+      globalPerPage: 50,
+      zonePerPage: {} as Record<string, number>,
+      showUnsupportedRecordTypes: false,
+      zoneShowUnsupportedRecordTypes: {} as Record<string, boolean>,
+      confirmDeleteRecord: true,
+      zoneConfirmDeleteRecord: {} as Record<string, boolean>,
+      reopenLastTabs: false,
+      reopenZoneTabs: {} as Record<string, boolean>,
+      confirmLogout: true,
+      idleLogoutMs: null as number | null,
+      confirmWindowClose: true,
+    }),
+    [],
+  );
+
+  const resetSettingsToDefaults = useCallback(() => {
+    setAutoRefreshInterval(DEFAULT_SETTINGS.autoRefreshInterval);
+    setGlobalPerPage(DEFAULT_SETTINGS.globalPerPage);
+    setZonePerPage(DEFAULT_SETTINGS.zonePerPage);
+    setShowUnsupportedRecordTypes(DEFAULT_SETTINGS.showUnsupportedRecordTypes);
+    setZoneShowUnsupportedRecordTypes(DEFAULT_SETTINGS.zoneShowUnsupportedRecordTypes);
+    setConfirmDeleteRecord(DEFAULT_SETTINGS.confirmDeleteRecord);
+    setZoneConfirmDeleteRecord(DEFAULT_SETTINGS.zoneConfirmDeleteRecord);
+    setReopenLastTabs(DEFAULT_SETTINGS.reopenLastTabs);
+    setReopenZoneTabs(DEFAULT_SETTINGS.reopenZoneTabs);
+    setConfirmLogout(DEFAULT_SETTINGS.confirmLogout);
+    setIdleLogoutMs(DEFAULT_SETTINGS.idleLogoutMs);
+    setConfirmWindowClose(DEFAULT_SETTINGS.confirmWindowClose);
+
+    setTabs([]);
+    setActiveTabId(null);
+    setSelectedZoneId("");
+    setLastOpenTabs([]);
+    setLastActiveTabId("");
+  }, [DEFAULT_SETTINGS]);
+
+  const persistSettingsNow = useCallback(
+    async (opts?: {
+      includeTabs?: boolean;
+      overrides?: Partial<typeof DEFAULT_SETTINGS>;
+      openTabsOverride?: string[];
+      activeTabIdOverride?: string | null;
+    }) => {
+      const includeTabs = opts?.includeTabs ?? true;
+      const snapshot = {
+        autoRefreshInterval,
+        globalPerPage,
+        zonePerPage,
+        showUnsupportedRecordTypes,
+        zoneShowUnsupportedRecordTypes,
+        confirmDeleteRecord,
+        zoneConfirmDeleteRecord,
+        reopenLastTabs,
+        reopenZoneTabs,
+        confirmLogout,
+        idleLogoutMs,
+        confirmWindowClose,
+        ...(opts?.overrides ?? {}),
+      };
+
+      storageManager.setAutoRefreshInterval(snapshot.autoRefreshInterval ?? null);
+      storageManager.setDefaultPerPage(snapshot.globalPerPage);
+      storageManager.setZonePerPageMap(snapshot.zonePerPage);
+      storageManager.setShowUnsupportedRecordTypes(snapshot.showUnsupportedRecordTypes);
+      storageManager.setZoneShowUnsupportedRecordTypesMap(snapshot.zoneShowUnsupportedRecordTypes);
+      storageManager.setConfirmDeleteRecord(snapshot.confirmDeleteRecord);
+      storageManager.setZoneConfirmDeleteRecordMap(snapshot.zoneConfirmDeleteRecord);
+      storageManager.setReopenLastTabs(snapshot.reopenLastTabs);
+      storageManager.setReopenZoneTabs(snapshot.reopenZoneTabs);
+      storageManager.setConfirmLogout(snapshot.confirmLogout);
+      storageManager.setIdleLogoutMs(snapshot.idleLogoutMs);
+      storageManager.setConfirmWindowClose(snapshot.confirmWindowClose);
+
+      if (includeTabs) {
+        storageManager.setLastOpenTabs(opts?.openTabsOverride ?? lastOpenTabs);
+        storageManager.setLastActiveTabId(
+          opts?.activeTabIdOverride ?? activeTabId,
+        );
+      }
+
+      if (!isDesktop()) return;
+      await TauriClient.updatePreferenceFields({
+        auto_refresh_interval: snapshot.autoRefreshInterval ?? undefined,
+        default_per_page: snapshot.globalPerPage,
+        zone_per_page: snapshot.zonePerPage,
+        show_unsupported_record_types: snapshot.showUnsupportedRecordTypes,
+        zone_show_unsupported_record_types: snapshot.zoneShowUnsupportedRecordTypes,
+        confirm_delete_record: snapshot.confirmDeleteRecord,
+        zone_confirm_delete_record: snapshot.zoneConfirmDeleteRecord,
+        reopen_last_tabs: snapshot.reopenLastTabs,
+        reopen_zone_tabs: snapshot.reopenZoneTabs,
+        confirm_logout: snapshot.confirmLogout,
+        idle_logout_ms: snapshot.idleLogoutMs ?? null,
+        confirm_window_close: snapshot.confirmWindowClose,
+        ...(includeTabs
+          ? { last_open_tabs: opts?.openTabsOverride ?? lastOpenTabs }
+          : {}),
+      });
+    },
+    [
+      activeTabId,
+      autoRefreshInterval,
+      confirmDeleteRecord,
+      confirmLogout,
+      confirmWindowClose,
+      globalPerPage,
+      idleLogoutMs,
+      lastOpenTabs,
+      reopenLastTabs,
+      reopenZoneTabs,
+      showUnsupportedRecordTypes,
+      zoneConfirmDeleteRecord,
+      zonePerPage,
+      zoneShowUnsupportedRecordTypes,
+    ],
+  );
+
+  const handleResetSettings = useCallback(async () => {
+    resetSettingsToDefaults();
+    // Persist immediately (especially important on desktop) so state stays up-to-date.
+    try {
+      await persistSettingsNow({
+        includeTabs: true,
+        overrides: DEFAULT_SETTINGS,
+        openTabsOverride: [],
+        activeTabIdOverride: null,
+      });
+    } catch {
+      // ignore
+    }
+    toast({ title: "Settings reset", description: "Defaults restored." });
+  }, [DEFAULT_SETTINGS, persistSettingsNow, resetSettingsToDefaults, toast]);
+
+  const handleClearSettings = useCallback(async () => {
+    // Clear persisted settings first...
+    if (isDesktop()) {
+      try {
+        await TauriClient.updatePreferences({});
+      } catch {
+        // ignore
+      }
+    } else {
+      storageManager.clearSettings();
+    }
+
+    // ...then immediately resave defaults so the app has a known baseline.
+    resetSettingsToDefaults();
+    try {
+      await persistSettingsNow({
+        includeTabs: true,
+        overrides: DEFAULT_SETTINGS,
+        openTabsOverride: [],
+        activeTabIdOverride: null,
+      });
+    } catch {
+      // ignore
+    }
+    toast({ title: "Settings cleared", description: "Defaults saved." });
+  }, [DEFAULT_SETTINGS, persistSettingsNow, resetSettingsToDefaults, toast]);
+
+  const handleClearAllData = useCallback(async () => {
+    if (isDesktop()) {
+      try {
+        const keys = await TauriClient.getApiKeys();
+        const ids = Array.isArray(keys)
+          ? keys
+              .map((k) => (k && typeof k === "object" ? (k as { id?: unknown }).id : undefined))
+              .filter((id): id is string => typeof id === "string")
+          : [];
+        await Promise.allSettled(ids.map((id) => TauriClient.deleteApiKey(id)));
+      } catch {
+        // ignore
+      }
+      try {
+        await TauriClient.clearAuditEntries();
+      } catch {
+        // ignore
+      }
+      try {
+        await TauriClient.updatePreferences({});
+      } catch {
+        // ignore
+      }
+    } else {
+      storageManager.clearAllData();
+    }
+
+    setTabs([]);
+    setActiveTabId(null);
+    setSelectedZoneId("");
+    setLastOpenTabs([]);
+    setLastActiveTabId("");
+    setAuditEntries([]);
+    setCopyBuffer(null);
+    onLogout();
+  }, [onLogout]);
 
   const selectedZoneData = activeTab
     ? availableZones.find((z) => z.id === activeTab.zoneId)
@@ -2814,6 +3017,38 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Settings className="h-4 w-4" />
                       Global settings apply to every zone unless overridden.
                     </div>
+                    <div className="mt-2 rounded-xl border border-border/60 bg-card/60 p-4">
+                      <div className="text-sm font-semibold">Data management</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Reset or clear local settings and data. These actions affect this device.
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowResetSettingsConfirm(true)}
+                        >
+                          Reset to defaults…
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setShowClearSettingsConfirm(true)}
+                        >
+                          Clear settings…
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setShowClearAllDataConfirm(true)}
+                        >
+                          Clear all app data…
+                        </Button>
+                      </div>
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        “Clear settings” wipes preferences then immediately saves defaults again.
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               )}
@@ -2850,6 +3085,101 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               }}
             >
               Clear logs
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={showResetSettingsConfirm}
+        onOpenChange={setShowResetSettingsConfirm}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset settings to defaults?</DialogTitle>
+            <DialogDescription>
+              This resets session settings and clears open tabs. It does not delete API keys.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowResetSettingsConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setShowResetSettingsConfirm(false);
+                void handleResetSettings();
+              }}
+            >
+              Reset
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={showClearSettingsConfirm}
+        onOpenChange={setShowClearSettingsConfirm}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear settings?</DialogTitle>
+            <DialogDescription>
+              This clears saved preferences, then immediately re-saves default settings so the app starts from a clean baseline.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowClearSettingsConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={() => {
+                setShowClearSettingsConfirm(false);
+                void handleClearSettings();
+              }}
+            >
+              Clear settings
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={showClearAllDataConfirm}
+        onOpenChange={setShowClearAllDataConfirm}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear all app data?</DialogTitle>
+            <DialogDescription>
+              This deletes local keys, preferences, tags, and other stored data on this device, then logs you out. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowClearAllDataConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={() => {
+                setShowClearAllDataConfirm(false);
+                void handleClearAllData();
+              }}
+            >
+              Clear all data
             </Button>
           </div>
         </DialogContent>

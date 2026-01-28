@@ -705,6 +705,37 @@ export class StorageManager {
     return this.data.lastActiveTabId ?? "";
   }
 
+  clearSettings(): void {
+    delete this.data.lastZone;
+    delete this.data.autoRefreshInterval;
+    delete this.data.defaultPerPage;
+    delete this.data.zonePerPage;
+    delete this.data.showUnsupportedRecordTypes;
+    delete this.data.zoneShowUnsupportedRecordTypes;
+    delete this.data.confirmDeleteRecord;
+    delete this.data.zoneConfirmDeleteRecord;
+    delete this.data.reopenLastTabs;
+    delete this.data.reopenZoneTabs;
+    delete this.data.lastOpenTabs;
+    delete this.data.lastActiveTabId;
+    delete this.data.confirmLogout;
+    delete this.data.idleLogoutMs;
+    delete this.data.confirmWindowClose;
+    this.save();
+    this.dispatchPreferencesChanged({ settingsCleared: true });
+  }
+
+  clearAllData(): void {
+    this.data = { apiKeys: [] };
+    try {
+      this.storage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    this.dispatchPreferencesChanged({ allDataCleared: true });
+    this.dispatchRecordTagsChanged("*");
+  }
+
   /**
    * Export the storage contents as a JSON string including the current
    * encryption configuration.
