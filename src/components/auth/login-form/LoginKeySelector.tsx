@@ -86,7 +86,7 @@ export function LoginKeySelector({
           <button
             type="button"
             onClick={() => setShowPassword((prev) => !prev)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition hover:bg-accent/60 hover:text-foreground"
+            className="ui-icon-button absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground/80 hover:text-foreground"
             aria-label={showPassword ? t("Hide password") : t("Show password")}
             disabled={!hasKeys}
           >

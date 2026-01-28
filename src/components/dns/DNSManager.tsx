@@ -1557,7 +1557,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             event.stopPropagation();
                             closeTab(tab.id);
                           }}
-                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground"
+                          className="ui-icon-button ml-1 h-5 w-5 p-0 text-muted-foreground/80 hover:text-foreground"
                           aria-label="Close tab"
                         >
                           <X className="h-3 w-3" />

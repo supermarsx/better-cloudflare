@@ -2,6 +2,14 @@
 @import "tailwindcss";
 
 @layer base {
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
   body {
     font-family: "Space Grotesk", "Segoe UI", sans-serif;
     background-color: hsl(var(--background));
@@ -506,6 +514,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    cursor: pointer;
     border-radius: 999px;
     border: 1px solid hsl(var(--border) / 0.7);
     background: hsl(var(--card) / 0.62);
@@ -521,6 +530,12 @@
       background-color 160ms ease,
       box-shadow 180ms ease,
       color 160ms ease;
+  }
+
+  .ui-icon-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .ui-icon-button:hover {
@@ -644,6 +659,7 @@
 
   .ui-segment {
     position: relative;
+    cursor: pointer;
     border-radius: 0.75rem;
     padding: 0.4rem 0.7rem;
     font-size: 0.75rem;
@@ -659,6 +675,7 @@
   }
 
   .ui-segment:hover {
+    transform: translateY(-1px);
     color: hsl(var(--foreground) / 0.92);
     background: hsl(var(--accent) / 0.45);
   }

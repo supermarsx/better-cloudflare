@@ -346,12 +346,14 @@ export function WindowTitleBar() {
           tip={isTopmost ? "Always on top: On" : "Always on top: Off"}
           side="bottom"
         >
-          <button
-            className={`h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground active:scale-[0.98] ${
-              isTopmost ? "bg-muted/60 text-foreground" : ""
-            }`}
-            onClick={handleToggleTopmost}
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            className={`h-7 w-9 px-0 text-[10px] ${
+              isTopmost ? "bg-muted/60 text-foreground" : "text-muted-foreground/80"
+            }`}
+            onClick={() => void handleToggleTopmost()}
             aria-label={
               isTopmost
                 ? "Disable always on top"
@@ -359,37 +361,43 @@ export function WindowTitleBar() {
             }
           >
             T
-          </button>
+          </Button>
         </Tooltip>
         <Tooltip tip="Minimize" side="bottom">
-          <button
-            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
-            onClick={() => void withWindow("minimize")}
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
+            onClick={() => void withWindow("minimize")}
             aria-label="Minimize window"
           >
             -
-          </button>
+          </Button>
         </Tooltip>
         <Tooltip tip="Toggle maximize" side="bottom">
-          <button
-            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-muted/60 hover:text-foreground hover:shadow-[0_0_18px_rgba(255,140,90,0.35)] active:scale-[0.98]"
-            onClick={() => void withWindow("toggle-maximize")}
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
+            onClick={() => void withWindow("toggle-maximize")}
             aria-label="Toggle maximize"
           >
             []
-          </button>
+          </Button>
         </Tooltip>
         <Tooltip tip="Close" side="bottom">
-          <button
-            className="h-7 w-9 cursor-pointer rounded-md border border-border/60 bg-background/30 text-muted-foreground/80 transition hover:scale-[1.04] hover:bg-destructive/70 hover:text-destructive-foreground hover:shadow-[0_0_18px_rgba(255,90,50,0.4)] active:scale-[0.98]"
-            onClick={() => void requestClose()}
+          <Button
             type="button"
+            variant="destructive"
+            size="sm"
+            className="h-7 w-9 px-0 text-[10px]"
+            onClick={() => void requestClose()}
             aria-label="Close window"
           >
             X
-          </button>
+          </Button>
         </Tooltip>
       </div>
       <Dialog open={confirmCloseOpen} onOpenChange={setConfirmCloseOpen}>
