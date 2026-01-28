@@ -184,6 +184,7 @@ impl CloudflareClient {
                         "type": record.r#type,
                         "name": record.name,
                         "content": record.content,
+                        "comment": record.comment,
                         "ttl": record.ttl,
                         "priority": record.priority,
                         "proxied": record.proxied
@@ -272,6 +273,7 @@ fn parse_dns_record(value: &Value) -> Option<crate::commands::DNSRecord> {
         r#type: value["type"].as_str()?.to_string(),
         name: value["name"].as_str()?.to_string(),
         content: value["content"].as_str()?.to_string(),
+        comment: value["comment"].as_str().map(|s| s.to_string()),
         ttl: value["ttl"].as_u64().map(|n| n as u32),
         priority: value["priority"].as_u64().map(|n| n as u16),
         proxied: value["proxied"].as_bool(),

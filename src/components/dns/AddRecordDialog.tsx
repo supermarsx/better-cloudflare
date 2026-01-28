@@ -749,6 +749,7 @@ export function AddRecordDialog({
       type: draft.type ?? "",
       name: (draft.name ?? "").trim(),
       content: (draft.content ?? "").trim(),
+      comment: (draft.comment ?? "").trim(),
       ttl: draft.ttl ?? "",
       priority: draft.priority ?? "",
       proxied: draft.proxied ?? false,

@@ -46,7 +46,15 @@ import {
   composeNAPTR,
 } from "@/lib/dns-parsers";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
-import { Copy, Edit2, Trash2, Save, X, MoreHorizontal } from "lucide-react";
+import {
+  Copy,
+  Edit2,
+  Trash2,
+  Save,
+  X,
+  MoreHorizontal,
+  MessageSquare,
+} from "lucide-react";
 
 /**
  * Properties for the `RecordRow` UI component which renders and optionally
@@ -1005,6 +1013,25 @@ export function RecordRow({
             )}
           </div>
         </div>
+        <div className="mt-4 space-y-1">
+          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            Comment
+          </Label>
+          <Textarea
+            value={editedRecord.comment ?? ""}
+            onChange={(e) =>
+              setEditedRecord({
+                ...editedRecord,
+                comment: e.target.value,
+              })
+            }
+            placeholder="Optional: add a note for this record"
+            className="min-h-20 resize-y"
+          />
+          <div className="text-[11px] text-muted-foreground">
+            Stored with the record in Cloudflare.
+          </div>
+        </div>
       </div>
     );
   }
@@ -1074,9 +1101,24 @@ export function RecordRow({
         </div>
       </Tooltip>
 
-      <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-        TTL {record.ttl === 1 ? "Auto" : record.ttl}
-        {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
+      <div className="flex items-center gap-2 text-[10px] text-muted-foreground whitespace-nowrap">
+        <span>
+          TTL {record.ttl === 1 ? "Auto" : record.ttl}
+          {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
+        </span>
+        {!!(record.comment ?? "").trim() && (
+          <Tooltip tip={record.comment ?? ""} side="top">
+            <button
+              type="button"
+              className="ui-icon-button h-5 w-5 p-0"
+              aria-label="View comment"
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              <MessageSquare className="h-3 w-3" />
+            </button>
+          </Tooltip>
+        )}
       </div>
 
       <div
@@ -1183,6 +1225,14 @@ export function RecordRow({
                 Content
               </span>
               <div className="mt-1 text-foreground">{record.content}</div>
+            </div>
+          )}
+          {!!(record.comment ?? "").trim() && (
+            <div className="break-all pr-16">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                Comment
+              </span>
+              <div className="mt-1 text-foreground">{record.comment}</div>
             </div>
           )}
           <div className="pr-16">
