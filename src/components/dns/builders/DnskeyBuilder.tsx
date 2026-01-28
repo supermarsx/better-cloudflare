@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
@@ -372,8 +373,8 @@ export function DnskeyBuilder({
 
         <div className="mt-2 space-y-1">
           <Label className="text-xs">Public key (base64)</Label>
-          <textarea
-            className="scrollbar-themed ui-focus w-full min-h-24 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+          <Textarea
+            className="scrollbar-themed min-h-24 resize-y"
             value={dnskeyPublicKey}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDnskeyPublicKey(e.target.value)}
             placeholder="Paste the base64 public key (no PEM header/footer)"
@@ -482,4 +483,3 @@ export function DnskeyBuilder({
     </div>
   );
 }
-

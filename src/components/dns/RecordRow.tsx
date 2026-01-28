@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -819,7 +820,7 @@ export function RecordRow({
               <div className="space-y-2">
                 {editedRecord.content.length > 120 ||
                 editedRecord.content.includes("\n") ? (
-                  <textarea
+                  <Textarea
                     value={editedRecord.content}
                     onChange={(e) =>
                       setEditedRecord({
@@ -828,7 +829,7 @@ export function RecordRow({
                       })
                     }
                     rows={4}
-                    className="ui-focus min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+                    className="min-h-24 resize-y"
                   />
                 ) : (
                   <Input
@@ -899,7 +900,7 @@ export function RecordRow({
                 {editedRecord.type === "TXT" ||
                 editedRecord.content.length > 120 ||
                 editedRecord.content.includes("\n") ? (
-                  <textarea
+                  <Textarea
                     value={editedRecord.content}
                     onChange={(e) =>
                       setEditedRecord({
@@ -908,7 +909,7 @@ export function RecordRow({
                       })
                     }
                     rows={4}
-                    className="ui-focus min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+                    className="min-h-24 resize-y"
                   />
                 ) : (
                   <Input

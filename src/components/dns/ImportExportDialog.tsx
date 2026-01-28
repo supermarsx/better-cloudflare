@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Upload, Download } from "lucide-react";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { ImportPreviewDialog } from "./ImportPreviewDialog";
@@ -100,8 +101,8 @@ export function ImportExportDialog({
             </div>
             <div className="space-y-2">
               <Label>{importFormat.toUpperCase()} Data</Label>
-              <textarea
-                className="w-full h-32 p-2 border rounded-md bg-background"
+              <Textarea
+                className="w-full h-32 resize-none"
                 value={importData}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                   onImportDataChange(e.target.value)

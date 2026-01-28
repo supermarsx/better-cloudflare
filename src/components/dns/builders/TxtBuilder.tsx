@@ -2,6 +2,7 @@ import type { ChangeEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -74,9 +75,9 @@ export function TxtBuilder({
 
   return (
     <div className="space-y-2">
-      <textarea
+      <Textarea
         aria-label="TXT content"
-        className="ui-focus w-full min-h-24 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="min-h-24 resize-y"
         value={record.content ?? ""}
         onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
           onRecordChange({
@@ -138,4 +139,3 @@ export function TxtBuilder({
     </div>
   );
 }
-

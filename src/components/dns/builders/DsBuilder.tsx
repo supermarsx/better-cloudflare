@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
@@ -345,8 +346,8 @@ export function DsBuilder({
 
         <div className="mt-2 space-y-1">
           <Label className="text-xs">Digest (hex)</Label>
-          <textarea
-            className="scrollbar-themed ui-focus w-full min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+          <Textarea
+            className="scrollbar-themed min-h-20 resize-y"
             value={dsDigest}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDsDigest(e.target.value)}
             placeholder={expectedLen ? `${expectedLen} hex chars (no spaces)` : "hex digest"}
@@ -456,4 +457,3 @@ export function DsBuilder({
     </div>
   );
 }
-
