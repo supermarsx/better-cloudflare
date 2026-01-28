@@ -78,6 +78,8 @@ export interface AddRecordDialogProps {
   zoneName?: string;
   /** Controls whether unsupported record types appear in the Type dropdown */
   showUnsupportedRecordTypes?: boolean;
+  /** Optional record type to prefill on new draft (e.g., when list is filtered). */
+  prefillType?: RecordType | "";
   apiKey?: string;
   email?: string;
 }
@@ -94,6 +96,7 @@ export function AddRecordDialog({
   onAdd,
   zoneName,
   showUnsupportedRecordTypes = false,
+  prefillType = "",
   apiKey,
   email,
 }: AddRecordDialogProps) {
@@ -125,6 +128,9 @@ export function AddRecordDialog({
   );
   const [confirmInvalid, setConfirmInvalid] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [typeSelectOpen, setTypeSelectOpen] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("");
+  const typeFilterInputRef = useRef<HTMLInputElement | null>(null);
   const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
     issues: [],
     nameIssues: [],
@@ -135,8 +141,15 @@ export function AddRecordDialog({
   useEffect(() => {
     if (!open) return;
     setTtlMode(isCustomTTL ? "custom" : "preset");
+    setTypeFilter("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (!typeSelectOpen) return;
+    // The input lives in a portal; defer focus to the next paint.
+    requestAnimationFrame(() => typeFilterInputRef.current?.focus());
+  }, [typeSelectOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -157,6 +170,16 @@ export function AddRecordDialog({
       String(a).localeCompare(String(b), undefined, { sensitivity: "base" }),
     );
   }, [record.type, showUnsupportedRecordTypes]);
+
+  const filteredRecordTypeOptions = useMemo(() => {
+    const q = typeFilter.trim().toLowerCase();
+    if (!q) return recordTypeOptions;
+    return recordTypeOptions.filter((type) => {
+      const typeKey = String(type).toLowerCase();
+      const label = getRecordTypeLabel(type).toLowerCase();
+      return typeKey.includes(q) || label.includes(q);
+    });
+  }, [recordTypeOptions, typeFilter]);
 
   const ttlSuggestions = useMemo(() => {
     const type = record.type as RecordType | undefined;
@@ -734,14 +757,14 @@ export function AddRecordDialog({
 
   const createEmptyDraft = useCallback((): Partial<DNSRecord> => {
     return {
-      type: "A",
+      type: prefillType ? (prefillType as RecordType) : "A",
       name: "",
       content: "",
       ttl: 300,
       proxied: false,
       priority: undefined,
     };
-  }, []);
+  }, [prefillType]);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
@@ -833,19 +856,68 @@ export function AddRecordDialog({
               <Select
                 aria-label={t("Record Type", "Record Type")}
                 value={record.type}
-                onValueChange={(value: string) =>
+                open={typeSelectOpen}
+                onOpenChange={setTypeSelectOpen}
+                onValueChange={(value: string) => {
+                  setTypeFilter("");
+                  setTypeSelectOpen(false);
                   onRecordChange({
                     ...record,
                     type: value as RecordType,
                     priority: value === "MX" ? record.priority : undefined,
-                  })
-                }
+                  });
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
               <SelectContent>
-                  {recordTypeOptions.map((type) => (
+                  <div className="sticky top-0 z-10 rounded-lg border border-border/50 bg-popover/80 p-2 backdrop-blur-sm">
+                    <Input
+                      ref={typeFilterInputRef}
+                      value={typeFilter}
+                      onChange={(e) => setTypeFilter(e.target.value)}
+                      placeholder={t("Search types…", "Search types…")}
+                      className="h-8 text-xs"
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Escape") {
+                          if (typeFilter.trim().length) {
+                            e.preventDefault();
+                            setTypeFilter("");
+                            return;
+                          }
+                          setTypeSelectOpen(false);
+                          return;
+                        }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const next = filteredRecordTypeOptions[0];
+                          if (!next) return;
+                          setTypeFilter("");
+                          setTypeSelectOpen(false);
+                          onRecordChange({
+                            ...record,
+                            type: next as RecordType,
+                            priority:
+                              next === "MX" ? record.priority : undefined,
+                          });
+                        }
+                      }}
+                    />
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      {t("Match by type or label.", "Match by type or label.")}
+                    </div>
+                  </div>
+                  {filteredRecordTypeOptions.length === 0 && (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                      {t(
+                        "No matching record types.",
+                        "No matching record types.",
+                      )}
+                    </div>
+                  )}
+                  {filteredRecordTypeOptions.map((type) => (
                     <SelectItem
                       key={type}
                       value={type}

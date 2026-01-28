@@ -1721,6 +1721,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       onAdd={handleAddRecord}
                       zoneName={activeTab.zoneName}
                       showUnsupportedRecordTypes={resolvedShowUnsupportedRecordTypes}
+                      prefillType={activeTab.typeFilter}
                       apiKey={apiKey}
                       email={email}
                     />
