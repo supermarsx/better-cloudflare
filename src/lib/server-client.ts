@@ -588,4 +588,26 @@ export class ServerClient {
       signal,
     });
   }
+
+  async getDnssec(zoneId: string, signal?: AbortSignal): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.getDnssec(this.apiKey, this.email, zoneId);
+    }
+    return this.request(`/zones/${zoneId}/dnssec`, { signal });
+  }
+
+  async updateDnssec(
+    zoneId: string,
+    payload: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.updateDnssec(this.apiKey, this.email, zoneId, payload);
+    }
+    return this.request(`/zones/${zoneId}/dnssec`, {
+      method: "PATCH",
+      body: payload,
+      signal,
+    });
+  }
 }

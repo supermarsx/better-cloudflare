@@ -42,6 +42,8 @@ fn main() {
             commands::purge_cache,
             commands::get_zone_setting,
             commands::update_zone_setting,
+            commands::get_dnssec,
+            commands::update_dnssec,
              
             // Vault Operations
             commands::store_vault_secret,

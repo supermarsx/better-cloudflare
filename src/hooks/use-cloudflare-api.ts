@@ -213,6 +213,26 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  const getDnssec = useCallback(
+    (zoneId: string, signal?: AbortSignal): Promise<unknown> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getDnssec(zoneId, signal);
+    },
+    [api],
+  );
+
+  const updateDnssec = useCallback(
+    (
+      zoneId: string,
+      payload: Record<string, unknown>,
+      signal?: AbortSignal,
+    ): Promise<unknown> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.updateDnssec(zoneId, payload, signal);
+    },
+    [api],
+  );
+
   const simulateSPF = useCallback(
     (
       domain: string,
@@ -253,5 +273,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     purgeCache,
     getZoneSetting,
     updateZoneSetting,
+    getDnssec,
+    updateDnssec,
   };
 }

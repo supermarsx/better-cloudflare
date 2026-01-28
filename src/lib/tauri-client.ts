@@ -222,6 +222,23 @@ export class TauriClient {
     });
   }
 
+  static async getDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+  ): Promise<unknown> {
+    return invoke("get_dnssec", { apiKey, email, zoneId });
+  }
+
+  static async updateDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    return invoke("update_dnssec", { apiKey, email, zoneId, payload });
+  }
+
   // Vault Operations
   static async storeVaultSecret(id: string, secret: string): Promise<void> {
     return invoke("store_vault_secret", { id, secret });

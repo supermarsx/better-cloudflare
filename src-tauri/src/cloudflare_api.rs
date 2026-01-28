@@ -368,6 +368,64 @@ impl CloudflareClient {
         }
         Ok(json["result"].clone())
     }
+
+    pub async fn get_dnssec(&self, zone_id: &str) -> Result<Value, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dnssec",
+            zone_id
+        );
+        let req = self.apply_auth(self.client.get(&url));
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        if json["success"].as_bool() != Some(true) {
+            let err = json["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Failed to get DNSSEC");
+            return Err(CloudflareError::ApiError(err.to_string()));
+        }
+        Ok(json["result"].clone())
+    }
+
+    pub async fn update_dnssec(
+        &self,
+        zone_id: &str,
+        payload: Value,
+    ) -> Result<Value, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dnssec",
+            zone_id
+        );
+        let req = self.apply_auth(self.client.patch(&url).json(&payload));
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+
+        if json["success"].as_bool() != Some(true) {
+            let err = json["errors"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Failed to update DNSSEC");
+            return Err(CloudflareError::ApiError(err.to_string()));
+        }
+        Ok(json["result"].clone())
+    }
 }
 
 fn parse_dns_record(value: &Value) -> Option<crate::commands::DNSRecord> {

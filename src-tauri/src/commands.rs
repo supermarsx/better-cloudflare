@@ -519,6 +519,44 @@ pub async fn update_zone_setting(
     Ok(result)
 }
 
+#[tauri::command]
+pub async fn get_dnssec(
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+) -> Result<serde_json::Value, String> {
+    let client = CloudflareClient::new(&api_key, email.as_deref());
+    client
+        .get_dnssec(&zone_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_dnssec(
+    storage: State<'_, Storage>,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = CloudflareClient::new(&api_key, email.as_deref());
+    let result = client
+        .update_dnssec(&zone_id, payload.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "dnssec:update",
+            "resource": zone_id,
+            "payload": payload,
+        }),
+    )
+    .await;
+    Ok(result)
+}
+
 // Vault Operations
 #[tauri::command]
 pub async fn store_vault_secret(

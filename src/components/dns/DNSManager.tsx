@@ -59,7 +59,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 
-type ActionTab = "records" | "import" | "zone-settings" | "cache" | "ssl-tls";
+type ActionTab =
+  | "records"
+  | "import"
+  | "zone-settings"
+  | "cache"
+  | "ssl-tls"
+  | "dns-options";
 type TabKind = "zone" | "settings" | "audit" | "tags";
 type SortKey = "type" | "name" | "content" | "comment" | "tags" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -135,6 +141,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "ssl-tls",
     label: "SSL/TLS",
     hint: "Manage zone SSL and TLS settings",
+  },
+  {
+    id: "dns-options",
+    label: "Options",
+    hint: "DNSSEC, multi-signer DNSSEC, and related zone options",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -349,11 +360,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
   const [zoneCacheLevel, setZoneCacheLevel] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAlwaysOnline, setZoneAlwaysOnline] = useState<ZoneSetting<string> | null>(null);
+  const [zoneCrawlerHints, setZoneCrawlerHints] = useState<ZoneSetting<string> | null>(null);
+  const [zoneBrowserCacheTtl, setZoneBrowserCacheTtl] =
+    useState<ZoneSetting<number> | null>(null);
   const [purgeUrlsInput, setPurgeUrlsInput] = useState("");
   const [showPurgeEverythingConfirm, setShowPurgeEverythingConfirm] = useState(false);
   const [showPurgeUrlsConfirm, setShowPurgeUrlsConfirm] = useState(false);
   const [pendingPurgeUrls, setPendingPurgeUrls] = useState<string[]>([]);
   const [pendingPurgeIssues, setPendingPurgeIssues] = useState<string[]>([]);
+  const [dnsOptionsLoading, setDnsOptionsLoading] = useState(false);
+  const [dnsOptionsError, setDnsOptionsError] = useState<string | null>(null);
+  const [dnssecInfo, setDnssecInfo] = useState<Record<string, unknown> | null>(null);
   const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
   const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
   const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
@@ -374,6 +392,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     purgeCache,
     getZoneSetting,
     updateZoneSetting,
+    getDnssec,
+    updateDnssec,
   } = useCloudflareAPI(apiKey, email);
 
   const availableZones = useMemo(
@@ -793,16 +813,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setCacheSettingsError(null);
     setZoneDevMode(null);
     setZoneCacheLevel(null);
+    setZoneAlwaysOnline(null);
+    setZoneCrawlerHints(null);
+    setZoneBrowserCacheTtl(null);
 
     Promise.allSettled([
       getZoneSetting<string>(activeTab.zoneId, "development_mode"),
       getZoneSetting<string>(activeTab.zoneId, "cache_level"),
+      getZoneSetting<string>(activeTab.zoneId, "always_online"),
+      getZoneSetting<string>(activeTab.zoneId, "crawler_hints"),
+      getZoneSetting<number>(activeTab.zoneId, "browser_cache_ttl"),
     ])
       .then((results) => {
         if (cancelled) return;
-        const [dev, level] = results;
+        const [dev, level, alwaysOnline, crawlerHints, browserTtl] = results;
         if (dev.status === "fulfilled") setZoneDevMode(dev.value);
         if (level.status === "fulfilled") setZoneCacheLevel(level.value);
+        if (alwaysOnline.status === "fulfilled") setZoneAlwaysOnline(alwaysOnline.value);
+        if (crawlerHints.status === "fulfilled") setZoneCrawlerHints(crawlerHints.value);
+        if (browserTtl.status === "fulfilled") setZoneBrowserCacheTtl(browserTtl.value);
         const errors = results
           .filter((r) => r.status === "rejected")
           .map((r) => (r as PromiseRejectedResult).reason)
@@ -876,6 +905,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       cancelled = true;
     };
   }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "dns-options") return;
+    void handleFetchDnssec();
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, handleFetchDnssec]);
 
   useEffect(() => {
     if (isDesktop()) {
@@ -1849,6 +1884,130 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
     },
     [activeTab, toast, updateZoneSetting],
+  );
+
+  const handleToggleAlwaysOnline = useCallback(
+    async (enabled: boolean) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setCacheSettingsLoading(true);
+        setCacheSettingsError(null);
+        const next = await updateZoneSetting<string>(
+          activeTab.zoneId,
+          "always_online",
+          enabled ? "on" : "off",
+        );
+        setZoneAlwaysOnline(next);
+        toast({
+          title: "Saved",
+          description: enabled ? "Always Online enabled." : "Always Online disabled.",
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update Always Online: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setCacheSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
+  const handleToggleCrawlerHints = useCallback(
+    async (enabled: boolean) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setCacheSettingsLoading(true);
+        setCacheSettingsError(null);
+        const next = await updateZoneSetting<string>(
+          activeTab.zoneId,
+          "crawler_hints",
+          enabled ? "on" : "off",
+        );
+        setZoneCrawlerHints(next);
+        toast({
+          title: "Saved",
+          description: enabled ? "Crawler Hints enabled." : "Crawler Hints disabled.",
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update Crawler Hints: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setCacheSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
+  const handleSetBrowserCacheTtl = useCallback(
+    async (ttl: number) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setCacheSettingsLoading(true);
+        setCacheSettingsError(null);
+        const next = await updateZoneSetting<number>(
+          activeTab.zoneId,
+          "browser_cache_ttl",
+          ttl,
+        );
+        setZoneBrowserCacheTtl(next);
+        toast({
+          title: "Saved",
+          description: `Browser Cache TTL set to ${ttl}s.`,
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description:
+            "Failed to update Browser Cache TTL: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setCacheSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
+  const handleFetchDnssec = useCallback(async () => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    try {
+      setDnsOptionsLoading(true);
+      setDnsOptionsError(null);
+      const result = await getDnssec(activeTab.zoneId);
+      setDnssecInfo((result as Record<string, unknown>) ?? null);
+    } catch (error) {
+      setDnsOptionsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDnsOptionsLoading(false);
+    }
+  }, [activeTab, getDnssec]);
+
+  const handleUpdateDnssec = useCallback(
+    async (payload: Record<string, unknown>) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setDnsOptionsLoading(true);
+        setDnsOptionsError(null);
+        const result = await updateDnssec(activeTab.zoneId, payload);
+        setDnssecInfo((result as Record<string, unknown>) ?? null);
+        toast({ title: "Saved", description: "DNS options updated." });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update DNSSEC: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setDnsOptionsLoading(false);
+      }
+    },
+    [activeTab, toast, updateDnssec],
   );
 
   const preparePurgeUrls = useCallback(() => {
@@ -3357,7 +3516,92 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <div className="text-xs text-muted-foreground">Unavailable.</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Controls how aggressively Cloudflare caches your content.
+                          <div>
+                            <span className="font-medium text-foreground/80">Basic</span>: respects origin cache headers.
+                          </div>
+                          <div>
+                            <span className="font-medium text-foreground/80">Aggressive</span>: caches more aggressively where safe.
+                          </div>
+                          <div>
+                            <span className="font-medium text-foreground/80">Simplified</span>: reduces variation by ignoring some request headers.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Always Online</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneAlwaysOnline ? (
+                          <Switch
+                            checked={zoneAlwaysOnline.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleToggleAlwaysOnline(checked)
+                            }
+                            disabled={!apiKey || cacheSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Serves limited cached pages when the origin is down (availability depends on plan/features).
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Crawler Hints</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneCrawlerHints ? (
+                          <Switch
+                            checked={zoneCrawlerHints.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleToggleCrawlerHints(checked)
+                            }
+                            disabled={!apiKey || cacheSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Adds headers to help search engines crawl faster and reduce server load.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Browser Cache TTL</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneBrowserCacheTtl ? (
+                          <Select
+                            value={String(zoneBrowserCacheTtl.value ?? 0)}
+                            onValueChange={(v) => {
+                              const n = Number(v);
+                              if (Number.isNaN(n)) return;
+                              void handleSetBrowserCacheTtl(n);
+                            }}
+                            disabled={!apiKey || cacheSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="Browser TTL" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="0">Respect existing headers</SelectItem>
+                              <SelectItem value="30">30s</SelectItem>
+                              <SelectItem value="60">1m</SelectItem>
+                              <SelectItem value="300">5m</SelectItem>
+                              <SelectItem value="1200">20m</SelectItem>
+                              <SelectItem value="3600">1h</SelectItem>
+                              <SelectItem value="14400">4h</SelectItem>
+                              <SelectItem value="86400">1d</SelectItem>
+                              <SelectItem value="604800">7d</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Overrides how long browsers cache resources (client-side TTL).
                         </div>
                       </div>
                     </div>
