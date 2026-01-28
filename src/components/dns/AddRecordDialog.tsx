@@ -173,15 +173,15 @@ export function AddRecordDialog({
       case "A":
       case "AAAA":
       case "CNAME":
-        return uniq(proxied ? ["auto", 300, 120] : [300, 120, 3600]);
+        return uniq(proxied ? ["auto", 60, 120] : [60, 120, 300]);
       case "MX":
       case "NS":
-        return uniq([3600, 86400]);
+        return uniq([300, 900, 1800]);
       case "TXT":
       case "SPF":
-        return uniq([300, 3600]);
+        return uniq([60, 120, 300]);
       case "SRV":
-        return uniq([300, 3600]);
+        return uniq([60, 120, 300]);
       case "CAA":
       case "DS":
       case "DNSKEY":
@@ -192,16 +192,16 @@ export function AddRecordDialog({
       case "SSHFP":
       case "SMIMEA":
       case "OPENPGPKEY":
-        return uniq([3600, 86400]);
+        return uniq([300, 900, 1800]);
       case "SOA":
-        return uniq([3600, 86400]);
+        return uniq([300, 900, 1800]);
       case "SVCB":
       case "HTTPS":
       case "URI":
       case "NAPTR":
-        return uniq([300, 3600]);
+        return uniq([60, 120, 300]);
       default:
-        return uniq([300, 3600]);
+        return uniq([60, 120, 300]);
     }
   }, [record.proxied, record.type]);
 
@@ -902,7 +902,7 @@ export function AddRecordDialog({
                       key={String(ttl)}
                       size="sm"
                       variant="outline"
-                      className="h-8"
+                      className="h-6 px-2 text-[10px] leading-none"
                       onClick={() => {
                         if (ttl === "auto") {
                           setTtlMode("preset");

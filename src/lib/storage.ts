@@ -24,6 +24,8 @@ interface StorageData {
   zonePerPage?: Record<string, number>;
   showUnsupportedRecordTypes?: boolean;
   zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
+  confirmDeleteRecord?: boolean;
+  zoneConfirmDeleteRecord?: Record<string, boolean>;
   reopenLastTabs?: boolean;
   reopenZoneTabs?: Record<string, boolean>;
   lastOpenTabs?: string[];
@@ -577,6 +579,37 @@ export class StorageManager {
 
   getZoneShowUnsupportedRecordTypesMap(): Record<string, boolean> {
     return { ...(this.data.zoneShowUnsupportedRecordTypes ?? {}) };
+  }
+
+  setConfirmDeleteRecord(enabled: boolean): void {
+    this.data.confirmDeleteRecord = enabled;
+    this.save();
+  }
+
+  getConfirmDeleteRecord(): boolean {
+    // Default to true (safer) unless explicitly disabled.
+    return this.data.confirmDeleteRecord !== false;
+  }
+
+  setZoneConfirmDeleteRecord(zoneId: string, enabled: boolean | null): void {
+    if (!this.data.zoneConfirmDeleteRecord) {
+      this.data.zoneConfirmDeleteRecord = {};
+    }
+    if (enabled === null) {
+      delete this.data.zoneConfirmDeleteRecord[zoneId];
+    } else {
+      this.data.zoneConfirmDeleteRecord[zoneId] = enabled;
+    }
+    this.save();
+  }
+
+  setZoneConfirmDeleteRecordMap(map: Record<string, boolean>): void {
+    this.data.zoneConfirmDeleteRecord = { ...map };
+    this.save();
+  }
+
+  getZoneConfirmDeleteRecordMap(): Record<string, boolean> {
+    return { ...(this.data.zoneConfirmDeleteRecord ?? {}) };
   }
 
   setConfirmLogout(enabled: boolean): void {

@@ -192,6 +192,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useState<Record<string, boolean>>(
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
+  const [confirmDeleteRecord, setConfirmDeleteRecord] = useState(
+    storageManager.getConfirmDeleteRecord(),
+  );
+  const [zoneConfirmDeleteRecord, setZoneConfirmDeleteRecord] = useState<
+    Record<string, boolean>
+  >(storageManager.getZoneConfirmDeleteRecordMap());
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
@@ -205,6 +211,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showDeleteRecordConfirm, setShowDeleteRecordConfirm] = useState(false);
+  const [pendingDeleteRecordId, setPendingDeleteRecordId] = useState<string | null>(null);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
@@ -250,6 +258,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [tabs, activeTabId],
   );
 
+  const pendingDeleteRecord = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return null;
+    if (!pendingDeleteRecordId) return null;
+    return (
+      activeTab.records.find((r) => r.id === pendingDeleteRecordId) ?? null
+    );
+  }, [activeTab, pendingDeleteRecordId]);
+
   const resolvedShowUnsupportedRecordTypes = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
     const zoneId = activeTab.zoneId;
@@ -257,6 +273,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return zoneShowUnsupportedRecordTypes[zoneId] === true;
     return showUnsupportedRecordTypes;
   }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
+
+  const resolvedConfirmDeleteRecord = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return confirmDeleteRecord;
+    const zoneId = activeTab.zoneId;
+    if (Object.prototype.hasOwnProperty.call(zoneConfirmDeleteRecord, zoneId))
+      return zoneConfirmDeleteRecord[zoneId] !== false;
+    return confirmDeleteRecord;
+  }, [activeTab, confirmDeleteRecord, zoneConfirmDeleteRecord]);
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -464,6 +488,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_per_page?: Record<string, number>;
             show_unsupported_record_types?: boolean;
             zone_show_unsupported_record_types?: Record<string, boolean>;
+            confirm_delete_record?: boolean;
+            zone_confirm_delete_record?: Record<string, boolean>;
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
@@ -489,6 +515,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             typeof prefObj.zone_show_unsupported_record_types === "object"
           ) {
             setZoneShowUnsupportedRecordTypes(prefObj.zone_show_unsupported_record_types);
+          }
+          if (typeof prefObj.confirm_delete_record === "boolean") {
+            setConfirmDeleteRecord(prefObj.confirm_delete_record);
+          }
+          if (
+            prefObj.zone_confirm_delete_record &&
+            typeof prefObj.zone_confirm_delete_record === "object"
+          ) {
+            setZoneConfirmDeleteRecord(prefObj.zone_confirm_delete_record);
           }
           if (typeof prefObj.reopen_last_tabs === "boolean") {
             setReopenLastTabs(prefObj.reopen_last_tabs);
@@ -523,6 +558,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setZoneShowUnsupportedRecordTypes(
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
+    setConfirmDeleteRecord(storageManager.getConfirmDeleteRecord());
+    setZoneConfirmDeleteRecord(storageManager.getZoneConfirmDeleteRecordMap());
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
@@ -581,6 +618,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setZonePerPageMap(zonePerPage);
     storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
     storageManager.setZoneShowUnsupportedRecordTypesMap(zoneShowUnsupportedRecordTypes);
+    storageManager.setConfirmDeleteRecord(confirmDeleteRecord);
+    storageManager.setZoneConfirmDeleteRecordMap(zoneConfirmDeleteRecord);
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
     storageManager.setLastOpenTabs(lastOpenTabs);
@@ -597,6 +636,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_per_page: zonePerPage,
             show_unsupported_record_types: showUnsupportedRecordTypes,
             zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
+            confirm_delete_record: confirmDeleteRecord,
+            zone_confirm_delete_record: zoneConfirmDeleteRecord,
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
             last_open_tabs: lastOpenTabs,
@@ -612,6 +653,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     zonePerPage,
     showUnsupportedRecordTypes,
     zoneShowUnsupportedRecordTypes,
+    confirmDeleteRecord,
+    zoneConfirmDeleteRecord,
     reopenLastTabs,
     reopenZoneTabs,
     lastOpenTabs,
@@ -902,7 +945,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
-  const handleDeleteRecord = async (recordId: string) => {
+  const deleteRecordNow = async (recordId: string) => {
     if (!activeTab) return;
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
@@ -922,6 +965,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         variant: "destructive",
       });
     }
+  };
+
+  const requestDeleteRecord = async (recordId: string) => {
+    if (!activeTab) return;
+    if (!resolvedConfirmDeleteRecord) {
+      await deleteRecordNow(recordId);
+      return;
+    }
+    setPendingDeleteRecordId(recordId);
+    setShowDeleteRecordConfirm(true);
   };
 
   const handleExport = (format: "json" | "csv" | "bind") => {
@@ -993,6 +1046,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       title: "Success",
       description: `Records exported as ${format.toUpperCase()}`,
     });
+  };
+
+  const confirmDeleteRecordNow = async () => {
+    if (!pendingDeleteRecordId) {
+      setShowDeleteRecordConfirm(false);
+      return;
+    }
+    const id = pendingDeleteRecordId;
+    setShowDeleteRecordConfirm(false);
+    setPendingDeleteRecordId(null);
+    await deleteRecordNow(id);
   };
 
   const handleImport = async (
@@ -1787,7 +1851,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 editingRecord: null,
                               }))
                             }
-                            onDelete={() => handleDeleteRecord(record.id)}
+                            onDelete={() => requestDeleteRecord(record.id)}
                             onToggleProxy={(next) =>
                               handleToggleProxy(record, next)
                             }
@@ -2043,6 +2107,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </Select>
                         <div className="text-xs text-muted-foreground">
                           Controls whether non-Cloudflare record types appear in the Type dropdown for this zone.
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">
+                        Confirm record delete
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Select
+                          value={
+                            Object.prototype.hasOwnProperty.call(
+                              zoneConfirmDeleteRecord,
+                              activeTab.zoneId,
+                            )
+                              ? zoneConfirmDeleteRecord[activeTab.zoneId]
+                                ? "confirm"
+                                : "no-confirm"
+                              : "inherit"
+                          }
+                          onValueChange={(v) => {
+                            if (v === "inherit") {
+                              setZoneConfirmDeleteRecord((prev) => {
+                                const next = { ...prev };
+                                delete next[activeTab.zoneId];
+                                return next;
+                              });
+                              notifySaved(
+                                `Zone delete confirmation set to inherit (${
+                                  confirmDeleteRecord ? "confirm" : "no-confirm"
+                                }).`,
+                              );
+                              return;
+                            }
+                            const enabled = v === "confirm";
+                            setZoneConfirmDeleteRecord((prev) => ({
+                              ...prev,
+                              [activeTab.zoneId]: enabled,
+                            }));
+                            notifySaved(
+                              enabled
+                                ? "Zone will confirm single-record deletion."
+                                : "Zone will delete single records without confirmation.",
+                            );
+                          }}
+                        >
+                          <SelectTrigger className="w-48">
+                            <SelectValue placeholder="Inherit" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="inherit">
+                              Inherit ({confirmDeleteRecord ? "Confirm" : "No confirm"})
+                            </SelectItem>
+                            <SelectItem value="confirm">Confirm</SelectItem>
+                            <SelectItem value="no-confirm">No confirm</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="text-xs text-muted-foreground">
+                          Controls whether deleting a single record prompts a confirmation for this zone.
                         </div>
                       </div>
                     </div>
@@ -2513,6 +2635,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Confirm record delete</div>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={confirmDeleteRecord}
+                            onCheckedChange={(checked: boolean) => {
+                              setConfirmDeleteRecord(checked);
+                              notifySaved(
+                                checked
+                                  ? "Delete confirmation enabled."
+                                  : "Delete confirmation disabled.",
+                              );
+                            }}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            Adds a confirmation dialog when deleting a single record.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Reopen last tabs</div>
                         <div className="flex items-center gap-3">
                           <Switch
@@ -2647,6 +2788,57 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               }}
             >
               Clear logs
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={showDeleteRecordConfirm}
+        onOpenChange={(open) => {
+          setShowDeleteRecordConfirm(open);
+          if (!open) setPendingDeleteRecordId(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete DNS record?</DialogTitle>
+            <DialogDescription>
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingDeleteRecord ? (
+            <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{pendingDeleteRecord.type}</span>
+                <span className="text-muted-foreground">•</span>
+                <span className="break-all">{pendingDeleteRecord.name}</span>
+              </div>
+              <div className="mt-2 break-all text-muted-foreground">
+                {pendingDeleteRecord.content}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">
+              Record details unavailable.
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                setShowDeleteRecordConfirm(false);
+                setPendingDeleteRecordId(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={confirmDeleteRecordNow}
+            >
+              Delete
             </Button>
           </div>
         </DialogContent>
