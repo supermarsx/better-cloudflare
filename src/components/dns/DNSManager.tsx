@@ -384,6 +384,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [domainAuditCategories, setDomainAuditCategories] = useState<
     Record<DomainAuditCategory, boolean>
   >({ email: true, security: true, hygiene: true });
+  const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
   const [spfGraphByZoneId, setSpfGraphByZoneId] = useState<
     Record<
       string,
@@ -529,10 +530,76 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     ];
   }, [activeTab, domainAuditCategories, spfGraphByZoneId]);
 
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const overrides = storageManager.getAuditOverrides(activeTab.zoneId);
+    setAuditOverridesByZone((prev) => ({
+      ...prev,
+      [activeTab.zoneId]: new Set(overrides),
+    }));
+  }, [activeTab]);
+
+  const handleOverrideAuditItem = useCallback(
+    (auditItemId: string) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      storageManager.setAuditOverride(activeTab.zoneId, auditItemId);
+      setAuditOverridesByZone((prev) => {
+        const existing = prev[activeTab.zoneId] ?? new Set();
+        return {
+          ...prev,
+          [activeTab.zoneId]: new Set([...existing, auditItemId]),
+        };
+      });
+    },
+    [activeTab],
+  );
+
+  const handleClearAuditOverride = useCallback(
+    (auditItemId: string) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      storageManager.clearAuditOverride(activeTab.zoneId, auditItemId);
+      setAuditOverridesByZone((prev) => {
+        const existing = prev[activeTab.zoneId] ?? new Set();
+        const updated = new Set(existing);
+        updated.delete(auditItemId);
+        return {
+          ...prev,
+          [activeTab.zoneId]: updated,
+        };
+      });
+    },
+    [activeTab],
+  );
+
+  const handleClearAllAuditOverrides = useCallback(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    storageManager.clearAllAuditOverrides(activeTab.zoneId);
+    setAuditOverridesByZone((prev) => ({
+      ...prev,
+      [activeTab.zoneId]: new Set(),
+    }));
+  }, [activeTab]);
+
+  const domainAuditItemsWithOverrides = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return domainAuditItems;
+    const overrides = auditOverridesByZone[activeTab.zoneId] ?? new Set();
+    return domainAuditItems.map((item) => {
+      if (overrides.has(item.id) && item.severity !== "pass") {
+        return {
+          ...item,
+          severity: "pass" as const,
+          title: `${item.title} (overridden)`,
+          details: `Original severity: ${item.severity}\n\n${item.details}`,
+        };
+      }
+      return item;
+    });
+  }, [domainAuditItems, activeTab, auditOverridesByZone]);
+
   const domainAuditVisibleItems = useMemo(() => {
-    if (domainAuditShowPassed) return domainAuditItems;
-    return domainAuditItems.filter((i) => i.severity !== "pass");
-  }, [domainAuditItems, domainAuditShowPassed]);
+    if (domainAuditShowPassed) return domainAuditItemsWithOverrides;
+    return domainAuditItemsWithOverrides.filter((i) => i.severity !== "pass");
+  }, [domainAuditItemsWithOverrides, domainAuditShowPassed]);
 
   const pendingDeleteRecord = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return null;
@@ -4214,6 +4281,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         />
                         Show passed
                       </div>
+                      {activeTab?.kind === "zone" && 
+                        auditOverridesByZone[activeTab.zoneId]?.size > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs"
+                          onClick={handleClearAllAuditOverrides}
+                        >
+                          Clear {auditOverridesByZone[activeTab.zoneId].size} override{auditOverridesByZone[activeTab.zoneId].size !== 1 ? "s" : ""}
+                        </Button>
+                      )}
                     </div>
 
                     <div className="rounded-xl border border-border/60 bg-card/60 p-2">
@@ -4224,12 +4302,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       ) : (
                         <div className="space-y-2">
                           {domainAuditVisibleItems.map((item) => {
+                            const isOverridden = activeTab?.kind === "zone" && 
+                              auditOverridesByZone[activeTab.zoneId]?.has(item.id);
+                            const originalSeverity = isOverridden && item.title.includes("(overridden)")
+                              ? item.details.match(/Original severity: (\w+)/)?.[1] as "fail" | "warn" | "info" | undefined
+                              : undefined;
+                            const displaySeverity = originalSeverity ?? item.severity;
+                            
                             const badge =
-                              item.severity === "fail"
+                              displaySeverity === "fail"
                                 ? "bg-destructive/20 text-destructive border-destructive/30"
-                                : item.severity === "warn"
+                                : displaySeverity === "warn"
                                   ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
-                                  : item.severity === "info"
+                                  : displaySeverity === "info"
                                     ? "bg-sky-500/15 text-sky-200 border-sky-500/30"
                                     : "bg-emerald-500/15 text-emerald-200 border-emerald-500/30";
 
@@ -4239,45 +4324,75 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 className="rounded-xl border border-border/60 bg-muted/10 p-3"
                               >
                                 <div className="flex flex-wrap items-start justify-between gap-2">
-                                  <div className="min-w-0">
+                                  <div className="min-w-0 flex-1">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <span
                                         className={cn(
                                           "rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-widest",
                                           badge,
+                                          isOverridden && "opacity-60",
                                         )}
                                       >
-                                        {item.severity}
+                                        {displaySeverity}
                                       </span>
-                                      <div className="font-medium text-sm">
-                                        {item.title}
+                                      {isOverridden && (
+                                        <span className="rounded-md border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] uppercase tracking-widest text-emerald-200">
+                                          overridden
+                                        </span>
+                                      )}
+                                      <div className={cn("font-medium text-sm", isOverridden && "line-through opacity-60")}>
+                                        {item.title.replace(" (overridden)", "")}
                                       </div>
                                     </div>
                                     <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
                                       {item.details}
                                     </div>
                                   </div>
-                                  {item.suggestion && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        updateTab(activeTab.id, (prev) => ({
-                                          ...prev,
-                                          showAddRecord: true,
-                                          newRecord: {
-                                            ...createEmptyRecord(),
-                                            type: item.suggestion!.recordType,
-                                            name: item.suggestion!.name,
-                                            content: item.suggestion!.content,
-                                            ttl: 300,
-                                          },
-                                        }))
-                                      }
-                                    >
-                                      Add suggested record…
-                                    </Button>
-                                  )}
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {item.severity !== "pass" && !isOverridden && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-xs"
+                                        onClick={() => handleOverrideAuditItem(item.id)}
+                                        title="Mark as acknowledged/passing"
+                                      >
+                                        Override
+                                      </Button>
+                                    )}
+                                    {isOverridden && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-xs"
+                                        onClick={() => handleClearAuditOverride(item.id)}
+                                        title="Remove override"
+                                      >
+                                        Restore
+                                      </Button>
+                                    )}
+                                    {item.suggestion && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                          updateTab(activeTab.id, (prev) => ({
+                                            ...prev,
+                                            showAddRecord: true,
+                                            newRecord: {
+                                              ...createEmptyRecord(),
+                                              type: item.suggestion!.recordType,
+                                              name: item.suggestion!.name,
+                                              content: item.suggestion!.content,
+                                              ttl: 300,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        Add suggested record…
+                                      </Button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             );

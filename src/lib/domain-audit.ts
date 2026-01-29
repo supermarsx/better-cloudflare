@@ -276,10 +276,12 @@ export function runDomainAudit(
 
   if (options.includeCategories.hygiene) {
     const ttlIssues: string[] = [];
+    const ttlCritical: string[] = [];
     for (const r of records) {
       const ttl = getTtlSeconds(r.ttl);
       if (ttl === null) continue;
-      if (ttl <= 0) ttlIssues.push(`${r.type} ${r.name}: invalid TTL ${ttl}`);
+      if (ttl <= 0) ttlCritical.push(`${r.type} ${r.name}: invalid TTL ${ttl}`);
+      else if (ttl < 30) ttlCritical.push(`${r.type} ${r.name}: TTL ${ttl}s is dangerously low (<30s should only be temporary)`);
       else if (ttl < 60) ttlIssues.push(`${r.type} ${r.name}: TTL ${ttl}s is very low`);
       else if (r.type === "SOA" && ttl < 3600)
         ttlIssues.push(`SOA ${r.name}: TTL ${ttl}s is low (often 3600+).`);
@@ -290,6 +292,15 @@ export function runDomainAudit(
           `${r.type} ${r.name}: TTL ${ttl}s is very high (changes propagate slowly).`,
         );
     }
+    if (ttlCritical.length > 0) {
+      items.push({
+        id: "ttl-critical",
+        category: "hygiene",
+        severity: "fail",
+        title: "TTL dangerously low",
+        details: ttlCritical.slice(0, 8).join("\n") + "\n\nTTL <30s should only be used temporarily before DNS changes.",
+      });
+    }
     items.push({
       id: "ttl-hygiene",
       category: "hygiene",
@@ -299,42 +310,93 @@ export function runDomainAudit(
     });
 
     const cnameConflicts: string[] = [];
+    const cnameAtApexWarnings: string[] = [];
     for (const [name, rrset] of byName.entries()) {
       const hasCname = rrset.some((r) => r.type === "CNAME");
       if (!hasCname) continue;
       const others = rrset.filter((r) => r.type !== "CNAME");
       if (others.length > 0) {
         const types = Array.from(new Set(others.map((r) => r.type))).join(", ");
-        cnameConflicts.push(`${name}: CNAME with other records (${types})`);
+        const isApex = name === normalizedZone;
+        if (isApex) {
+          cnameAtApexWarnings.push(
+            `${name}: CNAME at apex with ${types}. Cloudflare flattens this to ANAME/ALIAS, which works but may not be portable.`
+          );
+        } else {
+          cnameConflicts.push(`${name}: CNAME coexists with ${types} at the same name (RFC violation)`);
+        }
       }
     }
-    items.push({
-      id: "cname-conflicts",
-      category: "hygiene",
-      severity: cnameConflicts.length ? "fail" : "pass",
-      title: "CNAME conflicts",
-      details: cnameConflicts.length
-        ? cnameConflicts.slice(0, 10).join("\n")
-        : "No names have both CNAME and other record types.",
-    });
+    if (cnameConflicts.length > 0) {
+      items.push({
+        id: "cname-conflicts",
+        category: "hygiene",
+        severity: "fail",
+        title: "CNAME conflicts",
+        details:
+          cnameConflicts.slice(0, 10).join("\n") +
+          "\n\nRFC 1034: If a CNAME record is present at a name, no other data should exist at that exact same name.",
+      });
+    }
+    if (cnameAtApexWarnings.length > 0) {
+      items.push({
+        id: "cname-at-apex",
+        category: "hygiene",
+        severity: "warn",
+        title: "CNAME at apex (Cloudflare-specific behavior)",
+        details:
+          cnameAtApexWarnings.slice(0, 5).join("\n") +
+          "\n\nCloudflare automatically flattens CNAME records at the apex to ANAME/ALIAS records, which works correctly. " +
+          "However, this is Cloudflare-specific behavior. If you migrate to another DNS provider, you may need to convert these to A/AAAA records.",
+      });
+    }
+    if (cnameConflicts.length === 0 && cnameAtApexWarnings.length === 0) {
+      items.push({
+        id: "cname-conflicts",
+        category: "hygiene",
+        severity: "pass",
+        title: "CNAME conflicts",
+        details: "No names have both CNAME and other record types.",
+      });
+    }
 
     const cnameChainIssues: string[] = [];
+    const cnameChainWarnings: string[] = [];
     for (const r of cnameRecords) {
       const from = normalizeName(r.name, normalizedZone);
       if (!from) continue;
       const { hops, cyclic, chain } = computeCnameChain(from, cnameMap, 20);
       if (cyclic) cnameChainIssues.push(`${r.name}: CNAME cycle detected (${chain.join(" → ")})`);
       else if (hops >= 5) cnameChainIssues.push(`${r.name}: CNAME chain is ${hops} hops (${chain.join(" → ")})`);
+      else if (hops >= 3) cnameChainWarnings.push(`${r.name}: CNAME chain is ${hops} hops (best practice ≤2)`);
     }
-    items.push({
-      id: "cname-chains",
-      category: "hygiene",
-      severity: cnameChainIssues.length ? "warn" : "pass",
-      title: "CNAME chaining",
-      details: cnameChainIssues.length
-        ? cnameChainIssues.slice(0, 8).join("\n")
-        : "No long CNAME chains detected.",
-    });
+    if (cnameChainIssues.length > 0) {
+      items.push({
+        id: "cname-chains-fail",
+        category: "hygiene",
+        severity: "fail",
+        title: "CNAME chains or cycles",
+        details: cnameChainIssues.slice(0, 8).join("\n"),
+      });
+    }
+    if (cnameChainWarnings.length > 0) {
+      items.push({
+        id: "cname-chains-warn",
+        category: "hygiene",
+        severity: "warn",
+        title: "CNAME chains exceed best practice",
+        details: cnameChainWarnings.slice(0, 8).join("\n"),
+      });
+    }
+    if (cnameChainIssues.length === 0 && cnameChainWarnings.length === 0) {
+      items.push({
+        id: "cname-chains",
+        category: "hygiene",
+        severity: "pass",
+        title: "CNAME chaining",
+        details: "No excessive CNAME chains detected (all ≤2 hops).",
+      });
+    }
 
     if (spfTypeRecords.length > 0) {
       items.push({
@@ -386,6 +448,60 @@ export function runDomainAudit(
         : "No obvious special-use/bogon IPv6 addresses detected in AAAA records.",
     });
 
+    const nsAtApex = records.filter(
+      (r) => r.type === "NS" && recordNameIsApex(r.name, normalizedZone),
+    );
+    if (nsAtApex.length === 0) {
+      items.push({
+        id: "ns-missing",
+        category: "hygiene",
+        severity: "info",
+        title: "NS records at apex",
+        details: "No NS records visible at apex (Cloudflare manages these automatically).",
+      });
+    } else if (nsAtApex.length === 1) {
+      items.push({
+        id: "ns-single",
+        category: "hygiene",
+        severity: "fail",
+        title: "Single NS record at apex",
+        details: "Best practice requires ≥2 authoritative name servers for redundancy.",
+      });
+    } else {
+      items.push({
+        id: "ns-redundancy",
+        category: "hygiene",
+        severity: "pass",
+        title: "NS redundancy",
+        details: `Found ${nsAtApex.length} NS records at apex.`,
+      });
+    }
+
+    const apexA = records.filter(
+      (r) => r.type === "A" && recordNameIsApex(r.name, normalizedZone),
+    );
+    const apexAAAA = records.filter(
+      (r) => r.type === "AAAA" && recordNameIsApex(r.name, normalizedZone),
+    );
+    if (apexA.length === 1 && apexAAAA.length === 0) {
+      items.push({
+        id: "apex-single-ip",
+        category: "hygiene",
+        severity: "warn",
+        title: "Single A record at apex",
+        details: "Apex has only one A record. Consider adding redundancy for critical services.",
+      });
+    }
+    if (apexAAAA.length === 1 && apexA.length === 0) {
+      items.push({
+        id: "apex-single-ipv6",
+        category: "hygiene",
+        severity: "warn",
+        title: "Single AAAA record at apex",
+        details: "Apex has only one AAAA record. Consider adding redundancy for critical services.",
+      });
+    }
+
     if (soaRecords.length === 0) {
       items.push({
         id: "soa-missing",
@@ -420,12 +536,16 @@ export function runDomainAudit(
         const nums = [refresh, retry, expire, minimum].map((x) => Number(x));
         if (nums.some((n) => !Number.isFinite(n))) issues.push("SOA timers must be numeric.");
         const [refreshN, retryN, expireN, minimumN] = nums as number[];
-        if (Number.isFinite(refreshN) && (refreshN < 3600 || refreshN > 86400))
-          issues.push("SOA refresh is unusual (typical 3600–86400).");
-        if (Number.isFinite(retryN) && (retryN < 600 || retryN > 7200))
-          issues.push("SOA retry is unusual (typical 600–7200).");
-        if (Number.isFinite(expireN) && (expireN < 604800 || expireN > 2419200))
-          issues.push("SOA expire is unusual (typical 604800–2419200).");
+        if (Number.isFinite(refreshN) && refreshN < 3600)
+          issues.push("SOA refresh <3600s violates best practice (should be ≥3600).");
+        if (Number.isFinite(refreshN) && refreshN > 86400)
+          issues.push("SOA refresh is very high (>86400).");
+        if (Number.isFinite(retryN) && (retryN < 600 || retryN > 900))
+          issues.push("SOA retry outside recommended range 600-900s.");
+        if (Number.isFinite(expireN) && expireN < 604800)
+          issues.push("SOA expire <7 days violates best practice (should be ≥604800).");
+        if (Number.isFinite(expireN) && expireN > 2419200)
+          issues.push("SOA expire is very high (>28 days).");
         if (Number.isFinite(minimumN) && (minimumN < 60 || minimumN > 86400))
           issues.push("SOA minimum is unusual (typical 60–86400).");
         if (
@@ -435,7 +555,16 @@ export function runDomainAudit(
           retryN > 0 &&
           retryN >= refreshN
         ) {
-          issues.push("SOA retry is >= refresh (unusual).");
+          issues.push("SOA retry is >= refresh (should be smaller).");
+        }
+        const lowestTTL = records
+          .map((r) => getTtlSeconds(r.ttl))
+          .filter((t): t is number => t !== null && t > 0)
+          .sort((a, b) => a - b)[0];
+        if (Number.isFinite(minimumN) && lowestTTL && minimumN < lowestTTL) {
+          issues.push(
+            `SOA minimum (${minimumN}s) is less than lowest record TTL (${lowestTTL}s). Best practice: SOA minimum ≥ lowest TTL.`,
+          );
         }
       }
       items.push({
@@ -444,6 +573,27 @@ export function runDomainAudit(
         severity: issues.length ? "info" : "pass",
         title: "SOA best-practice review",
         details: issues.length ? issues.join("\n") : "SOA record looks structurally valid.",
+      });
+    }
+
+    const txtByName = new Map<string, number>();
+    for (const r of records.filter((x) => x.type === "TXT")) {
+      const n = normalizeName(r.name, normalizedZone);
+      if (!n) continue;
+      txtByName.set(n, (txtByName.get(n) ?? 0) + 1);
+    }
+    const txtSprawl = Array.from(txtByName.entries())
+      .filter(([, count]) => count > 5)
+      .map(([name, count]) => `${name}: ${count} TXT records`);
+    if (txtSprawl.length > 0) {
+      items.push({
+        id: "txt-sprawl",
+        category: "hygiene",
+        severity: "info",
+        title: "TXT record sprawl detected",
+        details:
+          txtSprawl.slice(0, 8).join("\n") +
+          "\n\nMultiple TXT records at the same name can make management difficult. Ensure each serves a purpose.",
       });
     }
 
@@ -574,6 +724,43 @@ export function runDomainAudit(
         title: "MX targets are not CNAMEs (within zone)",
         details: "No MX targets match CNAME names in this zone.",
       });
+    }
+
+    if (mxAtApex.length > 1) {
+      const parsed = mxAtApex.map((r) => parseMx(r.content, normalizedZone));
+      const priorities = parsed
+        .map((p) => p.priority)
+        .filter((p): p is number => p !== undefined);
+      const uniquePriorities = new Set(priorities);
+      if (priorities.length > 1 && uniquePriorities.size < priorities.length) {
+        items.push({
+          id: "mx-duplicate-priority",
+          category: "email",
+          severity: "warn",
+          title: "MX records have duplicate priorities",
+          details: "Multiple MX records share the same priority. Ensure this is intentional for round-robin.",
+        });
+      }
+      const mxTargetsWithoutResolution: string[] = [];
+      for (const p of parsed) {
+        if (!p.target) continue;
+        const hasA = aByName.has(p.target);
+        const hasAAAA = aaaaByName.has(p.target);
+        if (!hasA && !hasAAAA) {
+          mxTargetsWithoutResolution.push(p.target);
+        }
+      }
+      if (mxTargetsWithoutResolution.length > 0) {
+        items.push({
+          id: "mx-no-resolution",
+          category: "email",
+          severity: "info",
+          title: "MX targets without A/AAAA in zone",
+          details:
+            `The following MX targets have no A or AAAA records in this zone: ${Array.from(new Set(mxTargetsWithoutResolution)).join(", ")}. ` +
+            "This is OK if they resolve externally, but verify they're reachable.",
+        });
+      }
     }
 
     if (spfTxtAtApex.length === 0) {

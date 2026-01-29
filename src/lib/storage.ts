@@ -37,6 +37,7 @@ interface StorageData {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  auditOverrides?: Record<string, string[]>;
 }
 
 function parseRecordTags(
@@ -795,6 +796,38 @@ export class StorageManager {
     }
 
     this.data = imported as StorageData;
+    this.save();
+  }
+
+  getAuditOverrides(zoneId: string): string[] {
+    if (!this.data.auditOverrides) return [];
+    return this.data.auditOverrides[zoneId] ?? [];
+  }
+
+  setAuditOverride(zoneId: string, auditItemId: string): void {
+    if (!this.data.auditOverrides) {
+      this.data.auditOverrides = {};
+    }
+    if (!this.data.auditOverrides[zoneId]) {
+      this.data.auditOverrides[zoneId] = [];
+    }
+    if (!this.data.auditOverrides[zoneId].includes(auditItemId)) {
+      this.data.auditOverrides[zoneId].push(auditItemId);
+      this.save();
+    }
+  }
+
+  clearAuditOverride(zoneId: string, auditItemId: string): void {
+    if (!this.data.auditOverrides?.[zoneId]) return;
+    this.data.auditOverrides[zoneId] = this.data.auditOverrides[zoneId].filter(
+      (id) => id !== auditItemId,
+    );
+    this.save();
+  }
+
+  clearAllAuditOverrides(zoneId: string): void {
+    if (!this.data.auditOverrides) return;
+    delete this.data.auditOverrides[zoneId];
     this.save();
   }
 }
