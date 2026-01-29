@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 export interface TauriZone {
   id: string;
   name: string;
+  name_servers?: string[];
   status: string;
   paused: boolean;
   type: string;

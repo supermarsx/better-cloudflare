@@ -60,6 +60,8 @@ fn default_algorithm() -> String {
 pub struct Zone {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub name_servers: Vec<String>,
     pub status: String,
     pub paused: bool,
     pub r#type: String,

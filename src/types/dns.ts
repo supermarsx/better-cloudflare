@@ -39,6 +39,8 @@ export interface Zone {
   id: string;
   /** Zone name, typically the domain */
   name: string;
+  /** Assigned authoritative name servers for the zone (Cloudflare). */
+  name_servers?: string[];
   /** Zone status (active, pending, etc.) */
   status: string;
   /** Whether the zone is paused on Cloudflare */

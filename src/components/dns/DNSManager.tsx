@@ -58,6 +58,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
+import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
 
 type ActionTab =
   | "records"
@@ -65,7 +66,8 @@ type ActionTab =
   | "zone-settings"
   | "cache"
   | "ssl-tls"
-  | "dns-options";
+  | "dns-options"
+  | "domain-audit";
 type TabKind = "zone" | "settings" | "audit" | "tags";
 type SortKey = "type" | "name" | "content" | "comment" | "tags" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -146,6 +148,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "dns-options",
     label: "Options",
     hint: "DNSSEC, multi-signer DNSSEC, and related zone options",
+  },
+  {
+    id: "domain-audit",
+    label: "Audits",
+    hint: "Best-practice checks for the current zone records",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -372,6 +379,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [dnsOptionsLoading, setDnsOptionsLoading] = useState(false);
   const [dnsOptionsError, setDnsOptionsError] = useState<string | null>(null);
   const [dnssecInfo, setDnssecInfo] = useState<Record<string, unknown> | null>(null);
+  const [domainAuditShowPassed, setDomainAuditShowPassed] = useState(false);
+  const [domainAuditCategories, setDomainAuditCategories] = useState<
+    Record<DomainAuditCategory, boolean>
+  >({ email: true, security: true, hygiene: true });
   const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
   const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
   const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
@@ -401,10 +412,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [zones],
   );
 
+  const activeZoneMeta = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return null;
+    return zones.find((z) => z.id === activeTab.zoneId) ?? null;
+  }, [activeTab, zones]);
+
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
   );
+
+  const domainAuditItems = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return [];
+    return runDomainAudit(activeTab.zoneName, activeTab.records, {
+      includeCategories: domainAuditCategories,
+    });
+  }, [activeTab, domainAuditCategories]);
+
+  const domainAuditVisibleItems = useMemo(() => {
+    if (domainAuditShowPassed) return domainAuditItems;
+    return domainAuditItems.filter((i) => i.severity !== "pass");
+  }, [domainAuditItems, domainAuditShowPassed]);
 
   const pendingDeleteRecord = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return null;
@@ -2632,6 +2660,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <div className="space-y-4 fade-in">
+                  {activeZoneMeta?.name_servers && activeZoneMeta.name_servers.length > 0 && (
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-3">
+                      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                        Assigned name servers
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {activeZoneMeta.name_servers.map((ns) => (
+                          <div
+                            key={ns}
+                            className="rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs font-medium"
+                          >
+                            {ns}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        These are the authoritative Cloudflare name servers assigned to this zone.
+                      </div>
+                    </div>
+                  )}
                   {activeTab.isLoading && (
                     <div className="space-y-3">
                       {Array.from({ length: 6 }).map((_, idx) => (
@@ -3953,6 +4001,165 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           DNSSEC info unavailable.
                         </div>
                       )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "domain-audit" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Domain audits</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-sm text-muted-foreground">
+                        Audits run against the records currently loaded for{" "}
+                        <span className="font-medium text-foreground/90">
+                          {activeTab.zoneName}
+                        </span>
+                        .
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const controller = new AbortController();
+                            void loadRecords(activeTab, controller.signal);
+                          }}
+                        >
+                          Refresh records
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/60 p-3 text-sm">
+                      <div className="font-medium">Checks</div>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.email}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              email: e.target.checked,
+                            }))
+                          }
+                        />
+                        Email (SPF/DKIM/DMARC)
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.security}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              security: e.target.checked,
+                            }))
+                          }
+                        />
+                        Security (CAA)
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.hygiene}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              hygiene: e.target.checked,
+                            }))
+                          }
+                        />
+                        Hygiene (private IPs, deprecated)
+                      </label>
+                      <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                        <Switch
+                          checked={domainAuditShowPassed}
+                          onCheckedChange={(checked: boolean) =>
+                            setDomainAuditShowPassed(checked)
+                          }
+                        />
+                        Show passed
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-2">
+                      {domainAuditVisibleItems.length === 0 ? (
+                        <div className="px-3 py-6 text-sm text-muted-foreground">
+                          No issues detected (with current filters).
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {domainAuditVisibleItems.map((item) => {
+                            const badge =
+                              item.severity === "fail"
+                                ? "bg-destructive/20 text-destructive border-destructive/30"
+                                : item.severity === "warn"
+                                  ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
+                                  : item.severity === "info"
+                                    ? "bg-sky-500/15 text-sky-200 border-sky-500/30"
+                                    : "bg-emerald-500/15 text-emerald-200 border-emerald-500/30";
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="rounded-xl border border-border/60 bg-muted/10 p-3"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span
+                                        className={cn(
+                                          "rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-widest",
+                                          badge,
+                                        )}
+                                      >
+                                        {item.severity}
+                                      </span>
+                                      <div className="font-medium text-sm">
+                                        {item.title}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                                      {item.details}
+                                    </div>
+                                  </div>
+                                  {item.suggestion && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        updateTab(activeTab.id, (prev) => ({
+                                          ...prev,
+                                          showAddRecord: true,
+                                          newRecord: {
+                                            ...createEmptyRecord(),
+                                            type: item.suggestion!.recordType,
+                                            name: item.suggestion!.name,
+                                            content: item.suggestion!.content,
+                                            ttl: 300,
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      Add suggested record…
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      These checks are best-practice heuristics based only on records currently present in this zone.
                     </div>
                   </CardContent>
                 </Card>

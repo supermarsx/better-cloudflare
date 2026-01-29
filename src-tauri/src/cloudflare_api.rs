@@ -64,9 +64,18 @@ impl CloudflareClient {
             .ok_or(CloudflareError::ApiError("Invalid response format".to_string()))?
             .iter()
             .filter_map(|z| {
+                let name_servers = z["name_servers"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 Some(crate::commands::Zone {
                     id: z["id"].as_str()?.to_string(),
                     name: z["name"].as_str()?.to_string(),
+                    name_servers,
                     status: z["status"].as_str().unwrap_or("unknown").to_string(),
                     paused: z["paused"].as_bool().unwrap_or(false),
                     r#type: z["type"].as_str().unwrap_or("").to_string(),
