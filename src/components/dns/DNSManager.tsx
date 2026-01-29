@@ -58,7 +58,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
-import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
+import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/domain-audit";
+import type { SPFGraph } from "@/lib/spf";
 
 type ActionTab =
   | "records"
@@ -383,6 +384,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [domainAuditCategories, setDomainAuditCategories] = useState<
     Record<DomainAuditCategory, boolean>
   >({ email: true, security: true, hygiene: true });
+  const [spfGraphByZoneId, setSpfGraphByZoneId] = useState<
+    Record<
+      string,
+      {
+        status: "idle" | "loading" | "success" | "error";
+        graph?: SPFGraph;
+        error?: string;
+        checkedAt?: number;
+      }
+    >
+  >({});
   const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
   const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
   const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
@@ -401,6 +413,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     deleteDNSRecord,
     exportDNSRecords,
     purgeCache,
+    getSPFGraph,
     getZoneSetting,
     updateZoneSetting,
     getDnssec,
@@ -412,22 +425,109 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [zones],
   );
 
-  const activeZoneMeta = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return null;
-    return zones.find((z) => z.id === activeTab.zoneId) ?? null;
-  }, [activeTab, zones]);
-
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
   );
 
+  const activeZoneMeta = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return null;
+    return zones.find((z) => z.id === activeTab.zoneId) ?? null;
+  }, [activeTab, zones]);
+
+  const activeZoneSpfGraphState = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return null;
+    return spfGraphByZoneId[activeTab.zoneId] ?? { status: "idle" as const };
+  }, [activeTab, spfGraphByZoneId]);
+
+  const runSpfGraphAudit = useCallback(async () => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const zoneId = activeTab.zoneId;
+    const domain = activeTab.zoneName;
+    setSpfGraphByZoneId((prev) => ({
+      ...prev,
+      [zoneId]: { status: "loading" },
+    }));
+    try {
+      const graph = await getSPFGraph(domain);
+      setSpfGraphByZoneId((prev) => ({
+        ...prev,
+        [zoneId]: { status: "success", graph, checkedAt: Date.now() },
+      }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSpfGraphByZoneId((prev) => ({
+        ...prev,
+        [zoneId]: { status: "error", error: msg, checkedAt: Date.now() },
+      }));
+      toast({
+        title: "SPF graph failed",
+        description: msg,
+        variant: "destructive",
+      });
+    }
+  }, [activeTab, getSPFGraph, toast]);
+
   const domainAuditItems = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
-    return runDomainAudit(activeTab.zoneName, activeTab.records, {
+    const base = runDomainAudit(activeTab.zoneName, activeTab.records, {
       includeCategories: domainAuditCategories,
     });
-  }, [activeTab, domainAuditCategories]);
+    if (!domainAuditCategories.email) return base;
+    const spfState = spfGraphByZoneId[activeTab.zoneId];
+    if (!spfState || spfState.status === "idle" || spfState.status === "loading") return base;
+    if (spfState.status === "error") {
+      return [
+        ...base,
+        {
+          id: "spf-graph-error",
+          category: "email",
+          severity: "warn",
+          title: "SPF recursive lookup check failed",
+          details: spfState.error
+            ? `Error: ${spfState.error}`
+            : "The SPF graph endpoint returned an unknown error.",
+        } as DomainAuditItem,
+      ];
+    }
+    const graph = spfState.graph;
+    if (!graph) return base;
+    const issues: Array<{ severity: "pass" | "warn" | "fail"; title: string; details: string }> = [];
+    if (graph.cyclic) {
+      issues.push({
+        severity: "fail",
+        title: "SPF recursion cycle detected",
+        details:
+          "SPF includes/redirects appear to create a cycle. This can cause permerror and unpredictable evaluation.",
+      });
+    }
+    if (graph.lookups > 10) {
+      issues.push({
+        severity: "fail",
+        title: "SPF exceeds DNS lookup limit",
+        details: `SPF graph reports ${graph.lookups} lookups (limit 10). Consider simplifying/flattening includes/redirects.`,
+      });
+    }
+    if (issues.length === 0) {
+      issues.push({
+        severity: "pass",
+        title: "SPF recursive lookup budget",
+        details: `SPF graph reports ${graph.lookups} lookups (limit 10).`,
+      });
+    }
+    return [
+      ...base,
+      ...issues.map(
+        (it, idx): DomainAuditItem => ({
+          id: `spf-graph-${idx}`,
+          category: "email",
+          severity: it.severity,
+          title: it.title,
+          details: `${it.details}\nNodes: ${graph.nodes.length}, edges: ${graph.edges.length}${graph.cyclic ? ", cyclic: yes" : ", cyclic: no"}${spfState.checkedAt ? `\nChecked: ${new Date(spfState.checkedAt).toLocaleString()}` : ""}`,
+        }),
+      ),
+    ];
+  }, [activeTab, domainAuditCategories, spfGraphByZoneId]);
 
   const domainAuditVisibleItems = useMemo(() => {
     if (domainAuditShowPassed) return domainAuditItems;
@@ -4030,8 +4130,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         >
                           Refresh records
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void runSpfGraphAudit()}
+                          disabled={
+                            !apiKey ||
+                            activeZoneSpfGraphState?.status === "loading" ||
+                            !domainAuditCategories.email
+                          }
+                        >
+                          {activeZoneSpfGraphState?.status === "loading"
+                            ? "Checking SPF…"
+                            : "Run SPF graph check"}
+                        </Button>
                       </div>
                     </div>
+                    {domainAuditCategories.email &&
+                      activeZoneSpfGraphState?.status === "success" &&
+                      activeZoneSpfGraphState.graph && (
+                        <div className="rounded-xl border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
+                          SPF graph: {activeZoneSpfGraphState.graph.lookups} lookups (limit 10)
+                          {activeZoneSpfGraphState.graph.cyclic ? ", cyclic" : ""}.
+                        </div>
+                      )}
+                    {domainAuditCategories.email &&
+                      activeZoneSpfGraphState?.status === "error" && (
+                        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+                          SPF graph failed: {activeZoneSpfGraphState.error ?? "Unknown error"}
+                        </div>
+                      )}
 
                     <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/60 p-3 text-sm">
                       <div className="font-medium">Checks</div>
