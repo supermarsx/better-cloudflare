@@ -38,6 +38,7 @@ interface StorageData {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
+  topologyResolutionMaxHops?: number;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -64,6 +65,7 @@ export interface SessionSettingsProfile {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
+  topologyResolutionMaxHops?: number;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -695,6 +697,19 @@ export class StorageManager {
     return Math.max(1000, Math.min(60000, Math.round(value)));
   }
 
+  setTopologyResolutionMaxHops(value: number): void {
+    const clamped = Math.max(1, Math.min(15, Math.round(value)));
+    this.data.topologyResolutionMaxHops = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyResolutionMaxHops: clamped });
+  }
+
+  getTopologyResolutionMaxHops(): number {
+    const value = this.data.topologyResolutionMaxHops;
+    if (typeof value !== "number" || Number.isNaN(value)) return 15;
+    return Math.max(1, Math.min(15, Math.round(value)));
+  }
+
   setAuditExportDefaultDocuments(enabled: boolean): void {
     this.data.auditExportDefaultDocuments = enabled;
     this.save();
@@ -889,6 +904,7 @@ export class StorageManager {
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
     delete this.data.loadingOverlayTimeoutMs;
+    delete this.data.topologyResolutionMaxHops;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;

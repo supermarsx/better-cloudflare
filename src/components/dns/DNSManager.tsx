@@ -473,6 +473,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
     storageManager.getLoadingOverlayTimeoutMs(),
   );
+  const [topologyResolutionMaxHops, setTopologyResolutionMaxHops] = useState(
+    storageManager.getTopologyResolutionMaxHops(),
+  );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
@@ -549,6 +552,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       idleLogoutMs,
       confirmWindowClose,
       loadingOverlayTimeoutMs,
+      topologyResolutionMaxHops,
       auditExportDefaultDocuments,
       confirmClearAuditLogs,
       auditExportFolderPreset,
@@ -568,6 +572,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     idleLogoutMs,
     confirmWindowClose,
     loadingOverlayTimeoutMs,
+    topologyResolutionMaxHops,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -612,6 +617,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.loadingOverlayTimeoutMs === "number") {
       setLoadingOverlayTimeoutMs(Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)));
+    }
+    if (typeof profile.topologyResolutionMaxHops === "number") {
+      setTopologyResolutionMaxHops(Math.max(1, Math.min(15, Math.round(profile.topologyResolutionMaxHops))));
     }
     if (typeof profile.auditExportDefaultDocuments === "boolean") {
       setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
@@ -1034,6 +1042,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
             loading_overlay_timeout_ms?: number;
+            topology_resolution_max_hops?: number;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -1090,6 +1099,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               Math.max(1000, Math.min(60000, prefObj.loading_overlay_timeout_ms)),
             );
           }
+          if (typeof prefObj.topology_resolution_max_hops === "number") {
+            setTopologyResolutionMaxHops(
+              Math.max(1, Math.min(15, Math.round(prefObj.topology_resolution_max_hops))),
+            );
+          }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
             setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
           }
@@ -1135,6 +1149,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
+    setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
@@ -1256,6 +1271,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
+    storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
@@ -1282,6 +1298,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
             loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
+            topology_resolution_max_hops: topologyResolutionMaxHops,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
@@ -1308,6 +1325,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     idleLogoutMs,
     confirmWindowClose,
     loadingOverlayTimeoutMs,
+    topologyResolutionMaxHops,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -4323,6 +4341,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   zoneName={activeTab.zoneName}
                   records={activeTab.records}
                   isLoading={activeTab.isLoading}
+                  maxResolutionHops={topologyResolutionMaxHops}
                   onRefresh={async () => {
                     await loadRecords(activeTab);
                   }}
@@ -5067,6 +5086,37 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             Max 60s. Loading overlay auto-hides after timeout.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Topology resolution hops</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={String(topologyResolutionMaxHops)}
+                            onValueChange={(v) => {
+                              const next = Number(v);
+                              const clamped = Math.max(1, Math.min(15, Number.isNaN(next) ? 15 : next));
+                              setTopologyResolutionMaxHops(clamped);
+                              notifySaved(`Topology CNAME resolution hops set to ${clamped}.`);
+                            }}
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Max hops" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {Array.from({ length: 15 }).map((_, idx) => {
+                                const value = idx + 1;
+                                return (
+                                  <SelectItem key={value} value={String(value)}>
+                                    {value}
+                                  </SelectItem>
+                                );
+                              })}
+                            </SelectContent>
+                          </Select>
+                          <div className="text-xs text-muted-foreground">
+                            Max recursive hostname resolution depth for topology (1-15).
                           </div>
                         </div>
                       </div>

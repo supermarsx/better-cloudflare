@@ -2,7 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Copy, Download, Edit3, FileDown, Hand, Minus, Plus, RefreshCw, Search, StickyNote, ZoomIn } from "lucide-react";
+import {
+  Copy,
+  Download,
+  Edit3,
+  FileDown,
+  Hand,
+  Maximize2,
+  Minimize2,
+  Minus,
+  Plus,
+  RefreshCw,
+  Search,
+  StickyNote,
+  ZoomIn,
+} from "lucide-react";
 import type { DNSRecord } from "@/types/dns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -47,6 +61,7 @@ type ZoneTopologyTabProps = {
   zoneName: string;
   records: DNSRecord[];
   isLoading?: boolean;
+  maxResolutionHops?: number;
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
 };
@@ -110,7 +125,7 @@ function extractTarget(record: DNSRecord): string | null {
   return null;
 }
 
-function computeCnameChains(records: DNSRecord[]): Array<{ start: string; chain: string[] }> {
+function computeCnameChains(records: DNSRecord[], maxHops: number): Array<{ start: string; chain: string[] }> {
   const map = new Map<string, string>();
   for (const record of records) {
     if (record.type !== "CNAME") continue;
@@ -125,7 +140,7 @@ function computeCnameChains(records: DNSRecord[]): Array<{ start: string; chain:
     const chain = [start];
     let cur = start;
     let hops = 0;
-    while (hops < 16) {
+    while (hops < maxHops) {
       const next = map.get(cur);
       if (!next) break;
       chain.push(next);
@@ -200,6 +215,7 @@ function resolveNameToTerminal(
   cnameMap: Map<string, string>,
   ipv4ByName: Map<string, string[]>,
   ipv6ByName: Map<string, string[]>,
+  maxHops: number,
 ): { chain: string[]; terminal: string; ipv4: string[]; ipv6: string[] } {
   const start = normalizeDomain(startName);
   if (!start) return { chain: [], terminal: "", ipv4: [], ipv6: [] };
@@ -207,7 +223,7 @@ function resolveNameToTerminal(
   const seen = new Set<string>([start]);
   let cur = start;
   let hops = 0;
-  while (hops < 20) {
+  while (hops < maxHops) {
     const next = cnameMap.get(cur);
     if (!next || seen.has(next)) break;
     chain.push(next);
@@ -266,7 +282,7 @@ function classifyAreas(
   return Array.from(areas);
 }
 
-function buildTopology(records: DNSRecord[], zoneName: string): { code: string; summary: TopologySummary } {
+function buildTopology(records: DNSRecord[], zoneName: string, maxResolutionHops: number): { code: string; summary: TopologySummary } {
   const lines: string[] = [];
   const nodeIds = new Map<string, string>();
   let nextId = 0;
@@ -275,7 +291,7 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
 
   const sharedIpMap = new Map<string, Set<string>>();
   const detectedServices = new Map<string, string>();
-  const cnameChains = computeCnameChains(records);
+  const cnameChains = computeCnameChains(records, maxResolutionHops);
   const cnameMap = buildCnameMap(records);
   const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
   const nodeRecords = new Map<string, DNSRecord[]>();
@@ -294,7 +310,7 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
     const fromName = normalizeDomain(r.name) || zone;
     const mxTarget = extractTarget(r);
     if (!mxTarget) continue;
-    const resolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName);
+    const resolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
     mxTrails.push({
       from: fromName,
       target: mxTarget,
@@ -319,104 +335,148 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
 
   const usedNames = new Set<string>();
   const areaCounts = { email: 0, web: 0, infra: 0, misc: 0 };
+  type GraphUnit = {
+    key: string;
+    type: DNSRecord["type"];
+    name: string;
+    records: DNSRecord[];
+    aggregate: boolean;
+  };
+  const units: GraphUnit[] = [];
+  const aggAaaaMap = new Map<string, DNSRecord[]>();
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
     const labelName = nameRaw === "@" ? zone : nameRaw;
-    const nodeRecs = nodeRecords.get(labelName) ?? [record];
-    const areas = classifyAreas(labelName, nodeRecs, emailPathNames);
+    if (record.type === "A" || record.type === "AAAA") {
+      const k = `${record.type}:${labelName}`;
+      if (!aggAaaaMap.has(k)) aggAaaaMap.set(k, []);
+      aggAaaaMap.get(k)!.push(record);
+    } else {
+      units.push({
+        key: `record:${record.id}`,
+        type: record.type,
+        name: labelName,
+        records: [record],
+        aggregate: false,
+      });
+    }
+  }
+  for (const [k, recs] of aggAaaaMap.entries()) {
+    units.push({
+      key: `agg:${k}`,
+      type: recs[0].type,
+      name: normalizeDomain(recs[0].name) || zone,
+      records: recs,
+      aggregate: true,
+    });
+  }
+
+  for (const unit of units) {
+    const nodeRecs = nodeRecords.get(unit.name) ?? unit.records;
+    const areas = classifyAreas(unit.name, nodeRecs, emailPathNames);
     for (const area of areas) areaCounts[area] += 1;
 
-    const recordKey = `record:${record.id}`;
-    const recordId = idFor(recordKey);
-    const resolved = resolveNameToTerminal(labelName, cnameMap, ipv4ByName, ipv6ByName);
+    const recordId = idFor(unit.key);
+    const resolved = resolveNameToTerminal(unit.name, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
     const endpointInfo =
       resolved.ipv4.length || resolved.ipv6.length
         ? `A:${resolved.ipv4.length || 0} AAAA:${resolved.ipv6.length || 0}`
         : "";
+    const ttlValues = Array.from(new Set(unit.records.map((r) => String(r.ttl ?? "auto"))));
+    const proxyValues = Array.from(new Set(unit.records.map((r) => (r.proxied ? "proxied" : "dns-only"))));
     const info = [
-      `type:${record.type}`,
-      `ttl:${String(record.ttl ?? "auto")}`,
-      record.proxied ? "proxied" : "dns-only",
+      `type:${unit.type}${unit.aggregate ? ` x${unit.records.length}` : ""}`,
+      `ttl:${ttlValues.length === 1 ? ttlValues[0] : "mixed"}`,
+      proxyValues.length === 1 ? proxyValues[0] : "proxy:mixed",
       resolved.chain.length > 1 ? `resolves:${resolved.terminal}` : "",
       endpointInfo,
     ]
       .filter(Boolean)
       .join(" | ");
-    lines.push(`  ${recordId}["${safeNodeLabel(labelName, info || "record")}"]:::record`);
+    lines.push(`  ${recordId}["${safeNodeLabel(unit.name, info || "record")}"]:::record`);
     lines.push(`  ${zoneNode} --> ${recordId}`);
 
-    const target = extractTarget(record);
-    if (!target) continue;
-    const isIp = record.type === "A" || record.type === "AAAA";
-    const targetKey = `${isIp ? "ip" : "target"}:${target}`;
-    const targetId = idFor(targetKey);
-    const targetClass = isIp ? "ip" : "target";
+    const targets = Array.from(
+      new Set(unit.records.map((r) => extractTarget(r)).filter((v): v is string => Boolean(v))),
+    );
+    for (const target of targets) {
+      const isIp = unit.type === "A" || unit.type === "AAAA";
+      const targetKey = `${isIp ? "ip" : "target"}:${target}`;
+      const targetId = idFor(targetKey);
+      const targetClass = isIp ? "ip" : "target";
 
-    if (!usedNames.has(targetKey)) {
-      lines.push(`  ${targetId}["${esc(target)}"]:::${targetClass}`);
-      usedNames.add(targetKey);
-    }
+      if (!usedNames.has(targetKey)) {
+        lines.push(`  ${targetId}["${esc(target)}"]:::${targetClass}`);
+        usedNames.add(targetKey);
+      }
 
-    lines.push(`  ${recordId} -- "${esc(record.type)}" --> ${targetId}`);
-    edgeSet.add(`${recordId}|${record.type}|${targetId}`);
+      lines.push(`  ${recordId} -- "${esc(unit.type)}" --> ${targetId}`);
+      edgeSet.add(`${recordId}|${unit.type}|${targetId}`);
 
-    // For MX targets, explicitly draw hostname -> CNAME terminal -> A/AAAA trail.
-    if (record.type === "MX" && !isIp) {
-      const resolved = resolveNameToTerminal(target, cnameMap, ipv4ByName, ipv6ByName);
-      for (let i = 0; i < resolved.chain.length - 1; i += 1) {
-        const from = resolved.chain[i];
-        const to = resolved.chain[i + 1];
-        const fromId = idFor(`target:${from}`);
-        const toId = idFor(`target:${to}`);
-        if (!usedNames.has(`target:${from}`)) {
-          lines.push(`  ${fromId}["${esc(from)}"]:::target`);
-          usedNames.add(`target:${from}`);
+      // Keep MX as individual nodes and trace hostname->CNAME->A/AAAA path.
+      if (unit.type === "MX" && !isIp) {
+        const resolvedMx = resolveNameToTerminal(
+          target,
+          cnameMap,
+          ipv4ByName,
+          ipv6ByName,
+          maxResolutionHops,
+        );
+        for (let i = 0; i < resolvedMx.chain.length - 1; i += 1) {
+          const from = resolvedMx.chain[i];
+          const to = resolvedMx.chain[i + 1];
+          const fromId = idFor(`target:${from}`);
+          const toId = idFor(`target:${to}`);
+          if (!usedNames.has(`target:${from}`)) {
+            lines.push(`  ${fromId}["${esc(from)}"]:::target`);
+            usedNames.add(`target:${from}`);
+          }
+          if (!usedNames.has(`target:${to}`)) {
+            lines.push(`  ${toId}["${esc(to)}"]:::target`);
+            usedNames.add(`target:${to}`);
+          }
+          const k = `${fromId}|CNAME|${toId}`;
+          if (!edgeSet.has(k)) {
+            lines.push(`  ${fromId} -. "CNAME" .-> ${toId}`);
+            edgeSet.add(k);
+          }
         }
-        if (!usedNames.has(`target:${to}`)) {
-          lines.push(`  ${toId}["${esc(to)}"]:::target`);
-          usedNames.add(`target:${to}`);
+        for (const ip of resolvedMx.ipv4) {
+          const ipId = idFor(`ip:${ip}`);
+          if (!usedNames.has(`ip:${ip}`)) {
+            lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+            usedNames.add(`ip:${ip}`);
+          }
+          const termId = idFor(`target:${resolvedMx.terminal || target}`);
+          const k = `${termId}|A|${ipId}`;
+          if (!edgeSet.has(k)) {
+            lines.push(`  ${termId} -. "A" .-> ${ipId}`);
+            edgeSet.add(k);
+          }
         }
-        const k = `${fromId}|CNAME|${toId}`;
-        if (!edgeSet.has(k)) {
-          lines.push(`  ${fromId} -. "CNAME" .-> ${toId}`);
-          edgeSet.add(k);
+        for (const ip of resolvedMx.ipv6) {
+          const ipId = idFor(`ip:${ip}`);
+          if (!usedNames.has(`ip:${ip}`)) {
+            lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+            usedNames.add(`ip:${ip}`);
+          }
+          const termId = idFor(`target:${resolvedMx.terminal || target}`);
+          const k = `${termId}|AAAA|${ipId}`;
+          if (!edgeSet.has(k)) {
+            lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
+            edgeSet.add(k);
+          }
         }
       }
-      for (const ip of resolved.ipv4) {
-        const ipId = idFor(`ip:${ip}`);
-        if (!usedNames.has(`ip:${ip}`)) {
-          lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
-          usedNames.add(`ip:${ip}`);
-        }
-        const termId = idFor(`target:${resolved.terminal || target}`);
-        const k = `${termId}|A|${ipId}`;
-        if (!edgeSet.has(k)) {
-          lines.push(`  ${termId} -. "A" .-> ${ipId}`);
-          edgeSet.add(k);
-        }
-      }
-      for (const ip of resolved.ipv6) {
-        const ipId = idFor(`ip:${ip}`);
-        if (!usedNames.has(`ip:${ip}`)) {
-          lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
-          usedNames.add(`ip:${ip}`);
-        }
-        const termId = idFor(`target:${resolved.terminal || target}`);
-        const k = `${termId}|AAAA|${ipId}`;
-        if (!edgeSet.has(k)) {
-          lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
-          edgeSet.add(k);
-        }
-      }
-    }
 
-    if (isIp) {
-      if (!sharedIpMap.has(target)) sharedIpMap.set(target, new Set());
-      sharedIpMap.get(target)!.add(labelName);
-    } else {
-      for (const fp of SERVICE_PATTERNS) {
-        if (fp.pattern.test(target)) {
-          detectedServices.set(`${fp.service}:${target}`, fp.service);
+      if (isIp) {
+        if (!sharedIpMap.has(target)) sharedIpMap.set(target, new Set());
+        sharedIpMap.get(target)!.add(unit.name);
+      } else {
+        for (const fp of SERVICE_PATTERNS) {
+          if (fp.pattern.test(target)) {
+            detectedServices.set(`${fp.service}:${target}`, fp.service);
+          }
         }
       }
     }
@@ -457,7 +517,13 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
       nodeSummaries: Array.from(nodeRecords.entries())
         .map(([name, nodeRecs]) => ({
           ...(() => {
-            const resolved = resolveNameToTerminal(name, cnameMap, ipv4ByName, ipv6ByName);
+            const resolved = resolveNameToTerminal(
+              name,
+              cnameMap,
+              ipv4ByName,
+              ipv6ByName,
+              maxResolutionHops,
+            );
             return {
               name,
               records: nodeRecs,
@@ -504,6 +570,7 @@ async function queryDnsGoogle(name: string, type: "CNAME" | "A" | "AAAA"): Promi
 
 async function resolveExternalCnameToAddress(
   startName: string,
+  maxHops: number,
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -515,7 +582,7 @@ async function resolveExternalCnameToAddress(
   seen.add(cur);
   let hops = 0;
   try {
-    while (hops < 16) {
+    while (hops < maxHops) {
       const cnames = await queryDnsGoogle(cur, "CNAME");
       const next = cnames.find(Boolean);
       if (!next || seen.has(next)) break;
@@ -547,7 +614,14 @@ async function resolveExternalCnameToAddress(
   }
 }
 
-export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefresh, onEditRecord }: ZoneTopologyTabProps) {
+export function ZoneTopologyTab({
+  zoneName,
+  records,
+  isLoading = false,
+  maxResolutionHops = 15,
+  onRefresh,
+  onEditRecord,
+}: ZoneTopologyTabProps) {
   const { toast } = useToast();
   const [svgMarkup, setSvgMarkup] = useState("");
   const [mermaidCode, setMermaidCode] = useState("");
@@ -569,6 +643,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const [discovering, setDiscovering] = useState(false);
   const [discovery, setDiscovery] = useState<ServiceDiscoveryItem[]>([]);
+  const [expandGraph, setExpandGraph] = useState(false);
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
   >({});
@@ -590,10 +665,11 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
   }, []);
 
   useEffect(() => {
-    const { code, summary: nextSummary } = buildTopology(records, zoneName);
+    const clampedMaxHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
+    const { code, summary: nextSummary } = buildTopology(records, zoneName, clampedMaxHops);
     setMermaidCode(code);
     setSummary(nextSummary);
-  }, [records, zoneName]);
+  }, [maxResolutionHops, records, zoneName]);
 
   useEffect(() => {
     const candidates = new Set<string>();
@@ -613,7 +689,10 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     (async () => {
       const entries = await Promise.all(
         missing.slice(0, 20).map(async (name) => {
-          const resolved = await resolveExternalCnameToAddress(name);
+          const resolved = await resolveExternalCnameToAddress(
+            name,
+            Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
+          );
           return [name, resolved] as const;
         }),
       );
@@ -627,7 +706,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     return () => {
       cancelled = true;
     };
-  }, [externalResolutionByName, summary.mxTrails, summary.nodeSummaries]);
+  }, [externalResolutionByName, maxResolutionHops, summary.mxTrails, summary.nodeSummaries]);
 
   useEffect(() => {
     let cancelled = false;
@@ -702,18 +781,34 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     return () => ro.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!expandGraph || typeof document === "undefined") return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpandGraph(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [expandGraph]);
+
   const fitAndCenterGraph = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
     const padding = 20;
     const availW = Math.max(1, viewportSize.w - padding * 2);
     const availH = Math.max(1, viewportSize.h - padding * 2);
-    const fitScale = Math.max(0.1, Math.min(6, Math.min(availW / graphSize.w, availH / graphSize.h)));
+    const baseFit = Math.min(availW / graphSize.w, availH / graphSize.h);
+    const boost = expandGraph ? 1.45 : 1.28;
+    const fitScale = Math.max(0.1, Math.min(8, baseFit * boost));
     const x = (viewportSize.w - graphSize.w * fitScale) / 2;
     const y = (viewportSize.h - graphSize.h * fitScale) / 2;
     setZoom(Number(fitScale.toFixed(2)));
     setPan({ x, y });
     userAdjustedViewRef.current = false;
-  }, [graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+  }, [expandGraph, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
 
   useEffect(() => {
     const key = `${graphSize.w}x${graphSize.h}|${viewportSize.w}x${viewportSize.h}|${records.length}`;
@@ -879,7 +974,13 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
         const maybePriority = Number(rawParts[0]);
         const priority = Number.isFinite(maybePriority) ? maybePriority : null;
         const target = extractTarget(record) || "";
-        const local = resolveNameToTerminal(target, cnameMap, ipv4ByName, ipv6ByName);
+        const local = resolveNameToTerminal(
+          target,
+          cnameMap,
+          ipv4ByName,
+          ipv6ByName,
+          Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
+        );
         const external = externalResolutionByName[normalizeDomain(local.terminal || target)];
         const chain = local.chain.length > 1 ? local.chain : external?.chain ?? local.chain;
         const ipv4 = local.ipv4.length ? local.ipv4 : external?.ipv4 ?? [];
@@ -898,7 +999,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
           source,
         };
       });
-  }, [externalResolutionByName, records, zoneName]);
+  }, [externalResolutionByName, maxResolutionHops, records, zoneName]);
 
   const runDiscovery = useCallback(async () => {
     const items: ServiceDiscoveryItem[] = [];
@@ -1022,6 +1123,18 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
           <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void onRefresh()} disabled={isLoading}>
             <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 px-2"
+            onClick={() => {
+              setExpandGraph((prev) => !prev);
+              autoFitDoneRef.current = "";
+            }}
+            title={expandGraph ? "Exit full window" : "Expand to full window"}
+          >
+            {expandGraph ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </Button>
           <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
             <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
             Discover services
@@ -1029,11 +1142,32 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
         </div>
 
         <div
-          ref={viewportRef}
           className={cn(
-            "relative h-[560px] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
-            cursorClass,
+            expandGraph &&
+              "fixed inset-3 z-[120] rounded-xl border border-border/70 bg-background/95 p-3 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl",
           )}
+        >
+          {expandGraph && (
+            <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+              <div>Topology graph - full window mode</div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2"
+                onClick={() => setExpandGraph(false)}
+              >
+                <Minimize2 className="h-3.5 w-3.5 mr-1" />
+                Close
+              </Button>
+            </div>
+          )}
+          <div
+            ref={viewportRef}
+            className={cn(
+              "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
+              expandGraph ? "h-[calc(100vh-7.5rem)]" : "h-[560px]",
+              cursorClass,
+            )}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -1075,7 +1209,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
           }}
           tabIndex={0}
           onClick={handleViewportClick}
-        >
+          >
           <div
             className="absolute left-0 top-0 will-change-transform"
             style={{
@@ -1125,6 +1259,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
               </div>
             </div>
           )}
+          </div>
         </div>
         <div className="space-y-2">
           <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs" open>
