@@ -337,34 +337,33 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
     const labelName = nameRaw === "@" ? zone : nameRaw;
-    const nameKey = `name:${labelName}`;
-    const nameId = idFor(nameKey);
-    if (!usedNames.has(nameKey)) {
-      const nodeRecs = nodeRecords.get(labelName) ?? [record];
-      const areas = classifyAreas(labelName, nodeRecs, emailPathNames);
-      for (const area of areas) areaCounts[area] += 1;
-      const resolved = resolveNameToTerminal(labelName, cnameMap, ipv4ByName, ipv6ByName);
-      const recordTypes = Array.from(new Set(nodeRecs.map((r) => r.type))).slice(0, 4).join(",");
-      const endpointInfo =
-        resolved.ipv4.length || resolved.ipv6.length
-          ? `A:${resolved.ipv4.length || 0} AAAA:${resolved.ipv6.length || 0}`
-          : "";
-      const info = [
-        recordTypes || record.type,
-        resolved.chain.length > 1 ? `resolves: ${resolved.terminal}` : "",
-        endpointInfo,
-      ]
-        .filter(Boolean)
-        .join(" | ");
-      lines.push(`  ${nameId}["${safeNodeLabel(labelName, info || "record")}"]:::record`);
-      for (const area of areas) {
-        const edgeKey = `${area}:${nameId}`;
-        if (!areaEdgeSet.has(edgeKey)) {
-          lines.push(`  ${areaNodes[area]} --> ${nameId}`);
-          areaEdgeSet.add(edgeKey);
-        }
+    const nodeRecs = nodeRecords.get(labelName) ?? [record];
+    const areas = classifyAreas(labelName, nodeRecs, emailPathNames);
+    for (const area of areas) areaCounts[area] += 1;
+
+    const recordKey = `record:${record.id}`;
+    const recordId = idFor(recordKey);
+    const resolved = resolveNameToTerminal(labelName, cnameMap, ipv4ByName, ipv6ByName);
+    const endpointInfo =
+      resolved.ipv4.length || resolved.ipv6.length
+        ? `A:${resolved.ipv4.length || 0} AAAA:${resolved.ipv6.length || 0}`
+        : "";
+    const info = [
+      `name:${labelName}`,
+      `ttl:${String(record.ttl ?? "auto")}`,
+      record.proxied ? "proxied" : "dns-only",
+      resolved.chain.length > 1 ? `resolves:${resolved.terminal}` : "",
+      endpointInfo,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+    lines.push(`  ${recordId}["${safeNodeLabel(`${record.type}`, info || "record")}"]:::record`);
+    for (const area of areas) {
+      const edgeKey = `${area}:${recordId}`;
+      if (!areaEdgeSet.has(edgeKey)) {
+        lines.push(`  ${areaNodes[area]} --> ${recordId}`);
+        areaEdgeSet.add(edgeKey);
       }
-      usedNames.add(nameKey);
     }
 
     const target = extractTarget(record);
@@ -379,8 +378,8 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
       usedNames.add(targetKey);
     }
 
-    lines.push(`  ${nameId} -- "${esc(record.type)}" --> ${targetId}`);
-    edgeSet.add(`${nameId}|${record.type}|${targetId}`);
+    lines.push(`  ${recordId} -- "${esc(record.type)}" --> ${targetId}`);
+    edgeSet.add(`${recordId}|${record.type}|${targetId}`);
 
     // For MX targets, explicitly draw hostname -> CNAME terminal -> A/AAAA trail.
     if (record.type === "MX" && !isIp) {
