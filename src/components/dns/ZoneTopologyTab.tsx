@@ -82,6 +82,21 @@ type ExternalDnsResolution = {
   error?: string;
 };
 
+function detectDarkThemeMode(): boolean {
+  if (typeof document === "undefined") return true;
+  const root = document.documentElement;
+  const dataTheme = String(root.getAttribute("data-theme") ?? "").toLowerCase();
+  if (dataTheme.includes("light") || dataTheme.includes("midday")) return false;
+  if (dataTheme.includes("dark") || dataTheme.includes("oled") || dataTheme.includes("night") || dataTheme.includes("sunset")) return true;
+  const bgVar = getComputedStyle(root).getPropertyValue("--background").trim();
+  const lightnessMatch = bgVar.match(/([0-9.]+)%\s*$/);
+  if (lightnessMatch) {
+    const lightness = Number(lightnessMatch[1]);
+    if (Number.isFinite(lightness)) return lightness < 50;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? true;
+}
+
 const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /cloudfront\.net$/i, service: "AWS CloudFront" },
   { pattern: /elb\.amazonaws\.com$/i, service: "AWS ELB" },
@@ -285,7 +300,12 @@ function classifyAreas(
   return Array.from(areas);
 }
 
-function buildTopology(records: DNSRecord[], zoneName: string, maxResolutionHops: number): { code: string; summary: TopologySummary } {
+function buildTopology(
+  records: DNSRecord[],
+  zoneName: string,
+  maxResolutionHops: number,
+  isDarkTheme: boolean,
+): { code: string; summary: TopologySummary } {
   const lines: string[] = [];
   const nodeIds = new Map<string, string>();
   let nextId = 0;
@@ -500,11 +520,16 @@ function buildTopology(records: DNSRecord[], zoneName: string, maxResolutionHops
     lines.push(`  ${targetId} -.-> ${serviceId}`);
   }
 
-  lines.push("  classDef zone fill:#5b8cff22,stroke:#5b8cff,stroke-width:1.5px,color:#dce6ff;");
-  lines.push("  classDef record fill:#20c99722,stroke:#20c997,stroke-width:1.2px,color:#ddfff2;");
-  lines.push("  classDef target fill:#f59f0022,stroke:#f59f00,stroke-width:1.2px,color:#fff5db;");
-  lines.push("  classDef ip fill:#fa525222,stroke:#fa5252,stroke-width:1.2px,color:#ffe3e3;");
-  lines.push("  classDef service fill:#845ef722,stroke:#845ef7,stroke-width:1.2px,color:#efe8ff;");
+  const zoneText = isDarkTheme ? "#dce6ff" : "#1f2a44";
+  const recordText = isDarkTheme ? "#ddfff2" : "#143727";
+  const targetText = isDarkTheme ? "#fff5db" : "#4a3600";
+  const ipText = isDarkTheme ? "#ffe3e3" : "#5d1b1b";
+  const serviceText = isDarkTheme ? "#efe8ff" : "#2f1f5d";
+  lines.push(`  classDef zone fill:#5b8cff22,stroke:#5b8cff,stroke-width:1.5px,color:${zoneText};`);
+  lines.push(`  classDef record fill:#20c99722,stroke:#20c997,stroke-width:1.2px,color:${recordText};`);
+  lines.push(`  classDef target fill:#f59f0022,stroke:#f59f00,stroke-width:1.2px,color:${targetText};`);
+  lines.push(`  classDef ip fill:#fa525222,stroke:#fa5252,stroke-width:1.2px,color:${ipText};`);
+  lines.push(`  classDef service fill:#845ef722,stroke:#845ef7,stroke-width:1.2px,color:${serviceText};`);
 
   return {
     code: lines.join("\n"),
@@ -652,6 +677,7 @@ export function ZoneTopologyTab({
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
   >({});
+  const [isDarkThemeMode, setIsDarkThemeMode] = useState(() => detectDarkThemeMode());
   const [summary, setSummary] = useState<TopologySummary>({
     cnameChains: [],
     sharedIps: [],
@@ -674,17 +700,20 @@ export function ZoneTopologyTab({
   useEffect(() => {
     if (typeof document === "undefined") return;
     const root = document.documentElement;
-    const observer = new MutationObserver(() => setThemeVersion((v) => v + 1));
+    const observer = new MutationObserver(() => {
+      setThemeVersion((v) => v + 1);
+      setIsDarkThemeMode(detectDarkThemeMode());
+    });
     observer.observe(root, { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
     const clampedMaxHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
-    const { code, summary: nextSummary } = buildTopology(records, zoneName, clampedMaxHops);
+    const { code, summary: nextSummary } = buildTopology(records, zoneName, clampedMaxHops, isDarkThemeMode);
     setMermaidCode(code);
     setSummary(nextSummary);
-  }, [maxResolutionHops, records, zoneName]);
+  }, [isDarkThemeMode, maxResolutionHops, records, zoneName]);
 
   useEffect(() => {
     const candidates = new Set<string>();
@@ -742,11 +771,11 @@ export function ZoneTopologyTab({
           theme: "base",
           themeVariables: {
             primaryColor: hslVar("--primary", "#5b8cff"),
-            primaryTextColor: hslVar("--foreground", "#f2f5ff"),
+            primaryTextColor: hslVar("--foreground", isDarkThemeMode ? "#f2f5ff" : "#0f172a"),
             primaryBorderColor: hslVar("--border", "#445"),
             lineColor: hslVar("--foreground", "#d7deff"),
-            background: hslVar("--card", "#131824"),
-            tertiaryColor: hslVar("--muted", "#20263a"),
+            background: hslVar("--card", isDarkThemeMode ? "#131824" : "#ffffff"),
+            tertiaryColor: hslVar("--muted", isDarkThemeMode ? "#20263a" : "#e2e8f0"),
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           },
           flowchart: {
@@ -782,7 +811,7 @@ export function ZoneTopologyTab({
     return () => {
       cancelled = true;
     };
-  }, [mermaidCode, themeVersion]);
+  }, [isDarkThemeMode, mermaidCode, themeVersion]);
 
   useEffect(() => {
     if (!viewportRef.current) return;
@@ -1026,6 +1055,10 @@ export function ZoneTopologyTab({
 
   const controlsDisabled = isLoading || isRendering;
   const cursorClass = annotationTool ? "cursor-crosshair" : handTool ? "cursor-grab" : "cursor-default";
+  const graphBackgroundClass = isDarkThemeMode
+    ? "bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))]"
+    : "bg-[radial-gradient(circle_at_top,rgba(15,23,42,0.09),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.95),rgba(226,232,240,0.75))]";
+  const loadingOverlayClass = isDarkThemeMode ? "bg-black/35 backdrop-blur-md" : "bg-white/60 backdrop-blur-md";
   const panX = Math.round(pan.x);
   const panY = Math.round(pan.y);
   const zoneBase = useMemo(() => normalizeDomain(zoneName), [zoneName]);
@@ -1253,7 +1286,8 @@ export function ZoneTopologyTab({
               <div
                 ref={expandGraph ? viewportRef : undefined}
                 className={cn(
-                  "relative h-[calc(100dvh-4rem)] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
+                  "relative h-[calc(100dvh-4rem)] overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
+                  graphBackgroundClass,
                   cursorClass,
                 )}
                 onMouseDown={handleMouseDown}
@@ -1338,7 +1372,7 @@ export function ZoneTopologyTab({
                 </div>
 
                 {(isRendering || isLoading) && (
-                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-md">
+                  <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
                     <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
                       <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                       Rendering topology...
@@ -1364,7 +1398,8 @@ export function ZoneTopologyTab({
           <div
             ref={!expandGraph ? viewportRef : undefined}
             className={cn(
-              "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
+              "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
+              graphBackgroundClass,
               "h-[560px]",
               cursorClass,
             )}
@@ -1450,7 +1485,7 @@ export function ZoneTopologyTab({
           </div>
 
           {(isRendering || isLoading) && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-md">
+            <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
               <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                 Rendering topology...
