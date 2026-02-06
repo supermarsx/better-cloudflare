@@ -688,11 +688,23 @@ async function probeHttp(url: string, timeoutMs = 5000): Promise<"up" | "down"> 
   }
 }
 
-async function queryDnsGoogle(name: string, type: "CNAME" | "A" | "AAAA"): Promise<string[]> {
-  const res = await fetch(
-    `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`,
-    { cache: "no-store" },
-  );
+function resolveDohEndpoint(
+  provider: "google" | "cloudflare" | "quad9" | "custom",
+  customUrl: string,
+): string {
+  if (provider === "cloudflare") return "https://cloudflare-dns.com/dns-query";
+  if (provider === "quad9") return "https://dns.quad9.net:5053/dns-query";
+  if (provider === "custom") return customUrl.trim() || "https://dns.google/resolve";
+  return "https://dns.google/resolve";
+}
+
+async function queryDoh(
+  endpoint: string,
+  name: string,
+  type: "CNAME" | "A" | "AAAA",
+): Promise<string[]> {
+  const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(name)}&type=${type}`;
+  const res = await fetch(url, { cache: "no-store", headers: { accept: "application/dns-json" } });
   if (!res.ok) return [];
   const data = (await res.json()) as {
     Answer?: Array<{ data?: string; type?: number }>;
@@ -706,6 +718,7 @@ async function queryDnsGoogle(name: string, type: "CNAME" | "A" | "AAAA"): Promi
 async function resolveExternalCnameToAddress(
   startName: string,
   maxHops: number,
+  dohEndpoint: string,
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -718,7 +731,7 @@ async function resolveExternalCnameToAddress(
   let hops = 0;
   try {
     while (hops < maxHops) {
-      const cnames = await queryDnsGoogle(cur, "CNAME");
+      const cnames = await queryDoh(dohEndpoint, cur, "CNAME");
       const next = cnames.find(Boolean);
       if (!next || seen.has(next)) break;
       chain.push(next);
@@ -727,8 +740,8 @@ async function resolveExternalCnameToAddress(
       hops += 1;
     }
     const [a, aaaa] = await Promise.all([
-      queryDnsGoogle(cur, "A"),
-      queryDnsGoogle(cur, "AAAA"),
+      queryDoh(dohEndpoint, cur, "A"),
+      queryDoh(dohEndpoint, cur, "AAAA"),
     ]);
     return {
       chain,
@@ -841,6 +854,10 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
+  const dohEndpoint = useMemo(
+    () => resolveDohEndpoint(dohProvider, dohCustomUrl),
+    [dohCustomUrl, dohProvider],
+  );
   const recordsFingerprint = useMemo(
     () =>
       records
@@ -953,7 +970,7 @@ export function ZoneTopologyTab({
         })()
         : await Promise.all(
           missing.map(async (name) => {
-            const resolved = await resolveExternalCnameToAddress(name, clampedHops);
+            const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoint);
             return [name, resolved] as const;
           }),
         );
@@ -975,6 +992,7 @@ export function ZoneTopologyTab({
     records,
     summary.mxTrails,
     summary.nodeSummaries,
+    dohEndpoint,
   ]);
 
   useEffect(() => {
@@ -1494,7 +1512,16 @@ export function ZoneTopologyTab({
         <FileDown className="h-3.5 w-3.5 mr-1" />
         Export PDF
       </Button>
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void onRefresh()} disabled={isLoading}>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-8 px-2"
+        onClick={() => {
+          setExternalResolutionByName({});
+          void onRefresh();
+        }}
+        disabled={isLoading}
+      >
         <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
       </Button>
       <Button
