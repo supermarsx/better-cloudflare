@@ -22,6 +22,7 @@ import type {
 } from "@/types/registrar";
 import { AddRegistrarDialog } from "./AddRegistrarDialog";
 import {
+  Copy,
   Globe,
   Plus,
   RefreshCw,
@@ -51,6 +52,29 @@ function daysUntil(dateStr: string): number | null {
   } catch {
     return null;
   }
+}
+
+function formatHumanDate(dateStr: string): { label: string; full: string } {
+  if (!dateStr) return { label: "—", full: "—" };
+  const dt = new Date(dateStr);
+  if (Number.isNaN(dt.getTime())) return { label: dateStr, full: dateStr };
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const seconds = Math.round((dt.getTime() - Date.now()) / 1000);
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.round(seconds / 3600);
+  const days = Math.round(seconds / 86400);
+  const rel =
+    Math.abs(seconds) < 60
+      ? rtf.format(seconds, "second")
+      : Math.abs(minutes) < 60
+        ? rtf.format(minutes, "minute")
+        : Math.abs(hours) < 24
+          ? rtf.format(hours, "hour")
+          : rtf.format(days, "day");
+  return {
+    label: `${dt.toLocaleDateString()} (${rel})`,
+    full: `${dt.toLocaleString()} | ${dt.toISOString()}`,
+  };
 }
 
 /** Status badge colour for domain status. */
@@ -354,7 +378,11 @@ interface DomainRowProps {
 }
 
 function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
+  const { toast } = useToast();
   const days = daysUntil(domain.expires_at);
+  const created = formatHumanDate(domain.created_at);
+  const expires = formatHumanDate(domain.expires_at);
+  const updated = formatHumanDate(domain.updated_at ?? "");
   const expiryColor =
     days === null
       ? "text-muted-foreground"
@@ -432,21 +460,73 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
       {/* Expanded details */}
       {expanded && (
         <div className="border-t border-border/40 px-4 py-3 space-y-3 text-xs fade-in-up">
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 px-2 text-[11px]"
+              onClick={() => {
+                const payload = [
+                  `Domain: ${domain.domain}`,
+                  `Registrar: ${REGISTRAR_LABELS[domain.registrar]}`,
+                  `Status: ${domain.status}`,
+                  `Created: ${domain.created_at || "—"}`,
+                  `Expires: ${domain.expires_at || "—"}`,
+                  `Updated: ${domain.updated_at || "—"}`,
+                  `Nameservers: ${domain.nameservers.current.join(", ") || "—"}`,
+                ].join("\n");
+                void navigator.clipboard
+                  .writeText(payload)
+                  .then(() =>
+                    toast({
+                      title: t("Copied", "Copied"),
+                      description: t(
+                        "Domain summary copied to clipboard",
+                        "Domain summary copied to clipboard",
+                      ),
+                    }),
+                  )
+                  .catch(() =>
+                    toast({
+                      title: t("Error", "Error"),
+                      description: t(
+                        "Failed to copy to clipboard",
+                        "Failed to copy to clipboard",
+                      ),
+                      variant: "destructive",
+                    }),
+                  );
+              }}
+            >
+              <Copy className="h-3.5 w-3.5" />
+              {t("Copy", "Copy")}
+            </Button>
+          </div>
           {/* Quick info grid */}
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-2 md:grid-cols-6">
+            <div>
+              <span className="text-muted-foreground block">Registrar</span>
+              <span>{REGISTRAR_LABELS[domain.registrar]}</span>
+            </div>
             <div>
               <span className="text-muted-foreground block">
                 {t("Created", "Created")}
               </span>
-              <span>{domain.created_at ? new Date(domain.created_at).toLocaleDateString() : "—"}</span>
+              <span title={created.full}>{created.label}</span>
             </div>
             <div>
               <span className="text-muted-foreground block">
                 {t("Expires", "Expires")}
               </span>
-              <span className={expiryColor}>
-                {domain.expires_at ? new Date(domain.expires_at).toLocaleDateString() : "—"}
+              <span className={expiryColor} title={expires.full}>
+                {expires.label}
               </span>
+            </div>
+            <div>
+              <span className="text-muted-foreground block">
+                {t("Updated", "Updated")}
+              </span>
+              <span title={updated.full}>{updated.label}</span>
             </div>
             <div>
               <span className="text-muted-foreground block">DNSSEC</span>
@@ -454,7 +534,7 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
                 {domain.dnssec.enabled ? t("Enabled", "Enabled") : t("Disabled", "Disabled")}
               </span>
             </div>
-            <div>
+            <div className="md:col-span-1">
               <span className="text-muted-foreground block">
                 {t("Privacy", "Privacy")}
               </span>

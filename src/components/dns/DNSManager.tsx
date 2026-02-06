@@ -275,6 +275,16 @@ function formatAuditTimestampFull(value: unknown): string {
   })} | ${date.toISOString()}`;
 }
 
+function formatHumanizedDateTime(value: unknown): { short: string; full: string } {
+  const parsed = parseAuditTimestamp(value);
+  if (parsed === null) return { short: "—", full: "—" };
+  const date = new Date(parsed);
+  return {
+    short: `${date.toLocaleDateString()} (${formatRelativeTime(parsed)})`,
+    full: `${date.toLocaleString()} | ${date.toISOString()}`,
+  };
+}
+
 function sanitizeDomainAuditCategories(
   value: Partial<Record<DomainAuditCategory, boolean>> | null | undefined,
 ): Record<DomainAuditCategory, boolean> {
@@ -3907,7 +3917,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               Status: <span className="text-foreground">{registrarDomainResult.status}</span>
                             </div>
                             <div>
-                              Expires: <span className="text-foreground">{registrarDomainResult.expires_at || "—"}</span>
+                              Expires:{" "}
+                              <span
+                                className="text-foreground"
+                                title={formatHumanizedDateTime(registrarDomainResult.expires_at).full}
+                              >
+                                {formatHumanizedDateTime(registrarDomainResult.expires_at).short}
+                              </span>
                             </div>
                           </div>
                         ) : (
@@ -3942,14 +3958,54 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="text-sm font-medium">RDAP Response</div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setShowRawRdap((prev) => !prev)}
-                          disabled={!rdapResult}
-                        >
-                          {showRawRdap ? "Show Table" : "Show Raw JSON"}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              if (!rdapResult) return;
+                              const summary = [
+                                `Domain: ${String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}`,
+                                `Handle: ${String(rdapObject.handle ?? "—")}`,
+                                `Registrar API: ${registrarDomainResult?.registrar ?? "—"}`,
+                                `Registrar Entity: ${String(rdapRegistrarEntity?.handle ?? "—")}`,
+                                `Status: ${rdapStatuses.length ? rdapStatuses.join(", ") : "—"}`,
+                                `Nameservers: ${rdapNameservers.length ? rdapNameservers.join(", ") : "—"}`,
+                              ].join("\n");
+                              const payload = showRawRdap
+                                ? JSON.stringify(rdapResult, null, 2)
+                                : summary;
+                              void navigator.clipboard
+                                .writeText(payload)
+                                .then(() =>
+                                  toast({
+                                    title: "Copied",
+                                    description: "Registry data copied to clipboard.",
+                                  }),
+                                )
+                                .catch((error) =>
+                                  toast({
+                                    title: "Copy failed",
+                                    description:
+                                      error instanceof Error ? error.message : String(error),
+                                    variant: "destructive",
+                                  }),
+                                );
+                            }}
+                            disabled={!rdapResult}
+                          >
+                            <Copy className="h-3.5 w-3.5 mr-1" />
+                            Copy
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setShowRawRdap((prev) => !prev)}
+                            disabled={!rdapResult}
+                          >
+                            {showRawRdap ? "Show Table" : "Show Raw JSON"}
+                          </Button>
+                        </div>
                       </div>
                       {rdapResult ? (
                         showRawRdap ? (
@@ -3977,6 +4033,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     <td className="px-3 py-2 font-medium text-muted-foreground">Port 43</td>
                                     <td className="px-3 py-2">{String(rdapObject.port43 ?? "—")}</td>
                                   </tr>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Registrar (API)</td>
+                                    <td className="px-3 py-2">
+                                      {registrarDomainResult?.registrar ?? "—"}
+                                    </td>
+                                  </tr>
                                   <tr>
                                     <td className="px-3 py-2 font-medium text-muted-foreground">Status</td>
                                     <td className="px-3 py-2">
@@ -4000,7 +4062,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     rdapEvents.map((event, idx) => (
                                       <tr key={`${event.action}-${idx}`} className="border-b border-border/30 last:border-b-0">
                                         <td className="px-3 py-2">{event.action}</td>
-                                        <td className="px-3 py-2">{event.date || "—"}</td>
+                                        <td className="px-3 py-2" title={formatHumanizedDateTime(event.date).full}>
+                                          {formatHumanizedDateTime(event.date).short}
+                                        </td>
                                       </tr>
                                     ))
                                   ) : (
