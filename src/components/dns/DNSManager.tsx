@@ -285,6 +285,24 @@ function formatHumanizedDateTime(value: unknown): { short: string; full: string 
   };
 }
 
+function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: boolean } {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => {
+      setVisible(false);
+    }, Math.max(1000, Math.min(60000, timeoutMs)));
+    return () => window.clearTimeout(id);
+  }, [loading, timeoutMs]);
+
+  return { visible };
+}
+
 function sanitizeDomainAuditCategories(
   value: Partial<Record<DomainAuditCategory, boolean>> | null | undefined,
 ): Record<DomainAuditCategory, boolean> {
@@ -386,6 +404,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
+  const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
+    storageManager.getLoadingOverlayTimeoutMs(),
+  );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
@@ -461,6 +482,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmLogout,
       idleLogoutMs,
       confirmWindowClose,
+      loadingOverlayTimeoutMs,
       auditExportDefaultDocuments,
       confirmClearAuditLogs,
       auditExportFolderPreset,
@@ -479,6 +501,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    loadingOverlayTimeoutMs,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -520,6 +543,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.confirmWindowClose === "boolean") {
       setConfirmWindowClose(profile.confirmWindowClose);
+    }
+    if (typeof profile.loadingOverlayTimeoutMs === "number") {
+      setLoadingOverlayTimeoutMs(Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)));
     }
     if (typeof profile.auditExportDefaultDocuments === "boolean") {
       setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
@@ -931,6 +957,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
+            loading_overlay_timeout_ms?: number;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -982,6 +1009,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.confirm_window_close === "boolean") {
             setConfirmWindowClose(prefObj.confirm_window_close);
           }
+          if (typeof prefObj.loading_overlay_timeout_ms === "number") {
+            setLoadingOverlayTimeoutMs(
+              Math.max(1000, Math.min(60000, prefObj.loading_overlay_timeout_ms)),
+            );
+          }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
             setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
           }
@@ -1026,6 +1058,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
+    setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
@@ -1146,6 +1179,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
+    storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
@@ -1171,6 +1205,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
+            loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
@@ -1196,6 +1231,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    loadingOverlayTimeoutMs,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -2511,6 +2547,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           : false,
       )
     : undefined;
+  const cacheOverlay = useLoadingOverlay(cacheSettingsLoading, loadingOverlayTimeoutMs);
+  const sslOverlay = useLoadingOverlay(sslSettingsLoading, loadingOverlayTimeoutMs);
+  const auditOverlay = useLoadingOverlay(
+    activeTab?.kind === "zone" && actionTab === "domain-audit" && activeTab.isLoading,
+    loadingOverlayTimeoutMs,
+  );
+  const registryOverlay = useLoadingOverlay(registryChecksLoading, loadingOverlayTimeoutMs);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
@@ -3355,7 +3398,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardHeader>
                     <CardTitle className="text-lg">Cache</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-sm text-muted-foreground">
                         Cloudflare cache controls for {activeTab.zoneName}.
@@ -3366,19 +3409,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {cacheSettingsError && (
                       <div className="text-xs text-destructive">{cacheSettingsError}</div>
-                    )}
-                    {cacheSettingsLoading && (
-                      <div className="space-y-2 rounded-xl border border-border/60 bg-card/60 p-3">
-                        {Array.from({ length: 4 }).map((_, idx) => (
-                          <div key={`cache-skel-${idx}`} className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="skeleton h-4 w-32 rounded" />
-                            <div className="space-y-2">
-                              <div className="skeleton h-8 w-48 rounded" />
-                              <div className="skeleton h-3 w-64 rounded" />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
@@ -3475,6 +3505,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
+                    {cacheOverlay.visible && (
+                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading cache settings…
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -3483,7 +3521,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardHeader>
                     <CardTitle className="text-lg">SSL/TLS</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-sm text-muted-foreground">
                         SSL/TLS controls for {activeTab.zoneName}.
@@ -3494,19 +3532,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {sslSettingsError && (
                       <div className="text-xs text-destructive">{sslSettingsError}</div>
-                    )}
-                    {sslSettingsLoading && (
-                      <div className="space-y-2 rounded-xl border border-border/60 bg-card/60 p-3">
-                        {Array.from({ length: 6 }).map((_, idx) => (
-                          <div key={`ssl-skel-${idx}`} className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="skeleton h-4 w-36 rounded" />
-                            <div className="space-y-2">
-                              <div className="skeleton h-8 w-48 rounded" />
-                              <div className="skeleton h-3 w-72 rounded" />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
@@ -3655,6 +3680,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
+                    {sslOverlay.visible && (
+                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading SSL/TLS settings…
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -3663,7 +3696,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardHeader>
                     <CardTitle className="text-lg">Domain audits</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-sm text-muted-foreground">
                         Audits run against the records currently loaded for{" "}
@@ -3753,19 +3786,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="rounded-xl border border-border/60 bg-card/60 p-2">
-                      {activeTab.isLoading ? (
-                        <div className="space-y-2 px-2 py-2">
-                          {Array.from({ length: 4 }).map((_, idx) => (
-                            <div key={`audit-skel-${idx}`} className="rounded-xl border border-border/60 bg-muted/20 p-3">
-                              <div className="skeleton h-4 w-40 rounded" />
-                              <div className="mt-2 space-y-2">
-                                <div className="skeleton h-3 w-5/6 rounded" />
-                                <div className="skeleton h-3 w-2/3 rounded" />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : domainAuditVisibleItems.length === 0 ? (
+                      {domainAuditVisibleItems.length === 0 ? (
                         <div className="px-3 py-6 text-sm text-muted-foreground">
                           No issues detected (with current filters).
                         </div>
@@ -3886,6 +3907,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       These checks are best-practice heuristics based only on records currently
                       present in this zone.
                     </div>
+                    {auditOverlay.visible && (
+                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading audit data…
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -3894,7 +3923,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardHeader>
                     <CardTitle className="text-lg">Domain Registry Tools</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="relative space-y-4">
                     <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
                       <Input
                         value={registryLookupDomain}
@@ -3951,39 +3980,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {registryChecksError}
                       </div>
                     )}
-                    {registryChecksLoading && (
-                      <div className="space-y-3">
-                        <div className="grid gap-3 lg:grid-cols-2">
-                          <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                            <div className="skeleton h-4 w-40 rounded" />
-                            <div className="space-y-2">
-                              <div className="skeleton h-3 w-4/5 rounded" />
-                              <div className="skeleton h-3 w-3/5 rounded" />
-                              <div className="skeleton h-3 w-2/3 rounded" />
-                            </div>
-                          </div>
-                          <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                            <div className="skeleton h-4 w-32 rounded" />
-                            <div className="space-y-2">
-                              <div className="skeleton h-3 w-4/5 rounded" />
-                              <div className="skeleton h-3 w-3/4 rounded" />
-                              <div className="skeleton h-3 w-2/3 rounded" />
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                          <div className="skeleton h-4 w-36 rounded" />
-                          <div className="space-y-2">
-                            <div className="skeleton h-8 w-full rounded" />
-                            <div className="skeleton h-8 w-full rounded" />
-                            <div className="skeleton h-8 w-full rounded" />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {!registryChecksLoading && (
-                    <>
                     <div className="grid gap-3 lg:grid-cols-2">
                       <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
                         <div className="text-sm font-medium">Registrar API Match</div>
@@ -4183,7 +4179,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       )}
                     </div>
-                    </>
+                    {registryOverlay.visible && (
+                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading registry data…
+                        </div>
+                      </div>
                     )}
                   </CardContent>
                 </Card>
@@ -4891,6 +4893,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             New zone tabs inherit this value unless overridden.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Loader timeout</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={String(Math.round(loadingOverlayTimeoutMs / 1000))}
+                            onValueChange={(v) => {
+                              const sec = Number(v);
+                              const clampedSec = Math.max(1, Math.min(60, Number.isNaN(sec) ? 60 : sec));
+                              setLoadingOverlayTimeoutMs(clampedSec * 1000);
+                              notifySaved(`Loader timeout set to ${clampedSec}s.`);
+                            }}
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Timeout" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="5">5 s</SelectItem>
+                              <SelectItem value="10">10 s</SelectItem>
+                              <SelectItem value="20">20 s</SelectItem>
+                              <SelectItem value="30">30 s</SelectItem>
+                              <SelectItem value="45">45 s</SelectItem>
+                              <SelectItem value="60">60 s</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <div className="text-xs text-muted-foreground">
+                            Max 60s. Loading overlay auto-hides after timeout.
                           </div>
                         </div>
                       </div>

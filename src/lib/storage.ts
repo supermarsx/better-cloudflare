@@ -37,6 +37,7 @@ interface StorageData {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  loadingOverlayTimeoutMs?: number;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -62,6 +63,7 @@ export interface SessionSettingsProfile {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  loadingOverlayTimeoutMs?: number;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -680,6 +682,19 @@ export class StorageManager {
     return this.data.confirmWindowClose !== false;
   }
 
+  setLoadingOverlayTimeoutMs(ms: number): void {
+    const clamped = Math.max(1000, Math.min(60000, Math.round(ms)));
+    this.data.loadingOverlayTimeoutMs = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ loadingOverlayTimeoutMs: clamped });
+  }
+
+  getLoadingOverlayTimeoutMs(): number {
+    const value = this.data.loadingOverlayTimeoutMs;
+    if (typeof value !== "number" || Number.isNaN(value)) return 60000;
+    return Math.max(1000, Math.min(60000, Math.round(value)));
+  }
+
   setAuditExportDefaultDocuments(enabled: boolean): void {
     this.data.auditExportDefaultDocuments = enabled;
     this.save();
@@ -873,6 +888,7 @@ export class StorageManager {
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
+    delete this.data.loadingOverlayTimeoutMs;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;
