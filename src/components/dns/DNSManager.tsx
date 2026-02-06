@@ -56,6 +56,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
+import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
 import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
@@ -68,7 +69,8 @@ type ActionTab =
   | "cache"
   | "ssl-tls"
   | "domain-audit"
-  | "domain-registry";
+  | "domain-registry"
+  | "topology";
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -165,6 +167,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "domain-registry",
     label: "Registry",
     hint: "RDAP/WHOIS and registrar checks for this domain",
+  },
+  {
+    id: "topology",
+    label: "Topology",
+    hint: "Visualize DNS relationships, CNAME chains, and shared services",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -701,7 +708,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       raw === "cache" ||
       raw === "ssl-tls" ||
       raw === "domain-audit" ||
-      raw === "domain-registry"
+      raw === "domain-registry" ||
+      raw === "topology"
     ) {
       // Legacy malformed value (action without zone id): ignore.
       return null;
@@ -715,7 +723,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       actionRaw === "cache" ||
       actionRaw === "ssl-tls" ||
       actionRaw === "domain-audit" ||
-      actionRaw === "domain-registry"
+      actionRaw === "domain-registry" ||
+      actionRaw === "topology"
     ) {
       return { tabId: zoneId, action: actionRaw };
     }
@@ -4308,6 +4317,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                   </CardContent>
                 </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "topology" && (
+                <ZoneTopologyTab
+                  zoneName={activeTab.zoneName}
+                  records={activeTab.records}
+                  isLoading={activeTab.isLoading}
+                  onRefresh={async () => {
+                    await loadRecords(activeTab);
+                  }}
+                  onEditRecord={(record) => {
+                    setActionTab("records");
+                    updateTab(activeTab.id, (prev) => ({
+                      ...prev,
+                      editingRecord: record.id,
+                    }));
+                  }}
+                />
               )}
               {activeTab.kind === "audit" && (
                 <Card className="border-border/60 bg-card/70">
