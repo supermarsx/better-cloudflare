@@ -25,19 +25,23 @@ import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
 import { storageManager, type SessionSettingsProfile } from "@/lib/storage";
 import {
+  ArrowUpDown,
   ClipboardPaste,
   Copy,
   ExternalLink,
   FileDown,
   FileUp,
   Filter,
+  Plus,
   Globe,
   GripVertical,
   LogOut,
+  RefreshCw,
   Search,
   Settings,
   Shield,
   Tags,
+  Trash2,
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
@@ -70,6 +74,15 @@ type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab = "general" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
+type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
+type AuditFilterOperator = "equals" | "contains" | "matches" | "not_equals";
+
+type AuditFilterRule = {
+  id: string;
+  field: AuditFilterField;
+  operator: AuditFilterOperator;
+  value: string;
+};
 
 type ZoneTab = {
   kind: TabKind;
@@ -298,9 +311,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
-  const [auditType, setAuditType] = useState("all");
-  const [auditResource, setAuditResource] = useState("all");
-  const [auditOrder, setAuditOrder] = useState("newest");
+  const [auditFilters, setAuditFilters] = useState<AuditFilterRule[]>([]);
+  const [auditSort, setAuditSort] = useState<{
+    field: "timestamp" | "operation" | "resource";
+    dir: "asc" | "desc";
+  }>({ field: "timestamp", dir: "desc" });
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -1499,35 +1514,56 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return storageManager.getZoneTags(tagsZoneId);
   }, [tagsZoneId, tagsVersion]);
 
-  const auditTypeOptions = useMemo(() => {
-    const set = new Set<string>();
-    auditEntries.forEach((entry) => {
-      const op = entry.operation;
-      if (typeof op === "string" && op) set.add(op);
-    });
-    return ["all", ...Array.from(set)];
-  }, [auditEntries]);
-
-  const auditResourceOptions = useMemo(() => {
-    const set = new Set<string>();
-    auditEntries.forEach((entry) => {
-      const resource = entry.resource;
-      if (typeof resource === "string" && resource) set.add(resource);
-    });
-    return ["all", ...Array.from(set)];
-  }, [auditEntries]);
+  const getAuditFieldValue = useCallback(
+    (entry: Record<string, unknown>, field: AuditFilterField): string => {
+      if (field === "details") {
+        const details = { ...entry };
+        delete details.timestamp;
+        delete details.operation;
+        delete details.resource;
+        return JSON.stringify(details);
+      }
+      const value = entry[field];
+      return typeof value === "string" ? value : "";
+    },
+    [],
+  );
 
   const filteredAuditEntries = useMemo(() => {
     if (!auditEntries.length) return [];
     const search = auditSearch.trim().toLowerCase();
+    const activeFilters = auditFilters
+      .map((rule) => ({
+        ...rule,
+        value: rule.value.trim(),
+      }))
+      .filter((rule) => rule.value.length > 0);
     return auditEntries.filter((entry) => {
-      if (auditType !== "all" && entry.operation !== auditType) return false;
-      if (auditResource !== "all" && entry.resource !== auditResource) return false;
-      if (!search) return true;
-      const payload = JSON.stringify(entry).toLowerCase();
-      return payload.includes(search);
+      if (search) {
+        const payload = JSON.stringify(entry).toLowerCase();
+        if (!payload.includes(search)) return false;
+      }
+
+      for (const rule of activeFilters) {
+        const fieldValue = getAuditFieldValue(entry, rule.field);
+        const haystack = fieldValue.toLowerCase();
+        const needle = rule.value.toLowerCase();
+
+        if (rule.operator === "equals" && haystack !== needle) return false;
+        if (rule.operator === "not_equals" && haystack === needle) return false;
+        if (rule.operator === "contains" && !haystack.includes(needle)) return false;
+        if (rule.operator === "matches") {
+          try {
+            const re = new RegExp(rule.value, "i");
+            if (!re.test(fieldValue)) return false;
+          } catch {
+            return false;
+          }
+        }
+      }
+      return true;
     });
-  }, [auditEntries, auditSearch, auditType, auditResource]);
+  }, [auditEntries, auditFilters, auditSearch, getAuditFieldValue]);
 
   const orderedAuditEntries = useMemo(() => {
     const entries = [...filteredAuditEntries];
@@ -1537,18 +1573,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return Number.isNaN(ts) ? 0 : ts;
     };
     entries.sort((a, b) => {
-      if (auditOrder === "operation") {
-        return String(a.operation ?? "").localeCompare(String(b.operation ?? ""));
+      if (auditSort.field === "operation") {
+        const cmp = String(a.operation ?? "").localeCompare(String(b.operation ?? ""));
+        return auditSort.dir === "asc" ? cmp : -cmp;
       }
-      if (auditOrder === "resource") {
-        return String(a.resource ?? "").localeCompare(String(b.resource ?? ""));
+      if (auditSort.field === "resource") {
+        const cmp = String(a.resource ?? "").localeCompare(String(b.resource ?? ""));
+        return auditSort.dir === "asc" ? cmp : -cmp;
       }
       const aTime = parseTime(a.timestamp);
       const bTime = parseTime(b.timestamp);
-      return auditOrder === "oldest" ? aTime - bTime : bTime - aTime;
+      return auditSort.dir === "asc" ? aTime - bTime : bTime - aTime;
     });
     return entries;
-  }, [filteredAuditEntries, auditOrder]);
+  }, [filteredAuditEntries, auditSort]);
 
   const limitedAuditEntries = useMemo(() => {
     if (auditLimit === "all") return orderedAuditEntries;
@@ -1561,6 +1599,43 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (!isDesktop()) return;
     await TauriClient.clearAuditEntries();
     setAuditEntries([]);
+  }, []);
+
+  const addAuditFilter = useCallback(() => {
+    setAuditFilters((prev) => [
+      ...prev,
+      {
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random()}`,
+        field: "operation",
+        operator: "contains",
+        value: "",
+      },
+    ]);
+  }, []);
+
+  const updateAuditFilter = useCallback(
+    (id: string, patch: Partial<Omit<AuditFilterRule, "id">>) => {
+      setAuditFilters((prev) =>
+        prev.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)),
+      );
+    },
+    [],
+  );
+
+  const removeAuditFilter = useCallback((id: string) => {
+    setAuditFilters((prev) => prev.filter((rule) => rule.id !== id));
+  }, []);
+
+  const toggleAuditSort = useCallback((field: "timestamp" | "operation" | "resource") => {
+    setAuditSort((prev) => {
+      if (prev.field !== field) {
+        return { field, dir: field === "timestamp" ? "desc" : "asc" };
+      }
+      return { field, dir: prev.dir === "asc" ? "desc" : "asc" };
+    });
   }, []);
 
   const exportSessionSettings = useCallback(() => {
@@ -3868,13 +3943,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <CardTitle className="text-lg">Audit log</CardTitle>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
+                          size="sm"
                           variant="outline"
+                          className="h-8 gap-1 px-2"
                           onClick={() => loadAuditEntries()}
+                          title="Refresh"
                         >
-                          Refresh
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          <span className="text-xs">Refresh</span>
                         </Button>
                         <Button
+                          size="sm"
                           variant="outline"
+                          className="h-8 gap-1 px-2"
                           onClick={() => {
                             if (confirmClearAuditLogs) {
                               setShowClearAuditConfirm(true);
@@ -3883,11 +3964,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             void clearAuditEntriesNow();
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
+                          title="Clear logs"
                         >
-                          Clear logs
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span className="text-xs">Clear</span>
                         </Button>
                         <Button
+                          size="sm"
                           variant="outline"
+                          className="h-8 gap-1 px-2"
                           onClick={async () => {
                             if (!isDesktop()) return;
                             try {
@@ -3934,11 +4019,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
+                          title="Export JSON"
                         >
-                          Export JSON
+                          <FileDown className="h-3.5 w-3.5" />
+                          <span className="text-xs">JSON</span>
                         </Button>
                         <Button
+                          size="sm"
                           variant="outline"
+                          className="h-8 gap-1 px-2"
                           onClick={async () => {
                             if (!isDesktop()) return;
                             try {
@@ -3985,60 +4074,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
+                          title="Export CSV"
                         >
-                          Export CSV
+                          <FileDown className="h-3.5 w-3.5" />
+                          <span className="text-xs">CSV</span>
                         </Button>
                       </div>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="grid gap-3 md:grid-cols-[1fr_200px_200px]">
+                    <div className="grid gap-2 md:grid-cols-[1fr_120px_auto]">
                       <div className="relative">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
                           placeholder="Search audit entries"
                           value={auditSearch}
                           onChange={(e) => setAuditSearch(e.target.value)}
-                          className="pl-9"
+                          className="h-8 pl-9 text-xs"
                         />
                       </div>
-                      <Select value={auditType} onValueChange={setAuditType}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {auditTypeOptions.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option === "all" ? "All types" : option}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select value={auditResource} onValueChange={setAuditResource}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Resource" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {auditResourceOptions.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option === "all" ? "All resources" : option}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-[200px_200px]">
-                      <Select value={auditOrder} onValueChange={setAuditOrder}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Order" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="newest">Newest first</SelectItem>
-                          <SelectItem value="oldest">Oldest first</SelectItem>
-                          <SelectItem value="operation">Operation A–Z</SelectItem>
-                          <SelectItem value="resource">Resource A–Z</SelectItem>
-                        </SelectContent>
-                      </Select>
                       <Select value={auditLimit} onValueChange={setAuditLimit}>
                         <SelectTrigger>
                           <SelectValue placeholder="Limit" />
@@ -4052,7 +4106,70 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <SelectItem value="all">All</SelectItem>
                         </SelectContent>
                       </Select>
+                      <Button size="sm" variant="outline" className="h-8 gap-1 px-2" onClick={addAuditFilter}>
+                        <Plus className="h-3.5 w-3.5" />
+                        <span className="text-xs">Add filter</span>
+                      </Button>
                     </div>
+                    {auditFilters.length > 0 && (
+                      <div className="space-y-2 rounded-lg border border-border/60 bg-card/50 p-2">
+                        {auditFilters.map((rule) => (
+                          <div key={rule.id} className="grid gap-2 md:grid-cols-[140px_130px_1fr_auto]">
+                            <Select
+                              value={rule.field}
+                              onValueChange={(v) =>
+                                updateAuditFilter(rule.id, { field: v as AuditFilterField })
+                              }
+                            >
+                              <SelectTrigger className="h-8">
+                                <SelectValue placeholder="Field" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="operation">Operation</SelectItem>
+                                <SelectItem value="resource">Resource</SelectItem>
+                                <SelectItem value="timestamp">Timestamp</SelectItem>
+                                <SelectItem value="details">Details</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={rule.operator}
+                              onValueChange={(v) =>
+                                updateAuditFilter(rule.id, {
+                                  operator: v as AuditFilterOperator,
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-8">
+                                <SelectValue placeholder="Operator" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="equals">equals</SelectItem>
+                                <SelectItem value="contains">contains</SelectItem>
+                                <SelectItem value="matches">matches (regex)</SelectItem>
+                                <SelectItem value="not_equals">not equals</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Input
+                              value={rule.value}
+                              onChange={(e) =>
+                                updateAuditFilter(rule.id, { value: e.target.value })
+                              }
+                              className="h-8 text-xs"
+                              placeholder="Value"
+                            />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 px-2"
+                              onClick={() => removeAuditFilter(rule.id)}
+                              title="Remove filter"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {!isDesktop() && (
                       <div className="text-xs text-muted-foreground">
                         Audit log is only available in the desktop app.
@@ -4072,9 +4189,51 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
                       <div className="overflow-auto rounded-lg border border-border/60">
                       <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                          <div>Timestamp</div>
-                          <div>Operation</div>
-                          <div>Resource</div>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1 text-left hover:text-foreground"
+                            onClick={() => toggleAuditSort("timestamp")}
+                          >
+                            Timestamp
+                            <ArrowUpDown className="h-3 w-3" />
+                            <span className="text-[10px]">
+                              {auditSort.field === "timestamp"
+                                ? auditSort.dir === "asc"
+                                  ? "ASC"
+                                  : "DESC"
+                                : ""}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1 text-left hover:text-foreground"
+                            onClick={() => toggleAuditSort("operation")}
+                          >
+                            Operation
+                            <ArrowUpDown className="h-3 w-3" />
+                            <span className="text-[10px]">
+                              {auditSort.field === "operation"
+                                ? auditSort.dir === "asc"
+                                  ? "ASC"
+                                  : "DESC"
+                                : ""}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1 text-left hover:text-foreground"
+                            onClick={() => toggleAuditSort("resource")}
+                          >
+                            Resource
+                            <ArrowUpDown className="h-3 w-3" />
+                            <span className="text-[10px]">
+                              {auditSort.field === "resource"
+                                ? auditSort.dir === "asc"
+                                  ? "ASC"
+                                  : "DESC"
+                                : ""}
+                            </span>
+                          </button>
                           <div>Details</div>
                         </div>
                         <div className="divide-y divide-white/10">
@@ -4305,28 +4464,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant={settingsSubtab === "general" ? "default" : "outline"}
+                    <div className="glass-surface glass-sheen glass-fade ui-segment-group">
+                      <button
                         onClick={() => setSettingsSubtab("general")}
+                        data-active={settingsSubtab === "general"}
+                        className="ui-segment"
                       >
                         General
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={settingsSubtab === "audit" ? "default" : "outline"}
+                      </button>
+                      <button
                         onClick={() => setSettingsSubtab("audit")}
+                        data-active={settingsSubtab === "audit"}
+                        className="ui-segment"
                       >
                         Audit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={settingsSubtab === "profiles" ? "default" : "outline"}
+                      </button>
+                      <button
                         onClick={() => setSettingsSubtab("profiles")}
+                        data-active={settingsSubtab === "profiles"}
+                        className="ui-segment"
                       >
                         Profiles
-                      </Button>
+                      </button>
                     </div>
                     {settingsSubtab === "general" && (
                     <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
