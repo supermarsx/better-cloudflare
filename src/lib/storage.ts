@@ -41,6 +41,7 @@ interface StorageData {
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
   auditExportCustomPath?: string;
+  auditExportSkipDestinationConfirm?: boolean;
   domainAuditCategories?: {
     email?: boolean;
     security?: boolean;
@@ -65,6 +66,7 @@ export interface SessionSettingsProfile {
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
   auditExportCustomPath?: string;
+  auditExportSkipDestinationConfirm?: boolean;
   domainAuditCategories?: {
     email?: boolean;
     security?: boolean;
@@ -718,6 +720,16 @@ export class StorageManager {
     return this.data.auditExportCustomPath ?? "";
   }
 
+  setAuditExportSkipDestinationConfirm(enabled: boolean): void {
+    this.data.auditExportSkipDestinationConfirm = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ auditExportSkipDestinationConfirm: enabled });
+  }
+
+  getAuditExportSkipDestinationConfirm(): boolean {
+    return this.data.auditExportSkipDestinationConfirm !== false;
+  }
+
   setDomainAuditCategories(categories: {
     email: boolean;
     security: boolean;
@@ -865,6 +877,7 @@ export class StorageManager {
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;
     delete this.data.auditExportCustomPath;
+    delete this.data.auditExportSkipDestinationConfirm;
     delete this.data.domainAuditCategories;
     delete this.data.sessionSettingsProfiles;
     this.save();

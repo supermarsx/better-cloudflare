@@ -322,6 +322,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditExportCustomPath, setAuditExportCustomPath] = useState(
     storageManager.getAuditExportCustomPath(),
   );
+  const [auditExportSkipDestinationConfirm, setAuditExportSkipDestinationConfirm] =
+    useState(storageManager.getAuditExportSkipDestinationConfirm());
   const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("general");
   const [sessionSettingsProfiles, setSessionSettingsProfiles] = useState<
     Record<string, SessionSettingsProfile>
@@ -427,6 +429,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmClearAuditLogs,
       auditExportFolderPreset,
       auditExportCustomPath,
+      auditExportSkipDestinationConfirm,
       domainAuditCategories,
     };
   }, [
@@ -444,6 +447,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmClearAuditLogs,
     auditExportFolderPreset,
     auditExportCustomPath,
+    auditExportSkipDestinationConfirm,
     domainAuditCategories,
   ]);
 
@@ -492,6 +496,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.auditExportCustomPath === "string") {
       setAuditExportCustomPath(profile.auditExportCustomPath);
+    }
+    if (typeof profile.auditExportSkipDestinationConfirm === "boolean") {
+      setAuditExportSkipDestinationConfirm(profile.auditExportSkipDestinationConfirm);
     }
     if (profile.domainAuditCategories) {
       setDomainAuditCategories(sanitizeDomainAuditCategories(profile.domainAuditCategories));
@@ -892,6 +899,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
             audit_export_custom_path?: string;
+            audit_export_skip_destination_confirm?: boolean;
             domain_audit_categories?: Record<DomainAuditCategory, boolean>;
             session_settings_profiles?: Record<string, SessionSettingsProfile>;
           };
@@ -950,6 +958,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.audit_export_custom_path === "string") {
             setAuditExportCustomPath(prefObj.audit_export_custom_path);
           }
+          if (typeof prefObj.audit_export_skip_destination_confirm === "boolean") {
+            setAuditExportSkipDestinationConfirm(prefObj.audit_export_skip_destination_confirm);
+          }
           if (prefObj.domain_audit_categories && typeof prefObj.domain_audit_categories === "object") {
             setDomainAuditCategories(sanitizeDomainAuditCategories(prefObj.domain_audit_categories));
           }
@@ -983,6 +994,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
     setAuditExportCustomPath(storageManager.getAuditExportCustomPath());
+    setAuditExportSkipDestinationConfirm(
+      storageManager.getAuditExportSkipDestinationConfirm(),
+    );
     setDomainAuditCategories(sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()));
     setSessionSettingsProfiles(storageManager.getSessionSettingsProfiles());
     setPrefsReady(true);
@@ -1100,6 +1114,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
     storageManager.setAuditExportCustomPath(auditExportCustomPath);
+    storageManager.setAuditExportSkipDestinationConfirm(
+      auditExportSkipDestinationConfirm,
+    );
     storageManager.setDomainAuditCategories(domainAuditCategories);
     storageManager.setSessionSettingsProfile(currentSessionId, buildSessionSettingsProfile());
 
@@ -1122,6 +1139,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
             audit_export_custom_path: auditExportCustomPath,
+            audit_export_skip_destination_confirm: auditExportSkipDestinationConfirm,
             domain_audit_categories: domainAuditCategories,
             session_settings_profiles: {
               ...sessionSettingsProfiles,
@@ -1146,6 +1164,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmClearAuditLogs,
     auditExportFolderPreset,
     auditExportCustomPath,
+    auditExportSkipDestinationConfirm,
     domainAuditCategories,
     currentSessionId,
     buildSessionSettingsProfile,
@@ -3876,6 +3895,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 "json",
                                 auditExportFolderPreset,
                                 auditExportCustomPath,
+                                auditExportSkipDestinationConfirm,
                               );
                               toast({
                                 title: "Export complete",
@@ -3926,6 +3946,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 "csv",
                                 auditExportFolderPreset,
                                 auditExportCustomPath,
+                                auditExportSkipDestinationConfirm,
                               );
                               toast({
                                 title: "Export complete",
@@ -4557,6 +4578,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </Select>
                               <div className="text-xs text-muted-foreground">
                                 Choose the default start folder for audit exports.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Don’t confirm destination</div>
+                            <div className="flex items-center gap-3">
+                              <Switch
+                                checked={auditExportSkipDestinationConfirm}
+                                onCheckedChange={(checked: boolean) => {
+                                  setAuditExportSkipDestinationConfirm(checked);
+                                  notifySaved(
+                                    checked
+                                      ? "Audit exports will save directly without destination dialog."
+                                      : "Audit exports will ask for destination.",
+                                  );
+                                }}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Enabled by default.
                               </div>
                             </div>
                           </div>

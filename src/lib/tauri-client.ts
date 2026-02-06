@@ -356,8 +356,14 @@ export class TauriClient {
     format: "json" | "csv" = "json",
     folderPreset = "documents",
     customPath = "",
+    skipDestinationConfirm = true,
   ): Promise<string> {
-    return invoke("save_audit_entries", { format, folderPreset, customPath });
+    return invoke("save_audit_entries", {
+      format,
+      folderPreset,
+      customPath,
+      skipDestinationConfirm,
+    });
   }
 
   static async clearAuditEntries(): Promise<void> {

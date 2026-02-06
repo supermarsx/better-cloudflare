@@ -895,11 +895,25 @@ pub async fn save_audit_entries(
     format: Option<String>,
     folder_preset: Option<String>,
     custom_path: Option<String>,
+    skip_destination_confirm: Option<bool>,
 ) -> Result<String, String> {
     let entries = storage.get_audit_entries().await.map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string()).to_lowercase();
     let payload = serialize_audit_entries(entries, &fmt)?;
     let extension = if fmt == "csv" { "csv" } else { "json" };
+    let should_skip_confirm = skip_destination_confirm.unwrap_or(true);
+    if should_skip_confirm {
+        let base_dir = resolve_export_directory(folder_preset.as_deref(), custom_path.as_deref())
+            .or_else(dirs::document_dir)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| "Unable to resolve export directory".to_string())?;
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let file_name = format!("audit-log-{}.{}", stamp, extension);
+        let path = base_dir.join(file_name);
+        std::fs::write(&path, payload).map_err(|e| e.to_string())?;
+        return Ok(path.display().to_string());
+    }
+
     let file_name = format!("audit-log.{}", extension);
 
     let mut dialog = rfd::FileDialog::new().set_file_name(&file_name);
