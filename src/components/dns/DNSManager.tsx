@@ -1670,28 +1670,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   const applyAuditPreset = useCallback(
-    (preset: "errors" | "auth" | "dns" | "last24h" | "clear") => {
+    (
+      preset:
+        | "errors"
+        | "auth"
+        | "dns"
+        | "api_keys"
+        | "zone_settings"
+        | "cache"
+        | "last24h"
+        | "last7d"
+        | "today"
+        | "clear",
+    ) => {
       if (preset === "clear") {
         setAuditFilters([]);
         return;
       }
-      if (preset === "errors") {
-        setAuditFilters([
-          createAuditFilterRule("details", "contains", "\"success\":false"),
-        ]);
-        return;
-      }
-      if (preset === "auth") {
-        setAuditFilters([createAuditFilterRule("operation", "contains", "auth:")]);
-        return;
-      }
-      if (preset === "dns") {
-        setAuditFilters([createAuditFilterRule("operation", "contains", "dns:")]);
-        return;
-      }
       const now = Date.now();
-      const cutoffIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
-      setAuditFilters([createAuditFilterRule("timestamp", "gte", cutoffIso)]);
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const presetRules: AuditFilterRule[] =
+        preset === "errors"
+          ? [createAuditFilterRule("details", "contains", "\"success\":false")]
+          : preset === "auth"
+            ? [createAuditFilterRule("operation", "contains", "auth:")]
+            : preset === "dns"
+              ? [createAuditFilterRule("operation", "contains", "dns:")]
+              : preset === "api_keys"
+                ? [createAuditFilterRule("operation", "contains", "api_key:")]
+                : preset === "zone_settings"
+                  ? [createAuditFilterRule("operation", "contains", "zone_setting")]
+                  : preset === "cache"
+                    ? [createAuditFilterRule("operation", "contains", "cache")]
+                    : preset === "last24h"
+                      ? [
+                          createAuditFilterRule(
+                            "timestamp",
+                            "gte",
+                            new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+                          ),
+                        ]
+                      : preset === "last7d"
+                        ? [
+                            createAuditFilterRule(
+                              "timestamp",
+                              "gte",
+                              new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(),
+                            ),
+                          ]
+                        : [createAuditFilterRule("timestamp", "gte", startOfToday.toISOString())];
+
+      setAuditFilters((prev) => {
+        const existing = new Set(prev.map((r) => `${r.field}|${r.operator}|${r.value}`));
+        const additions = presetRules.filter(
+          (r) => !existing.has(`${r.field}|${r.operator}|${r.value}`),
+        );
+        return [...prev, ...additions];
+      });
     },
     [createAuditFilterRule],
   );
@@ -4207,9 +4243,49 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         size="sm"
                         variant="ghost"
                         className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("api_keys")}
+                      >
+                        API Keys
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("zone_settings")}
+                      >
+                        Zone Settings
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("cache")}
+                      >
+                        Cache Ops
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("last24h")}
                       >
                         Last 24h
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("last7d")}
+                      >
+                        Last 7d
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("today")}
+                      >
+                        Today
                       </Button>
                       <Button
                         size="sm"
