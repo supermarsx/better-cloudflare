@@ -924,22 +924,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   }, [activeTab?.kind, loadAuditEntries]);
 
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "cache") return;
-
-    let cancelled = false;
-    setCacheSettingsLoading(true);
-    setCacheSettingsError(null);
-    setZoneDevMode(null);
-    setZoneCacheLevel(null);
-
-    Promise.allSettled([
-      getZoneSetting<string>(activeTab.zoneId, "development_mode"),
-      getZoneSetting<string>(activeTab.zoneId, "cache_level"),
-    ])
-      .then((results) => {
-        if (cancelled) return;
+  const refreshCacheSettings = useCallback(
+    async (zoneId: string) => {
+      setCacheSettingsLoading(true);
+      setCacheSettingsError(null);
+      setZoneDevMode(null);
+      setZoneCacheLevel(null);
+      try {
+        const results = await Promise.allSettled([
+          getZoneSetting<string>(zoneId, "development_mode"),
+          getZoneSetting<string>(zoneId, "cache_level"),
+        ]);
         const [dev, level] = results;
         if (dev.status === "fulfilled") setZoneDevMode(dev.value);
         if (level.status === "fulfilled") setZoneCacheLevel(level.value);
@@ -949,45 +944,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           .map((e) => (e instanceof Error ? e.message : String(e)))
           .filter(Boolean);
         if (errors.length) setCacheSettingsError(errors.join(" | "));
-      })
-      .catch((e) => {
-        if (cancelled) return;
+      } catch (e) {
         setCacheSettingsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (cancelled) return;
+      } finally {
         setCacheSettingsLoading(false);
-      });
+      }
+    },
+    [getZoneSetting],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
-
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "ssl-tls") return;
-
-    let cancelled = false;
-    setSslSettingsLoading(true);
-    setSslSettingsError(null);
-    setZoneSslMode(null);
-    setZoneMinTlsVersion(null);
-    setZoneTls13(null);
-    setZoneAlwaysUseHttps(null);
-    setZoneAutoHttpsRewrites(null);
-    setZoneOpportunisticEncryption(null);
-
-    Promise.allSettled([
-      getZoneSetting<string>(activeTab.zoneId, "ssl"),
-      getZoneSetting<string>(activeTab.zoneId, "min_tls_version"),
-      getZoneSetting<string>(activeTab.zoneId, "tls_1_3"),
-      getZoneSetting<string>(activeTab.zoneId, "always_use_https"),
-      getZoneSetting<string>(activeTab.zoneId, "automatic_https_rewrites"),
-      getZoneSetting<string>(activeTab.zoneId, "opportunistic_encryption"),
-    ])
-      .then((results) => {
-        if (cancelled) return;
+  const refreshSslSettings = useCallback(
+    async (zoneId: string) => {
+      setSslSettingsLoading(true);
+      setSslSettingsError(null);
+      setZoneSslMode(null);
+      setZoneMinTlsVersion(null);
+      setZoneTls13(null);
+      setZoneAlwaysUseHttps(null);
+      setZoneAutoHttpsRewrites(null);
+      setZoneOpportunisticEncryption(null);
+      try {
+        const results = await Promise.allSettled([
+          getZoneSetting<string>(zoneId, "ssl"),
+          getZoneSetting<string>(zoneId, "min_tls_version"),
+          getZoneSetting<string>(zoneId, "tls_1_3"),
+          getZoneSetting<string>(zoneId, "always_use_https"),
+          getZoneSetting<string>(zoneId, "automatic_https_rewrites"),
+          getZoneSetting<string>(zoneId, "opportunistic_encryption"),
+        ]);
         const [ssl, minTls, tls13, alwaysHttps, rewrites, oppEnc] = results;
         if (ssl.status === "fulfilled") setZoneSslMode(ssl.value);
         if (minTls.status === "fulfilled") setZoneMinTlsVersion(minTls.value);
@@ -1001,20 +985,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           .map((e) => (e instanceof Error ? e.message : String(e)))
           .filter(Boolean);
         if (errors.length) setSslSettingsError(errors.join(" | "));
-      })
-      .catch((e) => {
-        if (cancelled) return;
+      } catch (e) {
         setSslSettingsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (cancelled) return;
+      } finally {
         setSslSettingsLoading(false);
-      });
+      }
+    },
+    [getZoneSetting],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "cache") return;
+    void refreshCacheSettings(activeTab.zoneId);
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, refreshCacheSettings]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "ssl-tls") return;
+    void refreshSslSettings(activeTab.zoneId);
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, refreshSslSettings]);
 
   useEffect(() => {
     if (isDesktop()) {
@@ -2994,6 +2984,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Button
                         size="sm"
                         variant="outline"
+                        className="h-8 px-2 text-xs"
+                        onClick={() => void loadRecords(activeTab)}
+                        disabled={activeTab.isLoading}
+                        title="Force refresh from Cloudflare"
+                      >
+                        <RefreshCw className={cn("h-3.5 w-3.5", activeTab.isLoading && "animate-spin")} />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
                         onClick={() =>
                           updateTab(activeTab.id, (prev) => ({
                             ...prev,
@@ -3480,9 +3480,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="text-sm text-muted-foreground">
                         Cloudflare cache controls for {activeTab.zoneName}.
                       </div>
-                      {cacheSettingsLoading && (
-                        <div className="text-xs text-muted-foreground">Loading…</div>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-2 text-xs"
+                          onClick={() => void refreshCacheSettings(activeTab.zoneId)}
+                          disabled={cacheSettingsLoading}
+                          title="Force refresh from Cloudflare"
+                        >
+                          <RefreshCw
+                            className={cn("h-3.5 w-3.5", cacheSettingsLoading && "animate-spin")}
+                          />
+                        </Button>
+                        {cacheSettingsLoading && (
+                          <div className="text-xs text-muted-foreground">Loading…</div>
+                        )}
+                      </div>
                     </div>
                     {cacheSettingsError && (
                       <div className="text-xs text-destructive">{cacheSettingsError}</div>
@@ -3616,9 +3630,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="text-sm text-muted-foreground">
                         SSL/TLS controls for {activeTab.zoneName}.
                       </div>
-                      {sslSettingsLoading && (
-                        <div className="text-xs text-muted-foreground">Loading…</div>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-2 text-xs"
+                          onClick={() => void refreshSslSettings(activeTab.zoneId)}
+                          disabled={sslSettingsLoading}
+                          title="Force refresh from Cloudflare"
+                        >
+                          <RefreshCw
+                            className={cn("h-3.5 w-3.5", sslSettingsLoading && "animate-spin")}
+                          />
+                        </Button>
+                        {sslSettingsLoading && (
+                          <div className="text-xs text-muted-foreground">Loading…</div>
+                        )}
+                      </div>
                     </div>
                     {sslSettingsError && (
                       <div className="text-xs text-destructive">{sslSettingsError}</div>
