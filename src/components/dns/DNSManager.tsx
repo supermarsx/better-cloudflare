@@ -27,6 +27,7 @@ import { storageManager } from "@/lib/storage";
 import {
   ClipboardPaste,
   Copy,
+  ExternalLink,
   FileDown,
   FileUp,
   Filter,
@@ -52,6 +53,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
 import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
+import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
 
 
 type ActionTab =
@@ -60,7 +62,8 @@ type ActionTab =
   | "zone-settings"
   | "cache"
   | "ssl-tls"
-  | "domain-audit";
+  | "domain-audit"
+  | "domain-registry";
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -130,6 +133,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "domain-audit",
     label: "Audits",
     hint: "Check DNS compliance and best practices",
+  },
+  {
+    id: "domain-registry",
+    label: "Registry",
+    hint: "RDAP/WHOIS and registrar checks for this domain",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -284,6 +292,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     Record<DomainAuditCategory, boolean>
   >({ email: true, security: true, hygiene: true });
   const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
+  const [registryLookupDomain, setRegistryLookupDomain] = useState("");
+  const [registryChecksLoading, setRegistryChecksLoading] = useState(false);
+  const [registryChecksError, setRegistryChecksError] = useState<string | null>(null);
+  const [rdapResult, setRdapResult] = useState<Record<string, unknown> | null>(null);
+  const [registrarDomainResult, setRegistrarDomainResult] = useState<DomainInfo | null>(null);
+  const [registrarHealthResult, setRegistrarHealthResult] = useState<DomainHealthCheck | null>(null);
   const {
     getZones,
     getDNSRecords,
@@ -295,6 +309,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     purgeCache,
     getZoneSetting,
     updateZoneSetting,
+    registrarListAllDomains,
+    registrarHealthCheckAll,
   } = useCloudflareAPI(apiKey, email);
 
   const availableZones = useMemo(
@@ -353,7 +369,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       raw === "zone-settings" ||
       raw === "cache" ||
       raw === "ssl-tls" ||
-      raw === "domain-audit"
+      raw === "domain-audit" ||
+      raw === "domain-registry"
     ) {
       // Legacy malformed value (action without zone id): ignore.
       return null;
@@ -366,7 +383,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       actionRaw === "zone-settings" ||
       actionRaw === "cache" ||
       actionRaw === "ssl-tls" ||
-      actionRaw === "domain-audit"
+      actionRaw === "domain-audit" ||
+      actionRaw === "domain-registry"
     ) {
       return { tabId: zoneId, action: actionRaw };
     }
@@ -1100,6 +1118,68 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       [activeTab.zoneId]: new Set(),
     }));
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    setRegistryLookupDomain(activeTab.zoneName);
+    setRegistryChecksError(null);
+    setRdapResult(null);
+    setRegistrarDomainResult(null);
+    setRegistrarHealthResult(null);
+  }, [activeTab?.id]);
+
+  const runDomainRegistryChecks = useCallback(async () => {
+    const domain = registryLookupDomain.trim().toLowerCase();
+    if (!domain) return;
+    setRegistryChecksLoading(true);
+    setRegistryChecksError(null);
+
+    const [rdap, domains, health] = await Promise.allSettled([
+      fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`)
+        .then(async (res) => {
+          if (!res.ok) {
+            throw new Error(`RDAP lookup failed (${res.status})`);
+          }
+          return (await res.json()) as Record<string, unknown>;
+        }),
+      registrarListAllDomains(),
+      registrarHealthCheckAll(),
+    ]);
+
+    const errors: string[] = [];
+    if (rdap.status === "fulfilled") {
+      setRdapResult(rdap.value);
+    } else {
+      setRdapResult(null);
+      errors.push(rdap.reason instanceof Error ? rdap.reason.message : String(rdap.reason));
+    }
+
+    if (domains.status === "fulfilled") {
+      const list = (Array.isArray(domains.value) ? domains.value : []) as DomainInfo[];
+      const match =
+        list.find((d) => d.domain.toLowerCase() === domain) ??
+        list.find((d) => d.domain.toLowerCase().endsWith(`.${domain}`)) ??
+        null;
+      setRegistrarDomainResult(match);
+    } else {
+      setRegistrarDomainResult(null);
+      errors.push(
+        domains.reason instanceof Error ? domains.reason.message : String(domains.reason),
+      );
+    }
+
+    if (health.status === "fulfilled") {
+      const checks = (Array.isArray(health.value) ? health.value : []) as DomainHealthCheck[];
+      const match = checks.find((h) => h.domain.toLowerCase() === domain) ?? null;
+      setRegistrarHealthResult(match);
+    } else {
+      setRegistrarHealthResult(null);
+      errors.push(health.reason instanceof Error ? health.reason.message : String(health.reason));
+    }
+
+    setRegistryChecksError(errors.length ? errors.join(" | ") : null);
+    setRegistryChecksLoading(false);
+  }, [registrarHealthCheckAll, registrarListAllDomains, registryLookupDomain]);
 
 
   const filteredRecords = useMemo(() => {
@@ -3152,6 +3232,132 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="text-xs text-muted-foreground">
                       These checks are best-practice heuristics based only on records currently
                       present in this zone.
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "domain-registry" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Domain Registry Tools</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+                      <Input
+                        value={registryLookupDomain}
+                        onChange={(e) => setRegistryLookupDomain(e.target.value)}
+                        placeholder="example.com"
+                      />
+                      <Button
+                        onClick={() => void runDomainRegistryChecks()}
+                        disabled={!registryLookupDomain.trim() || registryChecksLoading}
+                      >
+                        {registryChecksLoading ? "Checking..." : "Check Everything"}
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          window.open(
+                            `https://rdap.org/domain/${encodeURIComponent(
+                              registryLookupDomain.trim(),
+                            )}`,
+                            "_blank",
+                            "noopener,noreferrer",
+                          )
+                        }
+                        disabled={!registryLookupDomain.trim()}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                        RDAP Tool
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          window.open(
+                            `https://lookup.icann.org/en/lookup?name=${encodeURIComponent(
+                              registryLookupDomain.trim(),
+                            )}`,
+                            "_blank",
+                            "noopener,noreferrer",
+                          )
+                        }
+                        disabled={!registryLookupDomain.trim()}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                        WHOIS Tool
+                      </Button>
+                    </div>
+
+                    {registryChecksError && (
+                      <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+                        {registryChecksError}
+                      </div>
+                    )}
+
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                        <div className="text-sm font-medium">Registrar API Match</div>
+                        {registrarDomainResult ? (
+                          <div className="text-xs text-muted-foreground space-y-1">
+                            <div>
+                              Domain: <span className="text-foreground">{registrarDomainResult.domain}</span>
+                            </div>
+                            <div>
+                              Registrar:{" "}
+                              <span className="text-foreground">{registrarDomainResult.registrar}</span>
+                            </div>
+                            <div>
+                              Status: <span className="text-foreground">{registrarDomainResult.status}</span>
+                            </div>
+                            <div>
+                              Expires: <span className="text-foreground">{registrarDomainResult.expires_at || "—"}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">
+                            No registrar-api match found for this domain.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                        <div className="text-sm font-medium">Health Checks</div>
+                        {registrarHealthResult ? (
+                          <div className="text-xs text-muted-foreground space-y-1">
+                            <div>
+                              Overall: <span className="text-foreground">{registrarHealthResult.status}</span>
+                            </div>
+                            {registrarHealthResult.checks.map((check) => (
+                              <div key={check.name}>
+                                {check.name}:{" "}
+                                <span className="text-foreground">{check.message}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">
+                            No health check data for this domain yet.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                      <div className="text-sm font-medium">RDAP Response</div>
+                      {rdapResult ? (
+                        <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
+                          {JSON.stringify(rdapResult, null, 2)}
+                        </pre>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">
+                          Run checks to load RDAP response.
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>

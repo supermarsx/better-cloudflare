@@ -252,9 +252,27 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  const registrarListAllDomains = useCallback(
+    (): Promise<unknown[]> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.registrarListAllDomains();
+    },
+    [api],
+  );
+
+  const registrarHealthCheckAll = useCallback(
+    (): Promise<unknown[]> => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.registrarHealthCheckAll();
+    },
+    [api],
+  );
+
   return {
     simulateSPF,
     getSPFGraph,
+    registrarListAllDomains,
+    registrarHealthCheckAll,
     verifyToken,
     getZones,
     getDNSRecords,
