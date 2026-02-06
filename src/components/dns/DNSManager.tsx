@@ -311,6 +311,9 @@ function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: bool
 }
 
 function SectionLoadingOverlay({ label }: { label: string }) {
+  const theme =
+    typeof document !== "undefined" ? document.documentElement.dataset.theme ?? "sunset" : "sunset";
+  const isDarkOverlayTheme = theme === "sunset" || theme === "oled";
   const spinnerGradient =
     "conic-gradient(from 0deg, hsl(var(--primary)) 0deg, hsl(var(--primary) / 0.2) 90deg, hsl(var(--primary)) 220deg, hsl(var(--primary)) 360deg)";
   const spinnerGlowGradient =
@@ -319,8 +322,20 @@ function SectionLoadingOverlay({ label }: { label: string }) {
     "radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2.5px))";
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-gradient-to-br from-white/84 via-white/72 to-primary/16 backdrop-blur-2xl backdrop-saturate-150 dark:from-black/88 dark:via-black/82 dark:to-primary/44">
-      <div className="flex items-center gap-2 rounded-lg border border-primary/35 bg-card/92 px-3 py-2 text-xs text-foreground shadow-[0_0_34px_hsl(var(--primary)/0.28)] dark:bg-card/85">
+    <div
+      className={cn(
+        "absolute inset-0 z-20 flex items-center justify-center rounded-xl backdrop-blur-2xl backdrop-saturate-150",
+        isDarkOverlayTheme
+          ? "bg-gradient-to-br from-black/88 via-black/82 to-primary/44"
+          : "bg-gradient-to-br from-white/95 via-white/90 to-primary/12",
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-lg border border-primary/35 px-3 py-2 text-xs text-foreground shadow-[0_0_34px_hsl(var(--primary)/0.28)]",
+          isDarkOverlayTheme ? "bg-card/85" : "bg-card/96",
+        )}
+      >
         <div className="relative h-5 w-5">
           <div
             className="absolute inset-0 rounded-full opacity-85 blur-[1px]"
@@ -334,7 +349,12 @@ function SectionLoadingOverlay({ label }: { label: string }) {
               mask: ringMask,
             }}
           />
-          <div className="absolute inset-[5px] rounded-full bg-card/95 dark:bg-card/85" />
+          <div
+            className={cn(
+              "absolute inset-[5px] rounded-full",
+              isDarkOverlayTheme ? "bg-card/85" : "bg-card/96",
+            )}
+          />
         </div>
         {label}
       </div>
