@@ -39,7 +39,37 @@ interface StorageData {
   confirmWindowClose?: boolean;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
+  auditExportFolderPreset?: string;
+  auditExportCustomPath?: string;
+  domainAuditCategories?: {
+    email?: boolean;
+    security?: boolean;
+    hygiene?: boolean;
+  };
+  sessionSettingsProfiles?: Record<string, SessionSettingsProfile>;
   auditOverrides?: Record<string, string[]>;
+}
+
+export interface SessionSettingsProfile {
+  autoRefreshInterval?: number | null;
+  defaultPerPage?: number;
+  zonePerPage?: Record<string, number>;
+  showUnsupportedRecordTypes?: boolean;
+  zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
+  reopenLastTabs?: boolean;
+  reopenZoneTabs?: Record<string, boolean>;
+  confirmLogout?: boolean;
+  idleLogoutMs?: number | null;
+  confirmWindowClose?: boolean;
+  auditExportDefaultDocuments?: boolean;
+  confirmClearAuditLogs?: boolean;
+  auditExportFolderPreset?: string;
+  auditExportCustomPath?: string;
+  domainAuditCategories?: {
+    email?: boolean;
+    security?: boolean;
+    hygiene?: boolean;
+  };
 }
 
 function parseRecordTags(
@@ -668,6 +698,69 @@ export class StorageManager {
     return this.data.confirmClearAuditLogs !== false;
   }
 
+  setAuditExportFolderPreset(preset: string): void {
+    this.data.auditExportFolderPreset = preset;
+    this.save();
+    this.dispatchPreferencesChanged({ auditExportFolderPreset: preset });
+  }
+
+  getAuditExportFolderPreset(): string {
+    return this.data.auditExportFolderPreset ?? "documents";
+  }
+
+  setAuditExportCustomPath(path: string): void {
+    this.data.auditExportCustomPath = path.trim();
+    this.save();
+    this.dispatchPreferencesChanged({ auditExportCustomPath: this.data.auditExportCustomPath });
+  }
+
+  getAuditExportCustomPath(): string {
+    return this.data.auditExportCustomPath ?? "";
+  }
+
+  setDomainAuditCategories(categories: {
+    email: boolean;
+    security: boolean;
+    hygiene: boolean;
+  }): void {
+    this.data.domainAuditCategories = {
+      email: categories.email,
+      security: categories.security,
+      hygiene: categories.hygiene,
+    };
+    this.save();
+    this.dispatchPreferencesChanged({ domainAuditCategories: this.data.domainAuditCategories });
+  }
+
+  getDomainAuditCategories(): { email: boolean; security: boolean; hygiene: boolean } {
+    const raw = this.data.domainAuditCategories ?? {};
+    return {
+      email: raw.email !== false,
+      security: raw.security !== false,
+      hygiene: raw.hygiene !== false,
+    };
+  }
+
+  setSessionSettingsProfile(sessionId: string, profile: SessionSettingsProfile): void {
+    const id = String(sessionId || "").trim();
+    if (!id) return;
+    if (!this.data.sessionSettingsProfiles) this.data.sessionSettingsProfiles = {};
+    this.data.sessionSettingsProfiles[id] = { ...profile };
+    this.save();
+    this.dispatchPreferencesChanged({ sessionSettingsProfiles: this.data.sessionSettingsProfiles });
+  }
+
+  getSessionSettingsProfile(sessionId: string): SessionSettingsProfile | undefined {
+    const id = String(sessionId || "").trim();
+    if (!id) return undefined;
+    const profile = this.data.sessionSettingsProfiles?.[id];
+    return profile ? { ...profile } : undefined;
+  }
+
+  getSessionSettingsProfiles(): Record<string, SessionSettingsProfile> {
+    return { ...(this.data.sessionSettingsProfiles ?? {}) };
+  }
+
   setZonePerPage(zoneId: string, value: number | null): void {
     if (!this.data.zonePerPage) {
       this.data.zonePerPage = {};
@@ -770,6 +863,10 @@ export class StorageManager {
     delete this.data.confirmWindowClose;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
+    delete this.data.auditExportFolderPreset;
+    delete this.data.auditExportCustomPath;
+    delete this.data.domainAuditCategories;
+    delete this.data.sessionSettingsProfiles;
     this.save();
     this.dispatchPreferencesChanged({ settingsCleared: true });
   }

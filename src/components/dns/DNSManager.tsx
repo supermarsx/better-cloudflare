@@ -3,7 +3,7 @@
  * Top-level DNS Manager UI which composes the zone selector, the record
  * list and dialogs for creating/importing records.
  */
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,7 @@ import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
-import { storageManager } from "@/lib/storage";
+import { storageManager, type SessionSettingsProfile } from "@/lib/storage";
 import {
   ClipboardPaste,
   Copy,
@@ -48,6 +48,7 @@ import { RecordRow } from "./RecordRow";
 import { filterRecords } from "@/lib/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
@@ -67,6 +68,8 @@ type ActionTab =
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
+type SettingsSubtab = "general" | "audit" | "profiles";
+type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
 
 type ZoneTab = {
   kind: TabKind;
@@ -248,6 +251,16 @@ function formatAuditTimestampFull(value: unknown): string {
   })} | ${date.toISOString()}`;
 }
 
+function sanitizeDomainAuditCategories(
+  value: Partial<Record<DomainAuditCategory, boolean>> | null | undefined,
+): Record<DomainAuditCategory, boolean> {
+  return {
+    email: value?.email !== false,
+    security: value?.security !== false,
+    hygiene: value?.hygiene !== false,
+  };
+}
+
 /**
  * DNS Manager component responsible for listing zones and DNS records and
  * providing UI for add/import/export/update/delete operations.
@@ -259,6 +272,8 @@ function formatAuditTimestampFull(value: unknown): string {
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
+  const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
+  const sessionProfileHydratedRef = useRef(false);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState("");
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
@@ -301,6 +316,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [confirmClearAuditLogs, setConfirmClearAuditLogs] = useState(
     storageManager.getConfirmClearAuditLogs(),
   );
+  const [auditExportFolderPreset, setAuditExportFolderPreset] = useState<ExportFolderPreset>(
+    storageManager.getAuditExportFolderPreset() as ExportFolderPreset,
+  );
+  const [auditExportCustomPath, setAuditExportCustomPath] = useState(
+    storageManager.getAuditExportCustomPath(),
+  );
+  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("general");
+  const [sessionSettingsProfiles, setSessionSettingsProfiles] = useState<
+    Record<string, SessionSettingsProfile>
+  >(storageManager.getSessionSettingsProfiles());
+  const [cloneSourceSessionId, setCloneSourceSessionId] = useState("");
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -343,7 +369,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [domainAuditShowPassed, setDomainAuditShowPassed] = useState(false);
   const [domainAuditCategories, setDomainAuditCategories] = useState<
     Record<DomainAuditCategory, boolean>
-  >({ email: true, security: true, hygiene: true });
+  >(sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()));
   const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
   const [registryLookupDomain, setRegistryLookupDomain] = useState("");
   const [registryChecksLoading, setRegistryChecksLoading] = useState(false);
@@ -376,6 +402,111 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
   );
+  const currentSessionId = useMemo(
+    () => storageManager.getCurrentSession() ?? "__default",
+    [],
+  );
+  const sessionProfileIds = useMemo(
+    () => Object.keys(sessionSettingsProfiles).sort((a, b) => a.localeCompare(b)),
+    [sessionSettingsProfiles],
+  );
+
+  const buildSessionSettingsProfile = useCallback((): SessionSettingsProfile => {
+    return {
+      autoRefreshInterval,
+      defaultPerPage: globalPerPage,
+      zonePerPage,
+      showUnsupportedRecordTypes,
+      zoneShowUnsupportedRecordTypes,
+      reopenLastTabs,
+      reopenZoneTabs,
+      confirmLogout,
+      idleLogoutMs,
+      confirmWindowClose,
+      auditExportDefaultDocuments,
+      confirmClearAuditLogs,
+      auditExportFolderPreset,
+      auditExportCustomPath,
+      domainAuditCategories,
+    };
+  }, [
+    autoRefreshInterval,
+    globalPerPage,
+    zonePerPage,
+    showUnsupportedRecordTypes,
+    zoneShowUnsupportedRecordTypes,
+    reopenLastTabs,
+    reopenZoneTabs,
+    confirmLogout,
+    idleLogoutMs,
+    confirmWindowClose,
+    auditExportDefaultDocuments,
+    confirmClearAuditLogs,
+    auditExportFolderPreset,
+    auditExportCustomPath,
+    domainAuditCategories,
+  ]);
+
+  const applySessionSettingsProfile = useCallback((profile: SessionSettingsProfile) => {
+    if (typeof profile.autoRefreshInterval === "number" || profile.autoRefreshInterval === null) {
+      setAutoRefreshInterval(profile.autoRefreshInterval ?? null);
+    }
+    if (typeof profile.defaultPerPage === "number") {
+      setGlobalPerPage(profile.defaultPerPage);
+    }
+    if (profile.zonePerPage && typeof profile.zonePerPage === "object") {
+      setZonePerPage(profile.zonePerPage);
+    }
+    if (typeof profile.showUnsupportedRecordTypes === "boolean") {
+      setShowUnsupportedRecordTypes(profile.showUnsupportedRecordTypes);
+    }
+    if (
+      profile.zoneShowUnsupportedRecordTypes &&
+      typeof profile.zoneShowUnsupportedRecordTypes === "object"
+    ) {
+      setZoneShowUnsupportedRecordTypes(profile.zoneShowUnsupportedRecordTypes);
+    }
+    if (typeof profile.reopenLastTabs === "boolean") {
+      setReopenLastTabs(profile.reopenLastTabs);
+    }
+    if (profile.reopenZoneTabs && typeof profile.reopenZoneTabs === "object") {
+      setReopenZoneTabs(profile.reopenZoneTabs);
+    }
+    if (typeof profile.confirmLogout === "boolean") {
+      setConfirmLogout(profile.confirmLogout);
+    }
+    if (typeof profile.idleLogoutMs === "number" || profile.idleLogoutMs === null) {
+      setIdleLogoutMs(profile.idleLogoutMs ?? null);
+    }
+    if (typeof profile.confirmWindowClose === "boolean") {
+      setConfirmWindowClose(profile.confirmWindowClose);
+    }
+    if (typeof profile.auditExportDefaultDocuments === "boolean") {
+      setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
+    }
+    if (typeof profile.confirmClearAuditLogs === "boolean") {
+      setConfirmClearAuditLogs(profile.confirmClearAuditLogs);
+    }
+    if (typeof profile.auditExportFolderPreset === "string") {
+      setAuditExportFolderPreset(profile.auditExportFolderPreset as ExportFolderPreset);
+    }
+    if (typeof profile.auditExportCustomPath === "string") {
+      setAuditExportCustomPath(profile.auditExportCustomPath);
+    }
+    if (profile.domainAuditCategories) {
+      setDomainAuditCategories(sanitizeDomainAuditCategories(profile.domainAuditCategories));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    if (sessionProfileHydratedRef.current) return;
+    const profile = sessionSettingsProfiles[currentSessionId];
+    if (profile) {
+      applySessionSettingsProfile(profile);
+    }
+    sessionProfileHydratedRef.current = true;
+  }, [applySessionSettingsProfile, currentSessionId, prefsReady, sessionSettingsProfiles]);
 
   const resolvedShowUnsupportedRecordTypes = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
@@ -759,6 +890,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close?: boolean;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
+            audit_export_folder_preset?: string;
+            audit_export_custom_path?: string;
+            domain_audit_categories?: Record<DomainAuditCategory, boolean>;
+            session_settings_profiles?: Record<string, SessionSettingsProfile>;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.last_active_tab === "string") {
@@ -809,6 +944,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.confirm_clear_audit_logs === "boolean") {
             setConfirmClearAuditLogs(prefObj.confirm_clear_audit_logs);
           }
+          if (typeof prefObj.audit_export_folder_preset === "string") {
+            setAuditExportFolderPreset(prefObj.audit_export_folder_preset as ExportFolderPreset);
+          }
+          if (typeof prefObj.audit_export_custom_path === "string") {
+            setAuditExportCustomPath(prefObj.audit_export_custom_path);
+          }
+          if (prefObj.domain_audit_categories && typeof prefObj.domain_audit_categories === "object") {
+            setDomainAuditCategories(sanitizeDomainAuditCategories(prefObj.domain_audit_categories));
+          }
+          if (
+            prefObj.session_settings_profiles &&
+            typeof prefObj.session_settings_profiles === "object"
+          ) {
+            setSessionSettingsProfiles(prefObj.session_settings_profiles);
+          }
         })
         .catch(() => {})
         .finally(() => setPrefsReady(true));
@@ -831,6 +981,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
+    setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
+    setAuditExportCustomPath(storageManager.getAuditExportCustomPath());
+    setDomainAuditCategories(sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()));
+    setSessionSettingsProfiles(storageManager.getSessionSettingsProfiles());
     setPrefsReady(true);
   }, []);
 
@@ -944,6 +1098,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
+    storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
+    storageManager.setAuditExportCustomPath(auditExportCustomPath);
+    storageManager.setDomainAuditCategories(domainAuditCategories);
+    storageManager.setSessionSettingsProfile(currentSessionId, buildSessionSettingsProfile());
 
     if (isDesktop()) {
       TauriClient.getPreferences()
@@ -962,6 +1120,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close: confirmWindowClose,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
+            audit_export_folder_preset: auditExportFolderPreset,
+            audit_export_custom_path: auditExportCustomPath,
+            domain_audit_categories: domainAuditCategories,
+            session_settings_profiles: {
+              ...sessionSettingsProfiles,
+              [currentSessionId]: buildSessionSettingsProfile(),
+            },
           }),
         )
         .catch(() => {});
@@ -979,8 +1144,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
+    auditExportFolderPreset,
+    auditExportCustomPath,
+    domainAuditCategories,
+    currentSessionId,
+    buildSessionSettingsProfile,
+    sessionSettingsProfiles,
     prefsReady,
   ]);
+
+  useEffect(() => {
+    setSessionSettingsProfiles((prev) => ({
+      ...prev,
+      [currentSessionId]: buildSessionSettingsProfile(),
+    }));
+  }, [buildSessionSettingsProfile, currentSessionId]);
 
   useEffect(() => {
     if (!globalPerPage) return;
@@ -1365,6 +1543,112 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     await TauriClient.clearAuditEntries();
     setAuditEntries([]);
   }, []);
+
+  const exportSessionSettings = useCallback(() => {
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      sessionId: currentSessionId,
+      settings: buildSessionSettingsProfile(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `session-settings-${currentSessionId}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Exported", description: "Session settings exported." });
+  }, [buildSessionSettingsProfile, currentSessionId, toast]);
+
+  const importSessionSettings = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as
+          | SessionSettingsProfile
+          | { settings?: SessionSettingsProfile };
+        const profile =
+          parsed && typeof parsed === "object" && "settings" in parsed
+            ? (parsed.settings as SessionSettingsProfile | undefined)
+            : (parsed as SessionSettingsProfile);
+        if (!profile || typeof profile !== "object") {
+          throw new Error("Invalid settings file");
+        }
+        applySessionSettingsProfile(profile);
+        const nextProfiles = {
+          ...sessionSettingsProfiles,
+          [currentSessionId]: profile,
+        };
+        setSessionSettingsProfiles(nextProfiles);
+        storageManager.setSessionSettingsProfile(currentSessionId, profile);
+        if (isDesktop()) {
+          const prefs = await TauriClient.getPreferences();
+          await TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            session_settings_profiles: nextProfiles,
+          });
+        }
+        toast({ title: "Imported", description: "Session settings imported." });
+      } catch (error) {
+        toast({
+          title: "Import failed",
+          description: error instanceof Error ? error.message : String(error),
+          variant: "destructive",
+        });
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [
+      applySessionSettingsProfile,
+      currentSessionId,
+      sessionSettingsProfiles,
+      toast,
+    ],
+  );
+
+  const cloneSessionSettingsFrom = useCallback(
+    async (sourceSessionId: string) => {
+      if (!sourceSessionId) return;
+      const profile = sessionSettingsProfiles[sourceSessionId];
+      if (!profile) {
+        toast({
+          title: "Clone failed",
+          description: `No saved settings found for ${sourceSessionId}.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      applySessionSettingsProfile(profile);
+      const nextProfiles = {
+        ...sessionSettingsProfiles,
+        [currentSessionId]: profile,
+      };
+      setSessionSettingsProfiles(nextProfiles);
+      storageManager.setSessionSettingsProfile(currentSessionId, profile);
+      if (isDesktop()) {
+        try {
+          const prefs = await TauriClient.getPreferences();
+          await TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            session_settings_profiles: nextProfiles,
+          });
+        } catch {
+          // best effort
+        }
+      }
+      toast({
+        title: "Cloned",
+        description: `Applied settings from ${sourceSessionId}.`,
+      });
+    },
+    [applySessionSettingsProfile, currentSessionId, sessionSettingsProfiles, toast],
+  );
   const handleAddRecord = async () => {
     if (!activeTab) return;
     const draft = activeTab.newRecord;
@@ -2273,6 +2557,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <div className="space-y-4 fade-in">
+                  <div className="rounded-xl border border-border/60 bg-card/60 px-3 py-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground/90">Assigned nameservers:</span>{" "}
+                    {selectedZoneData?.name_servers && selectedZoneData.name_servers.length > 0
+                      ? selectedZoneData.name_servers.join(", ")
+                      : "Not available for this zone"}
+                  </div>
                   {activeTab.isLoading && (
                     <div className="space-y-3">
                       {Array.from({ length: 6 }).map((_, idx) => (
@@ -3584,11 +3874,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             try {
                               const path = await TauriClient.saveAuditEntries(
                                 "json",
-                                auditExportDefaultDocuments,
+                                auditExportFolderPreset,
+                                auditExportCustomPath,
                               );
                               toast({
                                 title: "Export complete",
                                 description: `Saved to ${path}`,
+                                action: (
+                                  <ToastAction
+                                    altText="Open export folder"
+                                    onClick={() => {
+                                      void TauriClient.openPathInFileManager(path).catch(
+                                        (error) => {
+                                          toast({
+                                            title: "Open folder failed",
+                                            description:
+                                              error instanceof Error
+                                                ? error.message
+                                                : String(error),
+                                            variant: "destructive",
+                                          });
+                                        },
+                                      );
+                                    }}
+                                  >
+                                    Open folder
+                                  </ToastAction>
+                                ),
                               });
                             } catch (error) {
                               const message =
@@ -3612,11 +3924,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             try {
                               const path = await TauriClient.saveAuditEntries(
                                 "csv",
-                                auditExportDefaultDocuments,
+                                auditExportFolderPreset,
+                                auditExportCustomPath,
                               );
                               toast({
                                 title: "Export complete",
                                 description: `Saved to ${path}`,
+                                action: (
+                                  <ToastAction
+                                    altText="Open export folder"
+                                    onClick={() => {
+                                      void TauriClient.openPathInFileManager(path).catch(
+                                        (error) => {
+                                          toast({
+                                            title: "Open folder failed",
+                                            description:
+                                              error instanceof Error
+                                                ? error.message
+                                                : String(error),
+                                            variant: "destructive",
+                                          });
+                                        },
+                                      );
+                                    }}
+                                  >
+                                    Open folder
+                                  </ToastAction>
+                                ),
                               });
                             } catch (error) {
                               const message =
@@ -3950,6 +4284,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant={settingsSubtab === "general" ? "default" : "outline"}
+                        onClick={() => setSettingsSubtab("general")}
+                      >
+                        General
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={settingsSubtab === "audit" ? "default" : "outline"}
+                        onClick={() => setSettingsSubtab("audit")}
+                      >
+                        Audit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={settingsSubtab === "profiles" ? "default" : "outline"}
+                        onClick={() => setSettingsSubtab("profiles")}
+                      >
+                        Profiles
+                      </Button>
+                    </div>
+                    {settingsSubtab === "general" && (
                     <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Auto refresh</div>
@@ -4089,48 +4447,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                       )}
-                      {isDesktop() && (
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Audit export default</div>
-                          <div className="flex items-center gap-3">
-                            <Switch
-                              checked={auditExportDefaultDocuments}
-                              onCheckedChange={(checked: boolean) => {
-                                setAuditExportDefaultDocuments(checked);
-                                notifySaved(
-                                  checked
-                                    ? "Audit export dialog defaults to Documents."
-                                    : "Audit export dialog uses system default location.",
-                                );
-                              }}
-                            />
-                            <div className="text-xs text-muted-foreground">
-                              Preselect Documents in the export save dialog.
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      {isDesktop() && (
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Confirm clear audit logs</div>
-                          <div className="flex items-center gap-3">
-                            <Switch
-                              checked={confirmClearAuditLogs}
-                              onCheckedChange={(checked: boolean) => {
-                                setConfirmClearAuditLogs(checked);
-                                notifySaved(
-                                  checked
-                                    ? "Clear-audit confirmation enabled."
-                                    : "Clear-audit confirmation disabled.",
-                                );
-                              }}
-                            />
-                            <div className="text-xs text-muted-foreground">
-                              Ask before deleting all audit entries.
-                            </div>
-                          </div>
-                        </div>
-                      )}
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Auto logout (idle)</div>
                         <div className="flex flex-wrap items-center gap-3">
@@ -4167,9 +4483,175 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
+                    )}
+                    {settingsSubtab === "audit" && (
+                      <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Audit categories</div>
+                          <div className="flex flex-wrap gap-4">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                className="checkbox-themed"
+                                checked={domainAuditCategories.email}
+                                onChange={(e) =>
+                                  setDomainAuditCategories((prev) => ({
+                                    ...prev,
+                                    email: e.target.checked,
+                                  }))
+                                }
+                              />
+                              Email
+                            </label>
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                className="checkbox-themed"
+                                checked={domainAuditCategories.security}
+                                onChange={(e) =>
+                                  setDomainAuditCategories((prev) => ({
+                                    ...prev,
+                                    security: e.target.checked,
+                                  }))
+                                }
+                              />
+                              Security
+                            </label>
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                className="checkbox-themed"
+                                checked={domainAuditCategories.hygiene}
+                                onChange={(e) =>
+                                  setDomainAuditCategories((prev) => ({
+                                    ...prev,
+                                    hygiene: e.target.checked,
+                                  }))
+                                }
+                              />
+                              Hygiene
+                            </label>
+                          </div>
+                        </div>
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Export folder preset</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Select
+                                value={auditExportFolderPreset}
+                                onValueChange={(v) => {
+                                  setAuditExportFolderPreset(v as ExportFolderPreset);
+                                  notifySaved(`Audit export preset set to ${v}.`);
+                                }}
+                              >
+                                <SelectTrigger className="w-52">
+                                  <SelectValue placeholder="Folder preset" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="system">System default</SelectItem>
+                                  <SelectItem value="documents">Documents</SelectItem>
+                                  <SelectItem value="downloads">Downloads</SelectItem>
+                                  <SelectItem value="desktop">Desktop</SelectItem>
+                                  <SelectItem value="custom">Custom path</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-xs text-muted-foreground">
+                                Choose the default start folder for audit exports.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {isDesktop() && auditExportFolderPreset === "custom" && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Custom export path</div>
+                            <Input
+                              value={auditExportCustomPath}
+                              onChange={(e) => setAuditExportCustomPath(e.target.value)}
+                              placeholder="C:\\Users\\You\\Documents\\Audit Exports"
+                            />
+                          </div>
+                        )}
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Confirm clear audit logs</div>
+                            <div className="flex items-center gap-3">
+                              <Switch
+                                checked={confirmClearAuditLogs}
+                                onCheckedChange={(checked: boolean) => {
+                                  setConfirmClearAuditLogs(checked);
+                                  notifySaved(
+                                    checked
+                                      ? "Clear-audit confirmation enabled."
+                                      : "Clear-audit confirmation disabled.",
+                                  );
+                                }}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Ask before deleting all audit entries.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {settingsSubtab === "profiles" && (
+                      <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 text-sm">
+                        <div className="text-xs text-muted-foreground">
+                          Current session:{" "}
+                          <span className="font-medium text-foreground">{currentSessionId}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={exportSessionSettings}>
+                            <FileDown className="mr-2 h-4 w-4" />
+                            Export settings
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => settingsImportInputRef.current?.click()}
+                          >
+                            <FileUp className="mr-2 h-4 w-4" />
+                            Import settings
+                          </Button>
+                          <input
+                            ref={settingsImportInputRef}
+                            type="file"
+                            className="hidden"
+                            accept="application/json"
+                            onChange={(e) => void importSessionSettings(e)}
+                          />
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                          <div className="space-y-1">
+                            <Label>Clone from session</Label>
+                            <Select value={cloneSourceSessionId} onValueChange={setCloneSourceSessionId}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Pick saved session profile" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {sessionProfileIds
+                                  .filter((id) => id !== currentSessionId)
+                                  .map((id) => (
+                                    <SelectItem key={id} value={id}>
+                                      {id}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <Button
+                            size="sm"
+                            disabled={!cloneSourceSessionId}
+                            onClick={() => void cloneSessionSettingsFrom(cloneSourceSessionId)}
+                          >
+                            Clone
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
-                      Global settings apply to every zone unless overridden.
+                      Settings can be exported/imported and cloned across sessions.
                     </div>
                   </CardContent>
                 </Card>

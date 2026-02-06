@@ -40,6 +40,68 @@ fn serialize_audit_entries(
     Err("Unsupported format".to_string())
 }
 
+fn resolve_export_directory(
+    folder_preset: Option<&str>,
+    custom_path: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let preset = folder_preset.unwrap_or("documents").to_lowercase();
+    match preset.as_str() {
+        "documents" => dirs::document_dir(),
+        "downloads" => dirs::download_dir(),
+        "desktop" => dirs::desktop_dir(),
+        "home" => dirs::home_dir(),
+        "custom" => {
+            let candidate = custom_path.unwrap_or("").trim();
+            if candidate.is_empty() {
+                None
+            } else {
+                let path = std::path::PathBuf::from(candidate);
+                if path.exists() && path.is_dir() {
+                    Some(path)
+                } else {
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub async fn open_path_in_file_manager(path: String) -> Result<(), String> {
+    let input = std::path::PathBuf::from(path);
+    let target = if input.is_dir() {
+        input
+    } else {
+        input
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| "Invalid path".to_string())?
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(target.as_os_str());
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(target.as_os_str());
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(target.as_os_str());
+        c
+    };
+
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -831,7 +893,8 @@ pub async fn export_audit_entries(
 pub async fn save_audit_entries(
     storage: State<'_, Storage>,
     format: Option<String>,
-    default_to_documents: Option<bool>,
+    folder_preset: Option<String>,
+    custom_path: Option<String>,
 ) -> Result<String, String> {
     let entries = storage.get_audit_entries().await.map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string()).to_lowercase();
@@ -840,10 +903,11 @@ pub async fn save_audit_entries(
     let file_name = format!("audit-log.{}", extension);
 
     let mut dialog = rfd::FileDialog::new().set_file_name(&file_name);
-    if default_to_documents.unwrap_or(true) {
-        if let Some(dir) = dirs::document_dir() {
-            dialog = dialog.set_directory(dir);
-        }
+    if let Some(dir) = resolve_export_directory(
+        folder_preset.as_deref(),
+        custom_path.as_deref(),
+    ) {
+        dialog = dialog.set_directory(dir);
     }
     if fmt == "csv" {
         dialog = dialog.add_filter("CSV", &["csv"]);

@@ -23,6 +23,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
             commands::restart_app,
+            commands::open_path_in_file_manager,
             // Authentication & Key Management
             commands::verify_token,
             commands::get_api_keys,

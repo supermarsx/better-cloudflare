@@ -42,6 +42,10 @@ export class TauriClient {
     return invoke("restart_app");
   }
 
+  static async openPathInFileManager(path: string): Promise<void> {
+    return invoke("open_path_in_file_manager", { path });
+  }
+
   // Authentication & Key Management
   static async verifyToken(apiKey: string, email?: string): Promise<boolean> {
     return invoke("verify_token", { apiKey, email });
@@ -350,9 +354,10 @@ export class TauriClient {
 
   static async saveAuditEntries(
     format: "json" | "csv" = "json",
-    defaultToDocuments = true,
+    folderPreset = "documents",
+    customPath = "",
   ): Promise<string> {
-    return invoke("save_audit_entries", { format, defaultToDocuments });
+    return invoke("save_audit_entries", { format, folderPreset, customPath });
   }
 
   static async clearAuditEntries(): Promise<void> {
