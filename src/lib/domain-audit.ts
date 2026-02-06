@@ -20,7 +20,15 @@ export type DomainAuditItem = {
 
 export type DomainAuditOptions = {
   includeCategories: Record<DomainAuditCategory, boolean>;
+  domainExpiresAt?: string | null;
 };
+
+function parseDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms);
+}
 
 function normalizeName(name: string, zoneName: string): string {
   const trimmed = String(name ?? "").trim().toLowerCase();
@@ -224,6 +232,7 @@ export function runDomainAudit(
   records: DNSRecord[],
   options: DomainAuditOptions = {
     includeCategories: { email: true, security: true, hygiene: true },
+    domainExpiresAt: null,
   },
 ): DomainAuditItem[] {
   const apex = zoneApex(zoneName);
@@ -275,6 +284,57 @@ export function runDomainAudit(
   }
 
   if (options.includeCategories.hygiene) {
+    const expiryDate = parseDate(options.domainExpiresAt);
+    if (!expiryDate) {
+      items.push({
+        id: "domain-expiry",
+        category: "hygiene",
+        severity: "info",
+        title: "Domain expiry check",
+        details:
+          "Domain expiry date is unavailable. Run a registry lookup to evaluate expiry risk.",
+      });
+    } else {
+      const now = new Date();
+      const daysUntilExpiry = Math.ceil(
+        (expiryDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      const fullExpiry = expiryDate.toLocaleString();
+      if (daysUntilExpiry < 0) {
+        items.push({
+          id: "domain-expiry",
+          category: "hygiene",
+          severity: "fail",
+          title: "Domain appears expired",
+          details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days). Renew immediately.`,
+        });
+      } else if (daysUntilExpiry < 15) {
+        items.push({
+          id: "domain-expiry",
+          category: "hygiene",
+          severity: "fail",
+          title: "Domain expiry critical (<15 days)",
+          details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days remaining). Renew now.`,
+        });
+      } else if (daysUntilExpiry < 30) {
+        items.push({
+          id: "domain-expiry",
+          category: "hygiene",
+          severity: "warn",
+          title: "Domain expiry approaching",
+          details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days remaining).`,
+        });
+      } else {
+        items.push({
+          id: "domain-expiry",
+          category: "hygiene",
+          severity: "pass",
+          title: "Domain expiry",
+          details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days remaining).`,
+        });
+      }
+    }
+
     const ttlIssues: string[] = [];
     const ttlCritical: string[] = [];
     for (const r of records) {

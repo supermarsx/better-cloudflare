@@ -646,10 +646,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const domainAuditItems = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
+    const zone = activeTab.zoneName.trim().toLowerCase();
+    const registrarExpiry =
+      registrarDomainResult &&
+      registrarDomainResult.domain.trim().toLowerCase() === zone
+        ? registrarDomainResult.expires_at
+        : null;
+    const rdapEventsRaw = Array.isArray((rdapResult as Record<string, unknown> | null)?.events)
+      ? ((rdapResult as Record<string, unknown>).events as Array<Record<string, unknown>>)
+      : [];
+    const rdapExpiryEvent =
+      rdapEventsRaw
+        .find((event) =>
+          String(event.eventAction ?? "")
+            .toLowerCase()
+            .includes("expiration"),
+        )
+        ?.eventDate?.toString() ?? null;
     return runDomainAudit(activeTab.zoneName, activeTab.records, {
       includeCategories: domainAuditCategories,
+      domainExpiresAt: registrarExpiry ?? rdapExpiryEvent,
     });
-  }, [activeTab, domainAuditCategories]);
+  }, [activeTab, domainAuditCategories, rdapResult, registrarDomainResult]);
 
   const domainAuditItemsWithOverrides = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return domainAuditItems;
