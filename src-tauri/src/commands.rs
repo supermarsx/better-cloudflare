@@ -1200,19 +1200,19 @@ fn build_dns_resolver() -> Result<TokioAsyncResolver, String> {
 }
 
 fn resolve_doh_endpoint(provider: Option<&str>, custom_url: Option<&str>) -> String {
-    let p = provider.unwrap_or("google").trim().to_lowercase();
+    let p = provider.unwrap_or("cloudflare").trim().to_lowercase();
     match p.as_str() {
         "cloudflare" => "https://cloudflare-dns.com/dns-query".to_string(),
         "quad9" => "https://dns.quad9.net:5053/dns-query".to_string(),
         "custom" => {
             let raw = custom_url.unwrap_or("").trim();
             if raw.is_empty() {
-                "https://dns.google/resolve".to_string()
+                "https://cloudflare-dns.com/dns-query".to_string()
             } else {
                 raw.to_string()
             }
         }
-        _ => "https://dns.google/resolve".to_string(),
+        _ => "https://cloudflare-dns.com/dns-query".to_string(),
     }
 }
 

@@ -694,8 +694,8 @@ function resolveDohEndpoint(
 ): string {
   if (provider === "cloudflare") return "https://cloudflare-dns.com/dns-query";
   if (provider === "quad9") return "https://dns.quad9.net:5053/dns-query";
-  if (provider === "custom") return customUrl.trim() || "https://dns.google/resolve";
-  return "https://dns.google/resolve";
+  if (provider === "custom") return customUrl.trim() || "https://cloudflare-dns.com/dns-query";
+  return "https://cloudflare-dns.com/dns-query";
 }
 
 async function queryDoh(
@@ -813,7 +813,7 @@ export function ZoneTopologyTab({
   records,
   isLoading = false,
   maxResolutionHops = 15,
-  dohProvider = "google",
+  dohProvider = "cloudflare",
   dohCustomUrl = "",
   onRefresh,
   onEditRecord,

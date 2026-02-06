@@ -407,7 +407,7 @@ export class TauriClient {
     hostnames: string[],
     maxHops = 15,
     serviceHosts?: string[],
-    dohProvider: "google" | "cloudflare" | "quad9" | "custom" = "google",
+    dohProvider: "google" | "cloudflare" | "quad9" | "custom" = "cloudflare",
     dohCustomUrl = "",
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {

@@ -723,7 +723,7 @@ export class StorageManager {
   getTopologyDohProvider(): "google" | "cloudflare" | "quad9" | "custom" {
     const value = this.data.topologyDohProvider;
     if (value === "cloudflare" || value === "quad9" || value === "custom") return value;
-    return "google";
+    return "cloudflare";
   }
 
   setTopologyDohCustomUrl(value: string): void {

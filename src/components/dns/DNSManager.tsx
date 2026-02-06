@@ -5311,8 +5311,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 <SelectValue placeholder="Resolver" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="google">Google (default)</SelectItem>
-                                <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                                <SelectItem value="cloudflare">Cloudflare (default)</SelectItem>
+                                <SelectItem value="google">Google</SelectItem>
                                 <SelectItem value="quad9">Quad9</SelectItem>
                                 <SelectItem value="custom">Custom</SelectItem>
                               </SelectContent>
