@@ -316,23 +316,8 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
 
   lines.push("flowchart LR");
   lines.push(`  ${zoneNode}["${esc(`Zone: ${zone || zoneName}`)}"]:::zone`);
-  const areaNodes = {
-    email: "area_email",
-    web: "area_web",
-    infra: "area_infra",
-    misc: "area_misc",
-  };
-  lines.push(`  ${areaNodes.email}["Email area"]:::area`);
-  lines.push(`  ${areaNodes.web}["Web area"]:::area`);
-  lines.push(`  ${areaNodes.infra}["Infrastructure area"]:::area`);
-  lines.push(`  ${areaNodes.misc}["Other area"]:::area`);
-  lines.push(`  ${zoneNode} --> ${areaNodes.email}`);
-  lines.push(`  ${zoneNode} --> ${areaNodes.web}`);
-  lines.push(`  ${zoneNode} --> ${areaNodes.infra}`);
-  lines.push(`  ${zoneNode} --> ${areaNodes.misc}`);
 
   const usedNames = new Set<string>();
-  const areaEdgeSet = new Set<string>();
   const areaCounts = { email: 0, web: 0, infra: 0, misc: 0 };
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
@@ -349,7 +334,7 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
         ? `A:${resolved.ipv4.length || 0} AAAA:${resolved.ipv6.length || 0}`
         : "";
     const info = [
-      `name:${labelName}`,
+      `type:${record.type}`,
       `ttl:${String(record.ttl ?? "auto")}`,
       record.proxied ? "proxied" : "dns-only",
       resolved.chain.length > 1 ? `resolves:${resolved.terminal}` : "",
@@ -357,14 +342,8 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
     ]
       .filter(Boolean)
       .join(" | ");
-    lines.push(`  ${recordId}["${safeNodeLabel(`${record.type}`, info || "record")}"]:::record`);
-    for (const area of areas) {
-      const edgeKey = `${area}:${recordId}`;
-      if (!areaEdgeSet.has(edgeKey)) {
-        lines.push(`  ${areaNodes[area]} --> ${recordId}`);
-        areaEdgeSet.add(edgeKey);
-      }
-    }
+    lines.push(`  ${recordId}["${safeNodeLabel(labelName, info || "record")}"]:::record`);
+    lines.push(`  ${zoneNode} --> ${recordId}`);
 
     const target = extractTarget(record);
     if (!target) continue;
@@ -463,7 +442,6 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
   lines.push("  classDef target fill:#f59f0022,stroke:#f59f00,stroke-width:1.2px,color:#fff5db;");
   lines.push("  classDef ip fill:#fa525222,stroke:#fa5252,stroke-width:1.2px,color:#ffe3e3;");
   lines.push("  classDef service fill:#845ef722,stroke:#845ef7,stroke-width:1.2px,color:#efe8ff;");
-  lines.push("  classDef area fill:#0ca67822,stroke:#0ca678,stroke-width:1.2px,color:#d4fff1;");
 
   return {
     code: lines.join("\n"),
@@ -1152,10 +1130,6 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
           <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs" open>
             <summary className="cursor-pointer select-none font-semibold">Topology summary</summary>
             <div className="mt-2 space-y-1 text-muted-foreground">
-              <div>Email area: {summary.areas.email} nodes</div>
-              <div>Web area: {summary.areas.web} nodes</div>
-              <div>Infrastructure area: {summary.areas.infra} nodes</div>
-              <div>Other area: {summary.areas.misc} nodes</div>
               {summary.cnameChains.slice(0, 6).map((chain) => (
                 <div key={chain.start}>CNAME chain: {chain.chain.join(" -> ")}</div>
               ))}
@@ -1238,7 +1212,6 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
               {summary.nodeSummaries.map((node) => (
                 <div key={node.name} className="rounded-md border border-border/50 bg-background/25 p-2">
                   <div className="font-medium">{node.name}</div>
-                  <div className="text-muted-foreground">Areas: {node.areas.join(", ")}</div>
                   {node.resolvedTo.length > 0 && (
                     <div className="text-muted-foreground">CNAME resolves: {node.resolvedTo.join(" -> ")}</div>
                   )}
