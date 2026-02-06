@@ -3,10 +3,11 @@
  * Top-level DNS Manager UI which composes the zone selector, the record
  * list and dialogs for creating/importing records.
  */
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -18,7 +19,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
-import type { DNSRecord, Zone, RecordType } from "@/types/dns";
+import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
@@ -50,9 +51,16 @@ import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
+import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
 
 
-type ActionTab = "records" | "import" | "zone-settings";
+type ActionTab =
+  | "records"
+  | "import"
+  | "zone-settings"
+  | "cache"
+  | "ssl-tls"
+  | "domain-audit";
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -92,7 +100,7 @@ interface DNSManagerProps {
   onLogout: () => void;
 }
 
-const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: string }[] = [
+const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
   {
     id: "records",
     label: "Records",
@@ -107,6 +115,21 @@ const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: strin
     id: "zone-settings",
     label: "Zone Settings",
     hint: "Override defaults for this zone",
+  },
+  {
+    id: "cache",
+    label: "Cache",
+    hint: "Purge cache and tune Cloudflare caching",
+  },
+  {
+    id: "ssl-tls",
+    label: "SSL/TLS",
+    hint: "Manage encryption and HTTPS behavior",
+  },
+  {
+    id: "domain-audit",
+    label: "Audits",
+    hint: "Check DNS compliance and best practices",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -180,6 +203,7 @@ const createActionTab = (kind: Exclude<TabKind, "zone">): ZoneTab => ({
  */
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
+  const initialZoneSelectionHandledRef = useRef(false);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState("");
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
@@ -215,6 +239,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
+  const [pendingLastActiveTab, setPendingLastActiveTab] = useState("");
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -236,6 +261,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
+  const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
+  const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
+  const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
+  const [zoneCacheLevel, setZoneCacheLevel] = useState<ZoneSetting<string> | null>(null);
+  const [purgeUrlsInput, setPurgeUrlsInput] = useState("");
+  const [showPurgeEverythingConfirm, setShowPurgeEverythingConfirm] = useState(false);
+  const [showPurgeUrlsConfirm, setShowPurgeUrlsConfirm] = useState(false);
+  const [pendingPurgeUrls, setPendingPurgeUrls] = useState<string[]>([]);
+  const [pendingPurgeIssues, setPendingPurgeIssues] = useState<string[]>([]);
+  const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
+  const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
+  const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
+  const [zoneMinTlsVersion, setZoneMinTlsVersion] = useState<ZoneSetting<string> | null>(null);
+  const [zoneTls13, setZoneTls13] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAlwaysUseHttps, setZoneAlwaysUseHttps] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAutoHttpsRewrites, setZoneAutoHttpsRewrites] = useState<ZoneSetting<string> | null>(null);
+  const [zoneOpportunisticEncryption, setZoneOpportunisticEncryption] =
+    useState<ZoneSetting<string> | null>(null);
+  const [domainAuditShowPassed, setDomainAuditShowPassed] = useState(false);
+  const [domainAuditCategories, setDomainAuditCategories] = useState<
+    Record<DomainAuditCategory, boolean>
+  >({ email: true, security: true, hygiene: true });
+  const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
   const {
     getZones,
     getDNSRecords,
@@ -244,6 +292,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     bulkCreateDNSRecords,
     deleteDNSRecord,
     exportDNSRecords,
+    purgeCache,
+    getZoneSetting,
+    updateZoneSetting,
   } = useCloudflareAPI(apiKey, email);
 
   const availableZones = useMemo(
@@ -263,6 +314,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return zoneShowUnsupportedRecordTypes[zoneId] === true;
     return showUnsupportedRecordTypes;
   }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
+
+  const domainAuditItems = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return [];
+    return runDomainAudit(activeTab.zoneName, activeTab.records, {
+      includeCategories: domainAuditCategories,
+    });
+  }, [activeTab, domainAuditCategories]);
+
+  const domainAuditItemsWithOverrides = useMemo(() => {
+    if (!activeTab || activeTab.kind !== "zone") return domainAuditItems;
+    const overrides = auditOverridesByZone[activeTab.zoneId] ?? new Set();
+    return domainAuditItems.map((item) => {
+      if (overrides.has(item.id) && item.severity !== "pass") {
+        return {
+          ...item,
+          severity: "pass" as const,
+          title: `${item.title} (overridden)`,
+          details: `Original severity: ${item.severity}\n\n${item.details}`,
+        };
+      }
+      return item;
+    });
+  }, [activeTab, auditOverridesByZone, domainAuditItems]);
+
+  const domainAuditVisibleItems = useMemo(() => {
+    if (domainAuditShowPassed) return domainAuditItemsWithOverrides;
+    return domainAuditItemsWithOverrides.filter((i) => i.severity !== "pass");
+  }, [domainAuditItemsWithOverrides, domainAuditShowPassed]);
+
+  const parseLastActiveTab = useCallback((value: string): { tabId: string; action?: ActionTab } | null => {
+    const raw = value.trim();
+    if (!raw) return null;
+    if (raw.startsWith("__")) return { tabId: raw };
+    if (
+      raw === "records" ||
+      raw === "import" ||
+      raw === "zone-settings" ||
+      raw === "cache" ||
+      raw === "ssl-tls" ||
+      raw === "domain-audit"
+    ) {
+      // Legacy malformed value (action without zone id): ignore.
+      return null;
+    }
+    const [zoneId, actionRaw] = raw.split("|", 2);
+    if (!zoneId) return null;
+    if (
+      actionRaw === "records" ||
+      actionRaw === "import" ||
+      actionRaw === "zone-settings" ||
+      actionRaw === "cache" ||
+      actionRaw === "ssl-tls" ||
+      actionRaw === "domain-audit"
+    ) {
+      return { tabId: zoneId, action: actionRaw };
+    }
+    return { tabId: zoneId };
+  }, []);
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -441,9 +550,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [loadZones]);
 
   useEffect(() => {
+    if (!prefsReady) return;
     if (!selectedZoneId) return;
+
+    if (!initialZoneSelectionHandledRef.current) {
+      initialZoneSelectionHandledRef.current = true;
+      if (reopenLastTabs) return;
+    }
+
     openZoneTab(selectedZoneId);
-  }, [selectedZoneId, openZoneTab]);
+  }, [selectedZoneId, openZoneTab, prefsReady, reopenLastTabs]);
 
   useEffect(() => {
     if (activeTab?.kind === "zone") {
@@ -460,11 +576,104 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [activeTab?.kind, loadAuditEntries]);
 
   useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "cache") return;
+
+    let cancelled = false;
+    setCacheSettingsLoading(true);
+    setCacheSettingsError(null);
+    setZoneDevMode(null);
+    setZoneCacheLevel(null);
+
+    Promise.allSettled([
+      getZoneSetting<string>(activeTab.zoneId, "development_mode"),
+      getZoneSetting<string>(activeTab.zoneId, "cache_level"),
+    ])
+      .then((results) => {
+        if (cancelled) return;
+        const [dev, level] = results;
+        if (dev.status === "fulfilled") setZoneDevMode(dev.value);
+        if (level.status === "fulfilled") setZoneCacheLevel(level.value);
+        const errors = results
+          .filter((r) => r.status === "rejected")
+          .map((r) => (r as PromiseRejectedResult).reason)
+          .map((e) => (e instanceof Error ? e.message : String(e)))
+          .filter(Boolean);
+        if (errors.length) setCacheSettingsError(errors.join(" | "));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setCacheSettingsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setCacheSettingsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    if (actionTab !== "ssl-tls") return;
+
+    let cancelled = false;
+    setSslSettingsLoading(true);
+    setSslSettingsError(null);
+    setZoneSslMode(null);
+    setZoneMinTlsVersion(null);
+    setZoneTls13(null);
+    setZoneAlwaysUseHttps(null);
+    setZoneAutoHttpsRewrites(null);
+    setZoneOpportunisticEncryption(null);
+
+    Promise.allSettled([
+      getZoneSetting<string>(activeTab.zoneId, "ssl"),
+      getZoneSetting<string>(activeTab.zoneId, "min_tls_version"),
+      getZoneSetting<string>(activeTab.zoneId, "tls_1_3"),
+      getZoneSetting<string>(activeTab.zoneId, "always_use_https"),
+      getZoneSetting<string>(activeTab.zoneId, "automatic_https_rewrites"),
+      getZoneSetting<string>(activeTab.zoneId, "opportunistic_encryption"),
+    ])
+      .then((results) => {
+        if (cancelled) return;
+        const [ssl, minTls, tls13, alwaysHttps, rewrites, oppEnc] = results;
+        if (ssl.status === "fulfilled") setZoneSslMode(ssl.value);
+        if (minTls.status === "fulfilled") setZoneMinTlsVersion(minTls.value);
+        if (tls13.status === "fulfilled") setZoneTls13(tls13.value);
+        if (alwaysHttps.status === "fulfilled") setZoneAlwaysUseHttps(alwaysHttps.value);
+        if (rewrites.status === "fulfilled") setZoneAutoHttpsRewrites(rewrites.value);
+        if (oppEnc.status === "fulfilled") setZoneOpportunisticEncryption(oppEnc.value);
+        const errors = results
+          .filter((r) => r.status === "rejected")
+          .map((r) => (r as PromiseRejectedResult).reason)
+          .map((e) => (e instanceof Error ? e.message : String(e)))
+          .filter(Boolean);
+        if (errors.length) setSslSettingsError(errors.join(" | "));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSslSettingsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setSslSettingsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
+
+  useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
           const prefObj = prefs as {
             last_zone?: string;
+            last_active_tab?: string;
             auto_refresh_interval?: number;
             default_per_page?: number;
             zone_per_page?: Record<string, number>;
@@ -478,6 +687,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close?: boolean;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
+          if (typeof prefObj.last_active_tab === "string") {
+            setPendingLastActiveTab(prefObj.last_active_tab);
+          }
           if (typeof prefObj.auto_refresh_interval === "number") {
             setAutoRefreshInterval(prefObj.auto_refresh_interval);
           }
@@ -533,11 +745,40 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
+    setPendingLastActiveTab(storageManager.getLastActiveTabId());
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setPrefsReady(true);
   }, []);
+
+  const persistTabStateBestEffort = useCallback(() => {
+    const openTabIds = tabs.map((tab) => tab.id);
+    const encoded =
+      activeTab && activeTab.kind === "zone"
+        ? `${activeTab.zoneId}|${actionTab}`
+        : activeTab?.id ?? "";
+
+    storageManager.setLastOpenTabs(openTabIds);
+    storageManager.setLastActiveTabId(encoded || null);
+    if (activeTab?.kind === "zone") {
+      storageManager.setLastZone(activeTab.zoneId);
+    }
+
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            last_open_tabs: openTabIds,
+            last_active_tab: encoded || undefined,
+            last_zone:
+              activeTab?.kind === "zone" ? activeTab.zoneId : undefined,
+          }),
+        )
+        .catch(() => {});
+    }
+  }, [actionTab, activeTab, tabs]);
 
   useEffect(() => {
     if (!activeTab?.zoneId || activeTab.kind !== "zone") return;
@@ -554,6 +795,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.setLastZone(activeTab.zoneId);
     }
   }, [activeTab?.zoneId]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    if (reopenLastTabs && !restoredTabs) return;
+    if (!activeTab) return;
+
+    const encoded =
+      activeTab.kind === "zone"
+        ? `${activeTab.zoneId}|${actionTab}`
+        : activeTab.id;
+
+    storageManager.setLastActiveTabId(encoded);
+    if (isDesktop()) {
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            last_active_tab: encoded,
+          }),
+        )
+        .catch(() => {});
+    }
+  }, [actionTab, activeTab, prefsReady, reopenLastTabs, restoredTabs]);
 
   useEffect(() => {
     if (isDesktop()) {
@@ -585,6 +849,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [autoRefreshInterval, activeTab, loadRecords]);
 
   useEffect(() => {
+    if (!prefsReady) return;
     storageManager.setDefaultPerPage(globalPerPage);
     storageManager.setZonePerPageMap(zonePerPage);
     storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
@@ -626,6 +891,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    prefsReady,
   ]);
 
   useEffect(() => {
@@ -641,37 +907,97 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     if (!reopenLastTabs || restoredTabs) return;
-    if (!availableZones.length || !lastOpenTabs.length) return;
-    const eligible = lastOpenTabs.filter(
-      (id) => reopenZoneTabs[id] !== false,
-    );
-    if (!eligible.length) {
+    if (!availableZones.length) return;
+    if (!lastOpenTabs.length) {
       setRestoredTabs(true);
       return;
     }
-    eligible.forEach((zoneId) => openZoneTab(zoneId));
+    for (const tabId of lastOpenTabs) {
+      if (tabId.startsWith("__")) {
+        if (tabId === "__settings") openActionTab("settings");
+        else if (tabId === "__audit") openActionTab("audit");
+        else if (tabId === "__tags") openActionTab("tags");
+        else if (tabId === "__registry") openActionTab("registry");
+        continue;
+      }
+      if (reopenZoneTabs[tabId] === false) continue;
+      openZoneTab(tabId);
+    }
     setRestoredTabs(true);
-  }, [reopenLastTabs, restoredTabs, availableZones, lastOpenTabs, reopenZoneTabs, openZoneTab]);
+  }, [
+    reopenLastTabs,
+    restoredTabs,
+    availableZones,
+    lastOpenTabs,
+    reopenZoneTabs,
+    openActionTab,
+    openZoneTab,
+  ]);
 
   useEffect(() => {
     if (!prefsReady) return;
     if (reopenLastTabs && !restoredTabs) return;
-    const openZoneIds = tabs
-      .filter((tab) => tab.kind === "zone")
-      .map((tab) => tab.zoneId);
-    setLastOpenTabs(openZoneIds);
+    if (!pendingLastActiveTab) return;
+    if (!reopenLastTabs) {
+      setPendingLastActiveTab("");
+      return;
+    }
+
+    const parsed = parseLastActiveTab(pendingLastActiveTab);
+    if (!parsed) {
+      setPendingLastActiveTab("");
+      return;
+    }
+    if (!lastOpenTabs.includes(parsed.tabId)) {
+      setPendingLastActiveTab("");
+      return;
+    }
+
+    if (parsed.tabId.startsWith("__")) {
+      if (parsed.tabId === "__settings") openActionTab("settings");
+      else if (parsed.tabId === "__audit") openActionTab("audit");
+      else if (parsed.tabId === "__tags") openActionTab("tags");
+      else if (parsed.tabId === "__registry") openActionTab("registry");
+      setPendingLastActiveTab("");
+      return;
+    }
+
+    const zoneExists = availableZones.some((z) => z.id === parsed.tabId);
+    if (!zoneExists) return;
+    if (parsed.action) setActionTab(parsed.action);
+    setSelectedZoneId(parsed.tabId);
+    openZoneTab(parsed.tabId);
+    setActiveTabId(parsed.tabId);
+    setPendingLastActiveTab("");
+  }, [
+    availableZones,
+    openActionTab,
+    openZoneTab,
+    parseLastActiveTab,
+    pendingLastActiveTab,
+    lastOpenTabs,
+    prefsReady,
+    reopenLastTabs,
+    restoredTabs,
+  ]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    if (reopenLastTabs && !restoredTabs) return;
+    const openTabIds = tabs.map((tab) => tab.id);
+    setLastOpenTabs(openTabIds);
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) =>
           TauriClient.updatePreferences({
             ...(prefs as Record<string, unknown>),
-            last_open_tabs: openZoneIds,
+            last_open_tabs: openTabIds,
           }),
         )
         .catch(() => {});
       return;
     }
-    storageManager.setLastOpenTabs(openZoneIds);
+    storageManager.setLastOpenTabs(openTabIds);
   }, [tabs, prefsReady, reopenLastTabs, restoredTabs]);
 
   useEffect(() => {
@@ -705,6 +1031,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [idleLogoutMs, onLogout]);
 
   useEffect(() => {
+    const flush = () => persistTabStateBestEffort();
+    if (typeof window === "undefined") return;
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, [persistTabStateBestEffort]);
+
+  useEffect(() => {
     const onChanged = () => setTagsVersion((v) => v + 1);
     window.addEventListener("record-tags-changed", onChanged);
     return () => window.removeEventListener("record-tags-changed", onChanged);
@@ -717,6 +1050,56 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const next = last ?? availableZones[0]?.id ?? "";
     if (next) setTagsZoneId(next);
   }, [activeTab?.kind, availableZones, tagsZoneId]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const overrides = storageManager.getAuditOverrides(activeTab.zoneId);
+    setAuditOverridesByZone((prev) => ({
+      ...prev,
+      [activeTab.zoneId]: new Set(overrides),
+    }));
+  }, [activeTab]);
+
+  const handleOverrideAuditItem = useCallback(
+    (auditItemId: string) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      storageManager.setAuditOverride(activeTab.zoneId, auditItemId);
+      setAuditOverridesByZone((prev) => {
+        const existing = prev[activeTab.zoneId] ?? new Set();
+        return {
+          ...prev,
+          [activeTab.zoneId]: new Set([...existing, auditItemId]),
+        };
+      });
+    },
+    [activeTab],
+  );
+
+  const handleClearAuditOverride = useCallback(
+    (auditItemId: string) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      storageManager.clearAuditOverride(activeTab.zoneId, auditItemId);
+      setAuditOverridesByZone((prev) => {
+        const existing = prev[activeTab.zoneId] ?? new Set();
+        const updated = new Set(existing);
+        updated.delete(auditItemId);
+        return {
+          ...prev,
+          [activeTab.zoneId]: updated,
+        };
+      });
+    },
+    [activeTab],
+  );
+
+  const handleClearAllAuditOverrides = useCallback(() => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    storageManager.clearAllAuditOverrides(activeTab.zoneId);
+    setAuditOverridesByZone((prev) => ({
+      ...prev,
+      [activeTab.zoneId]: new Set(),
+    }));
+  }, [activeTab]);
 
 
   const filteredRecords = useMemo(() => {
@@ -1227,7 +1610,186 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  const handleSetDevelopmentMode = useCallback(
+    async (enabled: boolean) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setCacheSettingsLoading(true);
+        setCacheSettingsError(null);
+        const next = await updateZoneSetting<string>(
+          activeTab.zoneId,
+          "development_mode",
+          enabled ? "on" : "off",
+        );
+        setZoneDevMode(next);
+        toast({
+          title: "Saved",
+          description: enabled
+            ? "Development mode enabled (cache bypass)."
+            : "Development mode disabled.",
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description:
+            "Failed to update development mode: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setCacheSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
+  const handleSetCacheLevel = useCallback(
+    async (level: string) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setCacheSettingsLoading(true);
+        setCacheSettingsError(null);
+        const next = await updateZoneSetting<string>(
+          activeTab.zoneId,
+          "cache_level",
+          level,
+        );
+        setZoneCacheLevel(next);
+        toast({
+          title: "Saved",
+          description: `Cache level set to ${level}.`,
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update cache level: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setCacheSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
+  const preparePurgeUrls = useCallback(() => {
+    const urls = purgeUrlsInput
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const issues: string[] = [];
+
+    for (const url of urls) {
+      if (/\s/.test(url)) issues.push(`URL contains whitespace: ${url}`);
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          issues.push(`Unsupported URL scheme: ${url}`);
+        }
+      } catch {
+        issues.push(`Not a valid URL: ${url}`);
+      }
+    }
+
+    setPendingPurgeUrls(urls);
+    setPendingPurgeIssues(issues);
+    setShowPurgeUrlsConfirm(true);
+  }, [purgeUrlsInput]);
+
+  const confirmPurgeEverything = useCallback(async () => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    setShowPurgeEverythingConfirm(false);
+    try {
+      await purgeCache(activeTab.zoneId, { purge_everything: true });
+      toast({
+        title: "Purged",
+        description: `Cache purged for ${activeTab.zoneName}.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to purge cache: " + (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  }, [activeTab, purgeCache, toast]);
+
+  const confirmPurgeUrls = useCallback(async () => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const urls = pendingPurgeUrls;
+    setShowPurgeUrlsConfirm(false);
+    if (!urls.length) return;
+    try {
+      await purgeCache(activeTab.zoneId, { files: urls });
+      toast({
+        title: "Purged",
+        description: `Purged ${urls.length} URL(s) for ${activeTab.zoneName}.`,
+      });
+      setPurgeUrlsInput("");
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to purge URLs: " + (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  }, [activeTab, pendingPurgeUrls, purgeCache, toast]);
+
+  const handleSetSslTlsSetting = useCallback(
+    async (
+      settingId:
+        | "ssl"
+        | "min_tls_version"
+        | "tls_1_3"
+        | "always_use_https"
+        | "automatic_https_rewrites"
+        | "opportunistic_encryption",
+      value: string,
+    ) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      try {
+        setSslSettingsLoading(true);
+        setSslSettingsError(null);
+        const next = await updateZoneSetting<string>(activeTab.zoneId, settingId, value);
+        switch (settingId) {
+          case "ssl":
+            setZoneSslMode(next);
+            break;
+          case "min_tls_version":
+            setZoneMinTlsVersion(next);
+            break;
+          case "tls_1_3":
+            setZoneTls13(next);
+            break;
+          case "always_use_https":
+            setZoneAlwaysUseHttps(next);
+            break;
+          case "automatic_https_rewrites":
+            setZoneAutoHttpsRewrites(next);
+            break;
+          case "opportunistic_encryption":
+            setZoneOpportunisticEncryption(next);
+            break;
+        }
+        toast({
+          title: "Saved",
+          description: `${settingId.replace(/_/g, " ")} updated.`,
+        });
+      } catch (error) {
+        toast({
+          title: "Error",
+          description:
+            "Failed to update SSL/TLS setting: " + (error as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setSslSettingsLoading(false);
+      }
+    },
+    [activeTab, toast, updateZoneSetting],
+  );
+
   const handleLogout = () => {
+    persistTabStateBestEffort();
     storageManager.clearSession();
     if (confirmLogout) {
       setShowLogoutConfirm(true);
@@ -1237,6 +1799,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const confirmAndLogout = () => {
+    persistTabStateBestEffort();
     storageManager.clearSession();
     setShowLogoutConfirm(false);
     onLogout();
@@ -2092,6 +2655,507 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
+              {activeTab.kind === "zone" && actionTab === "cache" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Cache</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-muted-foreground">
+                        Cloudflare cache controls for {activeTab.zoneName}.
+                      </div>
+                      {cacheSettingsLoading && (
+                        <div className="text-xs text-muted-foreground">Loading…</div>
+                      )}
+                    </div>
+                    {cacheSettingsError && (
+                      <div className="text-xs text-destructive">{cacheSettingsError}</div>
+                    )}
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Development mode</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneDevMode ? (
+                          <Switch
+                            checked={zoneDevMode.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetDevelopmentMode(checked)
+                            }
+                            disabled={!apiKey || cacheSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Cache level</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneCacheLevel ? (
+                          <Select
+                            value={zoneCacheLevel.value ?? "basic"}
+                            onValueChange={(v) => handleSetCacheLevel(v)}
+                            disabled={!apiKey || cacheSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="Cache level" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {zoneCacheLevel.value &&
+                              !["basic", "aggressive", "simplified"].includes(
+                                zoneCacheLevel.value,
+                              ) ? (
+                                <SelectItem value={zoneCacheLevel.value}>
+                                  {zoneCacheLevel.value} (current)
+                                </SelectItem>
+                              ) : null}
+                              <SelectItem value="basic">Basic</SelectItem>
+                              <SelectItem value="aggressive">Aggressive</SelectItem>
+                              <SelectItem value="simplified">Simplified</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Controls how aggressively Cloudflare caches your content.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
+                      <div className="font-medium text-sm">Purge cache</div>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => setShowPurgeEverythingConfirm(true)}
+                            disabled={!apiKey}
+                          >
+                            Purge everything
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                            Purge URLs (one per line)
+                          </Label>
+                          <Textarea
+                            value={purgeUrlsInput}
+                            onChange={(e) => setPurgeUrlsInput(e.target.value)}
+                            placeholder={`https://${activeTab.zoneName}/path\nhttps://${activeTab.zoneName}/asset.js`}
+                            className="min-h-24 resize-y"
+                          />
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => preparePurgeUrls()}
+                              disabled={!apiKey || !purgeUrlsInput.trim()}
+                            >
+                              Purge URLs…
+                            </Button>
+                            <div className="text-xs text-muted-foreground">
+                              Validations warn, but you can still force purge.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "ssl-tls" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">SSL/TLS</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-muted-foreground">
+                        SSL/TLS controls for {activeTab.zoneName}.
+                      </div>
+                      {sslSettingsLoading && (
+                        <div className="text-xs text-muted-foreground">Loading…</div>
+                      )}
+                    </div>
+                    {sslSettingsError && (
+                      <div className="text-xs text-destructive">{sslSettingsError}</div>
+                    )}
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Encryption mode</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneSslMode ? (
+                          <Select
+                            value={zoneSslMode.value ?? "off"}
+                            onValueChange={(v) => handleSetSslTlsSetting("ssl", v)}
+                            disabled={!apiKey || sslSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="SSL mode" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="off">Off</SelectItem>
+                              <SelectItem value="flexible">Flexible</SelectItem>
+                              <SelectItem value="full">Full</SelectItem>
+                              <SelectItem value="strict">Full (strict)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Controls how Cloudflare connects to your origin.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Minimum TLS version</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneMinTlsVersion ? (
+                          <Select
+                            value={zoneMinTlsVersion.value ?? "1.2"}
+                            onValueChange={(v) =>
+                              handleSetSslTlsSetting("min_tls_version", v)
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          >
+                            <SelectTrigger className="w-48">
+                              <SelectValue placeholder="Min TLS" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1.0">1.0</SelectItem>
+                              <SelectItem value="1.1">1.1</SelectItem>
+                              <SelectItem value="1.2">1.2</SelectItem>
+                              <SelectItem value="1.3">1.3</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Affects client connections to Cloudflare edge.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">TLS 1.3</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneTls13 ? (
+                          <Switch
+                            checked={zoneTls13.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting("tls_1_3", checked ? "on" : "off")
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Enables TLS 1.3 for client connections.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Always Use HTTPS</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneAlwaysUseHttps ? (
+                          <Switch
+                            checked={zoneAlwaysUseHttps.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "always_use_https",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Redirect HTTP to HTTPS at the edge.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Automatic HTTPS Rewrites</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneAutoHttpsRewrites ? (
+                          <Switch
+                            checked={zoneAutoHttpsRewrites.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "automatic_https_rewrites",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Rewrites mixed content links to HTTPS when possible.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
+                      <div className="font-medium text-sm">Opportunistic encryption</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {zoneOpportunisticEncryption ? (
+                          <Switch
+                            checked={zoneOpportunisticEncryption.value === "on"}
+                            onCheckedChange={(checked: boolean) =>
+                              handleSetSslTlsSetting(
+                                "opportunistic_encryption",
+                                checked ? "on" : "off",
+                              )
+                            }
+                            disabled={!apiKey || sslSettingsLoading}
+                          />
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          Enables opportunistic encryption to the edge when supported.
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {activeTab.kind === "zone" && actionTab === "domain-audit" && (
+                <Card className="border-border/60 bg-card/70">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Domain audits</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-sm text-muted-foreground">
+                        Audits run against the records currently loaded for{" "}
+                        <span className="font-medium text-foreground/90">
+                          {activeTab.zoneName}
+                        </span>
+                        .
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const controller = new AbortController();
+                            void loadRecords(activeTab, controller.signal);
+                          }}
+                        >
+                          Refresh records
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/60 p-3 text-sm">
+                      <div className="font-medium">Checks</div>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.email}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              email: e.target.checked,
+                            }))
+                          }
+                        />
+                        Email (SPF/DKIM/DMARC)
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.security}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              security: e.target.checked,
+                            }))
+                          }
+                        />
+                        Security (CAA)
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={domainAuditCategories.hygiene}
+                          onChange={(e) =>
+                            setDomainAuditCategories((prev) => ({
+                              ...prev,
+                              hygiene: e.target.checked,
+                            }))
+                          }
+                        />
+                        Hygiene (private IPs, deprecated)
+                      </label>
+                      <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                        <Switch
+                          checked={domainAuditShowPassed}
+                          onCheckedChange={(checked: boolean) =>
+                            setDomainAuditShowPassed(checked)
+                          }
+                        />
+                        Show passed
+                      </div>
+                      {auditOverridesByZone[activeTab.zoneId]?.size > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs"
+                          onClick={handleClearAllAuditOverrides}
+                        >
+                          Clear {auditOverridesByZone[activeTab.zoneId].size} override
+                          {auditOverridesByZone[activeTab.zoneId].size !== 1 ? "s" : ""}
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-2">
+                      {domainAuditVisibleItems.length === 0 ? (
+                        <div className="px-3 py-6 text-sm text-muted-foreground">
+                          No issues detected (with current filters).
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {domainAuditVisibleItems.map((item) => {
+                            const isOverridden = auditOverridesByZone[activeTab.zoneId]?.has(
+                              item.id,
+                            );
+                            const originalSeverity =
+                              isOverridden && item.title.includes("(overridden)")
+                                ? (item.details.match(/Original severity: (\w+)/)?.[1] as
+                                    | "fail"
+                                    | "warn"
+                                    | "info"
+                                    | undefined)
+                                : undefined;
+                            const displaySeverity = originalSeverity ?? item.severity;
+
+                            const badge =
+                              displaySeverity === "fail"
+                                ? "bg-destructive/20 text-destructive border-destructive/30"
+                                : displaySeverity === "warn"
+                                  ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
+                                  : displaySeverity === "info"
+                                    ? "bg-sky-500/15 text-sky-200 border-sky-500/30"
+                                    : "bg-emerald-500/15 text-emerald-200 border-emerald-500/30";
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="rounded-xl border border-border/60 bg-muted/10 p-3"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span
+                                        className={cn(
+                                          "rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-widest",
+                                          badge,
+                                          isOverridden && "opacity-60",
+                                        )}
+                                      >
+                                        {displaySeverity}
+                                      </span>
+                                      {isOverridden && (
+                                        <span className="rounded-md border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] uppercase tracking-widest text-emerald-200">
+                                          overridden
+                                        </span>
+                                      )}
+                                      <div
+                                        className={cn(
+                                          "font-medium text-sm",
+                                          isOverridden && "line-through opacity-60",
+                                        )}
+                                      >
+                                        {item.title.replace(" (overridden)", "")}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                                      {item.details}
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {item.severity !== "pass" && !isOverridden && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-xs"
+                                        onClick={() => handleOverrideAuditItem(item.id)}
+                                        title="Mark as acknowledged/passing"
+                                      >
+                                        Override
+                                      </Button>
+                                    )}
+                                    {isOverridden && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-xs"
+                                        onClick={() => handleClearAuditOverride(item.id)}
+                                        title="Remove override"
+                                      >
+                                        Restore
+                                      </Button>
+                                    )}
+                                    {item.suggestion && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                          updateTab(activeTab.id, (prev) => ({
+                                            ...prev,
+                                            showAddRecord: true,
+                                            newRecord: {
+                                              ...createEmptyRecord(),
+                                              type: item.suggestion!.recordType,
+                                              name: item.suggestion!.name,
+                                              content: item.suggestion!.content,
+                                              ttl: 300,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        Add suggested record…
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      These checks are best-practice heuristics based only on records currently
+                      present in this zone.
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
               {activeTab.kind === "audit" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
@@ -2671,6 +3735,85 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               }}
             >
               Clear logs
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={showPurgeEverythingConfirm}
+        onOpenChange={setShowPurgeEverythingConfirm}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Purge entire cache?</DialogTitle>
+            <DialogDescription>
+              This purges cached content for the active zone. It can temporarily increase origin load.
+            </DialogDescription>
+          </DialogHeader>
+          {activeTab?.kind === "zone" ? (
+            <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
+              <div className="font-semibold">{activeTab.zoneName}</div>
+              <div className="mt-1 text-muted-foreground">Purge: everything</div>
+            </div>
+          ) : null}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowPurgeEverythingConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={() => void confirmPurgeEverything()}
+            >
+              Purge
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={showPurgeUrlsConfirm} onOpenChange={setShowPurgeUrlsConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Purge URLs?</DialogTitle>
+            <DialogDescription>
+              Cloudflare may reject invalid URLs. You can still attempt to purge anyway.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
+            <div className="font-semibold">
+              {pendingPurgeUrls.length} URL(s)
+            </div>
+            {pendingPurgeIssues.length > 0 ? (
+              <div className="mt-2 space-y-1">
+                <div className="text-destructive font-medium">Warnings</div>
+                <ul className="list-disc pl-4 text-destructive/90">
+                  {pendingPurgeIssues.slice(0, 8).map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+                {pendingPurgeIssues.length > 8 ? (
+                  <div className="text-muted-foreground">
+                    +{pendingPurgeIssues.length - 8} more…
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-2 text-muted-foreground">No issues detected.</div>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowPurgeUrlsConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={() => void confirmPurgeUrls()}>
+              Purge
             </Button>
           </div>
         </DialogContent>
