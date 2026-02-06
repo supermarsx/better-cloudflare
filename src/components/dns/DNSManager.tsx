@@ -75,7 +75,18 @@ type SortDir = "asc" | "desc" | null;
 type SettingsSubtab = "general" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
-type AuditFilterOperator = "equals" | "contains" | "matches" | "not_equals";
+type AuditFilterOperator =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "not_contains"
+  | "starts_with"
+  | "ends_with"
+  | "matches"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte";
 
 type AuditFilterRule = {
   id: string;
@@ -1552,6 +1563,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (rule.operator === "equals" && haystack !== needle) return false;
         if (rule.operator === "not_equals" && haystack === needle) return false;
         if (rule.operator === "contains" && !haystack.includes(needle)) return false;
+        if (rule.operator === "not_contains" && haystack.includes(needle)) return false;
+        if (rule.operator === "starts_with" && !haystack.startsWith(needle)) return false;
+        if (rule.operator === "ends_with" && !haystack.endsWith(needle)) return false;
         if (rule.operator === "matches") {
           try {
             const re = new RegExp(rule.value, "i");
@@ -1559,6 +1573,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           } catch {
             return false;
           }
+        }
+        if (
+          rule.operator === "gt" ||
+          rule.operator === "gte" ||
+          rule.operator === "lt" ||
+          rule.operator === "lte"
+        ) {
+          const left =
+            rule.field === "timestamp"
+              ? Date.parse(fieldValue)
+              : Number(fieldValue);
+          const right =
+            rule.field === "timestamp"
+              ? Date.parse(rule.value)
+              : Number(rule.value);
+          if (Number.isNaN(left) || Number.isNaN(right)) return false;
+          if (rule.operator === "gt" && !(left > right)) return false;
+          if (rule.operator === "gte" && !(left >= right)) return false;
+          if (rule.operator === "lt" && !(left < right)) return false;
+          if (rule.operator === "lte" && !(left <= right)) return false;
         }
       }
       return true;
@@ -1601,20 +1635,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setAuditEntries([]);
   }, []);
 
+  const createAuditFilterRule = useCallback(
+    (
+      field: AuditFilterField = "operation",
+      operator: AuditFilterOperator = "contains",
+      value = "",
+    ): AuditFilterRule => ({
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`,
+      field,
+      operator,
+      value,
+    }),
+    [],
+  );
+
   const addAuditFilter = useCallback(() => {
-    setAuditFilters((prev) => [
-      ...prev,
-      {
-        id:
-          typeof crypto !== "undefined" && "randomUUID" in crypto
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random()}`,
-        field: "operation",
-        operator: "contains",
-        value: "",
-      },
-    ]);
-  }, []);
+    setAuditFilters((prev) => [...prev, createAuditFilterRule()]);
+  }, [createAuditFilterRule]);
 
   const updateAuditFilter = useCallback(
     (id: string, patch: Partial<Omit<AuditFilterRule, "id">>) => {
@@ -1628,6 +1668,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const removeAuditFilter = useCallback((id: string) => {
     setAuditFilters((prev) => prev.filter((rule) => rule.id !== id));
   }, []);
+
+  const applyAuditPreset = useCallback(
+    (preset: "errors" | "auth" | "dns" | "last24h" | "clear") => {
+      if (preset === "clear") {
+        setAuditFilters([]);
+        return;
+      }
+      if (preset === "errors") {
+        setAuditFilters([
+          createAuditFilterRule("details", "contains", "\"success\":false"),
+        ]);
+        return;
+      }
+      if (preset === "auth") {
+        setAuditFilters([createAuditFilterRule("operation", "contains", "auth:")]);
+        return;
+      }
+      if (preset === "dns") {
+        setAuditFilters([createAuditFilterRule("operation", "contains", "dns:")]);
+        return;
+      }
+      const now = Date.now();
+      const cutoffIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+      setAuditFilters([createAuditFilterRule("timestamp", "gte", cutoffIso)]);
+    },
+    [createAuditFilterRule],
+  );
 
   const toggleAuditSort = useCallback((field: "timestamp" | "operation" | "resource") => {
     setAuditSort((prev) => {
@@ -4094,7 +4161,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         />
                       </div>
                       <Select value={auditLimit} onValueChange={setAuditLimit}>
-                        <SelectTrigger>
+                        <SelectTrigger className="h-8 text-xs">
                           <SelectValue placeholder="Limit" />
                         </SelectTrigger>
                         <SelectContent>
@@ -4109,6 +4176,48 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Button size="sm" variant="outline" className="h-8 gap-1 px-2" onClick={addAuditFilter}>
                         <Plus className="h-3.5 w-3.5" />
                         <span className="text-xs">Add filter</span>
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("errors")}
+                      >
+                        Errors
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("auth")}
+                      >
+                        Auth Ops
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("dns")}
+                      >
+                        DNS Ops
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("last24h")}
+                      >
+                        Last 24h
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => applyAuditPreset("clear")}
+                      >
+                        Clear Filters
                       </Button>
                     </div>
                     {auditFilters.length > 0 && (
@@ -4144,9 +4253,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="equals">equals</SelectItem>
-                                <SelectItem value="contains">contains</SelectItem>
-                                <SelectItem value="matches">matches (regex)</SelectItem>
                                 <SelectItem value="not_equals">not equals</SelectItem>
+                                <SelectItem value="contains">contains</SelectItem>
+                                <SelectItem value="not_contains">not contains</SelectItem>
+                                <SelectItem value="starts_with">starts with</SelectItem>
+                                <SelectItem value="ends_with">ends with</SelectItem>
+                                <SelectItem value="matches">matches (regex)</SelectItem>
+                                <SelectItem value="gt">greater than (&gt;)</SelectItem>
+                                <SelectItem value="gte">greater/equal (&gt;=)</SelectItem>
+                                <SelectItem value="lt">less than (&lt;)</SelectItem>
+                                <SelectItem value="lte">less/equal (&lt;=)</SelectItem>
                               </SelectContent>
                             </Select>
                             <Input
@@ -4168,6 +4284,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </Button>
                           </div>
                         ))}
+                        <div className="text-[11px] text-muted-foreground">
+                          For timestamp comparisons, use ISO date/time values (example:
+                          {" "}2026-02-06T12:00:00Z).
+                        </div>
                       </div>
                     )}
                     {!isDesktop() && (
