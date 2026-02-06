@@ -66,6 +66,7 @@ fn main() {
             // Audit
             commands::get_audit_entries,
             commands::export_audit_entries,
+            commands::save_audit_entries,
             commands::clear_audit_entries,
             commands::get_preferences,
             commands::update_preferences,

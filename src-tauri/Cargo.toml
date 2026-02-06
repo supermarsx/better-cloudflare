@@ -28,6 +28,8 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 trust-dns-resolver = "0.23"
 ipnet = "2"
+rfd = "0.15"
+dirs = "5"
 
 [features]
 default = ["custom-protocol"]

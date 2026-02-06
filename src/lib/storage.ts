@@ -37,6 +37,8 @@ interface StorageData {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  auditExportDefaultDocuments?: boolean;
+  confirmClearAuditLogs?: boolean;
   auditOverrides?: Record<string, string[]>;
 }
 
@@ -646,6 +648,26 @@ export class StorageManager {
     return this.data.confirmWindowClose !== false;
   }
 
+  setAuditExportDefaultDocuments(enabled: boolean): void {
+    this.data.auditExportDefaultDocuments = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ auditExportDefaultDocuments: enabled });
+  }
+
+  getAuditExportDefaultDocuments(): boolean {
+    return this.data.auditExportDefaultDocuments !== false;
+  }
+
+  setConfirmClearAuditLogs(enabled: boolean): void {
+    this.data.confirmClearAuditLogs = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ confirmClearAuditLogs: enabled });
+  }
+
+  getConfirmClearAuditLogs(): boolean {
+    return this.data.confirmClearAuditLogs !== false;
+  }
+
   setZonePerPage(zoneId: string, value: number | null): void {
     if (!this.data.zonePerPage) {
       this.data.zonePerPage = {};
@@ -746,6 +768,8 @@ export class StorageManager {
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
+    delete this.data.auditExportDefaultDocuments;
+    delete this.data.confirmClearAuditLogs;
     this.save();
     this.dispatchPreferencesChanged({ settingsCleared: true });
   }

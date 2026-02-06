@@ -201,6 +201,53 @@ const createActionTab = (kind: Exclude<TabKind, "zone">): ZoneTab => ({
   importFormat: "json",
 });
 
+function parseAuditTimestamp(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? null : ts;
+}
+
+function formatRelativeTime(timestampMs: number): string {
+  const deltaSeconds = Math.round((timestampMs - Date.now()) / 1000);
+  const abs = Math.abs(deltaSeconds);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (abs < 60) return rtf.format(deltaSeconds, "second");
+  const deltaMinutes = Math.round(deltaSeconds / 60);
+  if (Math.abs(deltaMinutes) < 60) return rtf.format(deltaMinutes, "minute");
+  const deltaHours = Math.round(deltaSeconds / 3600);
+  if (Math.abs(deltaHours) < 24) return rtf.format(deltaHours, "hour");
+  const deltaDays = Math.round(deltaSeconds / 86400);
+  return rtf.format(deltaDays, "day");
+}
+
+function formatAuditTimestampShort(value: unknown): string {
+  const parsed = parseAuditTimestamp(value);
+  if (parsed === null) return "Unknown";
+  const date = new Date(parsed);
+  const short = date.toLocaleString(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${short} (${formatRelativeTime(parsed)})`;
+}
+
+function formatAuditTimestampFull(value: unknown): string {
+  const parsed = parseAuditTimestamp(value);
+  if (parsed === null) return "Unknown";
+  const date = new Date(parsed);
+  return `${date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  })} | ${date.toISOString()}`;
+}
+
 /**
  * DNS Manager component responsible for listing zones and DNS records and
  * providing UI for add/import/export/update/delete operations.
@@ -248,6 +295,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
   const [pendingLastActiveTab, setPendingLastActiveTab] = useState("");
+  const [auditExportDefaultDocuments, setAuditExportDefaultDocuments] = useState(
+    storageManager.getAuditExportDefaultDocuments(),
+  );
+  const [confirmClearAuditLogs, setConfirmClearAuditLogs] = useState(
+    storageManager.getConfirmClearAuditLogs(),
+  );
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -296,6 +349,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [registryChecksLoading, setRegistryChecksLoading] = useState(false);
   const [registryChecksError, setRegistryChecksError] = useState<string | null>(null);
   const [rdapResult, setRdapResult] = useState<Record<string, unknown> | null>(null);
+  const [showRawRdap, setShowRawRdap] = useState(false);
   const [registrarDomainResult, setRegistrarDomainResult] = useState<DomainInfo | null>(null);
   const [registrarHealthResult, setRegistrarHealthResult] = useState<DomainHealthCheck | null>(null);
   const {
@@ -703,6 +757,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
+            audit_export_default_documents?: boolean;
+            confirm_clear_audit_logs?: boolean;
           };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.last_active_tab === "string") {
@@ -747,6 +803,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.confirm_window_close === "boolean") {
             setConfirmWindowClose(prefObj.confirm_window_close);
           }
+          if (typeof prefObj.audit_export_default_documents === "boolean") {
+            setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
+          }
+          if (typeof prefObj.confirm_clear_audit_logs === "boolean") {
+            setConfirmClearAuditLogs(prefObj.confirm_clear_audit_logs);
+          }
         })
         .catch(() => {})
         .finally(() => setPrefsReady(true));
@@ -767,6 +829,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
+    setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
+    setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setPrefsReady(true);
   }, []);
 
@@ -878,6 +942,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
+    storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
+    storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
 
     if (isDesktop()) {
       TauriClient.getPreferences()
@@ -894,6 +960,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
+            audit_export_default_documents: auditExportDefaultDocuments,
+            confirm_clear_audit_logs: confirmClearAuditLogs,
           }),
         )
         .catch(() => {});
@@ -909,6 +977,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    auditExportDefaultDocuments,
+    confirmClearAuditLogs,
     prefsReady,
   ]);
 
@@ -1124,6 +1194,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setRegistryLookupDomain(activeTab.zoneName);
     setRegistryChecksError(null);
     setRdapResult(null);
+    setShowRawRdap(false);
     setRegistrarDomainResult(null);
     setRegistrarHealthResult(null);
   }, [activeTab?.id]);
@@ -1288,6 +1359,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (Number.isNaN(limit)) return orderedAuditEntries;
     return orderedAuditEntries.slice(0, limit);
   }, [orderedAuditEntries, auditLimit]);
+
+  const clearAuditEntriesNow = useCallback(async () => {
+    if (!isDesktop()) return;
+    await TauriClient.clearAuditEntries();
+    setAuditEntries([]);
+  }, []);
   const handleAddRecord = async () => {
     if (!activeTab) return;
     const draft = activeTab.newRecord;
@@ -1919,8 +1996,94 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [activeTab],
   );
 
+  const rdapObject = (rdapResult ?? {}) as Record<string, unknown>;
+  const rdapStatuses = Array.isArray(rdapObject.status)
+    ? (rdapObject.status as unknown[]).map((s) => String(s))
+    : [];
+  const rdapNameservers = Array.isArray(rdapObject.nameservers)
+    ? (rdapObject.nameservers as Array<Record<string, unknown>>)
+        .map((ns) => String(ns.ldhName ?? ns.unicodeName ?? ""))
+        .filter(Boolean)
+    : [];
+  const rdapEvents = Array.isArray(rdapObject.events)
+    ? (rdapObject.events as Array<Record<string, unknown>>).map((event) => ({
+        action: String(event.eventAction ?? "unknown"),
+        date: String(event.eventDate ?? ""),
+      }))
+    : [];
+  const rdapRegistrarEntity = Array.isArray(rdapObject.entities)
+    ? (rdapObject.entities as Array<Record<string, unknown>>).find((entity) =>
+        Array.isArray(entity.roles)
+          ? (entity.roles as unknown[])
+              .map((r) => String(r).toLowerCase())
+              .includes("registrar")
+          : false,
+      )
+    : undefined;
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
+      <div className={`fixed right-3 z-30 ${isDesktop() ? "top-12" : "top-3"}`}>
+        <div className="flex items-center gap-1 rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100">
+          {isDesktop() && (
+            <Tooltip tip="Audit log" side="bottom">
+              <Button
+                onClick={() => openActionTab("audit")}
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
+                aria-label="Audit log"
+              >
+                <Shield className="h-3.5 w-3.5" />
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip tip="Registry Monitoring" side="bottom">
+            <Button
+              onClick={() => openActionTab("registry")}
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
+              aria-label="Registry Monitoring"
+            >
+              <Globe className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+          <Tooltip tip="Settings" side="bottom">
+            <Button
+              onClick={() => openActionTab("settings")}
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
+              aria-label="Settings"
+            >
+              <Settings className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+          <Tooltip tip="Tags" side="bottom">
+            <Button
+              onClick={() => openActionTab("tags")}
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
+              aria-label="Tags"
+            >
+              <Tags className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+          <Tooltip tip="Logout" side="bottom">
+            <Button
+              onClick={handleLogout}
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
+              aria-label="Logout"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+        </div>
+      </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
           <div className="sticky top-0 z-20">
             <Card className="border-border/60 bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)] backdrop-blur">
@@ -1937,65 +2100,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   )}
                 </p>
               </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {isDesktop() && (
-                    <Tooltip tip="Audit log" side="bottom">
-                      <Button
-                        onClick={() => openActionTab("audit")}
-                        variant="outline"
-                        size="icon"
-                        className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                        aria-label="Audit log"
-                      >
-                        <Shield className="h-4 w-4" />
-                      </Button>
-                    </Tooltip>
-                  )}
-                  <Tooltip tip="Registry Monitoring" side="bottom">
-                    <Button
-                      onClick={() => openActionTab("registry")}
-                      variant="outline"
-                      size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                      aria-label="Registry Monitoring"
-                    >
-                      <Globe className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
-                  <Tooltip tip="Settings" side="bottom">
-                    <Button
-                      onClick={() => openActionTab("settings")}
-                      variant="outline"
-                      size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                      aria-label="Settings"
-                    >
-                      <Settings className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
-                  <Tooltip tip="Tags" side="bottom">
-                    <Button
-                      onClick={() => openActionTab("tags")}
-                      variant="outline"
-                      size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                      aria-label="Tags"
-                    >
-                      <Tags className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
-                  <Tooltip tip="Logout" side="bottom">
-                    <Button
-                      onClick={handleLogout}
-                      variant="outline"
-                      size="icon"
-                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
-                      aria-label="Logout"
-                    >
-                      <LogOut className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
-                </div>
+                <div />
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -3348,11 +3453,96 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                      <div className="text-sm font-medium">RDAP Response</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-medium">RDAP Response</div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setShowRawRdap((prev) => !prev)}
+                          disabled={!rdapResult}
+                        >
+                          {showRawRdap ? "Show Table" : "Show Raw JSON"}
+                        </Button>
+                      </div>
                       {rdapResult ? (
-                        <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
-                          {JSON.stringify(rdapResult, null, 2)}
-                        </pre>
+                        showRawRdap ? (
+                          <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
+                            {JSON.stringify(rdapResult, null, 2)}
+                          </pre>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                              <table className="w-full text-xs">
+                                <tbody>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Domain</td>
+                                    <td className="px-3 py-2">{String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}</td>
+                                  </tr>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Handle</td>
+                                    <td className="px-3 py-2">{String(rdapObject.handle ?? "—")}</td>
+                                  </tr>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Object Class</td>
+                                    <td className="px-3 py-2">{String(rdapObject.objectClassName ?? "—")}</td>
+                                  </tr>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Port 43</td>
+                                    <td className="px-3 py-2">{String(rdapObject.port43 ?? "—")}</td>
+                                  </tr>
+                                  <tr>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Status</td>
+                                    <td className="px-3 py-2">
+                                      {rdapStatuses.length ? rdapStatuses.join(", ") : "—"}
+                                    </td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-border/40 text-muted-foreground">
+                                    <th className="px-3 py-2 text-left font-medium">Event</th>
+                                    <th className="px-3 py-2 text-left font-medium">Date</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {rdapEvents.length ? (
+                                    rdapEvents.map((event, idx) => (
+                                      <tr key={`${event.action}-${idx}`} className="border-b border-border/30 last:border-b-0">
+                                        <td className="px-3 py-2">{event.action}</td>
+                                        <td className="px-3 py-2">{event.date || "—"}</td>
+                                      </tr>
+                                    ))
+                                  ) : (
+                                    <tr>
+                                      <td className="px-3 py-2 text-muted-foreground" colSpan={2}>No events returned.</td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                              <table className="w-full text-xs">
+                                <tbody>
+                                  <tr className="border-b border-border/40">
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Registrar Entity</td>
+                                    <td className="px-3 py-2">{String(rdapRegistrarEntity?.handle ?? "—")}</td>
+                                  </tr>
+                                  <tr>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">Nameservers</td>
+                                    <td className="px-3 py-2">
+                                      {rdapNameservers.length ? rdapNameservers.join(", ") : "—"}
+                                    </td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )
                       ) : (
                         <div className="text-xs text-muted-foreground">
                           Run checks to load RDAP response.
@@ -3376,7 +3566,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </Button>
                         <Button
                           variant="outline"
-                          onClick={() => setShowClearAuditConfirm(true)}
+                          onClick={() => {
+                            if (confirmClearAuditLogs) {
+                              setShowClearAuditConfirm(true);
+                              return;
+                            }
+                            void clearAuditEntriesNow();
+                          }}
                           disabled={!isDesktop() || auditEntries.length === 0}
                         >
                           Clear logs
@@ -3385,14 +3581,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           variant="outline"
                           onClick={async () => {
                             if (!isDesktop()) return;
-                            const data = await TauriClient.exportAuditEntries("json");
-                            const blob = new Blob([data], { type: "application/json" });
-                            const url = URL.createObjectURL(blob);
-                            const link = document.createElement("a");
-                            link.href = url;
-                            link.download = "audit-log.json";
-                            link.click();
-                            URL.revokeObjectURL(url);
+                            try {
+                              const path = await TauriClient.saveAuditEntries(
+                                "json",
+                                auditExportDefaultDocuments,
+                              );
+                              toast({
+                                title: "Export complete",
+                                description: `Saved to ${path}`,
+                              });
+                            } catch (error) {
+                              const message =
+                                error instanceof Error ? error.message : String(error);
+                              if (message.toLowerCase().includes("cancel")) return;
+                              toast({
+                                title: "Export failed",
+                                description: message,
+                                variant: "destructive",
+                              });
+                            }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
                         >
@@ -3402,14 +3609,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           variant="outline"
                           onClick={async () => {
                             if (!isDesktop()) return;
-                            const data = await TauriClient.exportAuditEntries("csv");
-                            const blob = new Blob([data], { type: "text/csv" });
-                            const url = URL.createObjectURL(blob);
-                            const link = document.createElement("a");
-                            link.href = url;
-                            link.download = "audit-log.csv";
-                            link.click();
-                            URL.revokeObjectURL(url);
+                            try {
+                              const path = await TauriClient.saveAuditEntries(
+                                "csv",
+                                auditExportDefaultDocuments,
+                              );
+                              toast({
+                                title: "Export complete",
+                                description: `Saved to ${path}`,
+                              });
+                            } catch (error) {
+                              const message =
+                                error instanceof Error ? error.message : String(error);
+                              if (message.toLowerCase().includes("cancel")) return;
+                              toast({
+                                title: "Export failed",
+                                description: message,
+                                variant: "destructive",
+                              });
+                            }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
                         >
@@ -3498,7 +3716,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                     {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
                       <div className="overflow-auto rounded-lg border border-border/60">
-                      <div className="grid grid-cols-[160px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
+                      <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
                           <div>Timestamp</div>
                           <div>Operation</div>
                           <div>Resource</div>
@@ -3509,11 +3727,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "unknown";
                             const operation = typeof entry.operation === "string" ? entry.operation : "operation";
                             const resource = typeof entry.resource === "string" ? entry.resource : "resource";
+                            const timestampShort = formatAuditTimestampShort(entry.timestamp);
+                            const timestampFull = formatAuditTimestampFull(entry.timestamp);
                             return (
                               <details key={`${timestamp}-${index}`} className="px-4 py-3 text-sm">
-                                <summary className="grid grid-cols-[160px_160px_1fr_80px] gap-3 cursor-pointer list-none">
-                                  <div className="text-xs text-muted-foreground">
-                                    {timestamp}
+                                <summary className="grid grid-cols-[220px_160px_1fr_80px] gap-3 cursor-pointer list-none">
+                                  <div className="text-xs text-muted-foreground" title={timestampFull}>
+                                    {timestampShort}
                                   </div>
                                   <div className="font-medium">{operation}</div>
                                   <div className="truncate text-muted-foreground">
@@ -3524,6 +3744,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   </div>
                                 </summary>
                                 <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
+                                  <div className="mb-2">
+                                    <span className="font-medium text-foreground">Full timestamp:</span>{" "}
+                                    {timestampFull}
+                                  </div>
                                   <pre className="whitespace-pre-wrap">
                                     {JSON.stringify(entry, null, 2)}
                                   </pre>
@@ -3865,6 +4089,48 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                       )}
+                      {isDesktop() && (
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Audit export default</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={auditExportDefaultDocuments}
+                              onCheckedChange={(checked: boolean) => {
+                                setAuditExportDefaultDocuments(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Audit export dialog defaults to Documents."
+                                    : "Audit export dialog uses system default location.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Preselect Documents in the export save dialog.
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {isDesktop() && (
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Confirm clear audit logs</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={confirmClearAuditLogs}
+                              onCheckedChange={(checked: boolean) => {
+                                setConfirmClearAuditLogs(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Clear-audit confirmation enabled."
+                                    : "Clear-audit confirmation disabled.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Ask before deleting all audit entries.
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Auto logout (idle)</div>
                         <div className="flex flex-wrap items-center gap-3">
@@ -3926,6 +4192,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               This deletes all audit entries stored on this device. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="checkbox-themed"
+              checked={!confirmClearAuditLogs}
+              onChange={(e) => {
+                const disable = e.target.checked;
+                setConfirmClearAuditLogs(!disable);
+                notifySaved(
+                  disable
+                    ? "Clear-audit confirmation disabled."
+                    : "Clear-audit confirmation enabled.",
+                );
+              }}
+            />
+            Don’t ask again
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setShowClearAuditConfirm(false)}>
               Cancel
@@ -3935,8 +4218,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               className="flex-1 bg-red-500/80 text-white hover:bg-red-500 hover:text-white shadow-[0_0_18px_rgba(255,80,80,0.25)] hover:shadow-[0_0_26px_rgba(255,90,90,0.45)] transition"
               onClick={async () => {
                 if (!isDesktop()) return;
-                await TauriClient.clearAuditEntries();
-                setAuditEntries([]);
+                await clearAuditEntriesNow();
                 setShowClearAuditConfirm(false);
               }}
             >

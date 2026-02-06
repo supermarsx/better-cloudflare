@@ -348,6 +348,13 @@ export class TauriClient {
     return invoke("export_audit_entries", { format });
   }
 
+  static async saveAuditEntries(
+    format: "json" | "csv" = "json",
+    defaultToDocuments = true,
+  ): Promise<string> {
+    return invoke("save_audit_entries", { format, defaultToDocuments });
+  }
+
   static async clearAuditEntries(): Promise<void> {
     return invoke("clear_audit_entries");
   }
