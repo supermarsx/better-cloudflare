@@ -74,6 +74,7 @@ fn main() {
             // SPF
             commands::simulate_spf,
             commands::spf_graph,
+            commands::resolve_topology_batch,
             // Registrar Monitoring
             registrar_commands::add_registrar_credential,
             registrar_commands::list_registrar_credentials,

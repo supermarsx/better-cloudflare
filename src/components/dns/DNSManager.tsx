@@ -76,6 +76,7 @@ type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab = "general" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
+type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
 type AuditFilterOperator =
   | "equals"
@@ -476,6 +477,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyResolutionMaxHops, setTopologyResolutionMaxHops] = useState(
     storageManager.getTopologyResolutionMaxHops(),
   );
+  const [topologyDohProvider, setTopologyDohProvider] = useState<TopologyDohProvider>(
+    storageManager.getTopologyDohProvider(),
+  );
+  const [topologyDohCustomUrl, setTopologyDohCustomUrl] = useState(
+    storageManager.getTopologyDohCustomUrl(),
+  );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
@@ -553,6 +560,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmWindowClose,
       loadingOverlayTimeoutMs,
       topologyResolutionMaxHops,
+      topologyDohProvider,
+      topologyDohCustomUrl,
       auditExportDefaultDocuments,
       confirmClearAuditLogs,
       auditExportFolderPreset,
@@ -573,6 +582,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
+    topologyDohProvider,
+    topologyDohCustomUrl,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -620,6 +631,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyResolutionMaxHops === "number") {
       setTopologyResolutionMaxHops(Math.max(1, Math.min(15, Math.round(profile.topologyResolutionMaxHops))));
+    }
+    if (
+      profile.topologyDohProvider === "google" ||
+      profile.topologyDohProvider === "cloudflare" ||
+      profile.topologyDohProvider === "quad9" ||
+      profile.topologyDohProvider === "custom"
+    ) {
+      setTopologyDohProvider(profile.topologyDohProvider);
+    }
+    if (typeof profile.topologyDohCustomUrl === "string") {
+      setTopologyDohCustomUrl(profile.topologyDohCustomUrl);
     }
     if (typeof profile.auditExportDefaultDocuments === "boolean") {
       setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
@@ -1043,6 +1065,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close?: boolean;
             loading_overlay_timeout_ms?: number;
             topology_resolution_max_hops?: number;
+            topology_doh_provider?: TopologyDohProvider;
+            topology_doh_custom_url?: string;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -1104,6 +1128,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               Math.max(1, Math.min(15, Math.round(prefObj.topology_resolution_max_hops))),
             );
           }
+          if (
+            prefObj.topology_doh_provider === "google" ||
+            prefObj.topology_doh_provider === "cloudflare" ||
+            prefObj.topology_doh_provider === "quad9" ||
+            prefObj.topology_doh_provider === "custom"
+          ) {
+            setTopologyDohProvider(prefObj.topology_doh_provider);
+          }
+          if (typeof prefObj.topology_doh_custom_url === "string") {
+            setTopologyDohCustomUrl(prefObj.topology_doh_custom_url);
+          }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
             setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
           }
@@ -1150,6 +1185,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
+    setTopologyDohProvider(storageManager.getTopologyDohProvider());
+    setTopologyDohCustomUrl(storageManager.getTopologyDohCustomUrl());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
@@ -1272,6 +1309,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
+    storageManager.setTopologyDohProvider(topologyDohProvider);
+    storageManager.setTopologyDohCustomUrl(topologyDohCustomUrl);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
@@ -1299,6 +1338,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close: confirmWindowClose,
             loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
             topology_resolution_max_hops: topologyResolutionMaxHops,
+            topology_doh_provider: topologyDohProvider,
+            topology_doh_custom_url: topologyDohCustomUrl,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
@@ -1326,6 +1367,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
+    topologyDohProvider,
+    topologyDohCustomUrl,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -4342,6 +4385,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   records={activeTab.records}
                   isLoading={activeTab.isLoading}
                   maxResolutionHops={topologyResolutionMaxHops}
+                  dohProvider={topologyDohProvider}
+                  dohCustomUrl={topologyDohCustomUrl}
                   onRefresh={async () => {
                     await loadRecords(activeTab);
                   }}
@@ -5117,6 +5162,58 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             Max recursive hostname resolution depth for topology (1-15).
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Topology DoH resolver</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Select
+                            value={topologyDohProvider}
+                            onValueChange={(v) => {
+                              const next =
+                                v === "cloudflare" || v === "quad9" || v === "custom"
+                                  ? v
+                                  : "google";
+                              setTopologyDohProvider(next);
+                              notifySaved(
+                                next === "custom"
+                                  ? "Topology resolver set to custom DoH endpoint."
+                                  : `Topology resolver set to ${next}.`,
+                              );
+                            }}
+                          >
+                            <SelectTrigger className="w-44">
+                              <SelectValue placeholder="Resolver" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="google">Google (default)</SelectItem>
+                              <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                              <SelectItem value="quad9">Quad9</SelectItem>
+                              <SelectItem value="custom">Custom</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <div className="text-xs text-muted-foreground">
+                            Used for topology hostname chain lookups.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">Custom DoH endpoint</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Input
+                            value={topologyDohCustomUrl}
+                            onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
+                            onBlur={() => {
+                              setTopologyDohCustomUrl((prev) => prev.trim());
+                              notifySaved("Custom DoH endpoint updated.");
+                            }}
+                            className="min-w-[320px]"
+                            placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
+                            disabled={topologyDohProvider !== "custom"}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            Used only when provider is Custom.
                           </div>
                         </div>
                       </div>

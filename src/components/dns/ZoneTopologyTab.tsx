@@ -21,6 +21,7 @@ import {
 import type { DNSRecord } from "@/types/dns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { TauriClient } from "@/lib/tauri-client";
 
 type Annotation = {
   id: string;
@@ -63,6 +64,8 @@ type ZoneTopologyTabProps = {
   records: DNSRecord[];
   isLoading?: boolean;
   maxResolutionHops?: number;
+  dohProvider?: "google" | "cloudflare" | "quad9" | "custom";
+  dohCustomUrl?: string;
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
 };
@@ -74,10 +77,12 @@ type ServiceDiscoveryItem = {
 };
 
 type ExternalDnsResolution = {
+  requestedName?: string;
   chain: string[];
   terminal: string;
   ipv4: string[];
   ipv6: string[];
+  reverseHostnamesByIp?: Record<string, string[]>;
   source: "external";
   error?: string;
 };
@@ -147,6 +152,15 @@ function esc(value: string): string {
 
 function normalizeDomain(value: string): string {
   return String(value ?? "").trim().replace(/\.$/, "").toLowerCase();
+}
+
+function isIpAddress(value: string): boolean {
+  const v = String(value ?? "").trim();
+  if (!v) return false;
+  // Simple IPv4/IPv6 checks for candidate filtering.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) return true;
+  if (v.includes(":") && /^[0-9a-f:.]+$/i.test(v)) return true;
+  return false;
 }
 
 function extractTarget(record: DNSRecord): string | null {
@@ -285,6 +299,43 @@ function resolveNameToTerminal(
   };
 }
 
+function pickBestResolution(
+  requestedName: string,
+  local: { chain: string[]; terminal: string; ipv4: string[]; ipv6: string[] },
+  externalByName: Record<string, ExternalDnsResolution>,
+): ExternalDnsResolution {
+  const requested = normalizeDomain(requestedName);
+  const localTerminal = normalizeDomain(local.terminal || requested);
+  const external =
+    externalByName[requested] ||
+    externalByName[localTerminal];
+  const localFallback: ExternalDnsResolution = {
+    chain: local.chain,
+    terminal: local.terminal,
+    ipv4: local.ipv4,
+    ipv6: local.ipv6,
+    source: "external",
+  };
+  if (!external) return localFallback;
+
+  const localHasEndpoints = local.ipv4.length > 0 || local.ipv6.length > 0;
+  const externalHasEndpoints = external.ipv4.length > 0 || external.ipv6.length > 0;
+  const externalHasDeeperChain = external.chain.length > local.chain.length;
+
+  // Prefer backend resolution whenever local chain does not end in IPs
+  // and backend provides either deeper hop trail or terminal endpoints.
+  if (!localHasEndpoints && (externalHasEndpoints || externalHasDeeperChain)) {
+    return external;
+  }
+  if (localHasEndpoints && externalHasEndpoints) {
+    return {
+      ...localFallback,
+      reverseHostnamesByIp: external.reverseHostnamesByIp,
+    };
+  }
+  return localFallback;
+}
+
 function safeNodeLabel(name: string, info: string): string {
   const compactInfo = info.replace(/\n/g, "<br/>");
   return `${esc(name)}<br/><span style='font-size:11px;opacity:0.8'>${esc(compactInfo)}</span>`;
@@ -333,6 +384,7 @@ function buildTopology(
   zoneName: string,
   maxResolutionHops: number,
   isDarkTheme: boolean,
+  externalResolutionByName: Record<string, ExternalDnsResolution>,
 ): { code: string; summary: TopologySummary } {
   const lines: string[] = [];
   const nodeIds = new Map<string, string>();
@@ -361,7 +413,8 @@ function buildTopology(
     const fromName = normalizeDomain(r.name) || zone;
     const mxTarget = extractTarget(r);
     if (!mxTarget) continue;
-    const resolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
+    const localResolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
+    const resolved = pickBestResolution(mxTarget, localResolved, externalResolutionByName);
     mxTrails.push({
       from: fromName,
       target: mxTarget,
@@ -428,7 +481,8 @@ function buildTopology(
     for (const area of areas) areaCounts[area] += 1;
 
     const recordId = idFor(unit.key);
-    const resolved = resolveNameToTerminal(unit.name, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
+    const localResolved = resolveNameToTerminal(unit.name, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
+    const resolved = pickBestResolution(unit.name, localResolved, externalResolutionByName);
     const endpointInfo =
       resolved.ipv4.length || resolved.ipv6.length
         ? `A:${resolved.ipv4.length || 0} AAAA:${resolved.ipv6.length || 0}`
@@ -466,13 +520,14 @@ function buildTopology(
 
       // Trace hostname -> CNAME chain -> terminal A/AAAA path for non-IP targets.
       if (!isIp) {
-        const resolvedTarget = resolveNameToTerminal(
+        const localResolvedTarget = resolveNameToTerminal(
           target,
           cnameMap,
           ipv4ByName,
           ipv6ByName,
           maxResolutionHops,
         );
+        const resolvedTarget = pickBestResolution(target, localResolvedTarget, externalResolutionByName);
         for (let i = 0; i < resolvedTarget.chain.length - 1; i += 1) {
           const from = resolvedTarget.chain[i];
           const to = resolvedTarget.chain[i + 1];
@@ -516,6 +571,29 @@ function buildTopology(
           if (!edgeSet.has(k)) {
             lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
             edgeSet.add(k);
+          }
+        }
+        if (resolvedTarget.reverseHostnamesByIp) {
+          for (const [ip, ptrNames] of Object.entries(resolvedTarget.reverseHostnamesByIp)) {
+            if (!ptrNames?.length) continue;
+            const ipId = idFor(`ip:${ip}`);
+            if (!usedNames.has(`ip:${ip}`)) {
+              lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+              usedNames.add(`ip:${ip}`);
+            }
+            for (const ptrName of ptrNames) {
+              const ptrKey = `target:${normalizeDomain(ptrName)}`;
+              const ptrId = idFor(ptrKey);
+              if (!usedNames.has(ptrKey)) {
+                lines.push(`  ${ptrId}["${esc(normalizeDomain(ptrName))}"]:::target`);
+                usedNames.add(ptrKey);
+              }
+              const ptrEdge = `${ipId}|PTR|${ptrId}`;
+              if (!edgeSet.has(ptrEdge)) {
+                lines.push(`  ${ipId} -. "PTR" .-> ${ptrId}`);
+                edgeSet.add(ptrEdge);
+              }
+            }
           }
         }
       }
@@ -580,14 +658,15 @@ function buildTopology(
               ipv6ByName,
               maxResolutionHops,
             );
+            const bestResolved = pickBestResolution(name, resolved, externalResolutionByName);
             return {
               name,
               records: nodeRecs,
-              resolvedTo: resolved.chain.slice(1),
+              resolvedTo: bestResolved.chain.slice(1),
               areas: classifyAreas(name, nodeRecs, emailPathNames),
-              terminal: resolved.terminal,
-              ipv4: resolved.ipv4,
-              ipv6: resolved.ipv6,
+              terminal: bestResolved.terminal,
+              ipv4: bestResolved.ipv4,
+              ipv6: bestResolved.ipv6,
             };
           })(),
         }))
@@ -670,11 +749,59 @@ async function resolveExternalCnameToAddress(
   }
 }
 
+async function resolveTopologyBatchInBackend(
+  hostnames: string[],
+  maxHops: number,
+  dohProvider: "google" | "cloudflare" | "quad9" | "custom",
+  dohCustomUrl: string,
+  serviceHosts: string[] = [],
+): Promise<{
+  resolutions: ExternalDnsResolution[];
+  probes: Array<{ host: string; httpsUp: boolean; httpUp: boolean }>;
+} | null> {
+  if (!TauriClient.isTauri()) return null;
+  try {
+    const result = await TauriClient.resolveTopologyBatch(
+      hostnames,
+      maxHops,
+      serviceHosts,
+      dohProvider,
+      dohCustomUrl,
+    );
+    return {
+      resolutions: (result.resolutions ?? []).map((item) => ({
+        requestedName: normalizeDomain(item.name ?? ""),
+        chain: item.chain ?? [],
+        terminal: item.terminal ?? "",
+        ipv4: item.ipv4 ?? [],
+        ipv6: item.ipv6 ?? [],
+        reverseHostnamesByIp: Object.fromEntries(
+          (item.reverse_hostnames ?? []).map((entry) => [
+            String(entry.ip ?? ""),
+            Array.from(new Set((entry.hostnames ?? []).map((value) => normalizeDomain(value)).filter(Boolean))),
+          ]),
+        ),
+        source: "external" as const,
+        error: item.error ?? undefined,
+      })),
+      probes: (result.probes ?? []).map((item) => ({
+        host: item.host,
+        httpsUp: Boolean(item.https_up),
+        httpUp: Boolean(item.http_up),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function ZoneTopologyTab({
   zoneName,
   records,
   isLoading = false,
   maxResolutionHops = 15,
+  dohProvider = "google",
+  dohCustomUrl = "",
   onRefresh,
   onEditRecord,
 }: ZoneTopologyTabProps) {
@@ -714,6 +841,16 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
+  const recordsFingerprint = useMemo(
+    () =>
+      records
+        .map((record) =>
+          `${record.id ?? ""}|${record.type}|${normalizeDomain(record.name)}|${normalizeDomain(String(record.content ?? ""))}|${record.modified_on ?? ""}`,
+        )
+        .sort()
+        .join("||"),
+    [records],
+  );
   const closeExpandGraph = useCallback(() => {
     setExpandGraph(false);
     autoFitDoneRef.current = "";
@@ -737,11 +874,21 @@ export function ZoneTopologyTab({
   }, []);
 
   useEffect(() => {
+    setExternalResolutionByName({});
+  }, [dohCustomUrl, dohProvider, recordsFingerprint, zoneName, maxResolutionHops]);
+
+  useEffect(() => {
     const clampedMaxHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
-    const { code, summary: nextSummary } = buildTopology(records, zoneName, clampedMaxHops, isDarkThemeMode);
+    const { code, summary: nextSummary } = buildTopology(
+      records,
+      zoneName,
+      clampedMaxHops,
+      isDarkThemeMode,
+      externalResolutionByName,
+    );
     setMermaidCode(code);
     setSummary(nextSummary);
-  }, [isDarkThemeMode, maxResolutionHops, records, zoneName]);
+  }, [externalResolutionByName, isDarkThemeMode, maxResolutionHops, records, zoneName]);
 
   useEffect(() => {
     const candidates = new Set<string>();
@@ -755,19 +902,61 @@ export function ZoneTopologyTab({
       const n = normalizeDomain(mx.terminal || mx.target);
       if (n) candidates.add(n);
     }
-    const missing = Array.from(candidates).filter((n) => !externalResolutionByName[n]);
+    // Resolve every hostname target used by topology edges, not only node summaries,
+    // so CNAME chains are always available for chart rendering.
+    for (const record of records) {
+      const target = extractTarget(record);
+      if (!target || isIpAddress(target)) continue;
+      const hostname = normalizeDomain(target);
+      if (hostname) candidates.add(hostname);
+    }
+    const missing = Array.from(candidates).filter((n) => {
+      const existing = externalResolutionByName[n];
+      if (!existing) return true;
+      if (existing.error) return false;
+      const hasEndpoints = existing.ipv4.length > 0 || existing.ipv6.length > 0;
+      const hasChain = existing.chain.length > 1;
+      // Retry previously weak/empty results so chart can recover.
+      return !hasEndpoints && !hasChain;
+    });
     if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
-      const entries = await Promise.all(
-        missing.slice(0, 20).map(async (name) => {
-          const resolved = await resolveExternalCnameToAddress(
-            name,
-            Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
-          );
-          return [name, resolved] as const;
-        }),
+      const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
+      const backendBatch = await resolveTopologyBatchInBackend(
+        missing,
+        clampedHops,
+        dohProvider,
+        dohCustomUrl,
       );
+      const entries = backendBatch
+        ? (() => {
+          const byName = new Map<string, ExternalDnsResolution>();
+          for (const resolved of backendBatch.resolutions) {
+            const requested = normalizeDomain(resolved.requestedName || "");
+            if (requested) byName.set(requested, resolved);
+            const key = normalizeDomain(resolved.terminal || resolved.chain[0] || "");
+            if (key && !byName.has(key)) byName.set(key, resolved);
+            for (const hop of resolved.chain) {
+              const hk = normalizeDomain(hop);
+              if (hk && !byName.has(hk)) byName.set(hk, resolved);
+            }
+          }
+          return missing.map((name) => [name, byName.get(normalizeDomain(name)) ?? {
+            chain: [name],
+            terminal: name,
+            ipv4: [],
+            ipv6: [],
+            source: "external" as const,
+            error: "backend resolution unavailable",
+          }] as const);
+        })()
+        : await Promise.all(
+          missing.map(async (name) => {
+            const resolved = await resolveExternalCnameToAddress(name, clampedHops);
+            return [name, resolved] as const;
+          }),
+        );
       if (cancelled) return;
       setExternalResolutionByName((prev) => {
         const next = { ...prev };
@@ -778,7 +967,15 @@ export function ZoneTopologyTab({
     return () => {
       cancelled = true;
     };
-  }, [externalResolutionByName, maxResolutionHops, summary.mxTrails, summary.nodeSummaries]);
+  }, [
+    dohCustomUrl,
+    dohProvider,
+    externalResolutionByName,
+    maxResolutionHops,
+    records,
+    summary.mxTrails,
+    summary.nodeSummaries,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1141,6 +1338,8 @@ export function ZoneTopologyTab({
         const ipv6 = local.ipv6.length ? local.ipv6 : external?.ipv6 ?? [];
         const terminal = local.terminal || external?.terminal || target;
         const source = local.ipv4.length || local.ipv6.length ? "in-zone" : external ? "external" : "none";
+        const reverse = Object.entries(external?.reverseHostnamesByIp ?? {})
+          .flatMap(([ip, hosts]) => hosts.map((host) => `${ip} => ${host}`));
         return {
           id: record.id,
           from,
@@ -1150,6 +1349,7 @@ export function ZoneTopologyTab({
           terminal,
           ipv4,
           ipv6,
+          reverse,
           source,
         };
       });
@@ -1180,18 +1380,43 @@ export function ZoneTopologyTab({
           httpTargets.add(n);
         }
       }
-      for (const host of Array.from(httpTargets).filter(Boolean).slice(0, 4)) {
-        const httpsStatus = await probeHttp(`https://${host}`);
-        items.push({ service: `HTTPS (${host})`, status: httpsStatus, details: httpsStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
-        const httpStatus = await probeHttp(`http://${host}`);
-        items.push({ service: `HTTP (${host})`, status: httpStatus, details: httpStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
+      const probeHosts = Array.from(httpTargets).filter(Boolean).slice(0, 4);
+      const backendBatch = await resolveTopologyBatchInBackend(
+        [],
+        Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
+        dohProvider,
+        dohCustomUrl,
+        probeHosts,
+      );
+      if (backendBatch && backendBatch.probes.length > 0) {
+        for (const probe of backendBatch.probes) {
+          const httpsStatus: "up" | "down" = probe.httpsUp ? "up" : "down";
+          const httpStatus: "up" | "down" = probe.httpUp ? "up" : "down";
+          items.push({
+            service: `HTTPS (${probe.host})`,
+            status: httpsStatus,
+            details: httpsStatus === "up" ? "Backend probe reachable" : "Backend probe failed",
+          });
+          items.push({
+            service: `HTTP (${probe.host})`,
+            status: httpStatus,
+            details: httpStatus === "up" ? "Backend probe reachable" : "Backend probe failed",
+          });
+        }
+      } else {
+        for (const host of probeHosts) {
+          const httpsStatus = await probeHttp(`https://${host}`);
+          items.push({ service: `HTTPS (${host})`, status: httpsStatus, details: httpsStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
+          const httpStatus = await probeHttp(`http://${host}`);
+          items.push({ service: `HTTP (${host})`, status: httpStatus, details: httpStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
+        }
       }
       setDiscovery(items);
       toast({ title: "Discovery complete", description: `Found ${items.length} service signal(s).` });
     } finally {
       setDiscovering(false);
     }
-  }, [records, toast, zoneBase]);
+  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase]);
 
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">
@@ -1579,6 +1804,7 @@ export function ZoneTopologyTab({
                     {mx.from} | prio {mx.priority ?? "—"} | target {mx.target || "—"} | chain{" "}
                     {mx.chain.length ? mx.chain.join(" -> ") : "—"} | end {mx.terminal || "—"} | A{" "}
                     {mx.ipv4.join(", ") || "none"} | AAAA {mx.ipv6.join(", ") || "none"} | source {mx.source}
+                    {mx.reverse.length > 0 ? ` | PTR ${mx.reverse.join("; ")}` : ""}
                   </div>
                 ))
               )}
@@ -1629,10 +1855,13 @@ export function ZoneTopologyTab({
                     const chain = node.resolvedTo.length
                       ? [node.name, ...node.resolvedTo]
                       : external?.chain ?? [node.name];
+                    const ptr = Object.entries(external?.reverseHostnamesByIp ?? {})
+                      .flatMap(([ip, hosts]) => hosts.map((host) => `${ip} => ${host}`));
                     if (!ipv4.length && !ipv6.length && chain.length <= 1) return null;
                     return (
                     <div className="text-muted-foreground">
                       Chain: {chain.join(" -> ")} | End node: {node.terminal || external?.terminal || node.name} | IPv4: {ipv4.join(", ") || "none"} | IPv6: {ipv6.join(", ") || "none"}
+                      {ptr.length > 0 ? ` | PTR: ${ptr.join("; ")}` : ""}
                     </div>
                     );
                   })()}

@@ -32,6 +32,27 @@ export interface TauriDNSRecord {
 
 export type TauriDNSRecordInput = Partial<TauriDNSRecord>;
 
+export interface TopologyHostnameResolution {
+  name: string;
+  chain: string[];
+  terminal: string;
+  ipv4: string[];
+  ipv6: string[];
+  reverse_hostnames?: Array<{ ip: string; hostnames: string[] }>;
+  error?: string | null;
+}
+
+export interface TopologyServiceProbeResult {
+  host: string;
+  https_up: boolean;
+  http_up: boolean;
+}
+
+export interface TopologyBatchResult {
+  resolutions: TopologyHostnameResolution[];
+  probes: TopologyServiceProbeResult[];
+}
+
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
@@ -380,6 +401,22 @@ export class TauriClient {
 
   static async getSPFGraph(domain: string): Promise<unknown> {
     return invoke("spf_graph", { domain });
+  }
+
+  static async resolveTopologyBatch(
+    hostnames: string[],
+    maxHops = 15,
+    serviceHosts?: string[],
+    dohProvider: "google" | "cloudflare" | "quad9" | "custom" = "google",
+    dohCustomUrl = "",
+  ): Promise<TopologyBatchResult> {
+    return invoke("resolve_topology_batch", {
+      hostnames,
+      max_hops: maxHops,
+      service_hosts: serviceHosts,
+      doh_provider: dohProvider,
+      doh_custom_url: dohCustomUrl,
+    });
   }
 
   // Preferences

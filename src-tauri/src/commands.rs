@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use tauri::{AppHandle, State};
+use std::collections::HashSet;
+use std::time::Duration;
+use std::net::IpAddr;
+use reqwest::redirect::Policy;
+use trust_dns_resolver::TokioAsyncResolver;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use crate::storage::{Preferences, Storage};
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
@@ -970,4 +976,295 @@ pub async fn simulate_spf(domain: String, ip: String) -> Result<spf::SPFSimulati
 #[tauri::command]
 pub async fn spf_graph(domain: String) -> Result<spf::SPFGraph, String> {
     spf::build_spf_graph(&domain).await
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HostnameChainResult {
+    pub name: String,
+    pub chain: Vec<String>,
+    pub terminal: String,
+    pub ipv4: Vec<String>,
+    pub ipv6: Vec<String>,
+    pub reverse_hostnames: Vec<ReverseHostnameResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReverseHostnameResult {
+    pub ip: String,
+    pub hostnames: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceProbeResult {
+    pub host: String,
+    pub https_up: bool,
+    pub http_up: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TopologyBatchResult {
+    pub resolutions: Vec<HostnameChainResult>,
+    pub probes: Vec<ServiceProbeResult>,
+}
+
+fn normalize_domain(input: &str) -> String {
+    input.trim().trim_end_matches('.').to_lowercase()
+}
+
+#[derive(Debug, Deserialize)]
+struct DnsGoogleAnswer {
+    data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnsGoogleResponse {
+    #[serde(rename = "Answer")]
+    answer: Option<Vec<DnsGoogleAnswer>>,
+}
+
+async fn query_doh_records(
+    client: &reqwest::Client,
+    doh_endpoint: &str,
+    name: &str,
+    record_type: &str,
+) -> Vec<String> {
+    let Ok(resp) = client
+        .get(doh_endpoint)
+        .header("accept", "application/dns-json")
+        .query(&[("name", name), ("type", record_type)])
+        .send()
+        .await
+    else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(payload) = resp.json::<DnsGoogleResponse>().await else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ans in payload.answer.unwrap_or_default() {
+        let raw = ans.data.unwrap_or_default().trim().to_string();
+        if raw.is_empty() {
+            continue;
+        }
+        let value = if record_type == "CNAME" {
+            normalize_domain(&raw)
+        } else {
+            raw
+        };
+        if !value.is_empty() && !out.contains(&value) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+async fn resolve_chain_for_host(
+    resolver: &TokioAsyncResolver,
+    client: &reqwest::Client,
+    doh_endpoint: &str,
+    host: &str,
+    max_hops: usize,
+) -> HostnameChainResult {
+    let name = normalize_domain(host);
+    if name.is_empty() {
+        return HostnameChainResult {
+            name,
+            chain: Vec::new(),
+            terminal: String::new(),
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+            reverse_hostnames: Vec::new(),
+            error: Some("empty hostname".to_string()),
+        };
+    }
+
+    let mut chain = vec![name.clone()];
+    let mut seen = HashSet::new();
+    seen.insert(name.clone());
+    let mut cur = name.clone();
+
+    for _ in 0..max_hops {
+        let cname_lookup = resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME).await;
+        let direct_next = match cname_lookup {
+            Ok(lookup) => lookup
+                .iter()
+                .next()
+                .map(|r| normalize_domain(&r.to_string()))
+                .filter(|s| !s.is_empty()),
+            Err(_) => None,
+        };
+        let next = if direct_next.is_some() {
+            direct_next
+        } else {
+            query_doh_records(client, doh_endpoint, &cur, "CNAME")
+                .await
+                .into_iter()
+                .next()
+        };
+        let Some(next_name) = next else {
+            break;
+        };
+        if seen.contains(&next_name) {
+            break;
+        }
+        chain.push(next_name.clone());
+        seen.insert(next_name.clone());
+        cur = next_name;
+    }
+
+    let mut ipv4 = Vec::new();
+    if let Ok(v4) = resolver.ipv4_lookup(cur.clone()).await {
+        for ip in v4.iter() {
+            let v = ip.to_string();
+            if !ipv4.contains(&v) {
+                ipv4.push(v);
+            }
+        }
+    }
+    if ipv4.is_empty() {
+        ipv4 = query_doh_records(client, doh_endpoint, &cur, "A").await;
+    }
+
+    let mut ipv6 = Vec::new();
+    if let Ok(v6) = resolver.ipv6_lookup(cur.clone()).await {
+        for ip in v6.iter() {
+            let v = ip.to_string();
+            if !ipv6.contains(&v) {
+                ipv6.push(v);
+            }
+        }
+    }
+    if ipv6.is_empty() {
+        ipv6 = query_doh_records(client, doh_endpoint, &cur, "AAAA").await;
+    }
+
+    let mut reverse_hostnames = Vec::new();
+    let mut all_ips = Vec::new();
+    all_ips.extend(ipv4.iter().cloned());
+    all_ips.extend(ipv6.iter().cloned());
+    for ip in all_ips {
+        let Ok(parsed) = ip.parse::<IpAddr>() else {
+            continue;
+        };
+        let mut names = Vec::new();
+        if let Ok(ptr_lookup) = resolver.reverse_lookup(parsed).await {
+            for name in ptr_lookup.iter() {
+                let host = normalize_domain(&name.to_utf8());
+                if !host.is_empty() && !names.contains(&host) {
+                    names.push(host);
+                }
+            }
+        }
+        if !names.is_empty() {
+            reverse_hostnames.push(ReverseHostnameResult {
+                ip,
+                hostnames: names,
+            });
+        }
+    }
+
+    let unresolved = chain.len() <= 1 && ipv4.is_empty() && ipv6.is_empty();
+    HostnameChainResult {
+        name,
+        chain,
+        terminal: cur,
+        ipv4,
+        ipv6,
+        reverse_hostnames,
+        error: if unresolved {
+            Some("no CNAME/A/AAAA records found".to_string())
+        } else {
+            None
+        },
+    }
+}
+
+async fn probe_url(client: &reqwest::Client, url: String) -> bool {
+    let fut = client.get(url).send();
+    let resp = tokio::time::timeout(Duration::from_secs(5), fut).await;
+    matches!(resp, Ok(Ok(_)))
+}
+
+fn build_dns_resolver() -> Result<TokioAsyncResolver, String> {
+    match TokioAsyncResolver::tokio_from_system_conf() {
+        Ok(resolver) => Ok(resolver),
+        Err(_) => Ok(TokioAsyncResolver::tokio(
+            ResolverConfig::cloudflare(),
+            ResolverOpts::default(),
+        )),
+    }
+}
+
+fn resolve_doh_endpoint(provider: Option<&str>, custom_url: Option<&str>) -> String {
+    let p = provider.unwrap_or("google").trim().to_lowercase();
+    match p.as_str() {
+        "cloudflare" => "https://cloudflare-dns.com/dns-query".to_string(),
+        "quad9" => "https://dns.quad9.net:5053/dns-query".to_string(),
+        "custom" => {
+            let raw = custom_url.unwrap_or("").trim();
+            if raw.is_empty() {
+                "https://dns.google/resolve".to_string()
+            } else {
+                raw.to_string()
+            }
+        }
+        _ => "https://dns.google/resolve".to_string(),
+    }
+}
+
+#[tauri::command]
+pub async fn resolve_topology_batch(
+    hostnames: Vec<String>,
+    max_hops: Option<u8>,
+    service_hosts: Option<Vec<String>>,
+    doh_provider: Option<String>,
+    doh_custom_url: Option<String>,
+) -> Result<TopologyBatchResult, String> {
+    let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
+    let doh_endpoint = resolve_doh_endpoint(doh_provider.as_deref(), doh_custom_url.as_deref());
+    let resolver = build_dns_resolver()?;
+    let resolver_http_client = reqwest::Client::builder()
+        .redirect(Policy::limited(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut seen_hosts = HashSet::new();
+    let mut resolutions = Vec::new();
+
+    for h in hostnames {
+        let normalized = normalize_domain(&h);
+        if normalized.is_empty() || !seen_hosts.insert(normalized.clone()) {
+            continue;
+        }
+        let result = resolve_chain_for_host(
+            &resolver,
+            &resolver_http_client,
+            &doh_endpoint,
+            &normalized,
+            max_hops,
+        )
+        .await;
+        resolutions.push(result);
+    }
+
+    let mut probes = Vec::new();
+    let mut seen_probe_hosts = HashSet::new();
+    for host in service_hosts.unwrap_or_default() {
+        let normalized = normalize_domain(&host);
+        if normalized.is_empty() || !seen_probe_hosts.insert(normalized.clone()) {
+            continue;
+        }
+        let https = probe_url(&resolver_http_client, format!("https://{}", normalized)).await;
+        let http = probe_url(&resolver_http_client, format!("http://{}", normalized)).await;
+        probes.push(ServiceProbeResult {
+            host: normalized,
+            https_up: https,
+            http_up: http,
+        });
+    }
+
+    Ok(TopologyBatchResult { resolutions, probes })
 }

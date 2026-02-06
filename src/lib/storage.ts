@@ -39,6 +39,8 @@ interface StorageData {
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
+  topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
+  topologyDohCustomUrl?: string;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -66,6 +68,8 @@ export interface SessionSettingsProfile {
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
+  topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
+  topologyDohCustomUrl?: string;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -710,6 +714,28 @@ export class StorageManager {
     return Math.max(1, Math.min(15, Math.round(value)));
   }
 
+  setTopologyDohProvider(value: "google" | "cloudflare" | "quad9" | "custom"): void {
+    this.data.topologyDohProvider = value;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDohProvider: value });
+  }
+
+  getTopologyDohProvider(): "google" | "cloudflare" | "quad9" | "custom" {
+    const value = this.data.topologyDohProvider;
+    if (value === "cloudflare" || value === "quad9" || value === "custom") return value;
+    return "google";
+  }
+
+  setTopologyDohCustomUrl(value: string): void {
+    this.data.topologyDohCustomUrl = String(value ?? "").trim();
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDohCustomUrl: this.data.topologyDohCustomUrl });
+  }
+
+  getTopologyDohCustomUrl(): string {
+    return String(this.data.topologyDohCustomUrl ?? "").trim();
+  }
+
   setAuditExportDefaultDocuments(enabled: boolean): void {
     this.data.auditExportDefaultDocuments = enabled;
     this.save();
@@ -905,6 +931,8 @@ export class StorageManager {
     delete this.data.confirmWindowClose;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
+    delete this.data.topologyDohProvider;
+    delete this.data.topologyDohCustomUrl;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;
