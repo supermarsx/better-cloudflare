@@ -174,6 +174,13 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   tags: "Tags",
   registry: "Registry",
 };
+const CACHE_LEVEL_DETAILS: Record<string, string> = {
+  basic: "Standard caching behavior. Query strings are respected for cache variation.",
+  aggressive:
+    "Caches more aggressively by reducing query-string variation. Better hit rate, but ensure query params do not change content.",
+  simplified:
+    "Minimal query-string variation for maximum cache reuse. Use when URLs are already canonical and deterministic.",
+};
 
 const createEmptyRecord = (): Partial<DNSRecord> => ({
   type: "A",
@@ -301,6 +308,38 @@ function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: bool
   }, [loading, timeoutMs]);
 
   return { visible };
+}
+
+function SectionLoadingOverlay({ label }: { label: string }) {
+  const spinnerGradient =
+    "conic-gradient(from 0deg, hsl(var(--primary)) 0deg, hsl(var(--primary) / 0.2) 90deg, hsl(var(--primary)) 220deg, hsl(var(--primary)) 360deg)";
+  const spinnerGlowGradient =
+    "conic-gradient(from 0deg, hsl(var(--primary)) 0deg, hsl(var(--primary) / 0.26) 110deg, hsl(var(--primary) / 0.95) 250deg, hsl(var(--primary)) 360deg)";
+  const ringMask =
+    "radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2.5px))";
+
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-gradient-to-br from-white/84 via-white/72 to-primary/16 backdrop-blur-2xl backdrop-saturate-150 dark:from-black/88 dark:via-black/82 dark:to-primary/44">
+      <div className="flex items-center gap-2 rounded-lg border border-primary/35 bg-card/92 px-3 py-2 text-xs text-foreground shadow-[0_0_34px_hsl(var(--primary)/0.28)] dark:bg-card/85">
+        <div className="relative h-5 w-5">
+          <div
+            className="absolute inset-0 rounded-full opacity-85 blur-[1px]"
+            style={{ background: spinnerGlowGradient }}
+          />
+          <div
+            className="absolute inset-0 animate-spin rounded-full"
+            style={{
+              background: spinnerGradient,
+              WebkitMask: ringMask,
+              mask: ringMask,
+            }}
+          />
+          <div className="absolute inset-[5px] rounded-full bg-card/95 dark:bg-card/85" />
+        </div>
+        {label}
+      </div>
+    </div>
+  );
 }
 
 function sanitizeDomainAuditCategories(
@@ -3463,6 +3502,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="text-xs text-muted-foreground">
                           Controls how aggressively Cloudflare caches your content.
                         </div>
+                        <div className="w-full space-y-1 rounded-lg border border-border/60 bg-card/55 p-2 text-[11px] text-muted-foreground">
+                          {(["basic", "aggressive", "simplified"] as const).map((level) => (
+                            <div
+                              key={level}
+                              className={cn(
+                                "rounded-md px-2 py-1",
+                                zoneCacheLevel?.value === level
+                                  ? "bg-primary/10 text-foreground"
+                                  : "bg-transparent",
+                              )}
+                            >
+                              <span className="font-medium capitalize">{level}</span>:{" "}
+                              {CACHE_LEVEL_DETAILS[level]}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
 
@@ -3505,17 +3560,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
-                    {cacheOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
-                          <div className="relative h-5 w-5">
-                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
-                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
-                          </div>
-                          Loading cache settings…
-                        </div>
-                      </div>
-                    )}
+                    {cacheOverlay.visible && <SectionLoadingOverlay label="Loading cache settings..." />}
                   </CardContent>
                 </Card>
               )}
@@ -3683,17 +3728,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
-                    {sslOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
-                          <div className="relative h-5 w-5">
-                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
-                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
-                          </div>
-                          Loading SSL/TLS settings…
-                        </div>
-                      </div>
-                    )}
+                    {sslOverlay.visible && <SectionLoadingOverlay label="Loading SSL/TLS settings..." />}
                   </CardContent>
                 </Card>
               )}
@@ -3913,17 +3948,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       These checks are best-practice heuristics based only on records currently
                       present in this zone.
                     </div>
-                    {auditOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
-                          <div className="relative h-5 w-5">
-                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
-                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
-                          </div>
-                          Loading audit data…
-                        </div>
-                      </div>
-                    )}
+                    {auditOverlay.visible && <SectionLoadingOverlay label="Loading audit data..." />}
                   </CardContent>
                 </Card>
               )}
@@ -4188,17 +4213,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       )}
                     </div>
-                    {registryOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
-                          <div className="relative h-5 w-5">
-                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
-                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
-                          </div>
-                          Loading registry data…
-                        </div>
-                      </div>
-                    )}
+                    {registryOverlay.visible && <SectionLoadingOverlay label="Loading registry data..." />}
                   </CardContent>
                 </Card>
               )}
