@@ -111,8 +111,7 @@ impl CloudflareClient {
             url.push_str(&params.join("&"));
         }
         
-        let mut req = self.client.get(&url)
-            ;
+        let req = self.client.get(&url);
         let req = self.apply_auth(req);
         let response = req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
@@ -174,7 +173,7 @@ impl CloudflareClient {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
         
         let req = self.apply_auth(self.client.delete(&url));
-        let response = req.send().await
+        req.send().await
             .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
 
         Ok(())

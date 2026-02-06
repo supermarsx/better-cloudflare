@@ -256,7 +256,8 @@ fn compute_health_check(info: &DomainInfo) -> DomainHealthCheck {
 
     // 1. Expiry check
     if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(&info.expires_at) {
-        let days_until = (expires - now).num_days();
+        let expires_utc = expires.with_timezone(&Utc);
+        let days_until = (expires_utc - now).num_days();
         if days_until < 0 {
             checks.push(DomainCheck {
                 name: "expiry".to_string(),

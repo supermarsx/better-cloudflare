@@ -33,10 +33,3 @@ ipnet = "2"
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 sqlite-backend = ["sqlx"]
-
-[profile.release]
-panic = "abort"
-codegen-units = 1
-lto = true
-opt-level = "z"
-strip = true

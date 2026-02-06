@@ -173,6 +173,64 @@ export class TauriClient {
     });
   }
 
+  static async purgeCache(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    purgeEverything: boolean,
+    files?: string[],
+  ): Promise<unknown> {
+    return invoke("purge_cache", {
+      apiKey,
+      email,
+      zoneId,
+      purgeEverything,
+      files,
+    });
+  }
+
+  static async getZoneSetting(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+  ): Promise<unknown> {
+    return invoke("get_zone_setting", { apiKey, email, zoneId, settingId });
+  }
+
+  static async updateZoneSetting(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+    value: unknown,
+  ): Promise<unknown> {
+    return invoke("update_zone_setting", {
+      apiKey,
+      email,
+      zoneId,
+      settingId,
+      value,
+    });
+  }
+
+  static async getDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+  ): Promise<unknown> {
+    return invoke("get_dnssec", { apiKey, email, zoneId });
+  }
+
+  static async updateDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    return invoke("update_dnssec", { apiKey, email, zoneId, payload });
+  }
+
   // Vault Operations
   static async storeVaultSecret(id: string, secret: string): Promise<void> {
     return invoke("store_vault_secret", { id, secret });
