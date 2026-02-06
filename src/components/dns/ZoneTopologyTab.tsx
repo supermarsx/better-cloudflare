@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type WheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -636,6 +636,8 @@ export function ZoneTopologyTab({
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [themeVersion, setThemeVersion] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
   const middleDragRestoreHandRef = useRef<boolean | null>(null);
   const userAdjustedViewRef = useRef(false);
@@ -780,7 +782,7 @@ export function ZoneTopologyTab({
     });
     ro.observe(node);
     return () => ro.disconnect();
-  }, []);
+  }, [expandGraph]);
 
   useEffect(() => {
     if (!expandGraph || typeof document === "undefined") return;
@@ -795,6 +797,14 @@ export function ZoneTopologyTab({
       window.removeEventListener("keydown", onKey);
     };
   }, [expandGraph]);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
 
   const fitAndCenterGraph = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
@@ -823,8 +833,56 @@ export function ZoneTopologyTab({
 
   const zoomBy = useCallback((delta: number) => {
     userAdjustedViewRef.current = true;
-    setZoom((z) => Math.max(0.3, Math.min(6, Number((z + delta).toFixed(2)))));
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      setZoom((z) => Math.max(0.3, Math.min(6, Number((z + delta).toFixed(2)))));
+      return;
+    }
+    const oldZoom = zoomRef.current;
+    const newZoom = Math.max(0.3, Math.min(6, Number((oldZoom + delta).toFixed(2))));
+    if (newZoom === oldZoom) return;
+    const oldPan = panRef.current;
+    const centerX = viewport.clientWidth / 2;
+    const centerY = viewport.clientHeight / 2;
+    const worldX = (centerX - oldPan.x) / oldZoom;
+    const worldY = (centerY - oldPan.y) / oldZoom;
+    const nextPan = {
+      x: centerX - worldX * newZoom,
+      y: centerY - worldY * newZoom,
+    };
+    setZoom(newZoom);
+    setPan(nextPan);
   }, []);
+
+  const zoomAtCursor = useCallback((delta: number, event: WheelEvent<HTMLDivElement>) => {
+    userAdjustedViewRef.current = true;
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      zoomBy(delta);
+      return;
+    }
+    const rect = viewport.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+    const oldZoom = zoomRef.current;
+    const newZoom = Math.max(0.3, Math.min(6, Number((oldZoom + delta).toFixed(2))));
+    if (newZoom === oldZoom) return;
+    const oldPan = panRef.current;
+    const worldX = (cursorX - oldPan.x) / oldZoom;
+    const worldY = (cursorY - oldPan.y) / oldZoom;
+    const nextPan = {
+      x: cursorX - worldX * newZoom,
+      y: cursorY - worldY * newZoom,
+    };
+    setZoom(newZoom);
+    setPan(nextPan);
+  }, [zoomBy]);
+
+  const handleWheelCapture = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    zoomAtCursor(event.deltaY < 0 ? 0.08 : -0.08, event);
+  }, [zoomAtCursor]);
 
   const normalizeTo100 = useCallback(() => {
     userAdjustedViewRef.current = true;
@@ -946,6 +1004,8 @@ export function ZoneTopologyTab({
 
   const controlsDisabled = isLoading || isRendering;
   const cursorClass = annotationTool ? "cursor-crosshair" : handTool ? "cursor-grab" : "cursor-default";
+  const panX = Math.round(pan.x);
+  const panY = Math.round(pan.y);
   const zoneBase = useMemo(() => normalizeDomain(zoneName), [zoneName]);
   const emailRecords = useMemo(
     () =>
@@ -1040,6 +1100,121 @@ export function ZoneTopologyTab({
     }
   }, [records, toast, zoneBase]);
 
+  const renderGraphControls = (forLightbox: boolean) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => zoomBy(0.1)} disabled={controlsDisabled}>
+        <Plus className="h-3.5 w-3.5" />
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => zoomBy(-0.1)} disabled={controlsDisabled}>
+        <Minus className="h-3.5 w-3.5" />
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={resetView} disabled={controlsDisabled}>
+        <ZoomIn className="h-3.5 w-3.5 mr-1" />
+        <span
+          role="button"
+          tabIndex={0}
+          className="select-none"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            normalizeTo100();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              normalizeTo100();
+            }
+          }}
+          title="Normalize zoom to 100%"
+        >
+          {Math.round(zoom * 100)}%
+        </span>
+      </Button>
+      <Button
+        size="sm"
+        variant={handTool ? "default" : "outline"}
+        className="h-8 px-2"
+        onClick={() => {
+          setHandTool((v) => !v);
+          setAnnotationTool(false);
+        }}
+      >
+        <Hand className="h-3.5 w-3.5 mr-1" />
+        Hand
+      </Button>
+      <Button
+        size="sm"
+        variant={annotationTool ? "default" : "outline"}
+        className="h-8 px-2"
+        onClick={() => {
+          setAnnotationTool((v) => !v);
+          setHandTool(false);
+        }}
+      >
+        <StickyNote className="h-3.5 w-3.5 mr-1" />
+        Annotate
+      </Button>
+      <Input
+        value={annotationDraft}
+        onChange={(e) => setAnnotationDraft(e.target.value)}
+        className="h-8 w-44"
+        placeholder="Annotation text"
+      />
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={copyCode} disabled={!mermaidCode}>
+        <Copy className="h-3.5 w-3.5 mr-1" />
+        Copy code
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportCode} disabled={!mermaidCode}>
+        <Download className="h-3.5 w-3.5 mr-1" />
+        Export code
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportSvg} disabled={!svgMarkup}>
+        <FileDown className="h-3.5 w-3.5 mr-1" />
+        Export SVG
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={printToPdf} disabled={!svgMarkup}>
+        <FileDown className="h-3.5 w-3.5 mr-1" />
+        Export PDF
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void onRefresh()} disabled={isLoading}>
+        <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-8 px-2"
+        onClick={() => {
+          setExpandGraph((prev) => !prev);
+          autoFitDoneRef.current = "";
+          userAdjustedViewRef.current = false;
+        }}
+        title={expandGraph ? "Exit full window" : "Expand to full window"}
+      >
+        {expandGraph ? (
+          <>
+            <Minimize2 className="h-3.5 w-3.5 mr-1" />
+            Exit full window
+          </>
+        ) : (
+          <>
+            <Maximize2 className="h-3.5 w-3.5 mr-1" />
+            Full window
+          </>
+        )}
+      </Button>
+      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
+        <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
+        Discover services
+      </Button>
+      {forLightbox && (
+        <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => setExpandGraph(false)}>
+          <Minimize2 className="h-3.5 w-3.5 mr-1" />
+          Close
+        </Button>
+      )}
+    </div>
+  );
+
   const fullscreenLightbox =
     expandGraph && typeof document !== "undefined"
       ? createPortal(
@@ -1053,18 +1228,10 @@ export function ZoneTopologyTab({
             <div className="absolute inset-0 bg-background/96 p-3">
               <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
                 <div>Topology graph - full window mode</div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2"
-                  onClick={() => setExpandGraph(false)}
-                >
-                  <Minimize2 className="h-3.5 w-3.5 mr-1" />
-                  Close
-                </Button>
               </div>
+              <div className="mb-2">{renderGraphControls(true)}</div>
               <div
-                ref={viewportRef}
+                ref={expandGraph ? viewportRef : undefined}
                 className={cn(
                   "relative h-[calc(100dvh-4rem)] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
                   cursorClass,
@@ -1074,9 +1241,7 @@ export function ZoneTopologyTab({
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
                 onWheelCapture={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  zoomBy(event.deltaY < 0 ? 0.08 : -0.08);
+                  handleWheelCapture(event);
                 }}
                 onTouchMoveCapture={(event) => {
                   event.stopPropagation();
@@ -1112,9 +1277,9 @@ export function ZoneTopologyTab({
                 onClick={handleViewportClick}
               >
                 <div
-                  className="absolute left-0 top-0 will-change-transform"
+                  className="absolute left-0 top-0"
                   style={{
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                    transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
                     transformOrigin: "0 0",
                   }}
                 >
@@ -1173,116 +1338,11 @@ export function ZoneTopologyTab({
         <CardTitle className="text-lg">Topology</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => zoomBy(0.1)} disabled={controlsDisabled}>
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => zoomBy(-0.1)} disabled={controlsDisabled}>
-            <Minus className="h-3.5 w-3.5" />
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={resetView} disabled={controlsDisabled}>
-            <ZoomIn className="h-3.5 w-3.5 mr-1" />
-            <span
-              role="button"
-              tabIndex={0}
-              className="select-none"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                normalizeTo100();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  normalizeTo100();
-                }
-              }}
-              title="Normalize zoom to 100%"
-            >
-              {Math.round(zoom * 100)}%
-            </span>
-          </Button>
-          <Button
-            size="sm"
-            variant={handTool ? "default" : "outline"}
-            className="h-8 px-2"
-            onClick={() => {
-              setHandTool((v) => !v);
-              setAnnotationTool(false);
-            }}
-          >
-            <Hand className="h-3.5 w-3.5 mr-1" />
-            Hand
-          </Button>
-          <Button
-            size="sm"
-            variant={annotationTool ? "default" : "outline"}
-            className="h-8 px-2"
-            onClick={() => {
-              setAnnotationTool((v) => !v);
-              setHandTool(false);
-            }}
-          >
-            <StickyNote className="h-3.5 w-3.5 mr-1" />
-            Annotate
-          </Button>
-          <Input
-            value={annotationDraft}
-            onChange={(e) => setAnnotationDraft(e.target.value)}
-            className="h-8 w-44"
-            placeholder="Annotation text"
-          />
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={copyCode} disabled={!mermaidCode}>
-            <Copy className="h-3.5 w-3.5 mr-1" />
-            Copy code
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportCode} disabled={!mermaidCode}>
-            <Download className="h-3.5 w-3.5 mr-1" />
-            Export code
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportSvg} disabled={!svgMarkup}>
-            <FileDown className="h-3.5 w-3.5 mr-1" />
-            Export SVG
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={printToPdf} disabled={!svgMarkup}>
-            <FileDown className="h-3.5 w-3.5 mr-1" />
-            Export PDF
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void onRefresh()} disabled={isLoading}>
-            <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 px-2"
-            onClick={() => {
-              setExpandGraph((prev) => !prev);
-              autoFitDoneRef.current = "";
-              userAdjustedViewRef.current = false;
-            }}
-            title={expandGraph ? "Exit full window" : "Expand to full window"}
-          >
-            {expandGraph ? (
-              <>
-                <Minimize2 className="h-3.5 w-3.5 mr-1" />
-                Exit full window
-              </>
-            ) : (
-              <>
-                <Maximize2 className="h-3.5 w-3.5 mr-1" />
-                Full window
-              </>
-            )}
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
-            <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
-            Discover services
-          </Button>
-        </div>
+        {renderGraphControls(false)}
 
         <div>
           <div
-            ref={viewportRef}
+            ref={!expandGraph ? viewportRef : undefined}
             className={cn(
               "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
               "h-[560px]",
@@ -1293,9 +1353,7 @@ export function ZoneTopologyTab({
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheelCapture={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            zoomBy(event.deltaY < 0 ? 0.08 : -0.08);
+            handleWheelCapture(event);
           }}
           onTouchMoveCapture={(event) => {
             event.stopPropagation();
@@ -1331,9 +1389,9 @@ export function ZoneTopologyTab({
           onClick={handleViewportClick}
           >
           <div
-            className="absolute left-0 top-0 will-change-transform"
+            className="absolute left-0 top-0"
             style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
               transformOrigin: "0 0",
             }}
           >
