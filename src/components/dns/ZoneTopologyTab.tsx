@@ -95,6 +95,8 @@ const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /netlify\.(app|global)$/i, service: "Netlify" },
   { pattern: /cloudflare\.com$/i, service: "Cloudflare" },
 ];
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 8;
 
 function esc(value: string): string {
   return String(value ?? "").replace(/"/g, '\\"');
@@ -658,6 +660,16 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
+  const closeExpandGraph = useCallback(() => {
+    setExpandGraph(false);
+    autoFitDoneRef.current = "";
+    userAdjustedViewRef.current = false;
+  }, []);
+  const toggleExpandGraph = useCallback(() => {
+    setExpandGraph((prev) => !prev);
+    autoFitDoneRef.current = "";
+    userAdjustedViewRef.current = false;
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -789,14 +801,14 @@ export function ZoneTopologyTab({
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpandGraph(false);
+      if (event.key === "Escape") closeExpandGraph();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = prevOverflow;
       window.removeEventListener("keydown", onKey);
     };
-  }, [expandGraph]);
+  }, [closeExpandGraph, expandGraph]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -806,20 +818,30 @@ export function ZoneTopologyTab({
     panRef.current = pan;
   }, [pan]);
 
-  const fitAndCenterGraph = useCallback(() => {
-    if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
+  const computeFitScale = useCallback(() => {
+    if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return 1;
     const padding = expandGraph ? 10 : 16;
     const availW = Math.max(1, viewportSize.w - padding * 2);
     const availH = Math.max(1, viewportSize.h - padding * 2);
     const baseFit = Math.min(availW / graphSize.w, availH / graphSize.h);
-    const boost = expandGraph ? 1.75 : 1.5;
-    const fitScale = Math.max(0.18, Math.min(6, baseFit * boost));
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, baseFit));
+  }, [expandGraph, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+
+  const fitAndCenterGraph = useCallback(() => {
+    if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
+    const fitScale = computeFitScale();
     const x = (viewportSize.w - graphSize.w * fitScale) / 2;
     const y = (viewportSize.h - graphSize.h * fitScale) / 2;
     setZoom(Number(fitScale.toFixed(2)));
     setPan({ x, y });
     userAdjustedViewRef.current = false;
-  }, [expandGraph, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+  }, [computeFitScale, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+
+  const fitScaleReference = useMemo(() => computeFitScale(), [computeFitScale]);
+  const zoomPercent = useMemo(() => {
+    if (!fitScaleReference || !Number.isFinite(fitScaleReference)) return Math.round(zoom * 100);
+    return Math.max(1, Math.round((zoom / fitScaleReference) * 100));
+  }, [fitScaleReference, zoom]);
 
   useEffect(() => {
     const key = `${graphSize.w}x${graphSize.h}|${viewportSize.w}x${viewportSize.h}|${records.length}|${expandGraph ? "full" : "panel"}`;
@@ -835,11 +857,11 @@ export function ZoneTopologyTab({
     userAdjustedViewRef.current = true;
     const viewport = viewportRef.current;
     if (!viewport) {
-      setZoom((z) => Math.max(0.3, Math.min(6, Number((z + delta).toFixed(2)))));
+      setZoom((z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number((z + delta).toFixed(2)))));
       return;
     }
     const oldZoom = zoomRef.current;
-    const newZoom = Math.max(0.3, Math.min(6, Number((oldZoom + delta).toFixed(2))));
+    const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number((oldZoom + delta).toFixed(2))));
     if (newZoom === oldZoom) return;
     const oldPan = panRef.current;
     const centerX = viewport.clientWidth / 2;
@@ -865,7 +887,7 @@ export function ZoneTopologyTab({
     const cursorX = event.clientX - rect.left;
     const cursorY = event.clientY - rect.top;
     const oldZoom = zoomRef.current;
-    const newZoom = Math.max(0.3, Math.min(6, Number((oldZoom + delta).toFixed(2))));
+    const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number((oldZoom + delta).toFixed(2))));
     if (newZoom === oldZoom) return;
     const oldPan = panRef.current;
     const worldX = (cursorX - oldPan.x) / oldZoom;
@@ -886,13 +908,13 @@ export function ZoneTopologyTab({
 
   const normalizeTo100 = useCallback(() => {
     userAdjustedViewRef.current = true;
-    const scale = 1;
+    const scale = fitScaleReference;
     setZoom(scale);
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
     const x = (viewportSize.w - graphSize.w * scale) / 2;
     const y = (viewportSize.h - graphSize.h * scale) / 2;
     setPan({ x, y });
-  }, [graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+  }, [fitScaleReference, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
 
   const resetView = useCallback(() => {
     autoFitDoneRef.current = "";
@@ -1127,7 +1149,7 @@ export function ZoneTopologyTab({
           }}
           title="Normalize zoom to 100%"
         >
-          {Math.round(zoom * 100)}%
+          {zoomPercent}%
         </span>
       </Button>
       <Button
@@ -1184,9 +1206,7 @@ export function ZoneTopologyTab({
         variant="outline"
         className="h-8 px-2"
         onClick={() => {
-          setExpandGraph((prev) => !prev);
-          autoFitDoneRef.current = "";
-          userAdjustedViewRef.current = false;
+          toggleExpandGraph();
         }}
         title={expandGraph ? "Exit full window" : "Expand to full window"}
       >
@@ -1207,7 +1227,7 @@ export function ZoneTopologyTab({
         Discover services
       </Button>
       {forLightbox && (
-        <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => setExpandGraph(false)}>
+        <Button size="sm" variant="outline" className="h-8 px-2" onClick={closeExpandGraph}>
           <Minimize2 className="h-3.5 w-3.5 mr-1" />
           Close
         </Button>
@@ -1223,7 +1243,7 @@ export function ZoneTopologyTab({
               type="button"
               aria-label="Close full window topology view"
               className="absolute inset-0 bg-black/45 backdrop-blur-sm"
-              onClick={() => setExpandGraph(false)}
+              onClick={closeExpandGraph}
             />
             <div className="absolute inset-0 bg-background/96 p-3">
               <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
