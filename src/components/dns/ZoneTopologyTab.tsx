@@ -57,6 +57,15 @@ type ServiceDiscoveryItem = {
   details: string;
 };
 
+type ExternalDnsResolution = {
+  chain: string[];
+  terminal: string;
+  ipv4: string[];
+  ipv6: string[];
+  source: "external";
+  error?: string;
+};
+
 const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /cloudfront\.net$/i, service: "AWS CloudFront" },
   { pattern: /elb\.amazonaws\.com$/i, service: "AWS ELB" },
@@ -501,6 +510,66 @@ async function probeHttp(url: string, timeoutMs = 5000): Promise<"up" | "down"> 
   }
 }
 
+async function queryDnsGoogle(name: string, type: "CNAME" | "A" | "AAAA"): Promise<string[]> {
+  const res = await fetch(
+    `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as {
+    Answer?: Array<{ data?: string; type?: number }>;
+  };
+  const out = (data.Answer ?? [])
+    .map((x) => String(x.data ?? "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(out.map((x) => normalizeDomain(x))));
+}
+
+async function resolveExternalCnameToAddress(
+  startName: string,
+): Promise<ExternalDnsResolution> {
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let cur = normalizeDomain(startName);
+  if (!cur) {
+    return { chain, terminal: "", ipv4: [], ipv6: [], source: "external", error: "empty name" };
+  }
+  chain.push(cur);
+  seen.add(cur);
+  let hops = 0;
+  try {
+    while (hops < 16) {
+      const cnames = await queryDnsGoogle(cur, "CNAME");
+      const next = cnames.find(Boolean);
+      if (!next || seen.has(next)) break;
+      chain.push(next);
+      seen.add(next);
+      cur = next;
+      hops += 1;
+    }
+    const [a, aaaa] = await Promise.all([
+      queryDnsGoogle(cur, "A"),
+      queryDnsGoogle(cur, "AAAA"),
+    ]);
+    return {
+      chain,
+      terminal: cur,
+      ipv4: a,
+      ipv6: aaaa,
+      source: "external",
+    };
+  } catch (error) {
+    return {
+      chain,
+      terminal: cur,
+      ipv4: [],
+      ipv6: [],
+      source: "external",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefresh, onEditRecord }: ZoneTopologyTabProps) {
   const { toast } = useToast();
   const [svgMarkup, setSvgMarkup] = useState("");
@@ -523,6 +592,9 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const [discovering, setDiscovering] = useState(false);
   const [discovery, setDiscovery] = useState<ServiceDiscoveryItem[]>([]);
+  const [externalResolutionByName, setExternalResolutionByName] = useState<
+    Record<string, ExternalDnsResolution>
+  >({});
   const [summary, setSummary] = useState<TopologySummary>({
     cnameChains: [],
     sharedIps: [],
@@ -545,6 +617,40 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     setMermaidCode(code);
     setSummary(nextSummary);
   }, [records, zoneName]);
+
+  useEffect(() => {
+    const candidates = new Set<string>();
+    for (const node of summary.nodeSummaries) {
+      if (node.ipv4.length || node.ipv6.length) continue;
+      const n = normalizeDomain(node.terminal || node.name);
+      if (n) candidates.add(n);
+    }
+    for (const mx of summary.mxTrails) {
+      if (mx.ipv4.length || mx.ipv6.length) continue;
+      const n = normalizeDomain(mx.terminal || mx.target);
+      if (n) candidates.add(n);
+    }
+    const missing = Array.from(candidates).filter((n) => !externalResolutionByName[n]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        missing.slice(0, 20).map(async (name) => {
+          const resolved = await resolveExternalCnameToAddress(name);
+          return [name, resolved] as const;
+        }),
+      );
+      if (cancelled) return;
+      setExternalResolutionByName((prev) => {
+        const next = { ...prev };
+        for (const [name, resolved] of entries) next[name] = resolved;
+        return next;
+      });
+    })().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [externalResolutionByName, summary.mxTrails, summary.nodeSummaries]);
 
   useEffect(() => {
     let cancelled = false;
@@ -621,10 +727,10 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
 
   const fitAndCenterGraph = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
-    const fitScale = Math.max(
-      0.35,
-      Math.min(1.15, Math.min(viewportSize.w / graphSize.w, viewportSize.h / graphSize.h) * 0.92),
-    );
+    const padding = 20;
+    const availW = Math.max(1, viewportSize.w - padding * 2);
+    const availH = Math.max(1, viewportSize.h - padding * 2);
+    const fitScale = Math.max(0.1, Math.min(6, Math.min(availW / graphSize.w, availH / graphSize.h)));
     const x = (viewportSize.w - graphSize.w * fitScale) / 2;
     const y = (viewportSize.h - graphSize.h * fitScale) / 2;
     setZoom(Number(fitScale.toFixed(2)));
@@ -785,6 +891,37 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
       }),
     [records],
   );
+  const mxResolvedRows = useMemo(() => {
+    const cnameMap = buildCnameMap(records);
+    const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
+    return records
+      .filter((r) => r.type === "MX")
+      .map((record) => {
+        const from = normalizeDomain(record.name) || normalizeDomain(zoneName);
+        const rawParts = String(record.content ?? "").trim().split(/\s+/);
+        const maybePriority = Number(rawParts[0]);
+        const priority = Number.isFinite(maybePriority) ? maybePriority : null;
+        const target = extractTarget(record) || "";
+        const local = resolveNameToTerminal(target, cnameMap, ipv4ByName, ipv6ByName);
+        const external = externalResolutionByName[normalizeDomain(local.terminal || target)];
+        const chain = local.chain.length > 1 ? local.chain : external?.chain ?? local.chain;
+        const ipv4 = local.ipv4.length ? local.ipv4 : external?.ipv4 ?? [];
+        const ipv6 = local.ipv6.length ? local.ipv6 : external?.ipv6 ?? [];
+        const terminal = local.terminal || external?.terminal || target;
+        const source = local.ipv4.length || local.ipv6.length ? "in-zone" : external ? "external" : "none";
+        return {
+          id: record.id,
+          from,
+          priority,
+          target,
+          chain,
+          terminal,
+          ipv4,
+          ipv6,
+          source,
+        };
+      });
+  }, [externalResolutionByName, records, zoneName]);
 
   const runDiscovery = useCallback(async () => {
     const items: ServiceDiscoveryItem[] = [];
@@ -839,7 +976,25 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
           </Button>
           <Button size="sm" variant="outline" className="h-8 px-2" onClick={resetView} disabled={controlsDisabled}>
             <ZoomIn className="h-3.5 w-3.5 mr-1" />
-            {Math.round(zoom * 100)}%
+            <span
+              role="button"
+              tabIndex={0}
+              className="select-none"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                normalizeTo100();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  normalizeTo100();
+                }
+              }}
+              title="Normalize zoom to 100%"
+            >
+              {Math.round(zoom * 100)}%
+            </span>
           </Button>
           <Button
             size="sm"
@@ -899,27 +1054,29 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
         <div
           ref={viewportRef}
           className={cn(
-            "relative h-[560px] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))]",
+            "relative h-[560px] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
             cursorClass,
           )}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
-          onWheel={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            zoomBy(event.deltaY < 0 ? 0.05 : -0.05);
-          }}
           onWheelCapture={(event) => {
             event.preventDefault();
             event.stopPropagation();
+            zoomBy(event.deltaY < 0 ? 0.05 : -0.05);
           }}
           onTouchMoveCapture={(event) => {
             event.stopPropagation();
           }}
           onPointerDownCapture={(event) => {
             event.stopPropagation();
+          }}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
           }}
           onKeyDownCapture={(event) => {
             if (
@@ -1009,6 +1166,42 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
               {summary.detectedServices.slice(0, 8).map((svc) => (
                 <div key={`${svc.name}:${svc.via}`}>Provider: {svc.name} via {svc.via}</div>
               ))}
+              {summary.mxTrails.slice(0, 10).map((mx) => (
+                <div key={`${mx.from}:${mx.target}`}>
+                  {(() => {
+                    const external = externalResolutionByName[normalizeDomain(mx.terminal || mx.target)];
+                    const chain = mx.chain.length > 1 ? mx.chain : external?.chain ?? mx.chain;
+                    const ipv4 = mx.ipv4.length ? mx.ipv4 : external?.ipv4 ?? [];
+                    const ipv6 = mx.ipv6.length ? mx.ipv6 : external?.ipv6 ?? [];
+                    return (
+                      <>
+                  MX trail {mx.from} {"->"} {mx.target}
+                  {chain.length > 1 ? ` -> ${chain.slice(1).join(" -> ")}` : ""}
+                  {ipv4.length || ipv6.length
+                    ? ` | A: ${ipv4.join(", ") || "none"} | AAAA: ${ipv6.join(", ") || "none"}`
+                    : " | no terminal A/AAAA found"}
+                      </>
+                    );
+                  })()}
+                </div>
+              ))}
+            </div>
+          </details>
+
+          <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs" open>
+            <summary className="cursor-pointer select-none font-semibold">MX records resolved ({mxResolvedRows.length})</summary>
+            <div className="mt-2 space-y-1 text-muted-foreground">
+              {mxResolvedRows.length === 0 ? (
+                <div>No MX records found.</div>
+              ) : (
+                mxResolvedRows.map((mx) => (
+                  <div key={mx.id}>
+                    {mx.from} | prio {mx.priority ?? "—"} | target {mx.target || "—"} | chain{" "}
+                    {mx.chain.length ? mx.chain.join(" -> ") : "—"} | end {mx.terminal || "—"} | A{" "}
+                    {mx.ipv4.join(", ") || "none"} | AAAA {mx.ipv6.join(", ") || "none"} | source {mx.source}
+                  </div>
+                ))
+              )}
             </div>
           </details>
 
@@ -1050,11 +1243,20 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
                   {node.resolvedTo.length > 0 && (
                     <div className="text-muted-foreground">CNAME resolves: {node.resolvedTo.join(" -> ")}</div>
                   )}
-                  {(node.ipv4.length > 0 || node.ipv6.length > 0) && (
+                  {(() => {
+                    const external = externalResolutionByName[normalizeDomain(node.terminal || node.name)];
+                    const ipv4 = node.ipv4.length ? node.ipv4 : external?.ipv4 ?? [];
+                    const ipv6 = node.ipv6.length ? node.ipv6 : external?.ipv6 ?? [];
+                    const chain = node.resolvedTo.length
+                      ? [node.name, ...node.resolvedTo]
+                      : external?.chain ?? [node.name];
+                    if (!ipv4.length && !ipv6.length && chain.length <= 1) return null;
+                    return (
                     <div className="text-muted-foreground">
-                      End node: {node.terminal} | IPv4: {node.ipv4.join(", ") || "none"} | IPv6: {node.ipv6.join(", ") || "none"}
+                      Chain: {chain.join(" -> ")} | End node: {node.terminal || external?.terminal || node.name} | IPv4: {ipv4.join(", ") || "none"} | IPv6: {ipv6.join(", ") || "none"}
                     </div>
-                  )}
+                    );
+                  })()}
                   <div className="mt-1 space-y-1">
                     {node.records.slice(0, 8).map((record) => (
                       <div key={record.id} className="flex items-center justify-between gap-2 rounded bg-background/30 px-2 py-1">
