@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -797,12 +798,12 @@ export function ZoneTopologyTab({
 
   const fitAndCenterGraph = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
-    const padding = 20;
+    const padding = expandGraph ? 10 : 16;
     const availW = Math.max(1, viewportSize.w - padding * 2);
     const availH = Math.max(1, viewportSize.h - padding * 2);
     const baseFit = Math.min(availW / graphSize.w, availH / graphSize.h);
-    const boost = expandGraph ? 1.45 : 1.28;
-    const fitScale = Math.max(0.1, Math.min(8, baseFit * boost));
+    const boost = expandGraph ? 1.75 : 1.5;
+    const fitScale = Math.max(0.18, Math.min(6, baseFit * boost));
     const x = (viewportSize.w - graphSize.w * fitScale) / 2;
     const y = (viewportSize.h - graphSize.h * fitScale) / 2;
     setZoom(Number(fitScale.toFixed(2)));
@@ -811,18 +812,18 @@ export function ZoneTopologyTab({
   }, [expandGraph, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
 
   useEffect(() => {
-    const key = `${graphSize.w}x${graphSize.h}|${viewportSize.w}x${viewportSize.h}|${records.length}`;
+    const key = `${graphSize.w}x${graphSize.h}|${viewportSize.w}x${viewportSize.h}|${records.length}|${expandGraph ? "full" : "panel"}`;
     if (!graphSize.w || !viewportSize.w) return;
     if (autoFitDoneRef.current === key && userAdjustedViewRef.current) return;
     if (autoFitDoneRef.current !== key || !userAdjustedViewRef.current) {
       fitAndCenterGraph();
       autoFitDoneRef.current = key;
     }
-  }, [fitAndCenterGraph, graphSize.h, graphSize.w, records.length, viewportSize.h, viewportSize.w]);
+  }, [expandGraph, fitAndCenterGraph, graphSize.h, graphSize.w, records.length, viewportSize.h, viewportSize.w]);
 
   const zoomBy = useCallback((delta: number) => {
     userAdjustedViewRef.current = true;
-    setZoom((z) => Math.max(0.3, Math.min(3, Number((z + delta).toFixed(2)))));
+    setZoom((z) => Math.max(0.3, Math.min(6, Number((z + delta).toFixed(2)))));
   }, []);
 
   const normalizeTo100 = useCallback(() => {
@@ -1039,6 +1040,133 @@ export function ZoneTopologyTab({
     }
   }, [records, toast, zoneBase]);
 
+  const fullscreenLightbox =
+    expandGraph && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[220]">
+            <button
+              type="button"
+              aria-label="Close full window topology view"
+              className="absolute inset-0 bg-black/45 backdrop-blur-sm"
+              onClick={() => setExpandGraph(false)}
+            />
+            <div className="absolute inset-0 bg-background/96 p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                <div>Topology graph - full window mode</div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2"
+                  onClick={() => setExpandGraph(false)}
+                >
+                  <Minimize2 className="h-3.5 w-3.5 mr-1" />
+                  Close
+                </Button>
+              </div>
+              <div
+                ref={viewportRef}
+                className={cn(
+                  "relative h-[calc(100dvh-4rem)] overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
+                  cursorClass,
+                )}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                onWheelCapture={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  zoomBy(event.deltaY < 0 ? 0.08 : -0.08);
+                }}
+                onTouchMoveCapture={(event) => {
+                  event.stopPropagation();
+                }}
+                onPointerDownCapture={(event) => {
+                  event.stopPropagation();
+                }}
+                onAuxClick={(event) => {
+                  if (event.button === 1) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }
+                }}
+                onKeyDownCapture={(event) => {
+                  if (
+                    [
+                      "ArrowUp",
+                      "ArrowDown",
+                      "ArrowLeft",
+                      "ArrowRight",
+                      "PageUp",
+                      "PageDown",
+                      "Home",
+                      "End",
+                      " ",
+                    ].includes(event.key)
+                  ) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }
+                }}
+                tabIndex={0}
+                onClick={handleViewportClick}
+              >
+                <div
+                  className="absolute left-0 top-0 will-change-transform"
+                  style={{
+                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                    transformOrigin: "0 0",
+                  }}
+                >
+                  <div className="relative p-4">
+                    {renderError ? (
+                      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+                        Mermaid render failed: {renderError}
+                      </div>
+                    ) : (
+                      <div
+                        className="topology-svg-wrapper"
+                        dangerouslySetInnerHTML={{ __html: svgMarkup }}
+                      />
+                    )}
+
+                    {annotations.map((ann) => (
+                      <div
+                        key={ann.id}
+                        className="absolute rounded-md border border-primary/40 bg-card/90 px-2 py-1 text-[11px] shadow-lg"
+                        style={{ left: ann.x, top: ann.y }}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span>{ann.text}</span>
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => setAnnotations((prev) => prev.filter((x) => x.id !== ann.id))}
+                          >
+                            x
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {(isRendering || isLoading) && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-md">
+                    <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      Rendering topology...
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
     <Card className="border-border/60 bg-card/70">
       <CardHeader>
@@ -1130,10 +1258,21 @@ export function ZoneTopologyTab({
             onClick={() => {
               setExpandGraph((prev) => !prev);
               autoFitDoneRef.current = "";
+              userAdjustedViewRef.current = false;
             }}
             title={expandGraph ? "Exit full window" : "Expand to full window"}
           >
-            {expandGraph ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {expandGraph ? (
+              <>
+                <Minimize2 className="h-3.5 w-3.5 mr-1" />
+                Exit full window
+              </>
+            ) : (
+              <>
+                <Maximize2 className="h-3.5 w-3.5 mr-1" />
+                Full window
+              </>
+            )}
           </Button>
           <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
             <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
@@ -1141,31 +1280,12 @@ export function ZoneTopologyTab({
           </Button>
         </div>
 
-        <div
-          className={cn(
-            expandGraph &&
-              "fixed inset-3 z-[120] rounded-xl border border-border/70 bg-background/95 p-3 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl",
-          )}
-        >
-          {expandGraph && (
-            <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-              <div>Topology graph - full window mode</div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2"
-                onClick={() => setExpandGraph(false)}
-              >
-                <Minimize2 className="h-3.5 w-3.5 mr-1" />
-                Close
-              </Button>
-            </div>
-          )}
+        <div>
           <div
             ref={viewportRef}
             className={cn(
               "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))] select-none",
-              expandGraph ? "h-[calc(100vh-7.5rem)]" : "h-[560px]",
+              "h-[560px]",
               cursorClass,
             )}
           onMouseDown={handleMouseDown}
@@ -1175,7 +1295,7 @@ export function ZoneTopologyTab({
           onWheelCapture={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            zoomBy(event.deltaY < 0 ? 0.05 : -0.05);
+            zoomBy(event.deltaY < 0 ? 0.08 : -0.08);
           }}
           onTouchMoveCapture={(event) => {
             event.stopPropagation();
@@ -1261,6 +1381,7 @@ export function ZoneTopologyTab({
           )}
           </div>
         </div>
+        {fullscreenLightbox}
         <div className="space-y-2">
           <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs" open>
             <summary className="cursor-pointer select-none font-semibold">Topology summary</summary>
