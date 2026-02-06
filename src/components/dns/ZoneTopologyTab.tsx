@@ -87,6 +87,23 @@ type ExternalDnsResolution = {
   error?: string;
 };
 
+type TopologyResolutionProgress = {
+  running: boolean;
+  total: number;
+  done: number;
+};
+type TopologyResolutionCacheEntry = {
+  value: ExternalDnsResolution;
+  ts: number;
+};
+type TopologyProbeCacheEntry = {
+  host: string;
+  httpsUp: boolean;
+  httpUp: boolean;
+  ts: number;
+};
+const TOPOLOGY_CACHE_TTL_MS = 5 * 60 * 1000;
+
 function detectDarkThemeMode(): boolean {
   if (typeof document === "undefined") return true;
   const root = document.documentElement;
@@ -688,37 +705,57 @@ async function probeHttp(url: string, timeoutMs = 5000): Promise<"up" | "down"> 
   }
 }
 
-function resolveDohEndpoint(
+function resolveDohEndpoints(
   provider: "google" | "cloudflare" | "quad9" | "custom",
   customUrl: string,
-): string {
-  if (provider === "cloudflare") return "https://cloudflare-dns.com/dns-query";
-  if (provider === "quad9") return "https://dns.quad9.net:5053/dns-query";
-  if (provider === "custom") return customUrl.trim() || "https://cloudflare-dns.com/dns-query";
-  return "https://cloudflare-dns.com/dns-query";
+): string[] {
+  const preferred =
+    provider === "cloudflare"
+      ? "https://cloudflare-dns.com/dns-query"
+      : provider === "quad9"
+        ? "https://dns.quad9.net:5053/dns-query"
+        : provider === "custom"
+          ? customUrl.trim() || "https://cloudflare-dns.com/dns-query"
+          : "https://dns.google/resolve";
+  return Array.from(
+    new Set([
+      preferred,
+      "https://cloudflare-dns.com/dns-query",
+      "https://dns.google/resolve",
+      "https://dns.quad9.net:5053/dns-query",
+    ]),
+  );
 }
 
 async function queryDoh(
-  endpoint: string,
+  endpoints: string[],
   name: string,
   type: "CNAME" | "A" | "AAAA",
 ): Promise<string[]> {
-  const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(name)}&type=${type}`;
-  const res = await fetch(url, { cache: "no-store", headers: { accept: "application/dns-json" } });
-  if (!res.ok) return [];
-  const data = (await res.json()) as {
-    Answer?: Array<{ data?: string; type?: number }>;
-  };
-  const out = (data.Answer ?? [])
-    .map((x) => String(x.data ?? "").trim())
-    .filter(Boolean);
-  return Array.from(new Set(out.map((x) => normalizeDomain(x))));
+  for (const endpoint of endpoints) {
+    try {
+      const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(name)}&type=${type}`;
+      const res = await fetch(url, { cache: "no-store", headers: { accept: "application/dns-json" } });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        Answer?: Array<{ data?: string; type?: number }>;
+      };
+      const out = (data.Answer ?? [])
+        .map((x) => String(x.data ?? "").trim())
+        .filter(Boolean);
+      const normalized = Array.from(new Set(out.map((x) => normalizeDomain(x))));
+      if (normalized.length > 0) return normalized;
+    } catch {
+      continue;
+    }
+  }
+  return [];
 }
 
 async function resolveExternalCnameToAddress(
   startName: string,
   maxHops: number,
-  dohEndpoint: string,
+  dohEndpoints: string[],
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -731,7 +768,7 @@ async function resolveExternalCnameToAddress(
   let hops = 0;
   try {
     while (hops < maxHops) {
-      const cnames = await queryDoh(dohEndpoint, cur, "CNAME");
+      const cnames = await queryDoh(dohEndpoints, cur, "CNAME");
       const next = cnames.find(Boolean);
       if (!next || seen.has(next)) break;
       chain.push(next);
@@ -740,8 +777,8 @@ async function resolveExternalCnameToAddress(
       hops += 1;
     }
     const [a, aaaa] = await Promise.all([
-      queryDoh(dohEndpoint, cur, "A"),
-      queryDoh(dohEndpoint, cur, "AAAA"),
+      queryDoh(dohEndpoints, cur, "A"),
+      queryDoh(dohEndpoints, cur, "AAAA"),
     ]);
     return {
       chain,
@@ -845,6 +882,16 @@ export function ZoneTopologyTab({
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
   >({});
+  const [topologyResolutionReady, setTopologyResolutionReady] = useState(false);
+  const [topologyResolutionProgress, setTopologyResolutionProgress] = useState<TopologyResolutionProgress>({
+    running: false,
+    total: 0,
+    done: 0,
+  });
+  const [manualRefreshTick, setManualRefreshTick] = useState(0);
+  const [activeResolutionRequests, setActiveResolutionRequests] = useState<string[]>([]);
+  const resolutionCacheRef = useRef<Map<string, TopologyResolutionCacheEntry>>(new Map());
+  const probeCacheRef = useRef<Map<string, TopologyProbeCacheEntry>>(new Map());
   const [isDarkThemeMode, setIsDarkThemeMode] = useState(() => detectDarkThemeMode());
   const [summary, setSummary] = useState<TopologySummary>({
     cnameChains: [],
@@ -854,8 +901,8 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
-  const dohEndpoint = useMemo(
-    () => resolveDohEndpoint(dohProvider, dohCustomUrl),
+  const dohEndpoints = useMemo(
+    () => resolveDohEndpoints(dohProvider, dohCustomUrl),
     [dohCustomUrl, dohProvider],
   );
   const recordsFingerprint = useMemo(
@@ -892,9 +939,14 @@ export function ZoneTopologyTab({
 
   useEffect(() => {
     setExternalResolutionByName({});
-  }, [dohCustomUrl, dohProvider, recordsFingerprint, zoneName, maxResolutionHops]);
+    setTopologyResolutionReady(false);
+    setMermaidCode("");
+    setSvgMarkup("");
+    setActiveResolutionRequests([]);
+  }, [dohCustomUrl, dohProvider, manualRefreshTick, recordsFingerprint, zoneName, maxResolutionHops]);
 
   useEffect(() => {
+    if (!topologyResolutionReady) return;
     const clampedMaxHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
     const { code, summary: nextSummary } = buildTopology(
       records,
@@ -905,95 +957,157 @@ export function ZoneTopologyTab({
     );
     setMermaidCode(code);
     setSummary(nextSummary);
-  }, [externalResolutionByName, isDarkThemeMode, maxResolutionHops, records, zoneName]);
+  }, [externalResolutionByName, isDarkThemeMode, maxResolutionHops, records, topologyResolutionReady, zoneName]);
 
   useEffect(() => {
     const candidates = new Set<string>();
-    for (const node of summary.nodeSummaries) {
-      if (node.ipv4.length || node.ipv6.length) continue;
-      const n = normalizeDomain(node.terminal || node.name);
-      if (n) candidates.add(n);
-    }
-    for (const mx of summary.mxTrails) {
-      if (mx.ipv4.length || mx.ipv6.length) continue;
-      const n = normalizeDomain(mx.terminal || mx.target);
-      if (n) candidates.add(n);
-    }
-    // Resolve every hostname target used by topology edges, not only node summaries,
-    // so CNAME chains are always available for chart rendering.
     for (const record of records) {
       const target = extractTarget(record);
       if (!target || isIpAddress(target)) continue;
       const hostname = normalizeDomain(target);
       if (hostname) candidates.add(hostname);
     }
-    const missing = Array.from(candidates).filter((n) => {
-      const existing = externalResolutionByName[n];
-      if (!existing) return true;
-      if (existing.error) return false;
-      const hasEndpoints = existing.ipv4.length > 0 || existing.ipv6.length > 0;
-      const hasChain = existing.chain.length > 1;
-      // Retry previously weak/empty results so chart can recover.
-      return !hasEndpoints && !hasChain;
-    });
-    if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
+      const queue = Array.from(candidates);
       const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
-      const backendBatch = await resolveTopologyBatchInBackend(
-        missing,
-        clampedHops,
-        dohProvider,
-        dohCustomUrl,
-      );
-      const entries = backendBatch
-        ? (() => {
-          const byName = new Map<string, ExternalDnsResolution>();
+      let total = queue.length;
+      let done = 0;
+      const seenTopologyNodes = new Set(queue.map((name) => normalizeDomain(name)));
+      const updateProgress = () =>
+        setTopologyResolutionProgress({ running: true, total: Math.max(0, total), done: Math.max(0, done) });
+      setTopologyResolutionProgress({ running: true, total, done });
+      const now = Date.now();
+      const cachePrefix = `${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|`;
+      if (queue.length === 0) {
+        if (!cancelled) {
+          setExternalResolutionByName({});
+          setTopologyResolutionReady(true);
+          setTopologyResolutionProgress({ running: false, total: 0, done: 0 });
+          setActiveResolutionRequests([]);
+        }
+        return;
+      }
+
+      const byName = new Map<string, ExternalDnsResolution>();
+      const unresolvedQueue: string[] = [];
+      const absorbResolved = (resolved: ExternalDnsResolution) => {
+        for (const hop of resolved.chain) {
+          const hk = normalizeDomain(hop);
+          if (!hk) continue;
+          if (!seenTopologyNodes.has(hk)) {
+            seenTopologyNodes.add(hk);
+            total += 1;
+            done += 1;
+          }
+        }
+      };
+      for (const name of queue) {
+        const key = normalizeDomain(name);
+        const cacheKey = `${cachePrefix}${key}`;
+        const cached = resolutionCacheRef.current.get(cacheKey);
+        if (cached && now - cached.ts <= TOPOLOGY_CACHE_TTL_MS) {
+          done += 1;
+          byName.set(key, cached.value);
+          absorbResolved(cached.value);
+          const term = normalizeDomain(cached.value.terminal || "");
+          if (term && !byName.has(term)) byName.set(term, cached.value);
+          for (const hop of cached.value.chain) {
+            const hk = normalizeDomain(hop);
+            if (hk && !byName.has(hk)) byName.set(hk, cached.value);
+          }
+        } else {
+          unresolvedQueue.push(name);
+        }
+      }
+      const chunkSize = 20;
+      updateProgress();
+      for (let idx = 0; idx < unresolvedQueue.length; idx += chunkSize) {
+        if (cancelled) return;
+        const chunk = unresolvedQueue.slice(idx, idx + chunkSize);
+        setActiveResolutionRequests(chunk);
+        const backendBatch = await resolveTopologyBatchInBackend(
+          chunk,
+          clampedHops,
+          dohProvider,
+          dohCustomUrl,
+        );
+        if (backendBatch) {
           for (const resolved of backendBatch.resolutions) {
+            done += 1;
             const requested = normalizeDomain(resolved.requestedName || "");
-            if (requested) byName.set(requested, resolved);
-            const key = normalizeDomain(resolved.terminal || resolved.chain[0] || "");
-            if (key && !byName.has(key)) byName.set(key, resolved);
+            if (requested) {
+              byName.set(requested, resolved);
+              resolutionCacheRef.current.set(`${cachePrefix}${requested}`, {
+                value: resolved,
+                ts: Date.now(),
+              });
+            }
+            absorbResolved(resolved);
+            const term = normalizeDomain(resolved.terminal || "");
+            if (term && !byName.has(term)) byName.set(term, resolved);
             for (const hop of resolved.chain) {
               const hk = normalizeDomain(hop);
               if (hk && !byName.has(hk)) byName.set(hk, resolved);
             }
           }
-          return missing.map((name) => [name, byName.get(normalizeDomain(name)) ?? {
-            chain: [name],
-            terminal: name,
+        } else {
+          const fallback = await Promise.all(
+            chunk.map(async (name) => {
+              const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoints);
+              return [name, resolved] as const;
+            }),
+          );
+          for (const [name, resolved] of fallback) {
+            done += 1;
+            const requested = normalizeDomain(name);
+            if (requested) {
+              byName.set(requested, resolved);
+              resolutionCacheRef.current.set(`${cachePrefix}${requested}`, {
+                value: resolved,
+                ts: Date.now(),
+              });
+            }
+            absorbResolved(resolved);
+            const term = normalizeDomain(resolved.terminal || "");
+            if (term && !byName.has(term)) byName.set(term, resolved);
+            for (const hop of resolved.chain) {
+              const hk = normalizeDomain(hop);
+              if (hk && !byName.has(hk)) byName.set(hk, resolved);
+            }
+          }
+        }
+        if (!cancelled) {
+          updateProgress();
+        }
+      }
+      if (cancelled) return;
+      const next: Record<string, ExternalDnsResolution> = {};
+      for (const name of queue) {
+        const key = normalizeDomain(name);
+        next[key] =
+          byName.get(key) ??
+          ({
+            requestedName: key,
+            chain: [key],
+            terminal: key,
             ipv4: [],
             ipv6: [],
-            source: "external" as const,
-            error: "backend resolution unavailable",
-          }] as const);
-        })()
-        : await Promise.all(
-          missing.map(async (name) => {
-            const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoint);
-            return [name, resolved] as const;
-          }),
-        );
-      if (cancelled) return;
-      setExternalResolutionByName((prev) => {
-        const next = { ...prev };
-        for (const [name, resolved] of entries) next[name] = resolved;
-        return next;
-      });
+            source: "external",
+            error: "no CNAME/A/AAAA records found",
+          } satisfies ExternalDnsResolution);
+      }
+      setExternalResolutionByName(next);
+      setTopologyResolutionReady(true);
+      setTopologyResolutionProgress({ running: false, total, done: Math.max(done, total) });
+      setActiveResolutionRequests([]);
     })().catch(() => {});
     return () => {
       cancelled = true;
+      setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
+      setActiveResolutionRequests([]);
     };
-  }, [
-    dohCustomUrl,
-    dohProvider,
-    externalResolutionByName,
-    maxResolutionHops,
-    records,
-    summary.mxTrails,
-    summary.nodeSummaries,
-    dohEndpoint,
-  ]);
+  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1306,7 +1420,7 @@ export function ZoneTopologyTab({
     win.document.close();
   }, [annotations, svgMarkup, zoneName]);
 
-  const controlsDisabled = isLoading || isRendering;
+  const controlsDisabled = isLoading || isRendering || topologyResolutionProgress.running;
   const cursorClass = annotationTool ? "cursor-crosshair" : handTool ? "cursor-grab" : "cursor-default";
   const graphBackgroundClass = isDarkThemeMode
     ? "bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))]"
@@ -1314,6 +1428,19 @@ export function ZoneTopologyTab({
   const loadingOverlayClass = isDarkThemeMode ? "bg-black/35 backdrop-blur-md" : "bg-white/60 backdrop-blur-md";
   const panX = Math.round(pan.x);
   const panY = Math.round(pan.y);
+  const topologyProgressLabel = useMemo(() => {
+    if (!topologyResolutionProgress.running) return "Rendering topology...";
+    const total = Math.max(1, topologyResolutionProgress.total);
+    const done = Math.min(total, topologyResolutionProgress.done);
+    const pct = Math.round((done / total) * 100);
+    return `Resolving chain nodes ${done}/${total} (${pct}%)...`;
+  }, [topologyResolutionProgress.done, topologyResolutionProgress.running, topologyResolutionProgress.total]);
+  const activeRequestPreview = useMemo(() => {
+    if (!topologyResolutionProgress.running || activeResolutionRequests.length === 0) return "";
+    const head = activeResolutionRequests.slice(0, 4).join(", ");
+    const extra = activeResolutionRequests.length > 4 ? ` (+${activeResolutionRequests.length - 4} more)` : "";
+    return `Requests: ${head}${extra}`;
+  }, [activeResolutionRequests, topologyResolutionProgress.running]);
   const zoneBase = useMemo(() => normalizeDomain(zoneName), [zoneName]);
   const emailRecords = useMemo(
     () =>
@@ -1350,13 +1477,18 @@ export function ZoneTopologyTab({
           ipv6ByName,
           Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
         );
-        const external = externalResolutionByName[normalizeDomain(local.terminal || target)];
-        const chain = local.chain.length > 1 ? local.chain : external?.chain ?? local.chain;
-        const ipv4 = local.ipv4.length ? local.ipv4 : external?.ipv4 ?? [];
-        const ipv6 = local.ipv6.length ? local.ipv6 : external?.ipv6 ?? [];
-        const terminal = local.terminal || external?.terminal || target;
-        const source = local.ipv4.length || local.ipv6.length ? "in-zone" : external ? "external" : "none";
-        const reverse = Object.entries(external?.reverseHostnamesByIp ?? {})
+        const best = pickBestResolution(target, local, externalResolutionByName);
+        const chain = best.chain.length ? best.chain : local.chain;
+        const ipv4 = best.ipv4.length ? best.ipv4 : local.ipv4;
+        const ipv6 = best.ipv6.length ? best.ipv6 : local.ipv6;
+        const terminal = best.terminal || local.terminal || target;
+        const source =
+          local.ipv4.length || local.ipv6.length
+            ? "in-zone"
+            : best.ipv4.length || best.ipv6.length || best.chain.length > local.chain.length
+              ? "external"
+              : "none";
+        const reverse = Object.entries(best.reverseHostnamesByIp ?? {})
           .flatMap(([ip, hosts]) => hosts.map((host) => `${ip} => ${host}`));
         return {
           id: record.id,
@@ -1399,15 +1531,39 @@ export function ZoneTopologyTab({
         }
       }
       const probeHosts = Array.from(httpTargets).filter(Boolean).slice(0, 4);
+      const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
+      const probePrefix = `${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|probe|`;
+      const now = Date.now();
+      const probeMap = new Map<string, { host: string; httpsUp: boolean; httpUp: boolean }>();
+      for (const host of probeHosts) {
+        const norm = normalizeDomain(host);
+        const cacheKey = `${probePrefix}${norm}`;
+        const cached = probeCacheRef.current.get(cacheKey);
+        if (cached && now - cached.ts <= TOPOLOGY_CACHE_TTL_MS) {
+          probeMap.set(norm, { host: norm, httpsUp: cached.httpsUp, httpUp: cached.httpUp });
+        }
+      }
       const backendBatch = await resolveTopologyBatchInBackend(
         [],
-        Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
+        clampedHops,
         dohProvider,
         dohCustomUrl,
         probeHosts,
       );
       if (backendBatch && backendBatch.probes.length > 0) {
         for (const probe of backendBatch.probes) {
+          const norm = normalizeDomain(probe.host);
+          probeMap.set(norm, { host: norm, httpsUp: probe.httpsUp, httpUp: probe.httpUp });
+          probeCacheRef.current.set(`${probePrefix}${norm}`, {
+            host: norm,
+            httpsUp: probe.httpsUp,
+            httpUp: probe.httpUp,
+            ts: Date.now(),
+          });
+        }
+      }
+      if (probeMap.size > 0) {
+        for (const probe of probeMap.values()) {
           const httpsStatus: "up" | "down" = probe.httpsUp ? "up" : "down";
           const httpStatus: "up" | "down" = probe.httpUp ? "up" : "down";
           items.push({
@@ -1517,7 +1673,14 @@ export function ZoneTopologyTab({
         variant="outline"
         className="h-8 px-2"
         onClick={() => {
+          resolutionCacheRef.current.clear();
+          probeCacheRef.current.clear();
           setExternalResolutionByName({});
+          setTopologyResolutionReady(false);
+          setMermaidCode("");
+          setSvgMarkup("");
+          setActiveResolutionRequests([]);
+          setManualRefreshTick((v) => v + 1);
           void onRefresh();
         }}
         disabled={isLoading}
@@ -1661,11 +1824,33 @@ export function ZoneTopologyTab({
                   </div>
                 </div>
 
-                {(isRendering || isLoading) && (
+                {(isRendering || isLoading || topologyResolutionProgress.running) && (
                   <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
-                    <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+                    <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
                       <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                      Rendering topology...
+                      {topologyProgressLabel}
+                      </div>
+                      {activeRequestPreview ? (
+                        <div className="line-clamp-2 text-[11px] text-muted-foreground">{activeRequestPreview}</div>
+                      ) : null}
+                      {topologyResolutionProgress.running && (
+                        <div className="h-1.5 w-full rounded bg-primary/20">
+                          <div
+                            className="h-full rounded bg-primary transition-all duration-200"
+                            style={{
+                              width: `${Math.round(
+                                (Math.min(
+                                  Math.max(topologyResolutionProgress.done, 0),
+                                  Math.max(topologyResolutionProgress.total, 1),
+                                ) /
+                                  Math.max(topologyResolutionProgress.total, 1)) *
+                                  100,
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1774,11 +1959,33 @@ export function ZoneTopologyTab({
             </div>
           </div>
 
-          {(isRendering || isLoading) && (
+          {(isRendering || isLoading || topologyResolutionProgress.running) && (
             <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
-              <div className="flex items-center gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+              <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+                <div className="flex items-center gap-2">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                Rendering topology...
+                {topologyProgressLabel}
+                </div>
+                {activeRequestPreview ? (
+                  <div className="line-clamp-2 text-[11px] text-muted-foreground">{activeRequestPreview}</div>
+                ) : null}
+                {topologyResolutionProgress.running && (
+                  <div className="h-1.5 w-full rounded bg-primary/20">
+                    <div
+                      className="h-full rounded bg-primary transition-all duration-200"
+                      style={{
+                        width: `${Math.round(
+                          (Math.min(
+                            Math.max(topologyResolutionProgress.done, 0),
+                            Math.max(topologyResolutionProgress.total, 1),
+                          ) /
+                            Math.max(topologyResolutionProgress.total, 1)) *
+                            100,
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

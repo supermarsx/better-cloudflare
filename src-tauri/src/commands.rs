@@ -1025,47 +1025,52 @@ struct DnsGoogleResponse {
 
 async fn query_doh_records(
     client: &reqwest::Client,
-    doh_endpoint: &str,
+    doh_endpoints: &[String],
     name: &str,
     record_type: &str,
 ) -> Vec<String> {
-    let Ok(resp) = client
-        .get(doh_endpoint)
-        .header("accept", "application/dns-json")
-        .query(&[("name", name), ("type", record_type)])
-        .send()
-        .await
-    else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
-    }
-    let Ok(payload) = resp.json::<DnsGoogleResponse>().await else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for ans in payload.answer.unwrap_or_default() {
-        let raw = ans.data.unwrap_or_default().trim().to_string();
-        if raw.is_empty() {
+    for endpoint in doh_endpoints {
+        let Ok(resp) = client
+            .get(endpoint)
+            .header("accept", "application/dns-json")
+            .query(&[("name", name), ("type", record_type)])
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
             continue;
         }
-        let value = if record_type == "CNAME" {
-            normalize_domain(&raw)
-        } else {
-            raw
+        let Ok(payload) = resp.json::<DnsGoogleResponse>().await else {
+            continue;
         };
-        if !value.is_empty() && !out.contains(&value) {
-            out.push(value);
+        let mut out = Vec::new();
+        for ans in payload.answer.unwrap_or_default() {
+            let raw = ans.data.unwrap_or_default().trim().to_string();
+            if raw.is_empty() {
+                continue;
+            }
+            let value = if record_type == "CNAME" {
+                normalize_domain(&raw)
+            } else {
+                raw
+            };
+            if !value.is_empty() && !out.contains(&value) {
+                out.push(value);
+            }
+        }
+        if !out.is_empty() {
+            return out;
         }
     }
-    out
+    Vec::new()
 }
 
 async fn resolve_chain_for_host(
     resolver: &TokioAsyncResolver,
     client: &reqwest::Client,
-    doh_endpoint: &str,
+    doh_endpoints: &[String],
     host: &str,
     max_hops: usize,
 ) -> HostnameChainResult {
@@ -1100,7 +1105,7 @@ async fn resolve_chain_for_host(
         let next = if direct_next.is_some() {
             direct_next
         } else {
-            query_doh_records(client, doh_endpoint, &cur, "CNAME")
+            query_doh_records(client, doh_endpoints, &cur, "CNAME")
                 .await
                 .into_iter()
                 .next()
@@ -1126,7 +1131,7 @@ async fn resolve_chain_for_host(
         }
     }
     if ipv4.is_empty() {
-        ipv4 = query_doh_records(client, doh_endpoint, &cur, "A").await;
+        ipv4 = query_doh_records(client, doh_endpoints, &cur, "A").await;
     }
 
     let mut ipv6 = Vec::new();
@@ -1139,7 +1144,7 @@ async fn resolve_chain_for_host(
         }
     }
     if ipv6.is_empty() {
-        ipv6 = query_doh_records(client, doh_endpoint, &cur, "AAAA").await;
+        ipv6 = query_doh_records(client, doh_endpoints, &cur, "AAAA").await;
     }
 
     let mut reverse_hostnames = Vec::new();
@@ -1199,10 +1204,11 @@ fn build_dns_resolver() -> Result<TokioAsyncResolver, String> {
     }
 }
 
-fn resolve_doh_endpoint(provider: Option<&str>, custom_url: Option<&str>) -> String {
+fn resolve_doh_endpoints(provider: Option<&str>, custom_url: Option<&str>) -> Vec<String> {
     let p = provider.unwrap_or("cloudflare").trim().to_lowercase();
-    match p.as_str() {
+    let preferred = match p.as_str() {
         "cloudflare" => "https://cloudflare-dns.com/dns-query".to_string(),
+        "google" => "https://dns.google/resolve".to_string(),
         "quad9" => "https://dns.quad9.net:5053/dns-query".to_string(),
         "custom" => {
             let raw = custom_url.unwrap_or("").trim();
@@ -1213,7 +1219,16 @@ fn resolve_doh_endpoint(provider: Option<&str>, custom_url: Option<&str>) -> Str
             }
         }
         _ => "https://cloudflare-dns.com/dns-query".to_string(),
-    }
+    };
+    let mut out = vec![
+        preferred,
+        "https://cloudflare-dns.com/dns-query".to_string(),
+        "https://dns.google/resolve".to_string(),
+        "https://dns.quad9.net:5053/dns-query".to_string(),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|value| seen.insert(value.clone()));
+    out
 }
 
 #[tauri::command]
@@ -1225,7 +1240,7 @@ pub async fn resolve_topology_batch(
     doh_custom_url: Option<String>,
 ) -> Result<TopologyBatchResult, String> {
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
-    let doh_endpoint = resolve_doh_endpoint(doh_provider.as_deref(), doh_custom_url.as_deref());
+    let doh_endpoints = resolve_doh_endpoints(doh_provider.as_deref(), doh_custom_url.as_deref());
     let resolver = build_dns_resolver()?;
     let resolver_http_client = reqwest::Client::builder()
         .redirect(Policy::limited(4))
@@ -1242,7 +1257,7 @@ pub async fn resolve_topology_batch(
         let result = resolve_chain_for_host(
             &resolver,
             &resolver_http_client,
-            &doh_endpoint,
+            &doh_endpoints,
             &normalized,
             max_hops,
         )
