@@ -97,6 +97,34 @@ function detectDarkThemeMode(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? true;
 }
 
+function applyEdgeLabelTheme(svgMarkup: string, isDarkTheme: boolean): string {
+  if (!svgMarkup.trim() || typeof document === "undefined") return svgMarkup;
+  try {
+    const styles = getComputedStyle(document.documentElement);
+    const hslVar = (name: string, fallback: string) => {
+      const v = styles.getPropertyValue(name).trim();
+      return v ? `hsl(${v})` : fallback;
+    };
+    const labelText = hslVar("--foreground", isDarkTheme ? "#e6eeff" : "#1f2937");
+    const labelBg = hslVar("--card", isDarkTheme ? "#1a2132" : "#ffffff");
+    const labelBorder = hslVar("--border", isDarkTheme ? "#445" : "#cbd5e1");
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgMarkup, "image/svg+xml");
+    const svg = doc.querySelector("svg");
+    if (!svg) return svgMarkup;
+    const style = doc.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.textContent = `
+      .edgeLabel, .edgeLabel span, .edgeLabel p { color: ${labelText} !important; fill: ${labelText} !important; }
+      .edgeLabel rect { fill: ${labelBg} !important; stroke: ${labelBorder} !important; opacity: 0.95; rx: 6px; ry: 6px; }
+      .flowchart-link, .edgePath path { stroke-linecap: round; stroke-linejoin: round; }
+    `;
+    svg.prepend(style);
+    return new XMLSerializer().serializeToString(svg);
+  } catch {
+    return svgMarkup;
+  }
+}
+
 const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /cloudfront\.net$/i, service: "AWS CloudFront" },
   { pattern: /elb\.amazonaws\.com$/i, service: "AWS ELB" },
@@ -436,18 +464,18 @@ function buildTopology(
       lines.push(`  ${recordId} -- "${esc(unit.type)}" --> ${targetId}`);
       edgeSet.add(`${recordId}|${unit.type}|${targetId}`);
 
-      // Keep MX as individual nodes and trace hostname->CNAME->A/AAAA path.
-      if (unit.type === "MX" && !isIp) {
-        const resolvedMx = resolveNameToTerminal(
+      // Trace hostname -> CNAME chain -> terminal A/AAAA path for non-IP targets.
+      if (!isIp) {
+        const resolvedTarget = resolveNameToTerminal(
           target,
           cnameMap,
           ipv4ByName,
           ipv6ByName,
           maxResolutionHops,
         );
-        for (let i = 0; i < resolvedMx.chain.length - 1; i += 1) {
-          const from = resolvedMx.chain[i];
-          const to = resolvedMx.chain[i + 1];
+        for (let i = 0; i < resolvedTarget.chain.length - 1; i += 1) {
+          const from = resolvedTarget.chain[i];
+          const to = resolvedTarget.chain[i + 1];
           const fromId = idFor(`target:${from}`);
           const toId = idFor(`target:${to}`);
           if (!usedNames.has(`target:${from}`)) {
@@ -464,26 +492,26 @@ function buildTopology(
             edgeSet.add(k);
           }
         }
-        for (const ip of resolvedMx.ipv4) {
+        for (const ip of resolvedTarget.ipv4) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
             lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
             usedNames.add(`ip:${ip}`);
           }
-          const termId = idFor(`target:${resolvedMx.terminal || target}`);
+          const termId = idFor(`target:${resolvedTarget.terminal || target}`);
           const k = `${termId}|A|${ipId}`;
           if (!edgeSet.has(k)) {
             lines.push(`  ${termId} -. "A" .-> ${ipId}`);
             edgeSet.add(k);
           }
         }
-        for (const ip of resolvedMx.ipv6) {
+        for (const ip of resolvedTarget.ipv6) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
             lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
             usedNames.add(`ip:${ip}`);
           }
-          const termId = idFor(`target:${resolvedMx.terminal || target}`);
+          const termId = idFor(`target:${resolvedTarget.terminal || target}`);
           const k = `${termId}|AAAA|${ipId}`;
           if (!edgeSet.has(k)) {
             lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
@@ -776,18 +804,28 @@ export function ZoneTopologyTab({
             lineColor: hslVar("--foreground", "#d7deff"),
             background: hslVar("--card", isDarkThemeMode ? "#131824" : "#ffffff"),
             tertiaryColor: hslVar("--muted", isDarkThemeMode ? "#20263a" : "#e2e8f0"),
+            textColor: hslVar("--foreground", isDarkThemeMode ? "#e6eeff" : "#0f172a"),
+            secondaryTextColor: hslVar("--foreground", isDarkThemeMode ? "#d7deff" : "#1f2937"),
+            tertiaryTextColor: hslVar("--foreground", isDarkThemeMode ? "#c7d2fe" : "#334155"),
+            edgeLabelBackground: hslVar("--card", isDarkThemeMode ? "#1a2132" : "#ffffff"),
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           },
           flowchart: {
             curve: "basis",
             htmlLabels: true,
+            defaultRenderer: "elk",
+            nodeSpacing: 70,
+            rankSpacing: 95,
+            diagramPadding: 10,
+            useMaxWidth: false,
           },
         });
         const id = `topology_${Date.now()}`;
         const rendered = await mermaid.render(id, mermaidCode);
         if (!cancelled) {
-          setSvgMarkup(rendered.svg);
-          const doc = new DOMParser().parseFromString(rendered.svg, "image/svg+xml");
+          const themedSvg = applyEdgeLabelTheme(rendered.svg, isDarkThemeMode);
+          setSvgMarkup(themedSvg);
+          const doc = new DOMParser().parseFromString(themedSvg, "image/svg+xml");
           const svg = doc.querySelector("svg");
           const vb = svg?.getAttribute("viewBox");
           if (vb) {
