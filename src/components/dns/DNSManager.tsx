@@ -2637,58 +2637,58 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       <div className={`fixed right-3 z-30 ${isDesktop() ? "top-12" : "top-3"}`}>
         <div className="flex items-center gap-1 rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100">
           {isDesktop() && (
-            <Tooltip tip="Audit log" side="bottom">
+            <Tooltip tip={t("Audit log", "Audit log")} side="bottom">
               <Button
                 onClick={() => openActionTab("audit")}
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-                aria-label="Audit log"
+                aria-label={t("Audit log", "Audit log")}
               >
                 <Shield className="h-3.5 w-3.5" />
               </Button>
             </Tooltip>
           )}
-          <Tooltip tip="Registry Monitoring" side="bottom">
+          <Tooltip tip={t("Registry Monitoring", "Registry Monitoring")} side="bottom">
             <Button
               onClick={() => openActionTab("registry")}
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label="Registry Monitoring"
+              aria-label={t("Registry Monitoring", "Registry Monitoring")}
             >
               <Globe className="h-3.5 w-3.5" />
             </Button>
           </Tooltip>
-          <Tooltip tip="Settings" side="bottom">
+          <Tooltip tip={t("Settings", "Settings")} side="bottom">
             <Button
               onClick={() => openActionTab("settings")}
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label="Settings"
+              aria-label={t("Settings", "Settings")}
             >
               <Settings className="h-3.5 w-3.5" />
             </Button>
           </Tooltip>
-          <Tooltip tip="Tags" side="bottom">
+          <Tooltip tip={t("Tags", "Tags")} side="bottom">
             <Button
               onClick={() => openActionTab("tags")}
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label="Tags"
+              aria-label={t("Tags", "Tags")}
             >
               <Tags className="h-3.5 w-3.5" />
             </Button>
           </Tooltip>
-          <Tooltip tip="Logout" side="bottom">
+          <Tooltip tip={t("Logout", "Logout")} side="bottom">
             <Button
               onClick={handleLogout}
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label="Logout"
+              aria-label={t("Logout", "Logout")}
             >
               <LogOut className="h-3.5 w-3.5" />
             </Button>
@@ -2717,7 +2717,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardContent className="space-y-4">
               <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
                 <div className="space-y-2">
-                  <Label htmlFor="zone-select">Domain/Zone</Label>
+                  <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
                   <Select
                     value={selectedZoneId || undefined}
                     onValueChange={(value) => {
@@ -2726,7 +2726,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     }}
                   >
                     <SelectTrigger className="bg-card/70 border-border text-foreground">
-                      <SelectValue placeholder="Select a domain" />
+                      <SelectValue placeholder={t("Select a domain", "Select a domain")} />
                     </SelectTrigger>
                     <SelectContent className="bg-popover/70 text-foreground">
                       {availableZones.map((zone: Zone) => (
@@ -3598,7 +3598,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
-                    {cacheOverlay.visible && <SectionLoadingOverlay label="Loading cache settings..." />}
+                    {cacheOverlay.visible && (
+                      <SectionLoadingOverlay
+                        label={t("Loading cache settings...", "Loading cache settings...")}
+                      />
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -3766,14 +3770,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
-                    {sslOverlay.visible && <SectionLoadingOverlay label="Loading SSL/TLS settings..." />}
+                    {sslOverlay.visible && (
+                      <SectionLoadingOverlay
+                        label={t("Loading SSL/TLS settings...", "Loading SSL/TLS settings...")}
+                      />
+                    )}
                   </CardContent>
                 </Card>
               )}
               {activeTab.kind === "zone" && actionTab === "domain-audit" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">Domain audits</CardTitle>
+                    <CardTitle className="text-lg">{t("Domain audits", "Domain audits")}</CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3986,14 +3994,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       These checks are best-practice heuristics based only on records currently
                       present in this zone.
                     </div>
-                    {auditOverlay.visible && <SectionLoadingOverlay label="Loading audit data..." />}
+                    {auditOverlay.visible && (
+                      <SectionLoadingOverlay
+                        label={t("Loading audit data...", "Loading audit data...")}
+                      />
+                    )}
                   </CardContent>
                 </Card>
               )}
               {activeTab.kind === "zone" && actionTab === "domain-registry" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">Domain Registry Tools</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("Domain Registry Tools", "Domain Registry Tools")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
@@ -4006,7 +4020,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         onClick={() => void runDomainRegistryChecks()}
                         disabled={!registryLookupDomain.trim() || registryChecksLoading}
                       >
-                        {registryChecksLoading ? "Checking..." : "Check Everything"}
+                        {registryChecksLoading
+                          ? t("Checking...", "Checking...")
+                          : t("Check Everything", "Check Everything")}
                       </Button>
                     </div>
 
@@ -4026,7 +4042,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         disabled={!registryLookupDomain.trim()}
                       >
                         <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                        RDAP Tool
+                        {t("RDAP Tool", "RDAP Tool")}
                       </Button>
                       <Button
                         variant="outline"
@@ -4043,7 +4059,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         disabled={!registryLookupDomain.trim()}
                       >
                         <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                        WHOIS Tool
+                        {t("WHOIS Tool", "WHOIS Tool")}
                       </Button>
                     </div>
 
@@ -4079,7 +4095,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         ) : (
                           <div className="text-xs text-muted-foreground">
-                            No registrar-api match found for this domain.
+                            {t(
+                              "No registrar-api match found for this domain.",
+                              "No registrar-api match found for this domain.",
+                            )}
                           </div>
                         )}
                       </div>
@@ -4100,7 +4119,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         ) : (
                           <div className="text-xs text-muted-foreground">
-                            No health check data for this domain yet.
+                            {t(
+                              "No health check data for this domain yet.",
+                              "No health check data for this domain yet.",
+                            )}
                           </div>
                         )}
                       </div>
@@ -4247,11 +4269,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )
                       ) : (
                         <div className="text-xs text-muted-foreground">
-                          Run checks to load RDAP response.
+                          {t("Run checks to load RDAP response.", "Run checks to load RDAP response.")}
                         </div>
                       )}
                     </div>
-                    {registryOverlay.visible && <SectionLoadingOverlay label="Loading registry data..." />}
+                    {registryOverlay.visible && (
+                      <SectionLoadingOverlay
+                        label={t("Loading registry data...", "Loading registry data...")}
+                      />
+                    )}
                   </CardContent>
                 </Card>
               )}

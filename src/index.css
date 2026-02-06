@@ -19,7 +19,7 @@
   :root,
   :root[data-theme="light"] {
     --app-top-inset: 0px;
-    /* Tarnished light: warm, faded ivory base with sunset accents. */
+    /* Midday light: warm, faded ivory base with sunset accents. */
     --background: 36 35% 96%;
     --foreground: 24 30% 10%;
     --card: 36 35% 98%;
@@ -41,7 +41,7 @@
     --ring: 18 85% 44%;
     --radius: 0.5rem;
 
-    /* Record-type accents (tarnished light) */
+    /* Record-type accents (midday light) */
     --tone-amber: 32 92% 44%;
     --tone-tangerine: 24 90% 44%;
     --tone-coral: 18 85% 44%;
@@ -109,7 +109,7 @@
     --input: 0 0% 5%;
     --ring: 18 90% 52%;
 
-    /* Record-type accents (OLED) */
+    /* Record-type accents (night) */
     --tone-amber: 34 92% 60%;
     --tone-tangerine: 26 92% 58%;
     --tone-coral: 18 90% 52%;

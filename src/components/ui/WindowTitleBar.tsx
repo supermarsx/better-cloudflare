@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { storageManager } from "@/lib/storage";
 import { TauriClient } from "@/lib/tauri-client";
+import { useI18n } from "@/hooks/use-i18n";
 
 const TITLEBAR_HEIGHT_PX = 36;
 
@@ -47,6 +48,7 @@ async function withWindow(action: WindowAction) {
 }
 
 export function WindowTitleBar() {
+  const { t } = useI18n();
   const [isDragging, setIsDragging] = useState(false);
   const [isTopmost, setIsTopmost] = useState(false);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
@@ -266,7 +268,7 @@ export function WindowTitleBar() {
               handleRestart();
             }}
           >
-            Restart Application
+            {t("Restart Application", "Restart Application")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -275,7 +277,9 @@ export function WindowTitleBar() {
               handleToggleTopmost();
             }}
           >
-            {isTopmost ? "Disable Always on Top" : "Enable Always on Top"}
+            {isTopmost
+              ? t("Disable Always on Top", "Disable Always on Top")
+              : t("Enable Always on Top", "Enable Always on Top")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -284,7 +288,7 @@ export function WindowTitleBar() {
               void withWindow("start-dragging");
             }}
           >
-            Move Window
+            {t("Move Window", "Move Window")}
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -292,7 +296,7 @@ export function WindowTitleBar() {
               void handleCenterWindow();
             }}
           >
-            Center Window
+            {t("Center Window", "Center Window")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -301,7 +305,7 @@ export function WindowTitleBar() {
               handleMinimize();
             }}
           >
-            Minimize
+            {t("Minimize", "Minimize")}
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -309,7 +313,7 @@ export function WindowTitleBar() {
               void handleMaximize();
             }}
           >
-            Maximize
+            {t("Maximize", "Maximize")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -318,7 +322,7 @@ export function WindowTitleBar() {
               void requestClose();
             }}
           >
-            Close
+            {t("Close", "Close")}
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -327,7 +331,7 @@ export function WindowTitleBar() {
             }}
             className="text-destructive focus:text-destructive"
           >
-            Force Close
+            {t("Force Close", "Force Close")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -339,11 +343,15 @@ export function WindowTitleBar() {
         onDoubleClick={handleToggleMaximize}
         onContextMenu={handleWindowContextMenu}
       >
-        Better Cloudflare Console
+        {t("Better Cloudflare Console", "Better Cloudflare Console")}
       </div>
       <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
         <Tooltip
-          tip={isTopmost ? "Always on top: On" : "Always on top: Off"}
+          tip={
+            isTopmost
+              ? t("Always on top: On", "Always on top: On")
+              : t("Always on top: Off", "Always on top: Off")
+          }
           side="bottom"
         >
           <Button
@@ -356,45 +364,45 @@ export function WindowTitleBar() {
             onClick={() => void handleToggleTopmost()}
             aria-label={
               isTopmost
-                ? "Disable always on top"
-                : "Enable always on top"
+                ? t("Disable always on top", "Disable always on top")
+                : t("Enable always on top", "Enable always on top")
             }
           >
             T
           </Button>
         </Tooltip>
-        <Tooltip tip="Minimize" side="bottom">
+        <Tooltip tip={t("Minimize", "Minimize")} side="bottom">
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
             onClick={() => void withWindow("minimize")}
-            aria-label="Minimize window"
+            aria-label={t("Minimize window", "Minimize window")}
           >
             -
           </Button>
         </Tooltip>
-        <Tooltip tip="Toggle maximize" side="bottom">
+        <Tooltip tip={t("Toggle maximize", "Toggle maximize")} side="bottom">
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
             onClick={() => void withWindow("toggle-maximize")}
-            aria-label="Toggle maximize"
+            aria-label={t("Toggle maximize", "Toggle maximize")}
           >
             []
           </Button>
         </Tooltip>
-        <Tooltip tip="Close" side="bottom">
+        <Tooltip tip={t("Close", "Close")} side="bottom">
           <Button
             type="button"
             variant="destructive"
             size="sm"
             className="h-7 w-9 px-0 text-[10px]"
             onClick={() => void requestClose()}
-            aria-label="Close window"
+            aria-label={t("Close window", "Close window")}
           >
             X
           </Button>
@@ -403,9 +411,12 @@ export function WindowTitleBar() {
       <Dialog open={confirmCloseOpen} onOpenChange={setConfirmCloseOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Close Better Cloudflare?</DialogTitle>
+            <DialogTitle>{t("Close Better Cloudflare?", "Close Better Cloudflare?")}</DialogTitle>
             <DialogDescription>
-              Unsaved edits may be lost. Are you sure you want to close the window?
+              {t(
+                "Unsaved edits may be lost. Are you sure you want to close the window?",
+                "Unsaved edits may be lost. Are you sure you want to close the window?",
+              )}
             </DialogDescription>
           </DialogHeader>
           <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
@@ -415,14 +426,14 @@ export function WindowTitleBar() {
               checked={dontAskAgain}
               onChange={(e) => setDontAskAgain(e.target.checked)}
             />
-            Don&apos;t ask again
+            {t("Don't ask again", "Don't ask again")}
           </label>
           <DialogFooter className="mt-2 gap-2 sm:gap-2">
             <Button
               variant="secondary"
               onClick={() => setConfirmCloseOpen(false)}
             >
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -436,7 +447,7 @@ export function WindowTitleBar() {
                 })();
               }}
             >
-              Close
+              {t("Close", "Close")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -444,9 +455,12 @@ export function WindowTitleBar() {
       <Dialog open={confirmRestartOpen} onOpenChange={setConfirmRestartOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Restart Application?</DialogTitle>
+            <DialogTitle>{t("Restart Application?", "Restart Application?")}</DialogTitle>
             <DialogDescription>
-              The application will close and attempt to restart. Any unsaved changes may be lost.
+              {t(
+                "The application will close and attempt to restart. Any unsaved changes may be lost.",
+                "The application will close and attempt to restart. Any unsaved changes may be lost.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-4 gap-2 sm:gap-2">
@@ -454,7 +468,7 @@ export function WindowTitleBar() {
               variant="secondary"
               onClick={() => setConfirmRestartOpen(false)}
             >
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button
               variant="default"
@@ -463,7 +477,7 @@ export function WindowTitleBar() {
                 void confirmRestart();
               }}
             >
-              Restart
+              {t("Restart", "Restart")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -10,13 +10,14 @@ import {
 } from "@/components/ui/DropdownMenu";
 import { isDesktop } from "@/lib/environment";
 import { TauriClient } from "@/lib/tauri-client";
+import { useI18n } from "@/hooks/use-i18n";
 
 type ThemeId = "sunset" | "oled" | "light";
 
 const themeLabels: Record<ThemeId, string> = {
   sunset: "Sunset",
-  oled: "OLED",
-  light: "Tarnished",
+  oled: "Night",
+  light: "Midday",
 };
 
 const themeIcons: Record<ThemeId, ReactNode> = {
@@ -26,6 +27,7 @@ const themeIcons: Record<ThemeId, ReactNode> = {
 };
 
 export function ThemeToggle() {
+  const { t } = useI18n();
   const [theme, setTheme] = useState<ThemeId>("sunset");
 
   useEffect(() => {
@@ -77,12 +79,15 @@ export function ThemeToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Tooltip tip={`Theme: ${themeLabels[theme]}`} side="bottom">
+        <Tooltip
+          tip={t("Theme: {{name}}", { name: t(themeLabels[theme], themeLabels[theme]) })}
+          side="bottom"
+        >
           <Button
             variant="ghost"
             size="icon"
             className="ui-icon-button h-8 w-8"
-            aria-label="Select theme"
+            aria-label={t("Select theme", "Select theme")}
           >
             {themeIcons[theme]}
           </Button>
@@ -99,7 +104,7 @@ export function ThemeToggle() {
             className="cursor-pointer"
           >
             <span className="mr-2 text-primary">{themeIcons[id]}</span>
-            {themeLabels[id]}
+            {t(themeLabels[id], themeLabels[id])}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
