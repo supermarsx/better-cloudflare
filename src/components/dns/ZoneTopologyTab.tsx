@@ -18,6 +18,14 @@ type TopologySummary = {
   cnameChains: Array<{ start: string; chain: string[] }>;
   sharedIps: Array<{ ip: string; names: string[] }>;
   detectedServices: Array<{ name: string; via: string }>;
+  mxTrails: Array<{
+    from: string;
+    target: string;
+    chain: string[];
+    terminal: string;
+    ipv4: string[];
+    ipv6: string[];
+  }>;
   areas: {
     email: number;
     web: number;
@@ -262,6 +270,7 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
   const cnameMap = buildCnameMap(records);
   const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
   const nodeRecords = new Map<string, DNSRecord[]>();
+  const edgeSet = new Set<string>();
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
     const labelName = nameRaw === "@" ? zone : nameRaw;
@@ -270,11 +279,21 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
   }
 
   const emailPathNames = new Set<string>();
+  const mxTrails: TopologySummary["mxTrails"] = [];
   for (const r of records) {
     if (r.type !== "MX") continue;
+    const fromName = normalizeDomain(r.name) || zone;
     const mxTarget = extractTarget(r);
     if (!mxTarget) continue;
     const resolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName);
+    mxTrails.push({
+      from: fromName,
+      target: mxTarget,
+      chain: resolved.chain,
+      terminal: resolved.terminal,
+      ipv4: resolved.ipv4,
+      ipv6: resolved.ipv6,
+    });
     for (const n of resolved.chain) emailPathNames.add(n);
     if (resolved.terminal) emailPathNames.add(resolved.terminal);
   }
@@ -352,6 +371,57 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
     }
 
     lines.push(`  ${nameId} -- "${esc(record.type)}" --> ${targetId}`);
+    edgeSet.add(`${nameId}|${record.type}|${targetId}`);
+
+    // For MX targets, explicitly draw hostname -> CNAME terminal -> A/AAAA trail.
+    if (record.type === "MX" && !isIp) {
+      const resolved = resolveNameToTerminal(target, cnameMap, ipv4ByName, ipv6ByName);
+      for (let i = 0; i < resolved.chain.length - 1; i += 1) {
+        const from = resolved.chain[i];
+        const to = resolved.chain[i + 1];
+        const fromId = idFor(`target:${from}`);
+        const toId = idFor(`target:${to}`);
+        if (!usedNames.has(`target:${from}`)) {
+          lines.push(`  ${fromId}["${esc(from)}"]:::target`);
+          usedNames.add(`target:${from}`);
+        }
+        if (!usedNames.has(`target:${to}`)) {
+          lines.push(`  ${toId}["${esc(to)}"]:::target`);
+          usedNames.add(`target:${to}`);
+        }
+        const k = `${fromId}|CNAME|${toId}`;
+        if (!edgeSet.has(k)) {
+          lines.push(`  ${fromId} -. "CNAME" .-> ${toId}`);
+          edgeSet.add(k);
+        }
+      }
+      for (const ip of resolved.ipv4) {
+        const ipId = idFor(`ip:${ip}`);
+        if (!usedNames.has(`ip:${ip}`)) {
+          lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+          usedNames.add(`ip:${ip}`);
+        }
+        const termId = idFor(`target:${resolved.terminal || target}`);
+        const k = `${termId}|A|${ipId}`;
+        if (!edgeSet.has(k)) {
+          lines.push(`  ${termId} -. "A" .-> ${ipId}`);
+          edgeSet.add(k);
+        }
+      }
+      for (const ip of resolved.ipv6) {
+        const ipId = idFor(`ip:${ip}`);
+        if (!usedNames.has(`ip:${ip}`)) {
+          lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+          usedNames.add(`ip:${ip}`);
+        }
+        const termId = idFor(`target:${resolved.terminal || target}`);
+        const k = `${termId}|AAAA|${ipId}`;
+        if (!edgeSet.has(k)) {
+          lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
+          edgeSet.add(k);
+        }
+      }
+    }
 
     if (isIp) {
       if (!sharedIpMap.has(target)) sharedIpMap.set(target, new Set());
@@ -396,6 +466,7 @@ function buildTopology(records: DNSRecord[], zoneName: string): { code: string; 
         const [name, via] = key.split(":", 2);
         return { name, via };
       }),
+      mxTrails,
       areas: areaCounts,
       nodeSummaries: Array.from(nodeRecords.entries())
         .map(([name, nodeRecs]) => ({
@@ -445,6 +516,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
   const [themeVersion, setThemeVersion] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+  const middleDragRestoreHandRef = useRef<boolean | null>(null);
   const userAdjustedViewRef = useRef(false);
   const autoFitDoneRef = useRef<string>("");
   const [graphSize, setGraphSize] = useState({ w: 1000, h: 600 });
@@ -455,6 +527,7 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     cnameChains: [],
     sharedIps: [],
     detectedServices: [],
+    mxTrails: [],
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
@@ -574,13 +647,31 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
     setZoom((z) => Math.max(0.3, Math.min(3, Number((z + delta).toFixed(2)))));
   }, []);
 
+  const normalizeTo100 = useCallback(() => {
+    userAdjustedViewRef.current = true;
+    const scale = 1;
+    setZoom(scale);
+    if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h) return;
+    const x = (viewportSize.w - graphSize.w * scale) / 2;
+    const y = (viewportSize.h - graphSize.h * scale) / 2;
+    setPan({ x, y });
+  }, [graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+
   const resetView = useCallback(() => {
     autoFitDoneRef.current = "";
     fitAndCenterGraph();
   }, [fitAndCenterGraph]);
 
   const handleMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
-    if (!handTool) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      middleDragRestoreHandRef.current = handTool;
+      setHandTool(true);
+    } else if (event.button !== 0) {
+      return;
+    } else if (!handTool) {
+      return;
+    }
     userAdjustedViewRef.current = true;
     dragRef.current = {
       startX: event.clientX,
@@ -599,6 +690,10 @@ export function ZoneTopologyTab({ zoneName, records, isLoading = false, onRefres
 
   const handleMouseUp = useCallback(() => {
     dragRef.current = null;
+    if (middleDragRestoreHandRef.current !== null) {
+      setHandTool(middleDragRestoreHandRef.current);
+      middleDragRestoreHandRef.current = null;
+    }
   }, []);
 
   const handleViewportClick = useCallback((event: MouseEvent<HTMLDivElement>) => {
