@@ -8,6 +8,8 @@ mod cloudflare_api;
 mod passkey;
 mod audit;
 mod spf;
+mod registrar;
+mod registrar_commands;
 
 use tauri::Manager;
 use crate::storage::Storage;
@@ -37,14 +39,7 @@ fn main() {
             commands::delete_dns_record,
             commands::create_bulk_dns_records,
             commands::export_dns_records,
-
-            // Cache / Zone Settings
-            commands::purge_cache,
-            commands::get_zone_setting,
-            commands::update_zone_setting,
-            commands::get_dnssec,
-            commands::update_dnssec,
-             
+            
             // Vault Operations
             commands::store_vault_secret,
             commands::get_vault_secret,
@@ -72,6 +67,16 @@ fn main() {
             // SPF
             commands::simulate_spf,
             commands::spf_graph,
+            // Registrar Monitoring
+            registrar_commands::add_registrar_credential,
+            registrar_commands::list_registrar_credentials,
+            registrar_commands::delete_registrar_credential,
+            registrar_commands::verify_registrar_credential,
+            registrar_commands::registrar_list_domains,
+            registrar_commands::registrar_get_domain,
+            registrar_commands::registrar_list_all_domains,
+            registrar_commands::registrar_health_check,
+            registrar_commands::registrar_health_check_all,
         ])
         .setup(|app| {
             // Initialize storage

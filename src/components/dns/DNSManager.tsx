@@ -4,11 +4,9 @@
  * list and dialogs for creating/importing records.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
-import type { DragEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -20,7 +18,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
-import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
+import type { DNSRecord, Zone, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
@@ -28,10 +26,10 @@ import { storageManager } from "@/lib/storage";
 import {
   ClipboardPaste,
   Copy,
-  Columns2,
   FileDown,
   FileUp,
   Filter,
+  Globe,
   GripVertical,
   LogOut,
   Search,
@@ -50,39 +48,14 @@ import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/DropdownMenu";
-import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/domain-audit";
-import type { SPFGraph } from "@/lib/spf";
+import { RegistryMonitor } from "./RegistryMonitor";
+import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
 
-type ActionTab =
-  | "records"
-  | "import"
-  | "zone-settings"
-  | "cache"
-  | "ssl-tls"
-  | "dns-options"
-  | "domain-audit";
-type TabKind = "zone" | "settings" | "audit" | "tags";
-type SortKey = "type" | "name" | "content" | "comment" | "tags" | "ttl" | "proxied";
+
+type ActionTab = "records" | "import" | "zone-settings";
+type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
+type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-
-type RecordTableColumnId =
-  | "select"
-  | "type"
-  | "name"
-  | "content"
-  | "comment"
-  | "tags"
-  | "ttl"
-  | "proxied"
-  | "actions";
 
 type ZoneTab = {
   kind: TabKind;
@@ -119,7 +92,7 @@ interface DNSManagerProps {
   onLogout: () => void;
 }
 
-const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
+const ACTION_TABS: { id: ActionTab | "zone-settings"; label: string; hint: string }[] = [
   {
     id: "records",
     label: "Records",
@@ -135,98 +108,22 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     label: "Zone Settings",
     hint: "Override defaults for this zone",
   },
-  {
-    id: "cache",
-    label: "Cache",
-    hint: "Purge cache and toggle Cloudflare caching settings",
-  },
-  {
-    id: "ssl-tls",
-    label: "SSL/TLS",
-    hint: "Manage zone SSL and TLS settings",
-  },
-  {
-    id: "dns-options",
-    label: "Options",
-    hint: "DNSSEC, multi-signer DNSSEC, and related zone options",
-  },
-  {
-    id: "domain-audit",
-    label: "Audits",
-    hint: "Best-practice checks for the current zone records",
-  },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
   zone: "Zone",
   settings: "Settings",
   audit: "Audit",
   tags: "Tags",
+  registry: "Registry",
 };
 
 const createEmptyRecord = (): Partial<DNSRecord> => ({
   type: "A",
   name: "",
   content: "",
-  comment: "",
   ttl: 300,
   proxied: false,
 });
-
-const DEFAULT_RECORD_TABLE_COLUMNS: RecordTableColumnId[] = [
-  "select",
-  "type",
-  "name",
-  "content",
-  "comment",
-  "tags",
-  "ttl",
-  "proxied",
-  "actions",
-];
-
-const RECORD_TABLE_COLUMN_TEMPLATES: Record<RecordTableColumnId, string> = {
-  select: "24px",
-  type: "56px",
-  name: "minmax(140px,1.2fr)",
-  content: "minmax(180px,2fr)",
-  comment: "minmax(160px,1.4fr)",
-  tags: "minmax(120px,1fr)",
-  ttl: "92px",
-  proxied: "78px",
-  actions: "92px",
-};
-
-function normalizeRecordTableColumns(
-  value: unknown,
-): RecordTableColumnId[] {
-  const raw = Array.isArray(value) ? value : [];
-  const allowed = new Set<RecordTableColumnId>([
-    "select",
-    "type",
-    "name",
-    "content",
-    "comment",
-    "tags",
-    "ttl",
-    "proxied",
-    "actions",
-  ]);
-  const normalized = raw
-    .filter((v): v is RecordTableColumnId => typeof v === "string" && allowed.has(v as RecordTableColumnId))
-    .filter((v, idx, arr) => arr.indexOf(v) === idx);
-
-  const ensure = (id: RecordTableColumnId) => {
-    if (!normalized.includes(id)) normalized.push(id);
-  };
-  // Always keep required columns.
-  ensure("select");
-  ensure("type");
-  ensure("name");
-
-  // Default order when no valid saved data.
-  if (normalized.length <= 4 && raw.length === 0) return [...DEFAULT_RECORD_TABLE_COLUMNS];
-  return normalized;
-}
 
 const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   kind: "zone",
@@ -299,15 +196,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useState<Record<string, boolean>>(
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
-  const [confirmDeleteRecord, setConfirmDeleteRecord] = useState(
-    storageManager.getConfirmDeleteRecord(),
-  );
-  const [zoneConfirmDeleteRecord, setZoneConfirmDeleteRecord] = useState<
-    Record<string, boolean>
-  >(storageManager.getZoneConfirmDeleteRecordMap());
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     storageManager.getAutoRefreshInterval(),
   );
+  const registrarMonitor = useRegistrarMonitor(apiKey, email);
   const [auditEntries, setAuditEntries] = useState<Array<Record<string, unknown>>>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
@@ -317,31 +209,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditOrder, setAuditOrder] = useState("newest");
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
-  const [showResetSettingsConfirm, setShowResetSettingsConfirm] = useState(false);
-  const [showClearSettingsConfirm, setShowClearSettingsConfirm] = useState(false);
-  const [showClearAllDataConfirm, setShowClearAllDataConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showDeleteRecordConfirm, setShowDeleteRecordConfirm] = useState(false);
-  const [pendingDeleteRecordId, setPendingDeleteRecordId] = useState<string | null>(null);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
-  const [lastActiveTabId, setLastActiveTabId] = useState<string>("");
-  const [globalRecordTableColumns, setGlobalRecordTableColumns] = useState<
-    RecordTableColumnId[]
-  >(() => normalizeRecordTableColumns(storageManager.getDnsTableColumns()));
-  const [zoneRecordTableColumns, setZoneRecordTableColumns] = useState<
-    Record<string, RecordTableColumnId[]>
-  >(() => {
-    const raw = storageManager.getZoneDnsTableColumnsMap();
-    const next: Record<string, RecordTableColumnId[]> = {};
-    for (const [zoneId, cols] of Object.entries(raw)) {
-      next[zoneId] = normalizeRecordTableColumns(cols);
-    }
-    return next;
-  });
-  const [dragHeaderId, setDragHeaderId] = useState<RecordTableColumnId | null>(null);
-  const [dragHeaderOverId, setDragHeaderOverId] = useState<RecordTableColumnId | null>(null);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
@@ -364,47 +235,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
-  const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
-  const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
-  const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
-  const [zoneCacheLevel, setZoneCacheLevel] = useState<ZoneSetting<string> | null>(null);
-  const [zoneAlwaysOnline, setZoneAlwaysOnline] = useState<ZoneSetting<string> | null>(null);
-  const [zoneCrawlerHints, setZoneCrawlerHints] = useState<ZoneSetting<string> | null>(null);
-  const [zoneBrowserCacheTtl, setZoneBrowserCacheTtl] =
-    useState<ZoneSetting<number> | null>(null);
-  const [purgeUrlsInput, setPurgeUrlsInput] = useState("");
-  const [showPurgeEverythingConfirm, setShowPurgeEverythingConfirm] = useState(false);
-  const [showPurgeUrlsConfirm, setShowPurgeUrlsConfirm] = useState(false);
-  const [pendingPurgeUrls, setPendingPurgeUrls] = useState<string[]>([]);
-  const [pendingPurgeIssues, setPendingPurgeIssues] = useState<string[]>([]);
-  const [dnsOptionsLoading, setDnsOptionsLoading] = useState(false);
-  const [dnsOptionsError, setDnsOptionsError] = useState<string | null>(null);
-  const [dnssecInfo, setDnssecInfo] = useState<Record<string, unknown> | null>(null);
-  const [domainAuditShowPassed, setDomainAuditShowPassed] = useState(false);
-  const [domainAuditCategories, setDomainAuditCategories] = useState<
-    Record<DomainAuditCategory, boolean>
-  >({ email: true, security: true, hygiene: true });
-  const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
-  const [spfGraphByZoneId, setSpfGraphByZoneId] = useState<
-    Record<
-      string,
-      {
-        status: "idle" | "loading" | "success" | "error";
-        graph?: SPFGraph;
-        error?: string;
-        checkedAt?: number;
-      }
-    >
-  >({});
-  const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
-  const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
-  const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
-  const [zoneMinTlsVersion, setZoneMinTlsVersion] = useState<ZoneSetting<string> | null>(null);
-  const [zoneTls13, setZoneTls13] = useState<ZoneSetting<string> | null>(null);
-  const [zoneAlwaysUseHttps, setZoneAlwaysUseHttps] = useState<ZoneSetting<string> | null>(null);
-  const [zoneAutoHttpsRewrites, setZoneAutoHttpsRewrites] = useState<ZoneSetting<string> | null>(null);
-  const [zoneOpportunisticEncryption, setZoneOpportunisticEncryption] =
-    useState<ZoneSetting<string> | null>(null);
   const {
     getZones,
     getDNSRecords,
@@ -413,12 +243,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     bulkCreateDNSRecords,
     deleteDNSRecord,
     exportDNSRecords,
-    purgeCache,
-    getSPFGraph,
-    getZoneSetting,
-    updateZoneSetting,
-    getDnssec,
-    updateDnssec,
   } = useCloudflareAPI(apiKey, email);
 
   const availableZones = useMemo(
@@ -431,362 +255,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [tabs, activeTabId],
   );
 
-  const activeZoneMeta = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return null;
-    return zones.find((z) => z.id === activeTab.zoneId) ?? null;
-  }, [activeTab, zones]);
-
-  const activeZoneSpfGraphState = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return null;
-    return spfGraphByZoneId[activeTab.zoneId] ?? { status: "idle" as const };
-  }, [activeTab, spfGraphByZoneId]);
-
-  const runSpfGraphAudit = useCallback(async () => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    const zoneId = activeTab.zoneId;
-    const domain = activeTab.zoneName;
-    setSpfGraphByZoneId((prev) => ({
-      ...prev,
-      [zoneId]: { status: "loading" },
-    }));
-    try {
-      const graph = await getSPFGraph(domain);
-      setSpfGraphByZoneId((prev) => ({
-        ...prev,
-        [zoneId]: { status: "success", graph, checkedAt: Date.now() },
-      }));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSpfGraphByZoneId((prev) => ({
-        ...prev,
-        [zoneId]: { status: "error", error: msg, checkedAt: Date.now() },
-      }));
-      toast({
-        title: "SPF graph failed",
-        description: msg,
-        variant: "destructive",
-      });
-    }
-  }, [activeTab, getSPFGraph, toast]);
-
-  const domainAuditItems = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return [];
-    const base = runDomainAudit(activeTab.zoneName, activeTab.records, {
-      includeCategories: domainAuditCategories,
-    });
-    if (!domainAuditCategories.email) return base;
-    const spfState = spfGraphByZoneId[activeTab.zoneId];
-    if (!spfState || spfState.status === "idle" || spfState.status === "loading") return base;
-    if (spfState.status === "error") {
-      return [
-        ...base,
-        {
-          id: "spf-graph-error",
-          category: "email",
-          severity: "warn",
-          title: "SPF recursive lookup check failed",
-          details: spfState.error
-            ? `Error: ${spfState.error}`
-            : "The SPF graph endpoint returned an unknown error.",
-        } as DomainAuditItem,
-      ];
-    }
-    const graph = spfState.graph;
-    if (!graph) return base;
-    const issues: Array<{ severity: "pass" | "warn" | "fail"; title: string; details: string }> = [];
-    if (graph.cyclic) {
-      issues.push({
-        severity: "fail",
-        title: "SPF recursion cycle detected",
-        details:
-          "SPF includes/redirects appear to create a cycle. This can cause permerror and unpredictable evaluation.",
-      });
-    }
-    if (graph.lookups > 10) {
-      issues.push({
-        severity: "fail",
-        title: "SPF exceeds DNS lookup limit",
-        details: `SPF graph reports ${graph.lookups} lookups (limit 10). Consider simplifying/flattening includes/redirects.`,
-      });
-    }
-    if (issues.length === 0) {
-      issues.push({
-        severity: "pass",
-        title: "SPF recursive lookup budget",
-        details: `SPF graph reports ${graph.lookups} lookups (limit 10).`,
-      });
-    }
-    return [
-      ...base,
-      ...issues.map(
-        (it, idx): DomainAuditItem => ({
-          id: `spf-graph-${idx}`,
-          category: "email",
-          severity: it.severity,
-          title: it.title,
-          details: `${it.details}\nNodes: ${graph.nodes.length}, edges: ${graph.edges.length}${graph.cyclic ? ", cyclic: yes" : ", cyclic: no"}${spfState.checkedAt ? `\nChecked: ${new Date(spfState.checkedAt).toLocaleString()}` : ""}`,
-        }),
-      ),
-    ];
-  }, [activeTab, domainAuditCategories, spfGraphByZoneId]);
-
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    const overrides = storageManager.getAuditOverrides(activeTab.zoneId);
-    setAuditOverridesByZone((prev) => ({
-      ...prev,
-      [activeTab.zoneId]: new Set(overrides),
-    }));
-  }, [activeTab]);
-
-  const handleOverrideAuditItem = useCallback(
-    (auditItemId: string) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      storageManager.setAuditOverride(activeTab.zoneId, auditItemId);
-      setAuditOverridesByZone((prev) => {
-        const existing = prev[activeTab.zoneId] ?? new Set();
-        return {
-          ...prev,
-          [activeTab.zoneId]: new Set([...existing, auditItemId]),
-        };
-      });
-    },
-    [activeTab],
-  );
-
-  const handleClearAuditOverride = useCallback(
-    (auditItemId: string) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      storageManager.clearAuditOverride(activeTab.zoneId, auditItemId);
-      setAuditOverridesByZone((prev) => {
-        const existing = prev[activeTab.zoneId] ?? new Set();
-        const updated = new Set(existing);
-        updated.delete(auditItemId);
-        return {
-          ...prev,
-          [activeTab.zoneId]: updated,
-        };
-      });
-    },
-    [activeTab],
-  );
-
-  const handleClearAllAuditOverrides = useCallback(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    storageManager.clearAllAuditOverrides(activeTab.zoneId);
-    setAuditOverridesByZone((prev) => ({
-      ...prev,
-      [activeTab.zoneId]: new Set(),
-    }));
-  }, [activeTab]);
-
-  const domainAuditItemsWithOverrides = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return domainAuditItems;
-    const overrides = auditOverridesByZone[activeTab.zoneId] ?? new Set();
-    return domainAuditItems.map((item) => {
-      if (overrides.has(item.id) && item.severity !== "pass") {
-        return {
-          ...item,
-          severity: "pass" as const,
-          title: `${item.title} (overridden)`,
-          details: `Original severity: ${item.severity}\n\n${item.details}`,
-        };
-      }
-      return item;
-    });
-  }, [domainAuditItems, activeTab, auditOverridesByZone]);
-
-  const domainAuditVisibleItems = useMemo(() => {
-    if (domainAuditShowPassed) return domainAuditItemsWithOverrides;
-    return domainAuditItemsWithOverrides.filter((i) => i.severity !== "pass");
-  }, [domainAuditItemsWithOverrides, domainAuditShowPassed]);
-
-  const pendingDeleteRecord = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return null;
-    if (!pendingDeleteRecordId) return null;
-    return (
-      activeTab.records.find((r) => r.id === pendingDeleteRecordId) ?? null
-    );
-  }, [activeTab, pendingDeleteRecordId]);
-
-  const zoneColumnsOverrideEnabled = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return false;
-    return Object.prototype.hasOwnProperty.call(
-      zoneRecordTableColumns,
-      activeTab.zoneId,
-    );
-  }, [activeTab, zoneRecordTableColumns]);
-
-  const resolvedRecordTableColumns = useMemo(() => {
-    if (activeTab?.kind === "zone" && zoneColumnsOverrideEnabled) {
-      return (
-        zoneRecordTableColumns[activeTab.zoneId] ?? globalRecordTableColumns
-      );
-    }
-    return globalRecordTableColumns;
-  }, [
-    activeTab?.kind,
-    activeTab?.zoneId,
-    globalRecordTableColumns,
-    zoneColumnsOverrideEnabled,
-    zoneRecordTableColumns,
-  ]);
-
-  const recordTableGridTemplate = useMemo(
-    () =>
-      resolvedRecordTableColumns
-        .map((id) => RECORD_TABLE_COLUMN_TEMPLATES[id])
-        .filter(Boolean)
-        .join(" "),
-    [resolvedRecordTableColumns],
-  );
-
-  const updateRecordTableColumns = useCallback(
-    (updater: (prev: RecordTableColumnId[]) => RecordTableColumnId[]) => {
-      if (activeTab?.kind === "zone" && zoneColumnsOverrideEnabled) {
-        const zoneId = activeTab.zoneId;
-        setZoneRecordTableColumns((prev) => {
-          const current = normalizeRecordTableColumns(
-            prev[zoneId] ?? globalRecordTableColumns,
-          );
-          const nextCols = normalizeRecordTableColumns(updater(current));
-          return { ...prev, [zoneId]: nextCols };
-        });
-        return;
-      }
-      setGlobalRecordTableColumns((prev) =>
-        normalizeRecordTableColumns(updater(prev)),
-      );
-    },
-    [
-      activeTab?.kind,
-      activeTab?.zoneId,
-      globalRecordTableColumns,
-      zoneColumnsOverrideEnabled,
-    ],
-  );
-
-  const setColumnEnabled = useCallback(
-    (
-      id: "comment" | "tags" | "content" | "ttl" | "proxied" | "actions",
-      enabled: boolean,
-    ) => {
-      updateRecordTableColumns((prev) => {
-        const has = prev.includes(id);
-        if (enabled && has) return prev;
-        if (!enabled && !has) return prev;
-
-        if (!enabled) return normalizeRecordTableColumns(prev.filter((c) => c !== id));
-
-        const next = [...prev];
-        const nameIdx = next.indexOf("name");
-        const contentIdx = next.indexOf("content");
-        const commentIdx = next.indexOf("comment");
-        const tagsIdx = next.indexOf("tags");
-        const ttlIdx = next.indexOf("ttl");
-
-        const insertAt = (() => {
-          switch (id) {
-            case "content":
-              return nameIdx >= 0 ? nameIdx + 1 : 3;
-            case "comment":
-              return contentIdx >= 0
-                ? contentIdx + 1
-                : nameIdx >= 0
-                  ? nameIdx + 1
-                  : next.length - 1;
-            case "tags":
-              if (commentIdx >= 0) return commentIdx + 1;
-              return contentIdx >= 0
-                ? contentIdx + 1
-                : nameIdx >= 0
-                  ? nameIdx + 1
-                  : next.length - 1;
-            case "ttl":
-              if (tagsIdx >= 0) return tagsIdx + 1;
-              if (commentIdx >= 0) return commentIdx + 1;
-              return contentIdx >= 0
-                ? contentIdx + 1
-                : nameIdx >= 0
-                  ? nameIdx + 1
-                  : next.length - 1;
-            case "proxied":
-              if (ttlIdx >= 0) return ttlIdx + 1;
-              if (tagsIdx >= 0) return tagsIdx + 1;
-              if (commentIdx >= 0) return commentIdx + 1;
-              if (contentIdx >= 0) return contentIdx + 1;
-              return next.length - 1;
-            case "actions":
-              return next.length;
-            default:
-              return next.length - 1;
-          }
-        })();
-
-        next.splice(Math.min(Math.max(insertAt, 0), next.length), 0, id);
-        return normalizeRecordTableColumns(next);
-      });
-    },
-    [updateRecordTableColumns],
-  );
-
-  const reorderRecordTableColumns = useCallback((from: RecordTableColumnId, to: RecordTableColumnId) => {
-    updateRecordTableColumns((prev) => {
-      const fromIdx = prev.indexOf(from);
-      const toIdx = prev.indexOf(to);
-      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
-      const next = [...prev];
-      next.splice(fromIdx, 1);
-      const dest = fromIdx < toIdx ? Math.max(toIdx - 1, 0) : toIdx;
-      next.splice(dest, 0, from);
-      return normalizeRecordTableColumns(next);
-    });
-  }, [updateRecordTableColumns]);
-
-  const onHeaderDragStart = useCallback(
-    (id: RecordTableColumnId) => (event: DragEvent) => {
-      setDragHeaderId(id);
-      setDragHeaderOverId(id);
-      try {
-        event.dataTransfer.setData("text/plain", id);
-        event.dataTransfer.effectAllowed = "move";
-      } catch {}
-    },
-    [],
-  );
-
-  const onHeaderDragOver = useCallback(
-    (id: RecordTableColumnId) => (event: DragEvent) => {
-      if (!dragHeaderId) return;
-      event.preventDefault();
-      setDragHeaderOverId(id);
-    },
-    [dragHeaderId],
-  );
-
-  const onHeaderDrop = useCallback(
-    (id: RecordTableColumnId) => (event: DragEvent) => {
-      event.preventDefault();
-      const raw = (() => {
-        try {
-          return event.dataTransfer.getData("text/plain");
-        } catch {
-          return "";
-        }
-      })();
-      const from = (dragHeaderId ?? (raw as RecordTableColumnId)) as RecordTableColumnId | null;
-      if (from) reorderRecordTableColumns(from, id);
-      setDragHeaderId(null);
-      setDragHeaderOverId(null);
-    },
-    [dragHeaderId, reorderRecordTableColumns],
-  );
-
-  const onHeaderDragEnd = useCallback(() => {
-    setDragHeaderId(null);
-    setDragHeaderOverId(null);
-  }, []);
-
   const resolvedShowUnsupportedRecordTypes = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
     const zoneId = activeTab.zoneId;
@@ -794,14 +262,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return zoneShowUnsupportedRecordTypes[zoneId] === true;
     return showUnsupportedRecordTypes;
   }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
-
-  const resolvedConfirmDeleteRecord = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return confirmDeleteRecord;
-    const zoneId = activeTab.zoneId;
-    if (Object.prototype.hasOwnProperty.call(zoneConfirmDeleteRecord, zoneId))
-      return zoneConfirmDeleteRecord[zoneId] !== false;
-    return confirmDeleteRecord;
-  }, [activeTab, confirmDeleteRecord, zoneConfirmDeleteRecord]);
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -999,109 +459,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [activeTab?.kind, loadAuditEntries]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "cache") return;
-    if (!getZoneSetting) return;
-
-    let cancelled = false;
-    setCacheSettingsLoading(true);
-    setCacheSettingsError(null);
-    setZoneDevMode(null);
-    setZoneCacheLevel(null);
-    setZoneAlwaysOnline(null);
-    setZoneCrawlerHints(null);
-    setZoneBrowserCacheTtl(null);
-
-    Promise.allSettled([
-      getZoneSetting<string>(activeTab.zoneId, "development_mode"),
-      getZoneSetting<string>(activeTab.zoneId, "cache_level"),
-      getZoneSetting<string>(activeTab.zoneId, "always_online"),
-      getZoneSetting<string>(activeTab.zoneId, "crawler_hints"),
-      getZoneSetting<number>(activeTab.zoneId, "browser_cache_ttl"),
-    ])
-      .then((results) => {
-        if (cancelled) return;
-        const [dev, level, alwaysOnline, crawlerHints, browserTtl] = results;
-        if (dev.status === "fulfilled") setZoneDevMode(dev.value);
-        if (level.status === "fulfilled") setZoneCacheLevel(level.value);
-        if (alwaysOnline.status === "fulfilled") setZoneAlwaysOnline(alwaysOnline.value);
-        if (crawlerHints.status === "fulfilled") setZoneCrawlerHints(crawlerHints.value);
-        if (browserTtl.status === "fulfilled") setZoneBrowserCacheTtl(browserTtl.value);
-        const errors = results
-          .filter((r) => r.status === "rejected")
-          .map((r) => (r as PromiseRejectedResult).reason)
-          .map((e) => (e instanceof Error ? e.message : String(e)))
-          .filter(Boolean);
-        if (errors.length) setCacheSettingsError(errors.join(" | "));
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setCacheSettingsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setCacheSettingsLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
-
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "ssl-tls") return;
-    if (!getZoneSetting) return;
-
-    let cancelled = false;
-    setSslSettingsLoading(true);
-    setSslSettingsError(null);
-    setZoneSslMode(null);
-    setZoneMinTlsVersion(null);
-    setZoneTls13(null);
-    setZoneAlwaysUseHttps(null);
-    setZoneAutoHttpsRewrites(null);
-    setZoneOpportunisticEncryption(null);
-
-    Promise.allSettled([
-      getZoneSetting<string>(activeTab.zoneId, "ssl"),
-      getZoneSetting<string>(activeTab.zoneId, "min_tls_version"),
-      getZoneSetting<string>(activeTab.zoneId, "tls_1_3"),
-      getZoneSetting<string>(activeTab.zoneId, "always_use_https"),
-      getZoneSetting<string>(activeTab.zoneId, "automatic_https_rewrites"),
-      getZoneSetting<string>(activeTab.zoneId, "opportunistic_encryption"),
-    ])
-      .then((results) => {
-        if (cancelled) return;
-        const [ssl, minTls, tls13, alwaysHttps, rewrites, oppEnc] = results;
-        if (ssl.status === "fulfilled") setZoneSslMode(ssl.value);
-        if (minTls.status === "fulfilled") setZoneMinTlsVersion(minTls.value);
-        if (tls13.status === "fulfilled") setZoneTls13(tls13.value);
-        if (alwaysHttps.status === "fulfilled") setZoneAlwaysUseHttps(alwaysHttps.value);
-        if (rewrites.status === "fulfilled") setZoneAutoHttpsRewrites(rewrites.value);
-        if (oppEnc.status === "fulfilled") setZoneOpportunisticEncryption(oppEnc.value);
-        const errors = results
-          .filter((r) => r.status === "rejected")
-          .map((r) => (r as PromiseRejectedResult).reason)
-          .map((e) => (e instanceof Error ? e.message : String(e)))
-          .filter(Boolean);
-        if (errors.length) setSslSettingsError(errors.join(" | "));
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setSslSettingsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setSslSettingsLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, getZoneSetting]);
-
-  useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
@@ -1112,18 +469,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_per_page?: Record<string, number>;
             show_unsupported_record_types?: boolean;
             zone_show_unsupported_record_types?: Record<string, boolean>;
-            confirm_delete_record?: boolean;
-            zone_confirm_delete_record?: Record<string, boolean>;
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
-             last_open_tabs?: string[];
-             last_active_tab?: string;
-             dns_table_columns?: string[];
-             zone_dns_table_columns?: Record<string, string[]>;
-             confirm_logout?: boolean;
-             idle_logout_ms?: number | null;
-             confirm_window_close?: boolean;
-           };
+            last_open_tabs?: string[];
+            confirm_logout?: boolean;
+            idle_logout_ms?: number | null;
+            confirm_window_close?: boolean;
+          };
           if (prefObj.last_zone) setSelectedZoneId(prefObj.last_zone);
           if (typeof prefObj.auto_refresh_interval === "number") {
             setAutoRefreshInterval(prefObj.auto_refresh_interval);
@@ -1143,15 +495,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           ) {
             setZoneShowUnsupportedRecordTypes(prefObj.zone_show_unsupported_record_types);
           }
-          if (typeof prefObj.confirm_delete_record === "boolean") {
-            setConfirmDeleteRecord(prefObj.confirm_delete_record);
-          }
-          if (
-            prefObj.zone_confirm_delete_record &&
-            typeof prefObj.zone_confirm_delete_record === "object"
-          ) {
-            setZoneConfirmDeleteRecord(prefObj.zone_confirm_delete_record);
-          }
           if (typeof prefObj.reopen_last_tabs === "boolean") {
             setReopenLastTabs(prefObj.reopen_last_tabs);
           }
@@ -1160,24 +503,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(prefObj.last_open_tabs);
-          }
-          if (typeof prefObj.last_active_tab === "string") {
-            setLastActiveTabId(prefObj.last_active_tab);
-          }
-          if (Array.isArray(prefObj.dns_table_columns)) {
-            setGlobalRecordTableColumns(
-              normalizeRecordTableColumns(prefObj.dns_table_columns),
-            );
-          }
-          if (
-            prefObj.zone_dns_table_columns &&
-            typeof prefObj.zone_dns_table_columns === "object"
-          ) {
-            const next: Record<string, RecordTableColumnId[]> = {};
-            for (const [zoneId, cols] of Object.entries(prefObj.zone_dns_table_columns)) {
-              next[zoneId] = normalizeRecordTableColumns(cols);
-            }
-            setZoneRecordTableColumns(next);
           }
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
@@ -1203,21 +528,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setZoneShowUnsupportedRecordTypes(
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
-    setConfirmDeleteRecord(storageManager.getConfirmDeleteRecord());
-    setZoneConfirmDeleteRecord(storageManager.getZoneConfirmDeleteRecordMap());
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
     setLastOpenTabs(storageManager.getLastOpenTabs());
-    setLastActiveTabId(storageManager.getLastActiveTabId());
-    setGlobalRecordTableColumns(
-      normalizeRecordTableColumns(storageManager.getDnsTableColumns()),
-    );
-    const rawZoneCols = storageManager.getZoneDnsTableColumnsMap();
-    const zoneCols: Record<string, RecordTableColumnId[]> = {};
-    for (const [zoneId, cols] of Object.entries(rawZoneCols)) {
-      zoneCols[zoneId] = normalizeRecordTableColumns(cols);
-    }
-    setZoneRecordTableColumns(zoneCols);
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
@@ -1273,14 +586,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setZonePerPageMap(zonePerPage);
     storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
     storageManager.setZoneShowUnsupportedRecordTypesMap(zoneShowUnsupportedRecordTypes);
-    storageManager.setConfirmDeleteRecord(confirmDeleteRecord);
-    storageManager.setZoneConfirmDeleteRecordMap(zoneConfirmDeleteRecord);
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
-    storageManager.setDnsTableColumns(globalRecordTableColumns as string[]);
-    storageManager.setZoneDnsTableColumnsMap(
-      zoneRecordTableColumns as Record<string, string[]>,
-    );
+    storageManager.setLastOpenTabs(lastOpenTabs);
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
@@ -1294,12 +602,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             zone_per_page: zonePerPage,
             show_unsupported_record_types: showUnsupportedRecordTypes,
             zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
-            confirm_delete_record: confirmDeleteRecord,
-            zone_confirm_delete_record: zoneConfirmDeleteRecord,
             reopen_last_tabs: reopenLastTabs,
             reopen_zone_tabs: reopenZoneTabs,
-            dns_table_columns: globalRecordTableColumns,
-            zone_dns_table_columns: zoneRecordTableColumns,
+            last_open_tabs: lastOpenTabs,
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
@@ -1312,12 +617,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     zonePerPage,
     showUnsupportedRecordTypes,
     zoneShowUnsupportedRecordTypes,
-    confirmDeleteRecord,
-    zoneConfirmDeleteRecord,
     reopenLastTabs,
     reopenZoneTabs,
-    globalRecordTableColumns,
-    zoneRecordTableColumns,
+    lastOpenTabs,
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
@@ -1344,52 +646,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setRestoredTabs(true);
       return;
     }
-    const preferred =
-      lastActiveTabId && eligible.includes(lastActiveTabId)
-        ? lastActiveTabId
-        : "";
-    const ordered = preferred
-      ? [...eligible.filter((id) => id !== preferred), preferred]
-      : eligible;
-    ordered.forEach((zoneId) => openZoneTab(zoneId));
+    eligible.forEach((zoneId) => openZoneTab(zoneId));
     setRestoredTabs(true);
-  }, [
-    reopenLastTabs,
-    restoredTabs,
-    availableZones,
-    lastOpenTabs,
-    reopenZoneTabs,
-    openZoneTab,
-    lastActiveTabId,
-  ]);
+  }, [reopenLastTabs, restoredTabs, availableZones, lastOpenTabs, reopenZoneTabs, openZoneTab]);
 
   useEffect(() => {
-    if (reopenLastTabs && !restoredTabs) return;
     const openZoneIds = tabs
       .filter((tab) => tab.kind === "zone")
       .map((tab) => tab.zoneId);
     setLastOpenTabs(openZoneIds);
     if (isDesktop()) {
-      TauriClient.updatePreferenceFields({ last_open_tabs: openZoneIds }).catch(
-        () => {},
-      );
+      TauriClient.getPreferences()
+        .then((prefs) =>
+          TauriClient.updatePreferences({
+            ...(prefs as Record<string, unknown>),
+            last_open_tabs: openZoneIds,
+          }),
+        )
+        .catch(() => {});
       return;
     }
     storageManager.setLastOpenTabs(openZoneIds);
-  }, [reopenLastTabs, restoredTabs, tabs]);
-
-  useEffect(() => {
-    if (reopenLastTabs && !restoredTabs) return;
-    if (!activeTabId) return;
-    setLastActiveTabId(activeTabId);
-    if (isDesktop()) {
-      TauriClient.updatePreferenceFields({ last_active_tab: activeTabId }).catch(
-        () => {},
-      );
-      return;
-    }
-    storageManager.setLastActiveTabId(activeTabId);
-  }, [activeTabId, reopenLastTabs, restoredTabs]);
+  }, [tabs]);
 
   useEffect(() => {
     if (!idleLogoutMs || idleLogoutMs <= 0) return;
@@ -1455,19 +733,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const cmpText = (a: string, b: string) =>
       a.localeCompare(b, undefined, { sensitivity: "base" });
 
-    const tagKeyById: Record<string, string> | null =
-      activeTab.sortKey === "tags"
-        ? Object.fromEntries(
-            base.map((r) => [
-              r.id,
-              storageManager
-                .getRecordTags(activeTab.zoneId, r.id)
-                .join(",")
-                .toLowerCase(),
-            ]),
-          )
-        : null;
-
     const sorted = [...base].sort((a, b) => {
       switch (activeTab.sortKey) {
         case "type":
@@ -1476,10 +741,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           return dir * cmpText(a.name ?? "", b.name ?? "");
         case "content":
           return dir * cmpText(a.content ?? "", b.content ?? "");
-        case "comment":
-          return dir * cmpText(a.comment ?? "", b.comment ?? "");
-        case "tags":
-          return dir * cmpText(tagKeyById?.[a.id] ?? "", tagKeyById?.[b.id] ?? "");
         case "ttl":
           return dir * (getTtl(a) - getTtl(b));
         case "proxied":
@@ -1490,7 +751,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
 
     return sorted;
-  }, [activeTab, tagsVersion]);
+  }, [activeTab]);
 
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
@@ -1571,10 +832,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return;
     }
 
-    const inFlight = toast({
-      title: "Creating record…",
-      description: `${draft.type} ${draft.name}`,
-    });
     try {
       const createdRecord = await createDNSRecord(activeTab.zoneId, draft);
       updateTab(activeTab.id, (prev) => ({
@@ -1583,14 +840,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         newRecord: createEmptyRecord(),
         showAddRecord: false,
       }));
-      inFlight.update({
-        id: inFlight.id,
-        title: "Record created",
-        description: `${createdRecord.type} ${createdRecord.name}`,
+      toast({
+        title: "Success",
+        description: "DNS record created successfully",
       });
     } catch (error) {
-      inFlight.update({
-        id: inFlight.id,
+      toast({
         title: "Error",
         description: "Failed to create DNS record: " + (error as Error).message,
         variant: "destructive",
@@ -1600,10 +855,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleUpdateRecord = async (record: DNSRecord) => {
     if (!activeTab) return;
-    const inFlight = toast({
-      title: "Saving changes…",
-      description: `${record.type} ${record.name}`,
-    });
     try {
       const updatedRecord = await updateDNSRecord(
         activeTab.zoneId,
@@ -1617,14 +868,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ),
         editingRecord: null,
       }));
-      inFlight.update({
-        id: inFlight.id,
-        title: "Record updated",
-        description: `${updatedRecord.type} ${updatedRecord.name}`,
+      toast({
+        title: "Success",
+        description: "DNS record updated successfully",
       });
     } catch (error) {
-      inFlight.update({
-        id: inFlight.id,
+      toast({
         title: "Error",
         description: "Failed to update DNS record: " + (error as Error).message,
         variant: "destructive",
@@ -1634,10 +883,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
     if (!activeTab) return;
-    const inFlight = toast({
-      title: "Updating proxy…",
-      description: `${record.type} ${record.name}`,
-    });
     try {
       const updatedRecord = await updateDNSRecord(
         activeTab.zoneId,
@@ -1653,16 +898,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           r.id === record.id ? updatedRecord : r,
         ),
       }));
-      inFlight.update({
-        id: inFlight.id,
-        title: "Proxy updated",
-        description: `${updatedRecord.type} ${updatedRecord.name} is now ${
-          proxied ? "proxied" : "DNS-only"
-        }`,
-      });
     } catch (error) {
-      inFlight.update({
-        id: inFlight.id,
+      toast({
         title: "Error",
         description: "Failed to update proxy: " + (error as Error).message,
         variant: "destructive",
@@ -1670,13 +907,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
-  const deleteRecordNow = async (recordId: string) => {
+  const handleDeleteRecord = async (recordId: string) => {
     if (!activeTab) return;
-    const deleting = activeTab.records.find((r) => r.id === recordId);
-    const inFlight = toast({
-      title: "Deleting record…",
-      description: deleting ? `${deleting.type} ${deleting.name}` : undefined,
-    });
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
       updateTab(activeTab.id, (prev) => ({
@@ -1684,29 +916,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         records: prev.records.filter((r) => r.id !== recordId),
         selectedIds: prev.selectedIds.filter((id) => id !== recordId),
       }));
-      inFlight.update({
-        id: inFlight.id,
-        title: "Record deleted",
-        description: deleting ? `${deleting.type} ${deleting.name}` : undefined,
+      toast({
+        title: "Success",
+        description: "DNS record deleted successfully",
       });
     } catch (error) {
-      inFlight.update({
-        id: inFlight.id,
+      toast({
         title: "Error",
         description: "Failed to delete DNS record: " + (error as Error).message,
         variant: "destructive",
       });
     }
-  };
-
-  const requestDeleteRecord = async (recordId: string) => {
-    if (!activeTab) return;
-    if (!resolvedConfirmDeleteRecord) {
-      await deleteRecordNow(recordId);
-      return;
-    }
-    setPendingDeleteRecordId(recordId);
-    setShowDeleteRecordConfirm(true);
   };
 
   const handleExport = (format: "json" | "csv" | "bind") => {
@@ -1778,17 +998,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       title: "Success",
       description: `Records exported as ${format.toUpperCase()}`,
     });
-  };
-
-  const confirmDeleteRecordNow = async () => {
-    if (!pendingDeleteRecordId) {
-      setShowDeleteRecordConfirm(false);
-      return;
-    }
-    const id = pendingDeleteRecordId;
-    setShowDeleteRecordConfirm(false);
-    setPendingDeleteRecordId(null);
-    await deleteRecordNow(id);
   };
 
   const handleImport = async (
@@ -1967,7 +1176,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       type: record.type,
       name: record.name,
       content: record.content,
-      comment: record.comment,
       ttl: record.ttl,
       priority: record.priority,
       proxied: record.proxied,
@@ -2014,315 +1222,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
-  const handleSetDevelopmentMode = useCallback(
-    async (enabled: boolean) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setCacheSettingsLoading(true);
-        setCacheSettingsError(null);
-        const next = await updateZoneSetting<string>(
-          activeTab.zoneId,
-          "development_mode",
-          enabled ? "on" : "off",
-        );
-        setZoneDevMode(next);
-        toast({
-          title: "Saved",
-          description: enabled
-            ? "Development mode enabled (cache bypass)."
-            : "Development mode disabled.",
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description:
-            "Failed to update development mode: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setCacheSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
-  const handleSetCacheLevel = useCallback(
-    async (level: string) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setCacheSettingsLoading(true);
-        setCacheSettingsError(null);
-        const next = await updateZoneSetting<string>(
-          activeTab.zoneId,
-          "cache_level",
-          level,
-        );
-        setZoneCacheLevel(next);
-        toast({
-          title: "Saved",
-          description: `Cache level set to ${level}.`,
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description: "Failed to update cache level: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setCacheSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
-  const handleToggleAlwaysOnline = useCallback(
-    async (enabled: boolean) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setCacheSettingsLoading(true);
-        setCacheSettingsError(null);
-        const next = await updateZoneSetting<string>(
-          activeTab.zoneId,
-          "always_online",
-          enabled ? "on" : "off",
-        );
-        setZoneAlwaysOnline(next);
-        toast({
-          title: "Saved",
-          description: enabled ? "Always Online enabled." : "Always Online disabled.",
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description: "Failed to update Always Online: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setCacheSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
-  const handleToggleCrawlerHints = useCallback(
-    async (enabled: boolean) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setCacheSettingsLoading(true);
-        setCacheSettingsError(null);
-        const next = await updateZoneSetting<string>(
-          activeTab.zoneId,
-          "crawler_hints",
-          enabled ? "on" : "off",
-        );
-        setZoneCrawlerHints(next);
-        toast({
-          title: "Saved",
-          description: enabled ? "Crawler Hints enabled." : "Crawler Hints disabled.",
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description: "Failed to update Crawler Hints: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setCacheSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
-  const handleSetBrowserCacheTtl = useCallback(
-    async (ttl: number) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setCacheSettingsLoading(true);
-        setCacheSettingsError(null);
-        const next = await updateZoneSetting<number>(
-          activeTab.zoneId,
-          "browser_cache_ttl",
-          ttl,
-        );
-        setZoneBrowserCacheTtl(next);
-        toast({
-          title: "Saved",
-          description: `Browser Cache TTL set to ${ttl}s.`,
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description:
-            "Failed to update Browser Cache TTL: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setCacheSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
-  const handleFetchDnssec = useCallback(async () => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    try {
-      setDnsOptionsLoading(true);
-      setDnsOptionsError(null);
-      const result = await getDnssec(activeTab.zoneId);
-      setDnssecInfo((result as Record<string, unknown>) ?? null);
-    } catch (error) {
-      setDnsOptionsError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setDnsOptionsLoading(false);
-    }
-  }, [activeTab, getDnssec]);
-
-  const handleUpdateDnssec = useCallback(
-    async (payload: Record<string, unknown>) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setDnsOptionsLoading(true);
-        setDnsOptionsError(null);
-        const result = await updateDnssec(activeTab.zoneId, payload);
-        setDnssecInfo((result as Record<string, unknown>) ?? null);
-        toast({ title: "Saved", description: "DNS options updated." });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description: "Failed to update DNSSEC: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setDnsOptionsLoading(false);
-      }
-    },
-    [activeTab, toast, updateDnssec],
-  );
-
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    if (actionTab !== "dns-options") return;
-    void handleFetchDnssec();
-  }, [actionTab, activeTab?.kind, activeTab?.zoneId, handleFetchDnssec]);
-
-  const preparePurgeUrls = useCallback(() => {
-    const raw = purgeUrlsInput;
-    const urls = raw
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const issues: string[] = [];
-    for (const url of urls) {
-      if (/\s/.test(url)) issues.push(`URL contains whitespace: ${url}`);
-      try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-          issues.push(`Unsupported URL scheme: ${url}`);
-        }
-      } catch {
-        issues.push(`Not a valid URL: ${url}`);
-      }
-    }
-
-    setPendingPurgeUrls(urls);
-    setPendingPurgeIssues(issues);
-    setShowPurgeUrlsConfirm(true);
-  }, [purgeUrlsInput]);
-
-  const confirmPurgeEverything = useCallback(async () => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    setShowPurgeEverythingConfirm(false);
-    try {
-      await purgeCache(activeTab.zoneId, { purge_everything: true });
-      toast({
-        title: "Purged",
-        description: `Cache purged for ${activeTab.zoneName}.`,
-      });
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to purge cache: " + (error as Error).message,
-        variant: "destructive",
-      });
-    }
-  }, [activeTab, purgeCache, toast]);
-
-  const confirmPurgeUrls = useCallback(async () => {
-    if (!activeTab || activeTab.kind !== "zone") return;
-    const urls = pendingPurgeUrls;
-    setShowPurgeUrlsConfirm(false);
-    if (!urls.length) return;
-    try {
-      await purgeCache(activeTab.zoneId, { files: urls });
-      toast({
-        title: "Purged",
-        description: `Purged ${urls.length} URL(s) for ${activeTab.zoneName}.`,
-      });
-      setPurgeUrlsInput("");
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to purge URLs: " + (error as Error).message,
-        variant: "destructive",
-      });
-    }
-  }, [activeTab, pendingPurgeUrls, purgeCache, toast]);
-
-  const handleSetSslTlsSetting = useCallback(
-    async (
-      settingId:
-        | "ssl"
-        | "min_tls_version"
-        | "tls_1_3"
-        | "always_use_https"
-        | "automatic_https_rewrites"
-        | "opportunistic_encryption",
-      value: string,
-    ) => {
-      if (!activeTab || activeTab.kind !== "zone") return;
-      try {
-        setSslSettingsLoading(true);
-        setSslSettingsError(null);
-        const next = await updateZoneSetting<string>(activeTab.zoneId, settingId, value);
-        switch (settingId) {
-          case "ssl":
-            setZoneSslMode(next);
-            break;
-          case "min_tls_version":
-            setZoneMinTlsVersion(next);
-            break;
-          case "tls_1_3":
-            setZoneTls13(next);
-            break;
-          case "always_use_https":
-            setZoneAlwaysUseHttps(next);
-            break;
-          case "automatic_https_rewrites":
-            setZoneAutoHttpsRewrites(next);
-            break;
-          case "opportunistic_encryption":
-            setZoneOpportunisticEncryption(next);
-            break;
-        }
-        toast({
-          title: "Saved",
-          description: `${settingId.replace(/_/g, " ")} updated.`,
-        });
-      } catch (error) {
-        toast({
-          title: "Error",
-          description:
-            "Failed to update SSL/TLS setting: " + (error as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setSslSettingsLoading(false);
-      }
-    },
-    [activeTab, toast, updateZoneSetting],
-  );
-
   const handleLogout = () => {
     storageManager.clearSession();
     if (confirmLogout) {
@@ -2337,220 +1236,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setShowLogoutConfirm(false);
     onLogout();
   };
-
-  const DEFAULT_SETTINGS = useMemo(
-    () => ({
-      autoRefreshInterval: null as number | null,
-      globalPerPage: 50,
-      zonePerPage: {} as Record<string, number>,
-      showUnsupportedRecordTypes: false,
-      zoneShowUnsupportedRecordTypes: {} as Record<string, boolean>,
-      confirmDeleteRecord: true,
-      zoneConfirmDeleteRecord: {} as Record<string, boolean>,
-      reopenLastTabs: false,
-      reopenZoneTabs: {} as Record<string, boolean>,
-      dnsTableColumns: [...DEFAULT_RECORD_TABLE_COLUMNS] as RecordTableColumnId[],
-      zoneDnsTableColumns: {} as Record<string, RecordTableColumnId[]>,
-      confirmLogout: true,
-      idleLogoutMs: null as number | null,
-      confirmWindowClose: true,
-    }),
-    [],
-  );
-
-  const resetSettingsToDefaults = useCallback(() => {
-    setAutoRefreshInterval(DEFAULT_SETTINGS.autoRefreshInterval);
-    setGlobalPerPage(DEFAULT_SETTINGS.globalPerPage);
-    setZonePerPage(DEFAULT_SETTINGS.zonePerPage);
-    setShowUnsupportedRecordTypes(DEFAULT_SETTINGS.showUnsupportedRecordTypes);
-    setZoneShowUnsupportedRecordTypes(DEFAULT_SETTINGS.zoneShowUnsupportedRecordTypes);
-    setConfirmDeleteRecord(DEFAULT_SETTINGS.confirmDeleteRecord);
-    setZoneConfirmDeleteRecord(DEFAULT_SETTINGS.zoneConfirmDeleteRecord);
-    setReopenLastTabs(DEFAULT_SETTINGS.reopenLastTabs);
-    setReopenZoneTabs(DEFAULT_SETTINGS.reopenZoneTabs);
-    setGlobalRecordTableColumns(DEFAULT_SETTINGS.dnsTableColumns);
-    setZoneRecordTableColumns(DEFAULT_SETTINGS.zoneDnsTableColumns);
-    setConfirmLogout(DEFAULT_SETTINGS.confirmLogout);
-    setIdleLogoutMs(DEFAULT_SETTINGS.idleLogoutMs);
-    setConfirmWindowClose(DEFAULT_SETTINGS.confirmWindowClose);
-
-    setTabs([]);
-    setActiveTabId(null);
-    setSelectedZoneId("");
-    setLastOpenTabs([]);
-    setLastActiveTabId("");
-  }, [DEFAULT_SETTINGS]);
-
-  const persistSettingsNow = useCallback(
-    async (opts?: {
-      includeTabs?: boolean;
-      overrides?: Partial<typeof DEFAULT_SETTINGS>;
-      openTabsOverride?: string[];
-      activeTabIdOverride?: string | null;
-    }) => {
-      const includeTabs = opts?.includeTabs ?? true;
-      const snapshot = {
-        autoRefreshInterval,
-        globalPerPage,
-        zonePerPage,
-        showUnsupportedRecordTypes,
-        zoneShowUnsupportedRecordTypes,
-        confirmDeleteRecord,
-        zoneConfirmDeleteRecord,
-        reopenLastTabs,
-        reopenZoneTabs,
-        dnsTableColumns: globalRecordTableColumns,
-        zoneDnsTableColumns: zoneRecordTableColumns,
-        confirmLogout,
-        idleLogoutMs,
-        confirmWindowClose,
-        ...(opts?.overrides ?? {}),
-      };
-
-      storageManager.setAutoRefreshInterval(snapshot.autoRefreshInterval ?? null);
-      storageManager.setDefaultPerPage(snapshot.globalPerPage);
-      storageManager.setZonePerPageMap(snapshot.zonePerPage);
-      storageManager.setShowUnsupportedRecordTypes(snapshot.showUnsupportedRecordTypes);
-      storageManager.setZoneShowUnsupportedRecordTypesMap(snapshot.zoneShowUnsupportedRecordTypes);
-      storageManager.setConfirmDeleteRecord(snapshot.confirmDeleteRecord);
-      storageManager.setZoneConfirmDeleteRecordMap(snapshot.zoneConfirmDeleteRecord);
-      storageManager.setReopenLastTabs(snapshot.reopenLastTabs);
-      storageManager.setReopenZoneTabs(snapshot.reopenZoneTabs);
-      storageManager.setDnsTableColumns(snapshot.dnsTableColumns as string[]);
-      storageManager.setZoneDnsTableColumnsMap(
-        snapshot.zoneDnsTableColumns as Record<string, string[]>,
-      );
-      storageManager.setConfirmLogout(snapshot.confirmLogout);
-      storageManager.setIdleLogoutMs(snapshot.idleLogoutMs);
-      storageManager.setConfirmWindowClose(snapshot.confirmWindowClose);
-
-      if (includeTabs) {
-        storageManager.setLastOpenTabs(opts?.openTabsOverride ?? lastOpenTabs);
-        storageManager.setLastActiveTabId(
-          opts?.activeTabIdOverride ?? activeTabId,
-        );
-      }
-
-      if (!isDesktop()) return;
-      await TauriClient.updatePreferenceFields({
-        auto_refresh_interval: snapshot.autoRefreshInterval ?? undefined,
-        default_per_page: snapshot.globalPerPage,
-        zone_per_page: snapshot.zonePerPage,
-        show_unsupported_record_types: snapshot.showUnsupportedRecordTypes,
-        zone_show_unsupported_record_types: snapshot.zoneShowUnsupportedRecordTypes,
-        confirm_delete_record: snapshot.confirmDeleteRecord,
-        zone_confirm_delete_record: snapshot.zoneConfirmDeleteRecord,
-        reopen_last_tabs: snapshot.reopenLastTabs,
-        reopen_zone_tabs: snapshot.reopenZoneTabs,
-        dns_table_columns: snapshot.dnsTableColumns,
-        zone_dns_table_columns: snapshot.zoneDnsTableColumns,
-        confirm_logout: snapshot.confirmLogout,
-        idle_logout_ms: snapshot.idleLogoutMs ?? null,
-        confirm_window_close: snapshot.confirmWindowClose,
-        ...(includeTabs
-          ? { last_open_tabs: opts?.openTabsOverride ?? lastOpenTabs }
-          : {}),
-      });
-    },
-    [
-      activeTabId,
-      autoRefreshInterval,
-      confirmDeleteRecord,
-      confirmLogout,
-      confirmWindowClose,
-      globalPerPage,
-      idleLogoutMs,
-      lastOpenTabs,
-      globalRecordTableColumns,
-      zoneRecordTableColumns,
-      reopenLastTabs,
-      reopenZoneTabs,
-      showUnsupportedRecordTypes,
-      zoneConfirmDeleteRecord,
-      zonePerPage,
-      zoneShowUnsupportedRecordTypes,
-    ],
-  );
-
-  const handleResetSettings = useCallback(async () => {
-    resetSettingsToDefaults();
-    // Persist immediately (especially important on desktop) so state stays up-to-date.
-    try {
-      await persistSettingsNow({
-        includeTabs: true,
-        overrides: DEFAULT_SETTINGS,
-        openTabsOverride: [],
-        activeTabIdOverride: null,
-      });
-    } catch {
-      // ignore
-    }
-    toast({ title: "Settings reset", description: "Defaults restored." });
-  }, [DEFAULT_SETTINGS, persistSettingsNow, resetSettingsToDefaults, toast]);
-
-  const handleClearSettings = useCallback(async () => {
-    // Clear persisted settings first...
-    if (isDesktop()) {
-      try {
-        await TauriClient.updatePreferences({});
-      } catch {
-        // ignore
-      }
-    } else {
-      storageManager.clearSettings();
-    }
-
-    // ...then immediately resave defaults so the app has a known baseline.
-    resetSettingsToDefaults();
-    try {
-      await persistSettingsNow({
-        includeTabs: true,
-        overrides: DEFAULT_SETTINGS,
-        openTabsOverride: [],
-        activeTabIdOverride: null,
-      });
-    } catch {
-      // ignore
-    }
-    toast({ title: "Settings cleared", description: "Defaults saved." });
-  }, [DEFAULT_SETTINGS, persistSettingsNow, resetSettingsToDefaults, toast]);
-
-  const handleClearAllData = useCallback(async () => {
-    if (isDesktop()) {
-      try {
-        const keys = await TauriClient.getApiKeys();
-        const ids = Array.isArray(keys)
-          ? keys
-              .map((k) => (k && typeof k === "object" ? (k as { id?: unknown }).id : undefined))
-              .filter((id): id is string => typeof id === "string")
-          : [];
-        await Promise.allSettled(ids.map((id) => TauriClient.deleteApiKey(id)));
-      } catch {
-        // ignore
-      }
-      try {
-        await TauriClient.clearAuditEntries();
-      } catch {
-        // ignore
-      }
-      try {
-        await TauriClient.updatePreferences({});
-      } catch {
-        // ignore
-      }
-    } else {
-      storageManager.clearAllData();
-    }
-
-    setTabs([]);
-    setActiveTabId(null);
-    setSelectedZoneId("");
-    setLastOpenTabs([]);
-    setLastActiveTabId("");
-    setAuditEntries([]);
-    setCopyBuffer(null);
-    onLogout();
-  }, [onLogout]);
 
   const selectedZoneData = activeTab
     ? availableZones.find((z) => z.id === activeTab.zoneId)
@@ -2609,21 +1294,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <Tooltip tip="Audit log" side="bottom">
                       <Button
                         onClick={() => openActionTab("audit")}
-                        variant="ghost"
+                        variant="outline"
                         size="icon"
-                        className="ui-icon-button h-8 w-8"
+                        className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                         aria-label="Audit log"
                       >
                         <Shield className="h-4 w-4" />
                       </Button>
                     </Tooltip>
                   )}
+                  <Tooltip tip="Registry Monitoring" side="bottom">
+                    <Button
+                      onClick={() => openActionTab("registry")}
+                      variant="outline"
+                      size="icon"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
+                      aria-label="Registry Monitoring"
+                    >
+                      <Globe className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
                   <Tooltip tip="Settings" side="bottom">
                     <Button
                       onClick={() => openActionTab("settings")}
-                      variant="ghost"
+                      variant="outline"
                       size="icon"
-                      className="ui-icon-button h-8 w-8"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                       aria-label="Settings"
                     >
                       <Settings className="h-4 w-4" />
@@ -2632,9 +1328,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Tooltip tip="Tags" side="bottom">
                     <Button
                       onClick={() => openActionTab("tags")}
-                      variant="ghost"
+                      variant="outline"
                       size="icon"
-                      className="ui-icon-button h-8 w-8"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                       aria-label="Tags"
                     >
                       <Tags className="h-4 w-4" />
@@ -2643,9 +1339,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Tooltip tip="Logout" side="bottom">
                     <Button
                       onClick={handleLogout}
-                      variant="ghost"
+                      variant="outline"
                       size="icon"
-                      className="ui-icon-button h-8 w-8"
+                      className="border-border/60 text-foreground/70 hover:border-primary/40 hover:text-foreground hover:bg-accent/60 transition"
                       aria-label="Logout"
                     >
                       <LogOut className="h-4 w-4" />
@@ -2695,7 +1391,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   )}
               </div>
-              {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit") && (
+              {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit" || activeTab?.kind === "registry") && (
                 <div
                   className="flex flex-wrap gap-2 fade-in"
                   onDragOver={(event) => {
@@ -2761,14 +1457,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                         data-active={isActive}
                         className={cn(
-                          "ui-tab cursor-pointer hover:cursor-pointer",
-                          dragTabId === tab.id && "cursor-grabbing",
+                          "ui-tab cursor-grab",
                           dragOverId === tab.id && "ring-1 ring-primary/30",
                         )}
                       >
-                        <span className="cursor-grab active:cursor-grabbing">
-                          <GripVertical className="h-3 w-3 text-muted-foreground/60" />
-                        </span>
+                        <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         <span className="max-w-[140px] truncate">
                           {tab.zoneName}
                         </span>
@@ -2782,7 +1475,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             event.stopPropagation();
                             closeTab(tab.id);
                           }}
-                          className="ui-icon-button ml-1 h-5 w-5 p-0 text-muted-foreground/80 hover:text-foreground"
+                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground"
                           aria-label="Close tab"
                         >
                           <X className="h-3 w-3" />
@@ -2827,26 +1520,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <div className="space-y-4 fade-in">
-                  {activeZoneMeta?.name_servers && activeZoneMeta.name_servers.length > 0 && (
-                    <div className="rounded-xl border border-border/60 bg-card/60 p-3">
-                      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                        Assigned name servers
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {activeZoneMeta.name_servers.map((ns) => (
-                          <div
-                            key={ns}
-                            className="rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs font-medium"
-                          >
-                            {ns}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        These are the authoritative Cloudflare name servers assigned to this zone.
-                      </div>
-                    </div>
-                  )}
                   {activeTab.isLoading && (
                     <div className="space-y-3">
                       {Array.from({ length: 6 }).map((_, idx) => (
@@ -3000,7 +1673,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       onAdd={handleAddRecord}
                       zoneName={activeTab.zoneName}
                       showUnsupportedRecordTypes={resolvedShowUnsupportedRecordTypes}
-                      prefillType={activeTab.typeFilter}
                       apiKey={apiKey}
                       email={email}
                     />
@@ -3022,100 +1694,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <ClipboardPaste className="h-4 w-4 mr-2" />
                       Paste {copyBuffer ? `${copyBuffer.records.length}` : ""}
                     </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button size="sm" variant="outline">
-                          <Columns2 className="h-4 w-4 mr-2" />
-                          Columns
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        <DropdownMenuItem disabled>
-                          <span className="flex items-center gap-2">
-                            <Columns2 className="h-4 w-4" />
-                            Columns
-                          </span>
-                        </DropdownMenuItem>
-                        {activeTab.kind === "zone" && (
-                          <>
-                            <DropdownMenuItem disabled>
-                              Scope: {zoneColumnsOverrideEnabled ? "This zone" : "Global"}
-                            </DropdownMenuItem>
-                            <DropdownMenuCheckboxItem
-                              checked={zoneColumnsOverrideEnabled}
-                              onCheckedChange={(checked) => {
-                                if (activeTab.kind !== "zone") return;
-                                if (checked === true) {
-                                  setZoneRecordTableColumns((prev) => ({
-                                    ...prev,
-                                    [activeTab.zoneId]: [...globalRecordTableColumns],
-                                  }));
-                                  notifySaved("Column preferences now override for this zone.");
-                                  return;
-                                }
-                                setZoneRecordTableColumns((prev) => {
-                                  const next = { ...prev };
-                                  delete next[activeTab.zoneId];
-                                  return next;
-                                });
-                                notifySaved("Zone column preferences set to inherit global.");
-                              }}
-                            >
-                              Override for this zone
-                            </DropdownMenuCheckboxItem>
-                          </>
-                        )}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("content")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("content", checked === true)
-                          }
-                        >
-                          Content
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("comment")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("comment", checked === true)
-                          }
-                        >
-                          Comment
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("tags")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("tags", checked === true)
-                          }
-                        >
-                          Tags
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("ttl")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("ttl", checked === true)
-                          }
-                        >
-                          TTL
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("proxied")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("proxied", checked === true)
-                          }
-                        >
-                          Proxy
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuCheckboxItem
-                          checked={resolvedRecordTableColumns.includes("actions")}
-                          onCheckedChange={(checked) =>
-                            setColumnEnabled("actions", checked === true)
-                          }
-                        >
-                          Actions
-                        </DropdownMenuCheckboxItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
                     {copyBuffer && (
                       <div className="text-xs text-muted-foreground">
                         Buffer: {copyBuffer.records.length} from {" "}
@@ -3145,106 +1723,49 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   ) : (
                     <div className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl">
-                      <div
-                        className="ui-table-head"
-                        style={{ gridTemplateColumns: recordTableGridTemplate }}
-                      >
-                        {resolvedRecordTableColumns.map((colId) => {
-                          const sortKey: SortKey | null = (() => {
-                            switch (colId) {
-                              case "type":
-                                return "type";
-                              case "name":
-                                return "name";
-                              case "content":
-                                return "content";
-                              case "comment":
-                                return "comment";
-                              case "tags":
-                                return "tags";
-                              case "ttl":
-                                return "ttl";
-                              case "proxied":
-                                return "proxied";
-                              default:
-                                return null;
-                            }
-                          })();
-
-                          const label = (() => {
-                            switch (colId) {
-                              case "select":
-                                return "";
-                              case "type":
-                                return "Type";
-                              case "name":
-                                return "Name";
-                              case "content":
-                                return "Content";
-                              case "comment":
-                                return "Comment";
-                              case "tags":
-                                return "Tags";
-                              case "ttl":
-                                return "TTL";
-                              case "proxied":
-                                return "Proxy";
-                              case "actions":
-                                return "Actions";
-                              default:
-                                return colId;
-                            }
-                          })();
-
-                          const isOver = dragHeaderOverId === colId && dragHeaderId && dragHeaderId !== colId;
-
-                          return (
-                            <div
-                              key={colId}
-                              className={cn(
-                                "flex min-w-0 items-center gap-1",
-                                colId === "actions" && "justify-end gap-2",
-                                isOver &&
-                                  "rounded-md bg-accent/35 shadow-[inset_0_0_0_1px_hsl(var(--primary)_/_0.16)]",
-                              )}
-                              onDragOver={onHeaderDragOver(colId)}
-                              onDrop={onHeaderDrop(colId)}
-                            >
-                              {colId !== "select" && (
-                                <span
-                                  className={cn(
-                                    "inline-flex items-center text-muted-foreground/80 hover:text-foreground",
-                                    "cursor-grab active:cursor-grabbing",
-                                  )}
-                                  draggable
-                                  onDragStart={onHeaderDragStart(colId)}
-                                  onDragEnd={onHeaderDragEnd}
-                                  onClick={(e) => e.preventDefault()}
-                                >
-                                  <GripVertical className="h-3.5 w-3.5" />
-                                </span>
-                              )}
-
-                              {sortKey ? (
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    "min-w-0 flex-1 text-left hover:text-foreground",
-                                    colId === "actions" && "flex-initial text-right",
-                                  )}
-                                  onClick={() => toggleSort(sortKey)}
-                                >
-                                  {label}{" "}
-                                  <span className="opacity-70">{sortIndicator(sortKey)}</span>
-                                </button>
-                              ) : (
-                                <span className={cn("min-w-0", colId === "actions" && "text-right")}>
-                                  {label}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
+                      <div className="ui-table-head">
+                        <span />
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("type")}
+                        >
+                          Type{" "}
+                          <span className="opacity-70">{sortIndicator("type")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("name")}
+                        >
+                          Name{" "}
+                          <span className="opacity-70">{sortIndicator("name")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("content")}
+                        >
+                          Content{" "}
+                          <span className="opacity-70">{sortIndicator("content")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("ttl")}
+                        >
+                          TTL{" "}
+                          <span className="opacity-70">{sortIndicator("ttl")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="text-left hover:text-foreground"
+                          onClick={() => toggleSort("proxied")}
+                        >
+                          Proxy{" "}
+                          <span className="opacity-70">{sortIndicator("proxied")}</span>
+                        </button>
+                        <span className="text-right">Actions</span>
                       </div>
                       {filteredRecords.map((record) => {
                         const isSelected = activeTab.selectedIds.includes(
@@ -3255,8 +1776,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             key={record.id}
                             zoneId={activeTab.zoneId}
                             record={record}
-                            columns={resolvedRecordTableColumns}
-                            gridTemplateColumns={recordTableGridTemplate}
                             isEditing={activeTab.editingRecord === record.id}
                             isSelected={isSelected}
                             onSelectChange={(checked) =>
@@ -3284,7 +1803,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 editingRecord: null,
                               }))
                             }
-                            onDelete={() => requestDeleteRecord(record.id)}
+                            onDelete={() => handleDeleteRecord(record.id)}
                             onToggleProxy={(next) =>
                               handleToggleProxy(record, next)
                             }
@@ -3544,64 +2063,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">
-                        Confirm record delete
-                      </div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <Select
-                          value={
-                            Object.prototype.hasOwnProperty.call(
-                              zoneConfirmDeleteRecord,
-                              activeTab.zoneId,
-                            )
-                              ? zoneConfirmDeleteRecord[activeTab.zoneId]
-                                ? "confirm"
-                                : "no-confirm"
-                              : "inherit"
-                          }
-                          onValueChange={(v) => {
-                            if (v === "inherit") {
-                              setZoneConfirmDeleteRecord((prev) => {
-                                const next = { ...prev };
-                                delete next[activeTab.zoneId];
-                                return next;
-                              });
-                              notifySaved(
-                                `Zone delete confirmation set to inherit (${
-                                  confirmDeleteRecord ? "confirm" : "no-confirm"
-                                }).`,
-                              );
-                              return;
-                            }
-                            const enabled = v === "confirm";
-                            setZoneConfirmDeleteRecord((prev) => ({
-                              ...prev,
-                              [activeTab.zoneId]: enabled,
-                            }));
-                            notifySaved(
-                              enabled
-                                ? "Zone will confirm single-record deletion."
-                                : "Zone will delete single records without confirmation.",
-                            );
-                          }}
-                        >
-                          <SelectTrigger className="w-48">
-                            <SelectValue placeholder="Inherit" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="inherit">
-                              Inherit ({confirmDeleteRecord ? "Confirm" : "No confirm"})
-                            </SelectItem>
-                            <SelectItem value="confirm">Confirm</SelectItem>
-                            <SelectItem value="no-confirm">No confirm</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <div className="text-xs text-muted-foreground">
-                          Controls whether deleting a single record prompts a confirmation for this zone.
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
                       <div className="font-medium text-sm">Reopen on launch</div>
                       <div className="flex items-center gap-3">
                         <Switch
@@ -3622,787 +2083,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           Controls whether this zone restores when tabs reopen.
                         </div>
                       </div>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Record table columns</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <Select
-                          value={zoneColumnsOverrideEnabled ? "custom" : "inherit"}
-                          onValueChange={(v) => {
-                            if (v === "inherit") {
-                              setZoneRecordTableColumns((prev) => {
-                                const next = { ...prev };
-                                delete next[activeTab.zoneId];
-                                return next;
-                              });
-                              notifySaved("Zone columns set to inherit global.");
-                              return;
-                            }
-                            setZoneRecordTableColumns((prev) => ({
-                              ...prev,
-                              [activeTab.zoneId]:
-                                prev[activeTab.zoneId] ?? [...globalRecordTableColumns],
-                            }));
-                            notifySaved("Zone columns now override global.");
-                          }}
-                        >
-                          <SelectTrigger className="w-48">
-                            <SelectValue placeholder="Inherit" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="inherit">Inherit (global)</SelectItem>
-                            <SelectItem value="custom">Custom (this zone)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <div className="text-xs text-muted-foreground">
-                          Customize from the Records tab → Columns.
-                        </div>
-                      </div>
-                    </div>
-
-                  </CardContent>
-                </Card>
-              )}
-              {activeTab.kind === "zone" && actionTab === "cache" && (
-                <Card className="border-border/60 bg-card/70">
-                  <CardHeader>
-                    <CardTitle className="text-lg">Cache</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm text-muted-foreground">
-                        Cloudflare cache controls for {activeTab.zoneName}.
-                      </div>
-                      {cacheSettingsLoading && (
-                        <div className="text-xs text-muted-foreground">Loading…</div>
-                      )}
-                    </div>
-                    {cacheSettingsError && (
-                      <div className="text-xs text-destructive">{cacheSettingsError}</div>
-                    )}
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Development mode</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneDevMode ? (
-                          <Switch
-                            checked={zoneDevMode.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleSetDevelopmentMode(checked)
-                            }
-                            disabled={!apiKey || cacheSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Cache level</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneCacheLevel ? (
-                          <Select
-                            value={zoneCacheLevel.value ?? "basic"}
-                            onValueChange={(v) => handleSetCacheLevel(v)}
-                            disabled={!apiKey || cacheSettingsLoading}
-                          >
-                            <SelectTrigger className="w-48">
-                              <SelectValue placeholder="Cache level" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {zoneCacheLevel.value &&
-                              !["basic", "aggressive", "simplified"].includes(
-                                zoneCacheLevel.value,
-                              ) ? (
-                                <SelectItem value={zoneCacheLevel.value}>
-                                  {zoneCacheLevel.value} (current)
-                                </SelectItem>
-                              ) : null}
-                              <SelectItem value="basic">Basic</SelectItem>
-                              <SelectItem value="aggressive">Aggressive</SelectItem>
-                              <SelectItem value="simplified">Simplified</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          <div>
-                            <span className="font-medium text-foreground/80">Basic</span>: respects origin cache headers.
-                          </div>
-                          <div>
-                            <span className="font-medium text-foreground/80">Aggressive</span>: caches more aggressively where safe.
-                          </div>
-                          <div>
-                            <span className="font-medium text-foreground/80">Simplified</span>: reduces variation by ignoring some request headers.
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Always Online</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneAlwaysOnline ? (
-                          <Switch
-                            checked={zoneAlwaysOnline.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleToggleAlwaysOnline(checked)
-                            }
-                            disabled={!apiKey || cacheSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Serves limited cached pages when the origin is down (availability depends on plan/features).
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Crawler Hints</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneCrawlerHints ? (
-                          <Switch
-                            checked={zoneCrawlerHints.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleToggleCrawlerHints(checked)
-                            }
-                            disabled={!apiKey || cacheSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Adds headers to help search engines crawl faster and reduce server load.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Browser Cache TTL</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneBrowserCacheTtl ? (
-                          <Select
-                            value={String(zoneBrowserCacheTtl.value ?? 0)}
-                            onValueChange={(v) => {
-                              const n = Number(v);
-                              if (Number.isNaN(n)) return;
-                              void handleSetBrowserCacheTtl(n);
-                            }}
-                            disabled={!apiKey || cacheSettingsLoading}
-                          >
-                            <SelectTrigger className="w-48">
-                              <SelectValue placeholder="Browser TTL" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">Respect existing headers</SelectItem>
-                              <SelectItem value="30">30s</SelectItem>
-                              <SelectItem value="60">1m</SelectItem>
-                              <SelectItem value="300">5m</SelectItem>
-                              <SelectItem value="1200">20m</SelectItem>
-                              <SelectItem value="3600">1h</SelectItem>
-                              <SelectItem value="14400">4h</SelectItem>
-                              <SelectItem value="86400">1d</SelectItem>
-                              <SelectItem value="604800">7d</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Overrides how long browsers cache resources (client-side TTL).
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
-                      <div className="font-medium text-sm">Purge cache</div>
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => setShowPurgeEverythingConfirm(true)}
-                            disabled={!apiKey}
-                          >
-                            Purge everything
-                          </Button>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                            Purge URLs (one per line)
-                          </Label>
-                          <Textarea
-                            value={purgeUrlsInput}
-                            onChange={(e) => setPurgeUrlsInput(e.target.value)}
-                            placeholder={`https://${activeTab.zoneName}/path\nhttps://${activeTab.zoneName}/asset.js`}
-                            className="min-h-24 resize-y"
-                          />
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => preparePurgeUrls()}
-                              disabled={!apiKey || !purgeUrlsInput.trim()}
-                            >
-                              Purge URLs…
-                            </Button>
-                            <div className="text-xs text-muted-foreground">
-                              Validations warn, but you can still force purge.
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-              {activeTab.kind === "zone" && actionTab === "ssl-tls" && (
-                <Card className="border-border/60 bg-card/70">
-                  <CardHeader>
-                    <CardTitle className="text-lg">SSL/TLS</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm text-muted-foreground">
-                        SSL/TLS controls for {activeTab.zoneName}.
-                      </div>
-                      {sslSettingsLoading && (
-                        <div className="text-xs text-muted-foreground">Loading…</div>
-                      )}
-                    </div>
-                    {sslSettingsError && (
-                      <div className="text-xs text-destructive">{sslSettingsError}</div>
-                    )}
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Encryption mode</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneSslMode ? (
-                          <Select
-                            value={zoneSslMode.value ?? "off"}
-                            onValueChange={(v) => handleSetSslTlsSetting("ssl", v)}
-                            disabled={!apiKey || sslSettingsLoading}
-                          >
-                            <SelectTrigger className="w-48">
-                              <SelectValue placeholder="SSL mode" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="off">Off</SelectItem>
-                              <SelectItem value="flexible">Flexible</SelectItem>
-                              <SelectItem value="full">Full</SelectItem>
-                              <SelectItem value="strict">Full (strict)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Controls how Cloudflare connects to your origin.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Minimum TLS version</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneMinTlsVersion ? (
-                          <Select
-                            value={zoneMinTlsVersion.value ?? "1.2"}
-                            onValueChange={(v) =>
-                              handleSetSslTlsSetting("min_tls_version", v)
-                            }
-                            disabled={!apiKey || sslSettingsLoading}
-                          >
-                            <SelectTrigger className="w-48">
-                              <SelectValue placeholder="Min TLS" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="1.0">1.0</SelectItem>
-                              <SelectItem value="1.1">1.1</SelectItem>
-                              <SelectItem value="1.2">1.2</SelectItem>
-                              <SelectItem value="1.3">1.3</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Affects client connections to Cloudflare edge.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">TLS 1.3</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneTls13 ? (
-                          <Switch
-                            checked={zoneTls13.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleSetSslTlsSetting("tls_1_3", checked ? "on" : "off")
-                            }
-                            disabled={!apiKey || sslSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Enables TLS 1.3 for client connections.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Always Use HTTPS</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneAlwaysUseHttps ? (
-                          <Switch
-                            checked={zoneAlwaysUseHttps.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleSetSslTlsSetting(
-                                "always_use_https",
-                                checked ? "on" : "off",
-                              )
-                            }
-                            disabled={!apiKey || sslSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Redirect HTTP to HTTPS at the edge.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Automatic HTTPS Rewrites</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneAutoHttpsRewrites ? (
-                          <Switch
-                            checked={zoneAutoHttpsRewrites.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleSetSslTlsSetting(
-                                "automatic_https_rewrites",
-                                checked ? "on" : "off",
-                              )
-                            }
-                            disabled={!apiKey || sslSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Rewrites mixed content links to HTTPS when possible.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Opportunistic encryption</div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {zoneOpportunisticEncryption ? (
-                          <Switch
-                            checked={zoneOpportunisticEncryption.value === "on"}
-                            onCheckedChange={(checked: boolean) =>
-                              handleSetSslTlsSetting(
-                                "opportunistic_encryption",
-                                checked ? "on" : "off",
-                              )
-                            }
-                            disabled={!apiKey || sslSettingsLoading}
-                          />
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          Enables opportunistic encryption to the edge when supported.
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-              {activeTab.kind === "zone" && actionTab === "dns-options" && (
-                <Card className="border-border/60 bg-card/70">
-                  <CardHeader>
-                    <CardTitle className="text-lg">DNS options</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm text-muted-foreground">
-                        DNSSEC and related settings for {activeTab.zoneName}.
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void handleFetchDnssec()}
-                          disabled={!apiKey || dnsOptionsLoading}
-                        >
-                          Refresh
-                        </Button>
-                      </div>
-                    </div>
-
-                    {dnsOptionsError && (
-                      <div className="text-xs text-destructive">{dnsOptionsError}</div>
-                    )}
-
-                    <div className="rounded-xl border border-border/60 bg-card/60 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-semibold">DNSSEC</div>
-                        {dnsOptionsLoading && (
-                          <div className="text-xs text-muted-foreground">Loading…</div>
-                        )}
-                      </div>
-                      {dnssecInfo ? (
-                        <div className="mt-3 space-y-3">
-                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="font-medium text-sm">Status</div>
-                            <div className="flex flex-wrap items-center gap-3">
-                              <div className="rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-xs">
-                                {String((dnssecInfo as { status?: unknown }).status ?? "unknown")}
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  void handleUpdateDnssec({
-                                    status:
-                                      (dnssecInfo as { status?: unknown }).status === "active"
-                                        ? "disabled"
-                                        : "active",
-                                  })
-                                }
-                                disabled={!apiKey || dnsOptionsLoading}
-                              >
-                                {(dnssecInfo as { status?: unknown }).status === "active"
-                                  ? "Disable"
-                                  : "Enable"}
-                              </Button>
-                              <div className="text-xs text-muted-foreground">
-                                Enabling DNSSEC publishes DS details for your registrar.
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="font-medium text-sm">Multi-signer DNSSEC</div>
-                            <div className="flex flex-wrap items-center gap-3">
-                              <Switch
-                                checked={
-                                  (dnssecInfo as { dnssec_multi_signer?: unknown })
-                                    .dnssec_multi_signer === true
-                                }
-                                onCheckedChange={(checked: boolean) =>
-                                  void handleUpdateDnssec({ dnssec_multi_signer: checked })
-                                }
-                                disabled={!apiKey || dnsOptionsLoading}
-                              />
-                              <div className="text-xs text-muted-foreground">
-                                Use multi-signer mode when running DNS with multiple providers.
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="font-medium text-sm">Presigned DNSSEC</div>
-                            <div className="flex flex-wrap items-center gap-3">
-                              <Switch
-                                checked={
-                                  (dnssecInfo as { dnssec_presigned?: unknown })
-                                    .dnssec_presigned === true
-                                }
-                                onCheckedChange={(checked: boolean) =>
-                                  void handleUpdateDnssec({ dnssec_presigned: checked })
-                                }
-                                disabled={!apiKey || dnsOptionsLoading}
-                              />
-                              <div className="text-xs text-muted-foreground">
-                                For secondary/multi-provider setups with an external signer.
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                            <div className="font-medium text-sm">Use NSEC3</div>
-                            <div className="flex flex-wrap items-center gap-3">
-                              <Switch
-                                checked={
-                                  (dnssecInfo as { dnssec_use_nsec3?: unknown })
-                                    .dnssec_use_nsec3 === true
-                                }
-                                onCheckedChange={(checked: boolean) =>
-                                  void handleUpdateDnssec({ dnssec_use_nsec3: checked })
-                                }
-                                disabled={!apiKey || dnsOptionsLoading}
-                              />
-                              <div className="text-xs text-muted-foreground">
-                                Uses NSEC3 for authenticated denial of existence (if supported).
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
-                            <div className="font-medium text-sm">DS record</div>
-                            <div className="space-y-1">
-                              <div className="text-xs text-muted-foreground">
-                                Registrar DS values (copy/paste).
-                              </div>
-                              <pre className="whitespace-pre-wrap break-all rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px] leading-5 text-foreground/90">
-                                {String((dnssecInfo as { ds?: unknown }).ds ?? "—")}
-                              </pre>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mt-3 text-sm text-muted-foreground">
-                          DNSSEC info unavailable.
-                        </div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-              {activeTab.kind === "zone" && actionTab === "domain-audit" && (
-                <Card className="border-border/60 bg-card/70">
-                  <CardHeader>
-                    <CardTitle className="text-lg">Domain audits</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-sm text-muted-foreground">
-                        Audits run against the records currently loaded for{" "}
-                        <span className="font-medium text-foreground/90">
-                          {activeTab.zoneName}
-                        </span>
-                        .
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const controller = new AbortController();
-                            void loadRecords(activeTab, controller.signal);
-                          }}
-                        >
-                          Refresh records
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void runSpfGraphAudit()}
-                          disabled={
-                            !apiKey ||
-                            activeZoneSpfGraphState?.status === "loading" ||
-                            !domainAuditCategories.email
-                          }
-                        >
-                          {activeZoneSpfGraphState?.status === "loading"
-                            ? "Checking SPF…"
-                            : "Run SPF graph check"}
-                        </Button>
-                      </div>
-                    </div>
-                    {domainAuditCategories.email &&
-                      activeZoneSpfGraphState?.status === "success" &&
-                      activeZoneSpfGraphState.graph && (
-                        <div className="rounded-xl border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
-                          SPF graph: {activeZoneSpfGraphState.graph.lookups} lookups (limit 10)
-                          {activeZoneSpfGraphState.graph.cyclic ? ", cyclic" : ""}.
-                        </div>
-                      )}
-                    {domainAuditCategories.email &&
-                      activeZoneSpfGraphState?.status === "error" && (
-                        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
-                          SPF graph failed: {activeZoneSpfGraphState.error ?? "Unknown error"}
-                        </div>
-                      )}
-
-                    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/60 p-3 text-sm">
-                      <div className="font-medium">Checks</div>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          className="checkbox-themed"
-                          checked={domainAuditCategories.email}
-                          onChange={(e) =>
-                            setDomainAuditCategories((prev) => ({
-                              ...prev,
-                              email: e.target.checked,
-                            }))
-                          }
-                        />
-                        Email (SPF/DKIM/DMARC)
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          className="checkbox-themed"
-                          checked={domainAuditCategories.security}
-                          onChange={(e) =>
-                            setDomainAuditCategories((prev) => ({
-                              ...prev,
-                              security: e.target.checked,
-                            }))
-                          }
-                        />
-                        Security (CAA)
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          className="checkbox-themed"
-                          checked={domainAuditCategories.hygiene}
-                          onChange={(e) =>
-                            setDomainAuditCategories((prev) => ({
-                              ...prev,
-                              hygiene: e.target.checked,
-                            }))
-                          }
-                        />
-                        Hygiene (private IPs, deprecated)
-                      </label>
-                      <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                        <Switch
-                          checked={domainAuditShowPassed}
-                          onCheckedChange={(checked: boolean) =>
-                            setDomainAuditShowPassed(checked)
-                          }
-                        />
-                        Show passed
-                      </div>
-                      {activeTab?.kind === "zone" && 
-                        auditOverridesByZone[activeTab.zoneId]?.size > 0 && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-xs"
-                          onClick={handleClearAllAuditOverrides}
-                        >
-                          Clear {auditOverridesByZone[activeTab.zoneId].size} override{auditOverridesByZone[activeTab.zoneId].size !== 1 ? "s" : ""}
-                        </Button>
-                      )}
-                    </div>
-
-                    <div className="rounded-xl border border-border/60 bg-card/60 p-2">
-                      {domainAuditVisibleItems.length === 0 ? (
-                        <div className="px-3 py-6 text-sm text-muted-foreground">
-                          No issues detected (with current filters).
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {domainAuditVisibleItems.map((item) => {
-                            const isOverridden = activeTab?.kind === "zone" && 
-                              auditOverridesByZone[activeTab.zoneId]?.has(item.id);
-                            const originalSeverity = isOverridden && item.title.includes("(overridden)")
-                              ? item.details.match(/Original severity: (\w+)/)?.[1] as "fail" | "warn" | "info" | undefined
-                              : undefined;
-                            const displaySeverity = originalSeverity ?? item.severity;
-                            
-                            const badge =
-                              displaySeverity === "fail"
-                                ? "bg-destructive/20 text-destructive border-destructive/30"
-                                : displaySeverity === "warn"
-                                  ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
-                                  : displaySeverity === "info"
-                                    ? "bg-sky-500/15 text-sky-200 border-sky-500/30"
-                                    : "bg-emerald-500/15 text-emerald-200 border-emerald-500/30";
-
-                            return (
-                              <div
-                                key={item.id}
-                                className="rounded-xl border border-border/60 bg-muted/10 p-3"
-                              >
-                                <div className="flex flex-wrap items-start justify-between gap-2">
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span
-                                        className={cn(
-                                          "rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-widest",
-                                          badge,
-                                          isOverridden && "opacity-60",
-                                        )}
-                                      >
-                                        {displaySeverity}
-                                      </span>
-                                      {isOverridden && (
-                                        <span className="rounded-md border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] uppercase tracking-widest text-emerald-200">
-                                          overridden
-                                        </span>
-                                      )}
-                                      <div className={cn("font-medium text-sm", isOverridden && "line-through opacity-60")}>
-                                        {item.title.replace(" (overridden)", "")}
-                                      </div>
-                                    </div>
-                                    <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                                      {item.details}
-                                    </div>
-                                  </div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {item.severity !== "pass" && !isOverridden && (
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="text-xs"
-                                        onClick={() => handleOverrideAuditItem(item.id)}
-                                        title="Mark as acknowledged/passing"
-                                      >
-                                        Override
-                                      </Button>
-                                    )}
-                                    {isOverridden && (
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="text-xs"
-                                        onClick={() => handleClearAuditOverride(item.id)}
-                                        title="Remove override"
-                                      >
-                                        Restore
-                                      </Button>
-                                    )}
-                                    {item.suggestion && (
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() =>
-                                          updateTab(activeTab.id, (prev) => ({
-                                            ...prev,
-                                            showAddRecord: true,
-                                            newRecord: {
-                                              ...createEmptyRecord(),
-                                              type: item.suggestion!.recordType,
-                                              name: item.suggestion!.name,
-                                              content: item.suggestion!.content,
-                                              ttl: 300,
-                                            },
-                                          }))
-                                        }
-                                      >
-                                        Add suggested record…
-                                      </Button>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="text-xs text-muted-foreground">
-                      These checks are best-practice heuristics based only on records currently present in this zone.
                     </div>
                   </CardContent>
                 </Card>
@@ -4760,6 +2440,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
+              {activeTab.kind === "registry" && (
+                <RegistryMonitor monitor={registrarMonitor} />
+              )}
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
@@ -4830,79 +2513,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Record columns</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button size="sm" variant="outline">
-                                <Columns2 className="h-4 w-4 mr-2" />
-                                Configure…
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="start">
-                              <DropdownMenuItem disabled>
-                                <span className="flex items-center gap-2">
-                                  <Columns2 className="h-4 w-4" />
-                                  Global columns
-                                </span>
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("content")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("content", checked === true)
-                                }
-                              >
-                                Content
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("comment")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("comment", checked === true)
-                                }
-                              >
-                                Comment
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("tags")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("tags", checked === true)
-                                }
-                              >
-                                Tags
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("ttl")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("ttl", checked === true)
-                                }
-                              >
-                                TTL
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("proxied")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("proxied", checked === true)
-                                }
-                              >
-                                Proxy
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuCheckboxItem
-                                checked={resolvedRecordTableColumns.includes("actions")}
-                                onCheckedChange={(checked) =>
-                                  setColumnEnabled("actions", checked === true)
-                                }
-                              >
-                                Actions
-                              </DropdownMenuCheckboxItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                          <div className="text-xs text-muted-foreground">
-                            Applies to all zones unless overridden in Zone Settings.
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                         <div className="font-medium">Unsupported record types</div>
                         <div className="flex items-center gap-3">
                           <Switch
@@ -4918,25 +2528,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           />
                           <div className="text-xs text-muted-foreground">
                             Controls the Type dropdown default. Zones can override this.
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Confirm record delete</div>
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            checked={confirmDeleteRecord}
-                            onCheckedChange={(checked: boolean) => {
-                              setConfirmDeleteRecord(checked);
-                              notifySaved(
-                                checked
-                                  ? "Delete confirmation enabled."
-                                  : "Delete confirmation disabled.",
-                              );
-                            }}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            Adds a confirmation dialog when deleting a single record.
                           </div>
                         </div>
                       </div>
@@ -5039,38 +2630,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Settings className="h-4 w-4" />
                       Global settings apply to every zone unless overridden.
                     </div>
-                    <div className="mt-2 rounded-xl border border-border/60 bg-card/60 p-4">
-                      <div className="text-sm font-semibold">Data management</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Reset or clear local settings and data. These actions affect this device.
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowResetSettingsConfirm(true)}
-                        >
-                          Reset to defaults…
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setShowClearSettingsConfirm(true)}
-                        >
-                          Clear settings…
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setShowClearAllDataConfirm(true)}
-                        >
-                          Clear all app data…
-                        </Button>
-                      </div>
-                      <div className="mt-2 text-[11px] text-muted-foreground">
-                        “Clear settings” wipes preferences then immediately saves defaults again.
-                      </div>
-                    </div>
                   </CardContent>
                 </Card>
               )}
@@ -5098,7 +2657,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </Button>
             <Button
               variant="destructive"
-              className="flex-1"
+              className="flex-1 bg-red-500/80 text-white hover:bg-red-500 hover:text-white shadow-[0_0_18px_rgba(255,80,80,0.25)] hover:shadow-[0_0_26px_rgba(255,90,90,0.45)] transition"
               onClick={async () => {
                 if (!isDesktop()) return;
                 await TauriClient.clearAuditEntries();
@@ -5107,231 +2666,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               }}
             >
               Clear logs
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={showResetSettingsConfirm}
-        onOpenChange={setShowResetSettingsConfirm}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reset settings to defaults?</DialogTitle>
-            <DialogDescription>
-              This resets session settings and clears open tabs. It does not delete API keys.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setShowResetSettingsConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="flex-1"
-              onClick={() => {
-                setShowResetSettingsConfirm(false);
-                void handleResetSettings();
-              }}
-            >
-              Reset
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={showClearSettingsConfirm}
-        onOpenChange={setShowClearSettingsConfirm}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Clear settings?</DialogTitle>
-            <DialogDescription>
-              This clears saved preferences, then immediately re-saves default settings so the app starts from a clean baseline.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setShowClearSettingsConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              className="flex-1"
-              onClick={() => {
-                setShowClearSettingsConfirm(false);
-                void handleClearSettings();
-              }}
-            >
-              Clear settings
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={showClearAllDataConfirm}
-        onOpenChange={setShowClearAllDataConfirm}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Clear all app data?</DialogTitle>
-            <DialogDescription>
-              This deletes local keys, preferences, tags, and other stored data on this device, then logs you out. This cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setShowClearAllDataConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              className="flex-1"
-              onClick={() => {
-                setShowClearAllDataConfirm(false);
-                void handleClearAllData();
-              }}
-            >
-              Clear all data
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={showDeleteRecordConfirm}
-        onOpenChange={(open) => {
-          setShowDeleteRecordConfirm(open);
-          if (!open) setPendingDeleteRecordId(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete DNS record?</DialogTitle>
-            <DialogDescription>
-              This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          {pendingDeleteRecord ? (
-            <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">{pendingDeleteRecord.type}</span>
-                <span className="text-muted-foreground">•</span>
-                <span className="break-all">{pendingDeleteRecord.name}</span>
-              </div>
-              <div className="mt-2 break-all text-muted-foreground">
-                {pendingDeleteRecord.content}
-              </div>
-            </div>
-          ) : (
-            <div className="text-xs text-muted-foreground">
-              Record details unavailable.
-            </div>
-          )}
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => {
-                setShowDeleteRecordConfirm(false);
-                setPendingDeleteRecordId(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              className="flex-1"
-              onClick={confirmDeleteRecordNow}
-            >
-              Delete
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={showPurgeEverythingConfirm}
-        onOpenChange={setShowPurgeEverythingConfirm}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Purge entire cache?</DialogTitle>
-            <DialogDescription>
-              This purges cached content for the active zone. It can temporarily increase origin load.
-            </DialogDescription>
-          </DialogHeader>
-          {activeTab?.kind === "zone" ? (
-            <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
-              <div className="font-semibold">{activeTab.zoneName}</div>
-              <div className="mt-1 text-muted-foreground">Purge: everything</div>
-            </div>
-          ) : null}
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setShowPurgeEverythingConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              className="flex-1"
-              onClick={() => void confirmPurgeEverything()}
-            >
-              Purge
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={showPurgeUrlsConfirm} onOpenChange={setShowPurgeUrlsConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Purge URLs?</DialogTitle>
-            <DialogDescription>
-              Cloudflare may reject invalid URLs. You can still attempt to purge anyway.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
-            <div className="font-semibold">
-              {pendingPurgeUrls.length} URL(s)
-            </div>
-            {pendingPurgeIssues.length > 0 ? (
-              <div className="mt-2 space-y-1">
-                <div className="text-destructive font-medium">Warnings</div>
-                <ul className="list-disc pl-4 text-destructive/90">
-                  {pendingPurgeIssues.slice(0, 8).map((issue) => (
-                    <li key={issue}>{issue}</li>
-                  ))}
-                </ul>
-                {pendingPurgeIssues.length > 8 ? (
-                  <div className="text-muted-foreground">
-                    +{pendingPurgeIssues.length - 8} more…
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <div className="mt-2 text-muted-foreground">No issues detected.</div>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setShowPurgeUrlsConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button className="flex-1" onClick={() => void confirmPurgeUrls()}>
-              Purge
             </Button>
           </div>
         </DialogContent>

@@ -24,6 +24,7 @@ keyring = "2"
 uuid = { version = "1", features = ["v4"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
 thiserror = "1"
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 trust-dns-resolver = "0.23"
 ipnet = "2"

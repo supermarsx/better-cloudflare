@@ -10,7 +10,6 @@ import { invoke } from "@tauri-apps/api/core";
 export interface TauriZone {
   id: string;
   name: string;
-  name_servers?: string[];
   status: string;
   paused: boolean;
   type: string;
@@ -22,7 +21,6 @@ export interface TauriDNSRecord {
   type: string;
   name: string;
   content: string;
-  comment?: string;
   ttl?: number;
   priority?: number;
   proxied?: boolean;
@@ -33,13 +31,6 @@ export interface TauriDNSRecord {
 }
 
 export type TauriDNSRecordInput = Partial<TauriDNSRecord>;
-
-export interface TauriZoneSetting<T = unknown> {
-  id: string;
-  value: T;
-  editable?: boolean;
-  modified_on?: string;
-}
 
 export class TauriClient {
   // Check if running in Tauri environment
@@ -180,64 +171,6 @@ export class TauriClient {
       page,
       per_page: perPage,
     });
-  }
-
-  static async purgeCache(
-    apiKey: string,
-    email: string | undefined,
-    zoneId: string,
-    purgeEverything: boolean,
-    files?: string[],
-  ): Promise<unknown> {
-    return invoke("purge_cache", {
-      apiKey,
-      email,
-      zoneId,
-      purgeEverything,
-      files,
-    });
-  }
-
-  static async getZoneSetting<T = unknown>(
-    apiKey: string,
-    email: string | undefined,
-    zoneId: string,
-    settingId: string,
-  ): Promise<TauriZoneSetting<T>> {
-    return invoke("get_zone_setting", { apiKey, email, zoneId, settingId });
-  }
-
-  static async updateZoneSetting<T = unknown>(
-    apiKey: string,
-    email: string | undefined,
-    zoneId: string,
-    settingId: string,
-    value: T,
-  ): Promise<TauriZoneSetting<T>> {
-    return invoke("update_zone_setting", {
-      apiKey,
-      email,
-      zoneId,
-      settingId,
-      value,
-    });
-  }
-
-  static async getDnssec(
-    apiKey: string,
-    email: string | undefined,
-    zoneId: string,
-  ): Promise<unknown> {
-    return invoke("get_dnssec", { apiKey, email, zoneId });
-  }
-
-  static async updateDnssec(
-    apiKey: string,
-    email: string | undefined,
-    zoneId: string,
-    payload: Record<string, unknown>,
-  ): Promise<unknown> {
-    return invoke("update_dnssec", { apiKey, email, zoneId, payload });
   }
 
   // Vault Operations
@@ -385,5 +318,59 @@ export class TauriClient {
   static async updatePreferenceFields(fields: Record<string, unknown>): Promise<void> {
     const current = await this.getPreferences();
     return this.updatePreferences({ ...(current as Record<string, unknown>), ...fields });
+  }
+
+  // ─── Registrar Monitoring ────────────────────────────────────────────
+
+  static async addRegistrarCredential(
+    provider: string,
+    label: string,
+    apiKey: string,
+    apiSecret?: string,
+    username?: string,
+    email?: string,
+    extra?: Record<string, string>,
+  ): Promise<string> {
+    return invoke("add_registrar_credential", {
+      provider,
+      label,
+      apiKey,
+      apiSecret,
+      username,
+      email,
+      extra,
+    });
+  }
+
+  static async listRegistrarCredentials(): Promise<unknown[]> {
+    return invoke("list_registrar_credentials");
+  }
+
+  static async deleteRegistrarCredential(credentialId: string): Promise<void> {
+    return invoke("delete_registrar_credential", { credentialId });
+  }
+
+  static async verifyRegistrarCredential(credentialId: string): Promise<boolean> {
+    return invoke("verify_registrar_credential", { credentialId });
+  }
+
+  static async registrarListDomains(credentialId: string): Promise<unknown[]> {
+    return invoke("registrar_list_domains", { credentialId });
+  }
+
+  static async registrarGetDomain(credentialId: string, domain: string): Promise<unknown> {
+    return invoke("registrar_get_domain", { credentialId, domain });
+  }
+
+  static async registrarListAllDomains(): Promise<unknown[]> {
+    return invoke("registrar_list_all_domains");
+  }
+
+  static async registrarHealthCheck(credentialId: string, domain: string): Promise<unknown> {
+    return invoke("registrar_health_check", { credentialId, domain });
+  }
+
+  static async registrarHealthCheckAll(): Promise<unknown[]> {
+    return invoke("registrar_health_check_all");
   }
 }

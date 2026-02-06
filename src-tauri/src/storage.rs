@@ -278,6 +278,69 @@ impl Storage {
         }
     }
 
+    // ─── Registrar credential storage ────────────────────────────────────
+
+    pub async fn get_registrar_credentials(&self) -> Result<Vec<crate::registrar::types::RegistrarCredential>, StorageError> {
+        match self.get_secret("registrar_credentials").await {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| StorageError::Error(e.to_string())),
+            Err(StorageError::NotFound) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn get_registrar_credential(&self, id: &str) -> Result<crate::registrar::types::RegistrarCredential, StorageError> {
+        let creds = self.get_registrar_credentials().await?;
+        creds.into_iter()
+            .find(|c| c.id == id)
+            .ok_or(StorageError::NotFound)
+    }
+
+    pub async fn store_registrar_credential(&self, cred: &crate::registrar::types::RegistrarCredential) -> Result<(), StorageError> {
+        let mut creds = self.get_registrar_credentials().await?;
+        creds.push(cred.clone());
+        let json = serde_json::to_string(&creds)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret("registrar_credentials", &json).await
+    }
+
+    pub async fn delete_registrar_credential(&self, id: &str) -> Result<(), StorageError> {
+        let mut creds = self.get_registrar_credentials().await?;
+        creds.retain(|c| c.id != id);
+        let json = serde_json::to_string(&creds)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret("registrar_credentials", &json).await
+    }
+
+    pub async fn store_registrar_secrets(
+        &self,
+        credential_id: &str,
+        secrets: &std::collections::HashMap<String, String>,
+    ) -> Result<(), StorageError> {
+        let key = format!("registrar_secrets:{}", credential_id);
+        let json = serde_json::to_string(secrets)
+            .map_err(|e| StorageError::Error(e.to_string()))?;
+        self.store_secret(&key, &json).await
+    }
+
+    pub async fn get_registrar_secrets(
+        &self,
+        credential_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>, StorageError> {
+        let key = format!("registrar_secrets:{}", credential_id);
+        match self.get_secret(&key).await {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| StorageError::Error(e.to_string())),
+            Err(StorageError::NotFound) => Ok(std::collections::HashMap::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn delete_registrar_secrets(&self, credential_id: &str) -> Result<(), StorageError> {
+        let key = format!("registrar_secrets:{}", credential_id);
+        self.delete_secret(&key).await
+    }
+
     // Audit log
     pub async fn get_audit_entries(&self) -> Result<Vec<Value>, StorageError> {
         match self.get_secret("audit_log").await {

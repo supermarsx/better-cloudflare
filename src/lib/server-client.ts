@@ -610,4 +610,98 @@ export class ServerClient {
       signal,
     });
   }
+
+  // ─── Registrar Monitoring ────────────────────────────────────────────
+  // All registrar operations are backend-only; these methods delegate to
+  // Tauri commands (desktop) or the server API proxy (web).
+
+  async addRegistrarCredential(
+    provider: string,
+    label: string,
+    apiKey: string,
+    apiSecret?: string,
+    username?: string,
+    email?: string,
+    extra?: Record<string, string>,
+  ): Promise<string> {
+    if (isDesktop()) {
+      return TauriClient.addRegistrarCredential(
+        provider, label, apiKey, apiSecret, username, email, extra,
+      );
+    }
+    return this.request("/registrar/credentials", {
+      method: "POST",
+      body: { provider, label, apiKey, apiSecret, username, email, extra },
+    });
+  }
+
+  async listRegistrarCredentials(): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.listRegistrarCredentials();
+    }
+    return this.request("/registrar/credentials");
+  }
+
+  async deleteRegistrarCredential(credentialId: string): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteRegistrarCredential(credentialId);
+    }
+    await this.request(`/registrar/credentials/${credentialId}`, { method: "DELETE" });
+  }
+
+  async verifyRegistrarCredential(credentialId: string): Promise<boolean> {
+    if (isDesktop()) {
+      return TauriClient.verifyRegistrarCredential(credentialId);
+    }
+    return this.request(`/registrar/credentials/${credentialId}/verify`, { method: "POST" });
+  }
+
+  async registrarListDomains(credentialId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.registrarListDomains(credentialId);
+    }
+    return this.request(`/registrar/credentials/${credentialId}/domains`, { signal });
+  }
+
+  async registrarGetDomain(
+    credentialId: string,
+    domain: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.registrarGetDomain(credentialId, domain);
+    }
+    return this.request(
+      `/registrar/credentials/${credentialId}/domains/${encodeURIComponent(domain)}`,
+      { signal },
+    );
+  }
+
+  async registrarListAllDomains(signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.registrarListAllDomains();
+    }
+    return this.request("/registrar/domains", { signal });
+  }
+
+  async registrarHealthCheck(
+    credentialId: string,
+    domain: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.registrarHealthCheck(credentialId, domain);
+    }
+    return this.request(
+      `/registrar/credentials/${credentialId}/domains/${encodeURIComponent(domain)}/health`,
+      { signal },
+    );
+  }
+
+  async registrarHealthCheckAll(signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.registrarHealthCheckAll();
+    }
+    return this.request("/registrar/health", { signal });
+  }
 }

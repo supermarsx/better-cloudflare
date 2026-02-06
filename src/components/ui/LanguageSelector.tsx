@@ -1,13 +1,6 @@
 import * as React from "react";
 import i18n, { availableLanguages } from "@/i18n";
 import { useI18n } from "@/hooks/use-i18n";
-
-const languageNames: Record<string, string> = {
-  "en-US": "English",
-  "pt-PT": "Português",
-};
-
-import { Globe } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,8 +8,24 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { Button } from "@/components/ui/button";
+import { Globe } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
 import { TauriClient } from "@/lib/tauri-client";
+
+const languageNames: Record<string, string> = {
+  "en-US": "English",
+  "pt-PT": "Português",
+  "zh-CN": "简体中文",
+  "es-ES": "Español",
+  "hi-IN": "हिन्दी",
+  "ar-SA": "العربية",
+  "fr-FR": "Français",
+  "de-DE": "Deutsch",
+  "ja-JP": "日本語",
+  "ko-KR": "한국어",
+  "ru-RU": "Русский",
+  "id-ID": "Bahasa Indonesia",
+};
 
 export function LanguageSelector() {
   const { t } = useI18n();
