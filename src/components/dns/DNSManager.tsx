@@ -3506,9 +3506,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     </div>
                     {cacheOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
-                          <RefreshCw className="h-4 w-4 animate-spin" />
+                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
+                          <div className="relative h-5 w-5">
+                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
+                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
+                          </div>
                           Loading cache settings…
                         </div>
                       </div>
@@ -3681,9 +3684,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     </div>
                     {sslOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
-                          <RefreshCw className="h-4 w-4 animate-spin" />
+                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
+                          <div className="relative h-5 w-5">
+                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
+                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
+                          </div>
                           Loading SSL/TLS settings…
                         </div>
                       </div>
@@ -3908,9 +3914,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       present in this zone.
                     </div>
                     {auditOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
-                          <RefreshCw className="h-4 w-4 animate-spin" />
+                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
+                          <div className="relative h-5 w-5">
+                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
+                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
+                          </div>
                           Loading audit data…
                         </div>
                       </div>
@@ -4180,9 +4189,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       )}
                     </div>
                     {registryOverlay.visible && (
-                      <div className="absolute inset-0 z-20 rounded-xl bg-card/70 backdrop-blur-[2px] flex items-center justify-center">
-                        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground">
-                          <RefreshCw className="h-4 w-4 animate-spin" />
+                      <div className="absolute inset-0 z-20 rounded-xl bg-gradient-to-br from-black/78 via-black/72 to-primary/30 backdrop-blur-2xl flex items-center justify-center">
+                        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-card/85 px-3 py-2 text-xs text-foreground/90 shadow-[0_0_24px_rgba(80,120,255,0.2)]">
+                          <div className="relative h-5 w-5">
+                            <div className="absolute inset-0 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
+                            <div className="absolute inset-1.5 rounded-full bg-primary/35" />
+                          </div>
                           Loading registry data…
                         </div>
                       </div>
