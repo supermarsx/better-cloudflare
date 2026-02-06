@@ -74,7 +74,7 @@ type ActionTab =
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-type SettingsSubtab = "general" | "audit" | "profiles";
+type SettingsSubtab = "general" | "topology" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
@@ -5029,6 +5029,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         General
                       </button>
                       <button
+                        onClick={() => setSettingsSubtab("topology")}
+                        data-active={settingsSubtab === "topology"}
+                        className="ui-segment"
+                      >
+                        Topology
+                      </button>
+                      <button
                         onClick={() => setSettingsSubtab("audit")}
                         data-active={settingsSubtab === "audit"}
                         className="ui-segment"
@@ -5131,89 +5138,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </Select>
                           <div className="text-xs text-muted-foreground">
                             Max 60s. Loading overlay auto-hides after timeout.
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Topology resolution hops</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={String(topologyResolutionMaxHops)}
-                            onValueChange={(v) => {
-                              const next = Number(v);
-                              const clamped = Math.max(1, Math.min(15, Number.isNaN(next) ? 15 : next));
-                              setTopologyResolutionMaxHops(clamped);
-                              notifySaved(`Topology CNAME resolution hops set to ${clamped}.`);
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Max hops" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Array.from({ length: 15 }).map((_, idx) => {
-                                const value = idx + 1;
-                                return (
-                                  <SelectItem key={value} value={String(value)}>
-                                    {value}
-                                  </SelectItem>
-                                );
-                              })}
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
-                            Max recursive hostname resolution depth for topology (1-15).
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Topology DoH resolver</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={topologyDohProvider}
-                            onValueChange={(v) => {
-                              const next =
-                                v === "cloudflare" || v === "quad9" || v === "custom"
-                                  ? v
-                                  : "google";
-                              setTopologyDohProvider(next);
-                              notifySaved(
-                                next === "custom"
-                                  ? "Topology resolver set to custom DoH endpoint."
-                                  : `Topology resolver set to ${next}.`,
-                              );
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Resolver" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="google">Google (default)</SelectItem>
-                              <SelectItem value="cloudflare">Cloudflare</SelectItem>
-                              <SelectItem value="quad9">Quad9</SelectItem>
-                              <SelectItem value="custom">Custom</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
-                            Used for topology hostname chain lookups.
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Custom DoH endpoint</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Input
-                            value={topologyDohCustomUrl}
-                            onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
-                            onBlur={() => {
-                              setTopologyDohCustomUrl((prev) => prev.trim());
-                              notifySaved("Custom DoH endpoint updated.");
-                            }}
-                            className="min-w-[320px]"
-                            placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
-                            disabled={topologyDohProvider !== "custom"}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            Used only when provider is Custom.
                           </div>
                         </div>
                       </div>
@@ -5331,6 +5255,93 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                       </div>
                     </div>
+                    )}
+                    {settingsSubtab === "topology" && (
+                      <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Topology resolution hops</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(topologyResolutionMaxHops)}
+                              onValueChange={(v) => {
+                                const next = Number(v);
+                                const clamped = Math.max(1, Math.min(15, Number.isNaN(next) ? 15 : next));
+                                setTopologyResolutionMaxHops(clamped);
+                                notifySaved(`Topology CNAME resolution hops set to ${clamped}.`);
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue placeholder="Max hops" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Array.from({ length: 15 }).map((_, idx) => {
+                                  const value = idx + 1;
+                                  return (
+                                    <SelectItem key={value} value={String(value)}>
+                                      {value}
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              Max recursive hostname resolution depth for topology (1-15).
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Topology DoH resolver</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={topologyDohProvider}
+                              onValueChange={(v) => {
+                                const next =
+                                  v === "cloudflare" || v === "quad9" || v === "custom"
+                                    ? v
+                                    : "google";
+                                setTopologyDohProvider(next);
+                                notifySaved(
+                                  next === "custom"
+                                    ? "Topology resolver set to custom DoH endpoint."
+                                    : `Topology resolver set to ${next}.`,
+                                );
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue placeholder="Resolver" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="google">Google (default)</SelectItem>
+                                <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                                <SelectItem value="quad9">Quad9</SelectItem>
+                                <SelectItem value="custom">Custom</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              Primary DoH resolver used for topology hostname chain lookups.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Custom DoH endpoint</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Input
+                              value={topologyDohCustomUrl}
+                              onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
+                              onBlur={() => {
+                                setTopologyDohCustomUrl((prev) => prev.trim());
+                                notifySaved("Custom DoH endpoint updated.");
+                              }}
+                              className="min-w-[320px]"
+                              placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
+                              disabled={topologyDohProvider !== "custom"}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Used only when provider is Custom.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     )}
                     {settingsSubtab === "audit" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
