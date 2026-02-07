@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Copy,
   Edit3,
+  ExternalLink,
   FileDown,
   Hand,
   Maximize2,
@@ -202,6 +203,19 @@ function isIpAddress(value: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) return true;
   if (v.includes(":") && /^[0-9a-f:.]+$/i.test(v)) return true;
   return false;
+}
+
+function buildBrowserUrl(address?: string): string | null {
+  const raw = String(address ?? "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (isIpAddress(raw)) {
+    return raw.includes(":") ? `http://[${raw}]` : `http://${raw}`;
+  }
+  if (/^[a-z0-9.-]+$/i.test(raw)) {
+    return `https://${raw}`;
+  }
+  return null;
 }
 
 function extractTarget(record: DNSRecord): string | null {
@@ -436,10 +450,10 @@ function buildTopology(
 ): {
   code: string;
   summary: TopologySummary;
-  nodeMetaById: Record<string, { text: string; recordId?: string }>;
+  nodeMetaById: Record<string, { text: string; recordId?: string; address?: string }>;
 } {
   const lines: string[] = [];
-  const nodeMetaById: Record<string, { text: string; recordId?: string }> = {};
+  const nodeMetaById: Record<string, { text: string; recordId?: string; address?: string }> = {};
   const nodeIds = new Map<string, string>();
   let nextId = 0;
   const zoneNode = "zone_root";
@@ -505,8 +519,8 @@ function buildTopology(
     nodeIds.set(key, id);
     return id;
   };
-  const setNodeMeta = (nodeId: string, text: string, recordId?: string) => {
-    nodeMetaById[nodeId] = { text, ...(recordId ? { recordId } : {}) };
+  const setNodeMeta = (nodeId: string, text: string, recordId?: string, address?: string) => {
+    nodeMetaById[nodeId] = { text, ...(recordId ? { recordId } : {}), ...(address ? { address } : {}) };
   };
   lines.push("flowchart LR");
   const zoneTitle = `Zone: ${zone || zoneName}`;
@@ -586,7 +600,12 @@ function buildTopology(
     lines.push(
       `  ${recordId}["${esc(buildNodeLabel(unit.name, info || "record"))}"]:::record`,
     );
-    setNodeMeta(recordId, info ? `${unit.name} | ${info.replace(/<br\s*\/?>/gi, " ")}` : unit.name, editableRecordId);
+    setNodeMeta(
+      recordId,
+      info ? `${unit.name} | ${info.replace(/<br\s*\/?>/gi, " ")}` : unit.name,
+      editableRecordId,
+      unit.name,
+    );
     lines.push(`  ${zoneNode} --> ${recordId}`);
 
     const targetEntries =
@@ -624,14 +643,14 @@ function buildTopology(
         lines.push(
           `  ${targetId}["${esc(buildNodeLabel(target, targetClass === "ip" ? ipSubtitle(target) : ""))}"]:::${targetClass}`,
         );
-        setNodeMeta(targetId, targetClass === "ip" ? `${target} | ${ipSubtitle(target)}` : target);
+        setNodeMeta(targetId, targetClass === "ip" ? `${target} | ${ipSubtitle(target)}` : target, undefined, target);
         usedNames.add(targetKey);
       }
 
       if (mxPriorityNodeId) {
         const mxPriorityLabel = `MX Priority ${entry.priority ?? "?"}`;
         lines.push(`  ${mxPriorityNodeId}["${esc(buildNodeLabel(mxPriorityLabel))}"]:::target`);
-        setNodeMeta(mxPriorityNodeId, mxPriorityLabel);
+        setNodeMeta(mxPriorityNodeId, mxPriorityLabel, undefined);
         const mxEdge = `${recordId}|MX|${mxPriorityNodeId}`;
         if (!edgeSet.has(mxEdge)) {
           lines.push(`  ${recordId} -- "MX" --> ${mxPriorityNodeId}`);
@@ -664,12 +683,12 @@ function buildTopology(
           const toId = idFor(`target:${to}`);
           if (!usedNames.has(`target:${from}`)) {
             lines.push(`  ${fromId}["${esc(buildNodeLabel(from))}"]:::target`);
-            setNodeMeta(fromId, from);
+            setNodeMeta(fromId, from, undefined, from);
             usedNames.add(`target:${from}`);
           }
           if (!usedNames.has(`target:${to}`)) {
             lines.push(`  ${toId}["${esc(buildNodeLabel(to))}"]:::target`);
-            setNodeMeta(toId, to);
+            setNodeMeta(toId, to, undefined, to);
             usedNames.add(`target:${to}`);
           }
           const k = `${fromId}|CNAME|${toId}`;
@@ -682,7 +701,7 @@ function buildTopology(
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
             lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
-            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
+            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`, undefined, ip);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -696,7 +715,7 @@ function buildTopology(
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
             lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
-            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
+            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`, undefined, ip);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -712,7 +731,7 @@ function buildTopology(
             const ipId = idFor(`ip:${ip}`);
             if (!usedNames.has(`ip:${ip}`)) {
               lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
-              setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
+              setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`, undefined, ip);
               usedNames.add(`ip:${ip}`);
             }
             for (const ptrName of ptrNames) {
@@ -720,7 +739,7 @@ function buildTopology(
               const ptrId = idFor(ptrKey);
               if (!usedNames.has(ptrKey)) {
                 lines.push(`  ${ptrId}["${esc(buildNodeLabel(normalizeDomain(ptrName)))}"]:::target`);
-                setNodeMeta(ptrId, normalizeDomain(ptrName));
+                setNodeMeta(ptrId, normalizeDomain(ptrName), undefined, normalizeDomain(ptrName));
                 usedNames.add(ptrKey);
               }
               const ptrEdge = `${ipId}|PTR|${ptrId}`;
@@ -758,7 +777,7 @@ function buildTopology(
     if (!targetId) continue;
     const serviceId = `svc_${svcIdx++}`;
     lines.push(`  ${serviceId}["${esc(buildNodeLabel(serviceName))}"]:::service`);
-    setNodeMeta(serviceId, serviceName);
+    setNodeMeta(serviceId, serviceName, undefined);
     lines.push(`  ${targetId} -.-> ${serviceId}`);
   }
 
@@ -1072,8 +1091,10 @@ export function ZoneTopologyTab({
     y: number;
     text: string;
     recordId?: string;
+    address?: string;
   }>({ open: false, x: 0, y: 0, text: "" });
-  const [nodeMetaById, setNodeMetaById] = useState<Record<string, { text: string; recordId?: string }>>({});
+  const [nodeMetaById, setNodeMetaById] = useState<Record<string, { text: string; recordId?: string; address?: string }>>({});
+  const nodeContextMenuRef = useRef<HTMLDivElement | null>(null);
   const [expandGraph, setExpandGraph] = useState(false);
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
@@ -1143,10 +1164,15 @@ export function ZoneTopologyTab({
   useEffect(() => {
     if (!nodeContextMenu.open) return;
     const close = () => closeNodeContextMenu();
-    window.addEventListener("click", close, { capture: true });
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && nodeContextMenuRef.current?.contains(target)) return;
+      closeNodeContextMenu();
+    };
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
     window.addEventListener("scroll", close, { capture: true });
     return () => {
-      window.removeEventListener("click", close, { capture: true });
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
       window.removeEventListener("scroll", close, { capture: true });
     };
   }, [closeNodeContextMenu, nodeContextMenu.open]);
@@ -1649,6 +1675,7 @@ export function ZoneTopologyTab({
       y: event.clientY,
       text: meta.text,
       recordId: meta.recordId || undefined,
+      address: meta.address || undefined,
     });
   }, [nodeMetaById]);
 
@@ -2472,8 +2499,10 @@ export function ZoneTopologyTab({
     nodeContextMenu.open && typeof document !== "undefined"
       ? createPortal(
           <div
-            className="fixed z-[240] min-w-[220px] rounded-md border border-border/70 bg-card/95 p-1 shadow-2xl backdrop-blur"
+            ref={nodeContextMenuRef}
+            className="fixed z-[260] min-w-[220px] rounded-md border border-border/70 bg-card/95 p-1 shadow-2xl backdrop-blur pointer-events-auto"
             style={{ left: Math.max(8, nodeContextMenu.x), top: Math.max(8, nodeContextMenu.y) }}
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -2490,6 +2519,23 @@ export function ZoneTopologyTab({
             >
               <Copy className="h-3.5 w-3.5" />
               Copy node text
+            </button>
+            <button
+              type="button"
+              disabled={!buildBrowserUrl(nodeContextMenu.address)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/60",
+                !buildBrowserUrl(nodeContextMenu.address) && "cursor-not-allowed opacity-50 hover:bg-transparent",
+              )}
+              onClick={() => {
+                const url = buildBrowserUrl(nodeContextMenu.address);
+                if (!url) return;
+                window.open(url, "_blank", "noopener,noreferrer");
+                closeNodeContextMenu();
+              }}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open in browser
             </button>
             <button
               type="button"
