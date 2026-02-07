@@ -373,9 +373,16 @@ function pickBestResolution(
   return localFallback;
 }
 
-function safeNodeLabel(name: string, info: string): string {
-  const compactInfo = info.replace(/\n/g, "<br/>");
-  return `${esc(name)}<br/><span style='font-size:11px;opacity:0.82'>${esc(compactInfo)}</span>`;
+function buildNodeLabel(
+  title: string,
+  subtitle = "",
+): string {
+  const cleanTitle = String(title ?? "");
+  const cleanSubtitle = String(subtitle ?? "");
+  const subtitleHtml = cleanSubtitle
+    ? `<div style='font-size:11px;opacity:0.82;margin-top:2px'>${esc(cleanSubtitle)}</div>`
+    : "";
+  return `<div><div>${esc(cleanTitle)}</div>${subtitleHtml}</div>`;
 }
 
 function classifyAreas(
@@ -422,8 +429,13 @@ function buildTopology(
   maxResolutionHops: number,
   isDarkTheme: boolean,
   externalResolutionByName: Record<string, ExternalDnsResolution>,
-): { code: string; summary: TopologySummary } {
+): {
+  code: string;
+  summary: TopologySummary;
+  nodeMetaById: Record<string, { text: string; recordId?: string }>;
+} {
   const lines: string[] = [];
+  const nodeMetaById: Record<string, { text: string; recordId?: string }> = {};
   const nodeIds = new Map<string, string>();
   let nextId = 0;
   const zoneNode = "zone_root";
@@ -474,10 +486,13 @@ function buildTopology(
     nodeIds.set(key, id);
     return id;
   };
-  const renderIpNodeLabel = (ip: string) => esc(ip);
-
+  const setNodeMeta = (nodeId: string, text: string, recordId?: string) => {
+    nodeMetaById[nodeId] = { text, ...(recordId ? { recordId } : {}) };
+  };
   lines.push("flowchart LR");
-  lines.push(`  ${zoneNode}["${esc(`Zone: ${zone || zoneName}`)}"]:::zone`);
+  const zoneTitle = `Zone: ${zone || zoneName}`;
+  lines.push(`  ${zoneNode}["${esc(buildNodeLabel(zoneTitle))}"]:::zone`);
+  setNodeMeta(zoneNode, zoneTitle);
 
   const usedNames = new Set<string>();
   const areaCounts = { email: 0, web: 0, infra: 0, misc: 0 };
@@ -547,7 +562,12 @@ function buildTopology(
     ]
       .filter(Boolean)
       .join(" | ");
-    lines.push(`  ${recordId}["${safeNodeLabel(unit.name, info || "record")}"]:::record`);
+    const editableRecordId =
+      unit.records.length === 1 && unit.records[0]?.id ? String(unit.records[0].id) : undefined;
+    lines.push(
+      `  ${recordId}["${esc(buildNodeLabel(unit.name, info || "record"))}"]:::record`,
+    );
+    setNodeMeta(recordId, info ? `${unit.name} | ${info.replace(/<br\s*\/?>/gi, " ")}` : unit.name, editableRecordId);
     lines.push(`  ${zoneNode} --> ${recordId}`);
 
     const targetEntries =
@@ -582,14 +602,17 @@ function buildTopology(
       const edgeFromNodeId = mxPriorityNodeId ?? recordId;
 
       if (!usedNames.has(targetKey)) {
-        const targetLabel = targetClass === "ip" ? renderIpNodeLabel(target) : esc(target);
-        lines.push(`  ${targetId}["${targetLabel}"]:::${targetClass}`);
+        lines.push(
+          `  ${targetId}["${esc(buildNodeLabel(target, targetClass === "ip" ? "IP" : ""))}"]:::${targetClass}`,
+        );
+        setNodeMeta(targetId, targetClass === "ip" ? `${target} | IP` : target);
         usedNames.add(targetKey);
       }
 
       if (mxPriorityNodeId) {
         const mxPriorityLabel = `MX Priority ${entry.priority ?? "?"}`;
-        lines.push(`  ${mxPriorityNodeId}["${esc(mxPriorityLabel)}"]:::target`);
+        lines.push(`  ${mxPriorityNodeId}["${esc(buildNodeLabel(mxPriorityLabel))}"]:::target`);
+        setNodeMeta(mxPriorityNodeId, mxPriorityLabel);
         const mxEdge = `${recordId}|MX|${mxPriorityNodeId}`;
         if (!edgeSet.has(mxEdge)) {
           lines.push(`  ${recordId} -- "MX" --> ${mxPriorityNodeId}`);
@@ -621,11 +644,13 @@ function buildTopology(
           const fromId = idFor(`target:${from}`);
           const toId = idFor(`target:${to}`);
           if (!usedNames.has(`target:${from}`)) {
-            lines.push(`  ${fromId}["${esc(from)}"]:::target`);
+            lines.push(`  ${fromId}["${esc(buildNodeLabel(from))}"]:::target`);
+            setNodeMeta(fromId, from);
             usedNames.add(`target:${from}`);
           }
           if (!usedNames.has(`target:${to}`)) {
-            lines.push(`  ${toId}["${esc(to)}"]:::target`);
+            lines.push(`  ${toId}["${esc(buildNodeLabel(to))}"]:::target`);
+            setNodeMeta(toId, to);
             usedNames.add(`target:${to}`);
           }
           const k = `${fromId}|CNAME|${toId}`;
@@ -637,7 +662,8 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv4) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
+            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
+            setNodeMeta(ipId, `${ip} | IP`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -650,7 +676,8 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv6) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
+            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
+            setNodeMeta(ipId, `${ip} | IP`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -665,14 +692,16 @@ function buildTopology(
             if (!ptrNames?.length) continue;
             const ipId = idFor(`ip:${ip}`);
             if (!usedNames.has(`ip:${ip}`)) {
-              lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
+              lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
+              setNodeMeta(ipId, `${ip} | IP`);
               usedNames.add(`ip:${ip}`);
             }
             for (const ptrName of ptrNames) {
               const ptrKey = `target:${normalizeDomain(ptrName)}`;
               const ptrId = idFor(ptrKey);
               if (!usedNames.has(ptrKey)) {
-                lines.push(`  ${ptrId}["${esc(normalizeDomain(ptrName))}"]:::target`);
+                lines.push(`  ${ptrId}["${esc(buildNodeLabel(normalizeDomain(ptrName)))}"]:::target`);
+                setNodeMeta(ptrId, normalizeDomain(ptrName));
                 usedNames.add(ptrKey);
               }
               const ptrEdge = `${ipId}|PTR|${ptrId}`;
@@ -709,7 +738,8 @@ function buildTopology(
     const targetId = nodeIds.get(targetKey);
     if (!targetId) continue;
     const serviceId = `svc_${svcIdx++}`;
-    lines.push(`  ${serviceId}["${esc(serviceName)}"]:::service`);
+    lines.push(`  ${serviceId}["${esc(buildNodeLabel(serviceName))}"]:::service`);
+    setNodeMeta(serviceId, serviceName);
     lines.push(`  ${targetId} -.-> ${serviceId}`);
   }
 
@@ -726,6 +756,7 @@ function buildTopology(
 
   return {
     code: lines.join("\n"),
+    nodeMetaById,
     summary: {
       cnameChains,
       sharedIps,
@@ -993,6 +1024,14 @@ export function ZoneTopologyTab({
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const [discovering, setDiscovering] = useState(false);
   const [discovery, setDiscovery] = useState<ServiceDiscoveryItem[]>([]);
+  const [nodeContextMenu, setNodeContextMenu] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    text: string;
+    recordId?: string;
+  }>({ open: false, x: 0, y: 0, text: "" });
+  const [nodeMetaById, setNodeMetaById] = useState<Record<string, { text: string; recordId?: string }>>({});
   const [expandGraph, setExpandGraph] = useState(false);
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
@@ -1036,6 +1075,10 @@ export function ZoneTopologyTab({
     autoFitDoneRef.current = "";
     userAdjustedViewRef.current = false;
   }, []);
+
+  const closeNodeContextMenu = useCallback(() => {
+    setNodeContextMenu((prev) => ({ ...prev, open: false }));
+  }, []);
   const toggleExpandGraph = useCallback(() => {
     if (disableFullWindow) return;
     setExpandGraph((prev) => !prev);
@@ -1056,6 +1099,17 @@ export function ZoneTopologyTab({
   }, [annotationTool, disableAnnotations]);
 
   useEffect(() => {
+    if (!nodeContextMenu.open) return;
+    const close = () => closeNodeContextMenu();
+    window.addEventListener("click", close, { capture: true });
+    window.addEventListener("scroll", close, { capture: true });
+    return () => {
+      window.removeEventListener("click", close, { capture: true });
+      window.removeEventListener("scroll", close, { capture: true });
+    };
+  }, [closeNodeContextMenu, nodeContextMenu.open]);
+
+  useEffect(() => {
     if (typeof document === "undefined") return;
     const root = document.documentElement;
     const observer = new MutationObserver(() => {
@@ -1071,6 +1125,7 @@ export function ZoneTopologyTab({
     setTopologyResolutionReady(false);
     setMermaidCode("");
     setSvgMarkup("");
+    setNodeMetaById({});
     setActiveResolutionRequests([]);
   }, [
     resolverMode,
@@ -1089,7 +1144,7 @@ export function ZoneTopologyTab({
   useEffect(() => {
     if (!topologyResolutionReady) return;
     const clampedMaxHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
-    const { code, summary: nextSummary } = buildTopology(
+    const { code, summary: nextSummary, nodeMetaById: nextNodeMetaById } = buildTopology(
       records,
       zoneName,
       clampedMaxHops,
@@ -1098,6 +1153,7 @@ export function ZoneTopologyTab({
     );
     setMermaidCode(code);
     setSummary(nextSummary);
+    setNodeMetaById(nextNodeMetaById);
   }, [externalResolutionByName, isDarkThemeMode, maxResolutionHops, records, topologyResolutionReady, zoneName]);
 
   useEffect(() => {
@@ -1501,6 +1557,9 @@ export function ZoneTopologyTab({
   }, []);
 
   const handleViewportClick = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (nodeContextMenu.open) {
+      setNodeContextMenu((prev) => ({ ...prev, open: false }));
+    }
     if (!annotationTool || !viewportRef.current) return;
     const rect = viewportRef.current.getBoundingClientRect();
     const x = (event.clientX - rect.left - pan.x) / zoom;
@@ -1514,7 +1573,30 @@ export function ZoneTopologyTab({
         text: annotationDraft.trim() || "Note",
       },
     ]);
-  }, [annotationDraft, annotationTool, pan.x, pan.y, zoom]);
+  }, [annotationDraft, annotationTool, nodeContextMenu.open, pan.x, pan.y, zoom]);
+
+  const handleNodeContextMenu = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    const nodeEl = target.closest(".node") as HTMLElement | null;
+    if (!nodeEl) return;
+    const rawId = nodeEl.getAttribute("id") ?? "";
+    let normalizedNodeId = rawId.replace(/^flowchart-/, "").replace(/^graph-/, "");
+    while (/-\d+$/.test(normalizedNodeId)) {
+      normalizedNodeId = normalizedNodeId.replace(/-\d+$/, "");
+    }
+    const meta = nodeMetaById[normalizedNodeId];
+    if (!meta) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setNodeContextMenu({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      text: meta.text,
+      recordId: meta.recordId || undefined,
+    });
+  }, [nodeMetaById]);
 
   const exportCode = useCallback(() => {
     const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
@@ -2249,6 +2331,7 @@ export function ZoneTopologyTab({
                 }}
                 tabIndex={0}
                 onClick={handleViewportClick}
+                onContextMenu={handleNodeContextMenu}
               >
                 <div
                   className="absolute left-0 top-0"
@@ -2328,6 +2411,52 @@ export function ZoneTopologyTab({
         )
       : null;
 
+  const nodeContextMenuPortal =
+    nodeContextMenu.open && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className="fixed z-[240] min-w-[220px] rounded-md border border-border/70 bg-card/95 p-1 shadow-2xl backdrop-blur"
+            style={{ left: Math.max(8, nodeContextMenu.x), top: Math.max(8, nodeContextMenu.y) }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/60"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(nodeContextMenu.text);
+                  toast({ title: "Copied", description: "Node text copied to clipboard." });
+                } finally {
+                  closeNodeContextMenu();
+                }
+              }}
+            >
+              <Copy className="h-3.5 w-3.5" />
+              Copy node text
+            </button>
+            <button
+              type="button"
+              disabled={!nodeContextMenu.recordId}
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/60",
+                !nodeContextMenu.recordId && "cursor-not-allowed opacity-50 hover:bg-transparent",
+              )}
+              onClick={() => {
+                if (!nodeContextMenu.recordId || !onEditRecord) return;
+                const rec = records.find((r) => String(r.id ?? "") === nodeContextMenu.recordId);
+                if (!rec) return;
+                onEditRecord(rec);
+                closeNodeContextMenu();
+              }}
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              Go to record and edit
+            </button>
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
     <Card className="border-border/60 bg-card/70">
       <CardHeader>
@@ -2384,6 +2513,7 @@ export function ZoneTopologyTab({
           }}
           tabIndex={0}
           onClick={handleViewportClick}
+          onContextMenu={handleNodeContextMenu}
           >
           <div
             className="absolute left-0 top-0"
@@ -2459,6 +2589,7 @@ export function ZoneTopologyTab({
           </div>
         </div>
         {fullscreenLightbox}
+        {nodeContextMenuPortal}
         <div className="space-y-2">
           <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs" open>
             <summary className="cursor-pointer select-none font-semibold">Topology summary</summary>
