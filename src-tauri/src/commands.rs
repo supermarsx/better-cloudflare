@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use tauri::{AppHandle, State};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::net::IpAddr;
 use reqwest::redirect::Policy;
+use tokio::sync::RwLock;
 use trust_dns_resolver::TokioAsyncResolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use crate::storage::{Preferences, Storage};
@@ -978,7 +980,7 @@ pub async fn spf_graph(domain: String) -> Result<spf::SPFGraph, String> {
     spf::build_spf_graph(&domain).await
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostnameChainResult {
     pub name: String,
     pub chain: Vec<String>,
@@ -989,13 +991,13 @@ pub struct HostnameChainResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReverseHostnameResult {
     pub ip: String,
     pub hostnames: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceProbeResult {
     pub host: String,
     pub https_up: bool,
@@ -1006,6 +1008,20 @@ pub struct ServiceProbeResult {
 pub struct TopologyBatchResult {
     pub resolutions: Vec<HostnameChainResult>,
     pub probes: Vec<ServiceProbeResult>,
+}
+
+#[derive(Debug, Clone)]
+struct TopologyHostCacheEntry {
+    ts_ms: i64,
+    value: HostnameChainResult,
+}
+
+const TOPOLOGY_HOST_CACHE_TTL_MS: i64 = 5 * 60 * 1000;
+const TOPOLOGY_HOST_CACHE_MAX_ENTRIES: usize = 6000;
+
+fn topology_host_cache() -> &'static RwLock<HashMap<String, TopologyHostCacheEntry>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, TopologyHostCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn normalize_domain(input: &str) -> String {
@@ -1029,21 +1045,37 @@ async fn query_doh_records(
     name: &str,
     record_type: &str,
 ) -> Vec<String> {
-    for endpoint in doh_endpoints {
-        let Ok(resp) = client
+    if doh_endpoints.is_empty() {
+        return Vec::new();
+    }
+
+    async fn query_one_doh(
+        client: reqwest::Client,
+        endpoint: String,
+        name: String,
+        record_type: String,
+    ) -> Option<Vec<String>> {
+        let send_fut = client
             .get(endpoint)
             .header("accept", "application/dns-json")
-            .query(&[("name", name), ("type", record_type)])
-            .send()
-            .await
-        else {
-            continue;
+            .query(&[("name", name.as_str()), ("type", record_type.as_str())])
+            .send();
+        let Ok(resp) = tokio::time::timeout(Duration::from_millis(1600), send_fut).await else {
+            return None;
+        };
+        let Ok(resp) = resp else {
+            return None;
         };
         if !resp.status().is_success() {
-            continue;
+            return None;
         }
-        let Ok(payload) = resp.json::<DnsGoogleResponse>().await else {
-            continue;
+        let Ok(payload) =
+            tokio::time::timeout(Duration::from_millis(1600), resp.json::<DnsGoogleResponse>()).await
+        else {
+            return None;
+        };
+        let Ok(payload) = payload else {
+            return None;
         };
         let mut out = Vec::new();
         for ans in payload.answer.unwrap_or_default() {
@@ -1061,6 +1093,22 @@ async fn query_doh_records(
             }
         }
         if !out.is_empty() {
+            return Some(out);
+        }
+        None
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for endpoint in doh_endpoints.iter().take(3) {
+        set.spawn(query_one_doh(
+            client.clone(),
+            endpoint.clone(),
+            name.to_string(),
+            record_type.to_string(),
+        ));
+    }
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(out)) = joined {
             return out;
         }
     }
@@ -1093,14 +1141,19 @@ async fn resolve_chain_for_host(
     let mut cur = name.clone();
 
     for _ in 0..max_hops {
-        let cname_lookup = resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME).await;
+        let cname_lookup = tokio::time::timeout(
+            Duration::from_millis(1200),
+            resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME),
+        )
+        .await;
         let direct_next = match cname_lookup {
-            Ok(lookup) => lookup
+            Ok(Ok(lookup)) => lookup
                 .iter()
                 .next()
                 .map(|r| normalize_domain(&r.to_string()))
                 .filter(|s| !s.is_empty()),
             Err(_) => None,
+            Ok(Err(_)) => None,
         };
         let next = if direct_next.is_some() {
             direct_next
@@ -1121,8 +1174,13 @@ async fn resolve_chain_for_host(
         cur = next_name;
     }
 
+    let (v4_lookup, v6_lookup) = tokio::join!(
+        tokio::time::timeout(Duration::from_millis(1200), resolver.ipv4_lookup(cur.clone())),
+        tokio::time::timeout(Duration::from_millis(1200), resolver.ipv6_lookup(cur.clone()))
+    );
+
     let mut ipv4 = Vec::new();
-    if let Ok(v4) = resolver.ipv4_lookup(cur.clone()).await {
+    if let Ok(Ok(v4)) = v4_lookup {
         for ip in v4.iter() {
             let v = ip.to_string();
             if !ipv4.contains(&v) {
@@ -1130,12 +1188,9 @@ async fn resolve_chain_for_host(
             }
         }
     }
-    if ipv4.is_empty() {
-        ipv4 = query_doh_records(client, doh_endpoints, &cur, "A").await;
-    }
 
     let mut ipv6 = Vec::new();
-    if let Ok(v6) = resolver.ipv6_lookup(cur.clone()).await {
+    if let Ok(Ok(v6)) = v6_lookup {
         for ip in v6.iter() {
             let v = ip.to_string();
             if !ipv6.contains(&v) {
@@ -1143,8 +1198,30 @@ async fn resolve_chain_for_host(
             }
         }
     }
-    if ipv6.is_empty() {
-        ipv6 = query_doh_records(client, doh_endpoints, &cur, "AAAA").await;
+
+    if ipv4.is_empty() || ipv6.is_empty() {
+        let (doh_v4, doh_v6) = tokio::join!(
+            async {
+                if ipv4.is_empty() {
+                    query_doh_records(client, doh_endpoints, &cur, "A").await
+                } else {
+                    Vec::new()
+                }
+            },
+            async {
+                if ipv6.is_empty() {
+                    query_doh_records(client, doh_endpoints, &cur, "AAAA").await
+                } else {
+                    Vec::new()
+                }
+            }
+        );
+        if ipv4.is_empty() {
+            ipv4 = doh_v4;
+        }
+        if ipv6.is_empty() {
+            ipv6 = doh_v6;
+        }
     }
 
     let mut reverse_hostnames = Vec::new();
@@ -1156,7 +1233,12 @@ async fn resolve_chain_for_host(
             continue;
         };
         let mut names = Vec::new();
-        if let Ok(ptr_lookup) = resolver.reverse_lookup(parsed).await {
+        let ptr_lookup = tokio::time::timeout(
+            Duration::from_millis(1200),
+            resolver.reverse_lookup(parsed),
+        )
+        .await;
+        if let Ok(Ok(ptr_lookup)) = ptr_lookup {
             for name in ptr_lookup.iter() {
                 let host = normalize_domain(&name.to_utf8());
                 if !host.is_empty() && !names.contains(&host) {
@@ -1241,44 +1323,150 @@ pub async fn resolve_topology_batch(
 ) -> Result<TopologyBatchResult, String> {
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
     let doh_endpoints = resolve_doh_endpoints(doh_provider.as_deref(), doh_custom_url.as_deref());
+    let doh_provider_key = doh_provider
+        .as_deref()
+        .unwrap_or("cloudflare")
+        .trim()
+        .to_lowercase();
+    let doh_custom_key = doh_custom_url.unwrap_or_default().trim().to_string();
     let resolver = build_dns_resolver()?;
     let resolver_http_client = reqwest::Client::builder()
         .redirect(Policy::limited(4))
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| e.to_string())?;
     let mut seen_hosts = HashSet::new();
-    let mut resolutions = Vec::new();
-
+    let mut unique_hosts = Vec::new();
     for h in hostnames {
         let normalized = normalize_domain(&h);
         if normalized.is_empty() || !seen_hosts.insert(normalized.clone()) {
             continue;
         }
-        let result = resolve_chain_for_host(
-            &resolver,
-            &resolver_http_client,
-            &doh_endpoints,
-            &normalized,
-            max_hops,
-        )
-        .await;
-        resolutions.push(result);
+        unique_hosts.push(normalized);
+    }
+
+    let now_ms = Utc::now().timestamp_millis();
+    let mut unresolved_hosts = Vec::new();
+    let mut resolved_by_host: HashMap<String, HostnameChainResult> = HashMap::new();
+    {
+        let cache = topology_host_cache().read().await;
+        for host in &unique_hosts {
+            let cache_key = format!(
+                "{}|{}|{}|{}",
+                doh_provider_key, doh_custom_key, max_hops, host
+            );
+            if let Some(entry) = cache.get(&cache_key) {
+                if now_ms - entry.ts_ms <= TOPOLOGY_HOST_CACHE_TTL_MS {
+                    resolved_by_host.insert(host.clone(), entry.value.clone());
+                    continue;
+                }
+            }
+            unresolved_hosts.push(host.clone());
+        }
+    }
+
+    let mut cache_updates: Vec<(String, HostnameChainResult)> = Vec::new();
+    let resolve_parallelism = 16usize;
+    for chunk in unresolved_hosts.chunks(resolve_parallelism) {
+        let mut set = tokio::task::JoinSet::new();
+        for host in chunk {
+            let host_owned = host.clone();
+            let resolver_cloned = resolver.clone();
+            let client_cloned = resolver_http_client.clone();
+            let doh_endpoints_cloned = doh_endpoints.clone();
+            set.spawn(async move {
+                resolve_chain_for_host(
+                    &resolver_cloned,
+                    &client_cloned,
+                    &doh_endpoints_cloned,
+                    &host_owned,
+                    max_hops,
+                )
+                .await
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok(result) = joined {
+                let host = normalize_domain(&result.name);
+                if !host.is_empty() {
+                    resolved_by_host.insert(host.clone(), result.clone());
+                    cache_updates.push((host, result));
+                }
+            }
+        }
+    }
+    if !cache_updates.is_empty() {
+        let write_ts = Utc::now().timestamp_millis();
+        let mut cache = topology_host_cache().write().await;
+        for (host, result) in cache_updates {
+            let cache_key = format!(
+                "{}|{}|{}|{}",
+                doh_provider_key, doh_custom_key, max_hops, host
+            );
+            cache.insert(
+                cache_key,
+                TopologyHostCacheEntry {
+                    ts_ms: write_ts,
+                    value: result,
+                },
+            );
+        }
+        cache.retain(|_, entry| write_ts - entry.ts_ms <= TOPOLOGY_HOST_CACHE_TTL_MS);
+        if cache.len() > TOPOLOGY_HOST_CACHE_MAX_ENTRIES {
+            let mut oldest: Vec<(String, i64)> = cache
+                .iter()
+                .map(|(k, v)| (k.clone(), v.ts_ms))
+                .collect();
+            oldest.sort_by_key(|(_, ts)| *ts);
+            let remove_count = cache.len() - TOPOLOGY_HOST_CACHE_MAX_ENTRIES;
+            for (k, _) in oldest.into_iter().take(remove_count) {
+                cache.remove(&k);
+            }
+        }
+    }
+    let mut resolutions = Vec::new();
+    for host in unique_hosts {
+        if let Some(value) = resolved_by_host.remove(&host) {
+            resolutions.push(value);
+        }
     }
 
     let mut probes = Vec::new();
     let mut seen_probe_hosts = HashSet::new();
+    let mut unique_probe_hosts = Vec::new();
     for host in service_hosts.unwrap_or_default() {
         let normalized = normalize_domain(&host);
         if normalized.is_empty() || !seen_probe_hosts.insert(normalized.clone()) {
             continue;
         }
-        let https = probe_url(&resolver_http_client, format!("https://{}", normalized)).await;
-        let http = probe_url(&resolver_http_client, format!("http://{}", normalized)).await;
-        probes.push(ServiceProbeResult {
-            host: normalized,
-            https_up: https,
-            http_up: http,
-        });
+        unique_probe_hosts.push(normalized);
+    }
+    let probe_parallelism = 8usize;
+    for chunk in unique_probe_hosts.chunks(probe_parallelism) {
+        let mut set = tokio::task::JoinSet::new();
+        for host in chunk {
+            let host_owned = host.clone();
+            let client_cloned = resolver_http_client.clone();
+            set.spawn(async move {
+                let https_url = format!("https://{}", host_owned);
+                let http_url = format!("http://{}", host_owned);
+                let (https, http) = tokio::join!(
+                    probe_url(&client_cloned, https_url),
+                    probe_url(&client_cloned, http_url)
+                );
+                ServiceProbeResult {
+                    host: host_owned,
+                    https_up: https,
+                    http_up: http,
+                }
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok(result) = joined {
+                probes.push(result);
+            }
+        }
     }
 
     Ok(TopologyBatchResult { resolutions, probes })

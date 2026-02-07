@@ -28,6 +28,70 @@ impl Default for PasskeyManager {
 }
 
 impl PasskeyManager {
+    fn decode_credential_id(value: &str) -> Option<Vec<u8>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(trimmed)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(trimmed))
+            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(trimmed))
+            .ok()
+    }
+
+    fn normalize_credential_id(value: &str) -> String {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        // Only normalize realistic WebAuthn credential IDs.
+        // Short human-readable placeholders (tests/legacy) should stay untouched.
+        if trimmed.len() >= 16 {
+            if let Some(bytes) = Self::decode_credential_id(trimmed) {
+                return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+            }
+        }
+        trimmed.to_string()
+    }
+
+    fn normalized_or_raw_credential_id(value: &str) -> String {
+        let normalized = Self::normalize_credential_id(value);
+        if normalized.is_empty() {
+            value.trim().to_string()
+        } else {
+            normalized
+        }
+    }
+
+    fn credential_ids_match(left: &str, right: &str) -> bool {
+        let l = left.trim();
+        let r = right.trim();
+        if l.is_empty() || r.is_empty() {
+            return false;
+        }
+        if l == r {
+            return true;
+        }
+        match (Self::decode_credential_id(l), Self::decode_credential_id(r)) {
+            (Some(lb), Some(rb)) => lb == rb,
+            _ => false,
+        }
+    }
+
+    fn normalize_assertion_id(value: &str) -> String {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        if trimmed.len() >= 16 {
+            if let Some(bytes) = Self::decode_credential_id(trimmed) {
+                return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+            }
+        }
+        trimmed.to_string()
+    }
+
     fn extract_client_challenge(payload: &Value) -> Result<String, PasskeyError> {
         let client_data_b64 = payload
             .get("response")
@@ -90,7 +154,7 @@ impl PasskeyManager {
         &self,
         storage: &Storage,
         id: &str,
-        attestation: Value,
+        mut attestation: Value,
     ) -> Result<(), PasskeyError> {
         // In a full implementation, this would verify the attestation
         // For now, we'll just store the credential
@@ -103,6 +167,26 @@ impl PasskeyManager {
         let challenge = Self::extract_client_challenge(&attestation)?;
         if challenge != expected {
             return Err(PasskeyError::Error("Challenge mismatch".to_string()));
+        }
+        if let Some(obj) = attestation.as_object_mut() {
+            let normalized_raw = obj
+                .get("rawId")
+                .and_then(|v| v.as_str())
+                .map(Self::normalized_or_raw_credential_id)
+                .filter(|v| !v.is_empty());
+            let normalized_id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(Self::normalized_or_raw_credential_id)
+                .filter(|v| !v.is_empty());
+            let final_raw = normalized_raw.clone().or(normalized_id.clone());
+            let final_id = normalized_id.or(normalized_raw);
+            if let Some(raw) = final_raw {
+                obj.insert("rawId".to_string(), Value::String(raw));
+            }
+            if let Some(cid) = final_id {
+                obj.insert("id".to_string(), Value::String(cid));
+            }
         }
         storage
             .store_passkey(id, attestation)
@@ -139,8 +223,11 @@ impl PasskeyManager {
             .map_err(|e| PasskeyError::Error(e.to_string()))?
             .into_iter()
             .filter_map(|c| {
-                let cred_id = c["id"].as_str().map(|s| s.to_string())
-                    .or_else(|| c["rawId"].as_str().map(|s| s.to_string()));
+                let cred_id = c["id"]
+                    .as_str()
+                    .or_else(|| c["rawId"].as_str())
+                    .map(Self::normalize_credential_id)
+                    .filter(|v| !v.is_empty());
                 cred_id.map(|id| serde_json::json!({ "id": id, "type": "public-key" }))
             })
             .collect::<Vec<_>>();
@@ -183,9 +270,16 @@ impl PasskeyManager {
                 .and_then(|v| v.as_str())
                 .or_else(|| _assertion.get("id").and_then(|v| v.as_str()));
             if let Some(assertion_id) = assertion_id {
+                let assertion_id = Self::normalize_assertion_id(assertion_id);
                 let matched = list.iter().any(|c| {
-                    c.get("rawId").and_then(|v| v.as_str()) == Some(assertion_id)
-                        || c.get("id").and_then(|v| v.as_str()) == Some(assertion_id)
+                    c.get("rawId")
+                        .and_then(|v| v.as_str())
+                        .map(|stored| Self::credential_ids_match(stored, &assertion_id))
+                        .unwrap_or(false)
+                        || c.get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|stored| Self::credential_ids_match(stored, &assertion_id))
+                            .unwrap_or(false)
                 });
                 if !matched {
                     return Err(PasskeyError::NotFound);
@@ -413,10 +507,18 @@ mod tests {
         mgr.register_passkey(&storage, id, attestation)
             .await
             .expect("register");
+        let auth_options = mgr
+            .get_auth_options(&storage, id)
+            .await
+            .expect("auth opts");
+        let auth_challenge = auth_options
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .expect("auth challenge");
         let assertion = serde_json::json!({
             "id": "cred_token",
             "response": {
-                "clientDataJSON": encode_client_data(challenge)
+                "clientDataJSON": encode_client_data(auth_challenge)
             }
         });
         let result = mgr

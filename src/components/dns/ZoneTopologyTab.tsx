@@ -4,8 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/DropdownMenu";
+import {
+  ChevronDown,
   Copy,
-  Download,
   Edit3,
   FileDown,
   Hand,
@@ -36,6 +42,7 @@ type TopologySummary = {
   detectedServices: Array<{ name: string; via: string }>;
   mxTrails: Array<{
     from: string;
+    priority: number | null;
     target: string;
     chain: string[];
     terminal: string;
@@ -354,8 +361,8 @@ function pickBestResolution(
 }
 
 function safeNodeLabel(name: string, info: string): string {
-  const compactInfo = info.replace(/\n/g, "<br/>");
-  return `${esc(name)}<br/><span style='font-size:11px;opacity:0.8'>${esc(compactInfo)}</span>`;
+  const compactInfo = info.replace(/\s*\|\s*/g, " | ").replace(/\n/g, " ");
+  return `${esc(name)}\\n${esc(compactInfo)}`;
 }
 
 function classifyAreas(
@@ -414,8 +421,20 @@ function buildTopology(
   const cnameChains = computeCnameChains(records, maxResolutionHops);
   const cnameMap = buildCnameMap(records);
   const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
+  const ptrByIp = new Map<string, string[]>();
   const nodeRecords = new Map<string, DNSRecord[]>();
   const edgeSet = new Set<string>();
+  for (const resolved of Object.values(externalResolutionByName)) {
+    for (const [ipRaw, hostnamesRaw] of Object.entries(resolved.reverseHostnamesByIp ?? {})) {
+      const ip = String(ipRaw ?? "").trim();
+      if (!ip) continue;
+      const hostnames = Array.from(
+        new Set((hostnamesRaw ?? []).map((h) => normalizeDomain(h)).filter(Boolean)),
+      );
+      if (!hostnames.length) continue;
+      ptrByIp.set(ip, hostnames);
+    }
+  }
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
     const labelName = nameRaw === "@" ? zone : nameRaw;
@@ -428,12 +447,16 @@ function buildTopology(
   for (const r of records) {
     if (r.type !== "MX") continue;
     const fromName = normalizeDomain(r.name) || zone;
+    const rawParts = String(r.content ?? "").trim().split(/\s+/);
+    const maybePriority = Number(rawParts[0]);
+    const priority = Number.isFinite(maybePriority) ? maybePriority : null;
     const mxTarget = extractTarget(r);
     if (!mxTarget) continue;
     const localResolved = resolveNameToTerminal(mxTarget, cnameMap, ipv4ByName, ipv6ByName, maxResolutionHops);
     const resolved = pickBestResolution(mxTarget, localResolved, externalResolutionByName);
     mxTrails.push({
       from: fromName,
+      priority,
       target: mxTarget,
       chain: resolved.chain,
       terminal: resolved.terminal,
@@ -449,6 +472,11 @@ function buildTopology(
     const id = `n_${nextId++}`;
     nodeIds.set(key, id);
     return id;
+  };
+  const renderIpNodeLabel = (ip: string) => {
+    const ptr = ptrByIp.get(ip) ?? [];
+    if (!ptr.length) return esc(ip);
+    return safeNodeLabel(ip, `PTR:${ptr.join(", ")}`);
   };
 
   lines.push("flowchart LR");
@@ -508,6 +536,13 @@ function buildTopology(
     const proxyValues = Array.from(new Set(unit.records.map((r) => (r.proxied ? "proxied" : "dns-only"))));
     const info = [
       `type:${unit.type}${unit.aggregate ? ` x${unit.records.length}` : ""}`,
+      unit.type === "MX"
+        ? (() => {
+            const parts = String(unit.records[0]?.content ?? "").trim().split(/\s+/);
+            const parsedPriority = Number(parts[0]);
+            return Number.isFinite(parsedPriority) ? `prio:${parsedPriority}` : "";
+          })()
+        : "",
       `ttl:${ttlValues.length === 1 ? ttlValues[0] : "mixed"}`,
       proxyValues.length === 1 ? proxyValues[0] : "proxy:mixed",
       resolved.chain.length > 1 ? `resolves:${resolved.terminal}` : "",
@@ -518,22 +553,60 @@ function buildTopology(
     lines.push(`  ${recordId}["${safeNodeLabel(unit.name, info || "record")}"]:::record`);
     lines.push(`  ${zoneNode} --> ${recordId}`);
 
-    const targets = Array.from(
-      new Set(unit.records.map((r) => extractTarget(r)).filter((v): v is string => Boolean(v))),
-    );
-    for (const target of targets) {
+    const targetEntries =
+      unit.type === "MX"
+        ? unit.records
+            .map((record) => {
+              const target = extractTarget(record);
+              if (!target) return null;
+              const parts = String(record.content ?? "").trim().split(/\s+/);
+              const parsedPriority = Number(parts[0]);
+              return {
+                recordId: record.id,
+                target,
+                priority: Number.isFinite(parsedPriority) ? parsedPriority : null,
+              };
+            })
+            .filter((entry): entry is { recordId: string; target: string; priority: number | null } => Boolean(entry))
+        : Array.from(
+            new Set(unit.records.map((r) => extractTarget(r)).filter((v): v is string => Boolean(v))),
+          ).map((target) => ({ recordId: "", target, priority: null as number | null }));
+
+    for (const entry of targetEntries) {
+      const target = entry.target;
       const isIp = unit.type === "A" || unit.type === "AAAA";
       const targetKey = `${isIp ? "ip" : "target"}:${target}`;
       const targetId = idFor(targetKey);
       const targetClass = isIp ? "ip" : "target";
+      const mxPriorityNodeId =
+        unit.type === "MX"
+          ? idFor(`mxprio:${entry.recordId || unit.key}:${entry.priority ?? "na"}:${target}`)
+          : null;
+      const edgeFromNodeId = mxPriorityNodeId ?? recordId;
 
       if (!usedNames.has(targetKey)) {
-        lines.push(`  ${targetId}["${esc(target)}"]:::${targetClass}`);
+        const targetLabel = targetClass === "ip" ? renderIpNodeLabel(target) : esc(target);
+        lines.push(`  ${targetId}["${targetLabel}"]:::${targetClass}`);
         usedNames.add(targetKey);
       }
 
-      lines.push(`  ${recordId} -- "${esc(unit.type)}" --> ${targetId}`);
-      edgeSet.add(`${recordId}|${unit.type}|${targetId}`);
+      if (mxPriorityNodeId) {
+        const mxPriorityLabel = `MX Priority ${entry.priority ?? "?"}`;
+        lines.push(`  ${mxPriorityNodeId}["${esc(mxPriorityLabel)}"]:::target`);
+        const mxEdge = `${recordId}|MX|${mxPriorityNodeId}`;
+        if (!edgeSet.has(mxEdge)) {
+          lines.push(`  ${recordId} -- "MX" --> ${mxPriorityNodeId}`);
+          edgeSet.add(mxEdge);
+        }
+        const targetEdge = `${mxPriorityNodeId}|P${entry.priority ?? "?"}|${targetId}`;
+        if (!edgeSet.has(targetEdge)) {
+          lines.push(`  ${mxPriorityNodeId} -- "prio ${entry.priority ?? "?"}" --> ${targetId}`);
+          edgeSet.add(targetEdge);
+        }
+      } else {
+        lines.push(`  ${recordId} -- "${esc(unit.type)}" --> ${targetId}`);
+        edgeSet.add(`${recordId}|${unit.type}|${targetId}`);
+      }
 
       // Trace hostname -> CNAME chain -> terminal A/AAAA path for non-IP targets.
       if (!isIp) {
@@ -567,11 +640,11 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv4) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+            lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
-          const k = `${termId}|A|${ipId}`;
+          const k = `${edgeFromNodeId}|A|${termId}|${ipId}`;
           if (!edgeSet.has(k)) {
             lines.push(`  ${termId} -. "A" .-> ${ipId}`);
             edgeSet.add(k);
@@ -580,11 +653,11 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv6) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+            lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
-          const k = `${termId}|AAAA|${ipId}`;
+          const k = `${edgeFromNodeId}|AAAA|${termId}|${ipId}`;
           if (!edgeSet.has(k)) {
             lines.push(`  ${termId} -. "AAAA" .-> ${ipId}`);
             edgeSet.add(k);
@@ -595,7 +668,7 @@ function buildTopology(
             if (!ptrNames?.length) continue;
             const ipId = idFor(`ip:${ip}`);
             if (!usedNames.has(`ip:${ip}`)) {
-              lines.push(`  ${ipId}["${esc(ip)}"]:::ip`);
+              lines.push(`  ${ipId}["${renderIpNodeLabel(ip)}"]:::ip`);
               usedNames.add(`ip:${ip}`);
             }
             for (const ptrName of ptrNames) {
@@ -892,6 +965,7 @@ export function ZoneTopologyTab({
   const [activeResolutionRequests, setActiveResolutionRequests] = useState<string[]>([]);
   const resolutionCacheRef = useRef<Map<string, TopologyResolutionCacheEntry>>(new Map());
   const probeCacheRef = useRef<Map<string, TopologyProbeCacheEntry>>(new Map());
+  const lastResolutionRunKeyRef = useRef<string>("");
   const [isDarkThemeMode, setIsDarkThemeMode] = useState(() => detectDarkThemeMode());
   const [summary, setSummary] = useState<TopologySummary>({
     cnameChains: [],
@@ -969,6 +1043,11 @@ export function ZoneTopologyTab({
     }
     let cancelled = false;
     (async () => {
+      const runKey = `${recordsFingerprint}|${zoneName}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${manualRefreshTick}`;
+      if (topologyResolutionReady && lastResolutionRunKeyRef.current === runKey) {
+        return;
+      }
+      lastResolutionRunKeyRef.current = runKey;
       const queue = Array.from(candidates);
       const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
       let total = queue.length;
@@ -1020,14 +1099,11 @@ export function ZoneTopologyTab({
           unresolvedQueue.push(name);
         }
       }
-      const chunkSize = 20;
       updateProgress();
-      for (let idx = 0; idx < unresolvedQueue.length; idx += chunkSize) {
-        if (cancelled) return;
-        const chunk = unresolvedQueue.slice(idx, idx + chunkSize);
-        setActiveResolutionRequests(chunk);
+      if (unresolvedQueue.length > 0) {
+        setActiveResolutionRequests(unresolvedQueue.slice(0, 12));
         const backendBatch = await resolveTopologyBatchInBackend(
-          chunk,
+          unresolvedQueue,
           clampedHops,
           dohProvider,
           dohCustomUrl,
@@ -1053,7 +1129,7 @@ export function ZoneTopologyTab({
           }
         } else {
           const fallback = await Promise.all(
-            chunk.map(async (name) => {
+            unresolvedQueue.map(async (name) => {
               const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoints);
               return [name, resolved] as const;
             }),
@@ -1107,7 +1183,7 @@ export function ZoneTopologyTab({
       setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
       setActiveResolutionRequests([]);
     };
-  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick]);
+  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1141,7 +1217,7 @@ export function ZoneTopologyTab({
           },
           flowchart: {
             curve: "basis",
-            htmlLabels: true,
+            htmlLabels: false,
             defaultRenderer: "elk",
             nodeSpacing: 70,
             rankSpacing: 95,
@@ -1382,6 +1458,115 @@ export function ZoneTopologyTab({
     toast({ title: "Copied", description: "Topology Mermaid code copied to clipboard." });
   }, [mermaidCode, toast]);
 
+  const renderSvgToPngBlob = useCallback(async (): Promise<Blob | null> => {
+    if (!svgMarkup.trim()) return null;
+    const sanitizeSvgForRasterization = (input: string): string => {
+      try {
+        const doc = new DOMParser().parseFromString(input, "image/svg+xml");
+        const isExternalRef = (value: string | null) =>
+          Boolean(value && /^(https?:)?\/\//i.test(value.trim()));
+        for (const el of Array.from(doc.querySelectorAll("image,use"))) {
+          const href = el.getAttribute("href") ?? el.getAttribute("xlink:href");
+          if (isExternalRef(href)) {
+            el.remove();
+          }
+        }
+        for (const styleNode of Array.from(doc.querySelectorAll("style"))) {
+          const text = styleNode.textContent ?? "";
+          styleNode.textContent = text.replace(/@import\s+url\((['"]?)(https?:)?\/\/.*?\);\s*/gi, "");
+        }
+        const svg = doc.querySelector("svg");
+        return svg ? new XMLSerializer().serializeToString(svg) : input;
+      } catch {
+        return input;
+      }
+    };
+    const safeSvgMarkup = sanitizeSvgForRasterization(svgMarkup);
+    const parsed = new DOMParser().parseFromString(safeSvgMarkup, "image/svg+xml");
+    const svg = parsed.querySelector("svg");
+    const vb = svg?.getAttribute("viewBox")?.split(/\s+/).map(Number) ?? [];
+    const widthAttr = Number(svg?.getAttribute("width")?.replace(/[^\d.]/g, ""));
+    const heightAttr = Number(svg?.getAttribute("height")?.replace(/[^\d.]/g, ""));
+    const width =
+      Number.isFinite(widthAttr) && widthAttr > 0
+        ? widthAttr
+        : Number.isFinite(vb[2]) && vb[2] > 0
+          ? vb[2]
+          : 1600;
+    const height =
+      Number.isFinite(heightAttr) && heightAttr > 0
+        ? heightAttr
+        : Number.isFinite(vb[3]) && vb[3] > 0
+          ? vb[3]
+          : 900;
+    const encoded = new TextEncoder().encode(safeSvgMarkup);
+    const url = URL.createObjectURL(new Blob([encoded], { type: "image/svg+xml;charset=utf-8" }));
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const i = new Image();
+        i.crossOrigin = "anonymous";
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("Failed to render SVG"));
+        i.src = url;
+      });
+      const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      try {
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0, width, height);
+      } catch {
+        return null;
+      }
+      return await new Promise<Blob | null>((resolve) => {
+        try {
+          canvas.toBlob((b) => resolve(b), "image/png");
+        } catch {
+          resolve(null);
+        }
+      });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }, [svgMarkup]);
+
+  const copySvg = useCallback(async () => {
+    if (!svgMarkup.trim()) return;
+    const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+    try {
+      if ("ClipboardItem" in window && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({ "image/svg+xml": svgBlob })]);
+      } else {
+        await navigator.clipboard.writeText(svgMarkup);
+      }
+      toast({ title: "Copied", description: "Topology SVG copied to clipboard." });
+    } catch {
+      await navigator.clipboard.writeText(svgMarkup);
+      toast({ title: "Copied", description: "SVG markup copied to clipboard." });
+    }
+  }, [svgMarkup, toast]);
+
+  const copyPng = useCallback(async () => {
+    const pngBlob = await renderSvgToPngBlob();
+    if (!pngBlob) {
+      toast({ title: "Copy failed", description: "Unable to render PNG from topology.", variant: "destructive" });
+      return;
+    }
+    if ("ClipboardItem" in window && navigator.clipboard?.write) {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+      toast({ title: "Copied", description: "Topology PNG copied to clipboard." });
+      return;
+    }
+    toast({
+      title: "Copy unsupported",
+      description: "PNG clipboard writing is not supported in this environment.",
+      variant: "destructive",
+    });
+  }, [renderSvgToPngBlob, toast]);
+
   const exportSvg = useCallback(() => {
     if (!svgMarkup.trim()) return;
     const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
@@ -1392,6 +1577,20 @@ export function ZoneTopologyTab({
     a.click();
     URL.revokeObjectURL(url);
   }, [svgMarkup, zoneName]);
+
+  const exportPng = useCallback(async () => {
+    const pngBlob = await renderSvgToPngBlob();
+    if (!pngBlob) {
+      toast({ title: "Export failed", description: "Unable to render PNG from topology.", variant: "destructive" });
+      return;
+    }
+    const url = URL.createObjectURL(pngBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${normalizeDomain(zoneName) || "zone"}-topology.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [renderSvgToPngBlob, toast, zoneName]);
 
   const printToPdf = useCallback(() => {
     if (!svgMarkup.trim()) return;
@@ -1652,22 +1851,56 @@ export function ZoneTopologyTab({
         className="h-8 w-44"
         placeholder="Annotation text"
       />
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={copyCode} disabled={!mermaidCode}>
-        <Copy className="h-3.5 w-3.5 mr-1" />
-        Copy code
-      </Button>
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportCode} disabled={!mermaidCode}>
-        <Download className="h-3.5 w-3.5 mr-1" />
-        Export code
-      </Button>
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={exportSvg} disabled={!svgMarkup}>
-        <FileDown className="h-3.5 w-3.5 mr-1" />
-        Export SVG
-      </Button>
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={printToPdf} disabled={!svgMarkup}>
-        <FileDown className="h-3.5 w-3.5 mr-1" />
-        Export PDF
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="outline" className="h-8 px-2" disabled={!mermaidCode && !svgMarkup}>
+            <Copy className="h-3.5 w-3.5 mr-1" />
+            Copy
+            <ChevronDown className="ml-1 h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" sideOffset={6} className="w-52">
+          <DropdownMenuItem onClick={() => void copyCode()} disabled={!mermaidCode}>
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            Copy Mermaid code
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void copySvg()} disabled={!svgMarkup}>
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            Copy SVG
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void copyPng()} disabled={!svgMarkup}>
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            Copy PNG
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="outline" className="h-8 px-2" disabled={!mermaidCode && !svgMarkup}>
+            <FileDown className="h-3.5 w-3.5 mr-1" />
+            Export
+            <ChevronDown className="ml-1 h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" sideOffset={6} className="w-52">
+          <DropdownMenuItem onClick={exportCode} disabled={!mermaidCode}>
+            <FileDown className="mr-2 h-3.5 w-3.5" />
+            Export Mermaid code
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={exportSvg} disabled={!svgMarkup}>
+            <FileDown className="mr-2 h-3.5 w-3.5" />
+            Export SVG
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void exportPng()} disabled={!svgMarkup}>
+            <FileDown className="mr-2 h-3.5 w-3.5" />
+            Export PNG
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={printToPdf} disabled={!svgMarkup}>
+            <FileDown className="mr-2 h-3.5 w-3.5" />
+            Export PDF
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Button
         size="sm"
         variant="outline"
@@ -2006,7 +2239,7 @@ export function ZoneTopologyTab({
                 <div key={`${svc.name}:${svc.via}`}>Provider: {svc.name} via {svc.via}</div>
               ))}
               {summary.mxTrails.slice(0, 10).map((mx) => (
-                <div key={`${mx.from}:${mx.target}`}>
+                <div key={`${mx.from}:${mx.priority ?? "na"}:${mx.target}`}>
                   {(() => {
                     const external = externalResolutionByName[normalizeDomain(mx.terminal || mx.target)];
                     const chain = mx.chain.length > 1 ? mx.chain : external?.chain ?? mx.chain;
@@ -2014,7 +2247,7 @@ export function ZoneTopologyTab({
                     const ipv6 = mx.ipv6.length ? mx.ipv6 : external?.ipv6 ?? [];
                     return (
                       <>
-                  MX trail {mx.from} {"->"} {mx.target}
+                  MX trail {mx.from} (prio {mx.priority ?? "?"}) {"->"} {mx.target}
                   {chain.length > 1 ? ` -> ${chain.slice(1).join(" -> ")}` : ""}
                   {ipv4.length || ipv6.length
                     ? ` | A: ${ipv4.join(", ") || "none"} | AAAA: ${ipv6.join(", ") || "none"}`

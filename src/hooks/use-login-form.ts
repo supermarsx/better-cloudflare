@@ -461,8 +461,9 @@ export function useLoginForm(
             serverResp.token,
           );
           if (secret) {
+            const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
             storageManager.setCurrentSession(selectedKeyId);
-            onLogin(secret);
+            onLogin(secret, selectedKey?.email);
             toast({ 
               title: "✓ Login Successful", 
               description: "Authenticated using passkey" 
