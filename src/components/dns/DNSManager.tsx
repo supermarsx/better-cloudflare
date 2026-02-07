@@ -483,6 +483,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyDohCustomUrl, setTopologyDohCustomUrl] = useState(
     storageManager.getTopologyDohCustomUrl(),
   );
+  const [topologyExportConfirmPath, setTopologyExportConfirmPath] = useState(
+    storageManager.getTopologyExportConfirmPath(),
+  );
+  const [topologyExportFolderPreset, setTopologyExportFolderPreset] = useState<ExportFolderPreset>(
+    storageManager.getTopologyExportFolderPreset() as ExportFolderPreset,
+  );
+  const [topologyExportCustomPath, setTopologyExportCustomPath] = useState(
+    storageManager.getTopologyExportCustomPath(),
+  );
+  const [topologyDisableAnnotations, setTopologyDisableAnnotations] = useState(
+    storageManager.getTopologyDisableAnnotations(),
+  );
+  const [topologyDisableFullWindow, setTopologyDisableFullWindow] = useState(
+    storageManager.getTopologyDisableFullWindow(),
+  );
+  const [topologyLookupTimeoutMs, setTopologyLookupTimeoutMs] = useState(
+    storageManager.getTopologyLookupTimeoutMs(),
+  );
+  const [topologyDisablePtrLookups, setTopologyDisablePtrLookups] = useState(
+    storageManager.getTopologyDisablePtrLookups(),
+  );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
@@ -562,6 +583,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       topologyResolutionMaxHops,
       topologyDohProvider,
       topologyDohCustomUrl,
+      topologyExportConfirmPath,
+      topologyExportFolderPreset,
+      topologyExportCustomPath,
+      topologyDisableAnnotations,
+      topologyDisableFullWindow,
+      topologyLookupTimeoutMs,
+      topologyDisablePtrLookups,
       auditExportDefaultDocuments,
       confirmClearAuditLogs,
       auditExportFolderPreset,
@@ -584,6 +612,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyResolutionMaxHops,
     topologyDohProvider,
     topologyDohCustomUrl,
+    topologyExportConfirmPath,
+    topologyExportFolderPreset,
+    topologyExportCustomPath,
+    topologyDisableAnnotations,
+    topologyDisableFullWindow,
+    topologyLookupTimeoutMs,
+    topologyDisablePtrLookups,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -642,6 +677,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyDohCustomUrl === "string") {
       setTopologyDohCustomUrl(profile.topologyDohCustomUrl);
+    }
+    if (typeof profile.topologyExportConfirmPath === "boolean") {
+      setTopologyExportConfirmPath(profile.topologyExportConfirmPath);
+    }
+    if (typeof profile.topologyExportFolderPreset === "string") {
+      setTopologyExportFolderPreset(profile.topologyExportFolderPreset as ExportFolderPreset);
+    }
+    if (typeof profile.topologyExportCustomPath === "string") {
+      setTopologyExportCustomPath(profile.topologyExportCustomPath);
+    }
+    if (typeof profile.topologyDisableAnnotations === "boolean") {
+      setTopologyDisableAnnotations(profile.topologyDisableAnnotations);
+    }
+    if (typeof profile.topologyDisableFullWindow === "boolean") {
+      setTopologyDisableFullWindow(profile.topologyDisableFullWindow);
+    }
+    if (typeof profile.topologyLookupTimeoutMs === "number") {
+      setTopologyLookupTimeoutMs(Math.max(250, Math.min(10000, Math.round(profile.topologyLookupTimeoutMs))));
+    }
+    if (typeof profile.topologyDisablePtrLookups === "boolean") {
+      setTopologyDisablePtrLookups(profile.topologyDisablePtrLookups);
     }
     if (typeof profile.auditExportDefaultDocuments === "boolean") {
       setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
@@ -1067,6 +1123,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_resolution_max_hops?: number;
             topology_doh_provider?: TopologyDohProvider;
             topology_doh_custom_url?: string;
+            topology_export_confirm_path?: boolean;
+            topology_export_folder_preset?: string;
+            topology_export_custom_path?: string;
+            topology_disable_annotations?: boolean;
+            topology_disable_full_window?: boolean;
+            topology_lookup_timeout_ms?: number;
+            topology_disable_ptr_lookups?: boolean;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -1139,6 +1202,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.topology_doh_custom_url === "string") {
             setTopologyDohCustomUrl(prefObj.topology_doh_custom_url);
           }
+          if (typeof prefObj.topology_export_confirm_path === "boolean") {
+            setTopologyExportConfirmPath(prefObj.topology_export_confirm_path);
+          }
+          if (typeof prefObj.topology_export_folder_preset === "string") {
+            setTopologyExportFolderPreset(prefObj.topology_export_folder_preset as ExportFolderPreset);
+          }
+          if (typeof prefObj.topology_export_custom_path === "string") {
+            setTopologyExportCustomPath(prefObj.topology_export_custom_path);
+          }
+          if (typeof prefObj.topology_disable_annotations === "boolean") {
+            setTopologyDisableAnnotations(prefObj.topology_disable_annotations);
+          }
+          if (typeof prefObj.topology_disable_full_window === "boolean") {
+            setTopologyDisableFullWindow(prefObj.topology_disable_full_window);
+          }
+          if (typeof prefObj.topology_lookup_timeout_ms === "number") {
+            setTopologyLookupTimeoutMs(Math.max(250, Math.min(10000, Math.round(prefObj.topology_lookup_timeout_ms))));
+          }
+          if (typeof prefObj.topology_disable_ptr_lookups === "boolean") {
+            setTopologyDisablePtrLookups(prefObj.topology_disable_ptr_lookups);
+          }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
             setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
           }
@@ -1187,6 +1271,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
     setTopologyDohProvider(storageManager.getTopologyDohProvider());
     setTopologyDohCustomUrl(storageManager.getTopologyDohCustomUrl());
+    setTopologyExportConfirmPath(storageManager.getTopologyExportConfirmPath());
+    setTopologyExportFolderPreset(storageManager.getTopologyExportFolderPreset() as ExportFolderPreset);
+    setTopologyExportCustomPath(storageManager.getTopologyExportCustomPath());
+    setTopologyDisableAnnotations(storageManager.getTopologyDisableAnnotations());
+    setTopologyDisableFullWindow(storageManager.getTopologyDisableFullWindow());
+    setTopologyLookupTimeoutMs(storageManager.getTopologyLookupTimeoutMs());
+    setTopologyDisablePtrLookups(storageManager.getTopologyDisablePtrLookups());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
@@ -1311,6 +1402,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
     storageManager.setTopologyDohProvider(topologyDohProvider);
     storageManager.setTopologyDohCustomUrl(topologyDohCustomUrl);
+    storageManager.setTopologyExportConfirmPath(topologyExportConfirmPath);
+    storageManager.setTopologyExportFolderPreset(topologyExportFolderPreset);
+    storageManager.setTopologyExportCustomPath(topologyExportCustomPath);
+    storageManager.setTopologyDisableAnnotations(topologyDisableAnnotations);
+    storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
+    storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
+    storageManager.setTopologyDisablePtrLookups(topologyDisablePtrLookups);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
@@ -1340,6 +1438,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_resolution_max_hops: topologyResolutionMaxHops,
             topology_doh_provider: topologyDohProvider,
             topology_doh_custom_url: topologyDohCustomUrl,
+            topology_export_confirm_path: topologyExportConfirmPath,
+            topology_export_folder_preset: topologyExportFolderPreset,
+            topology_export_custom_path: topologyExportCustomPath,
+            topology_disable_annotations: topologyDisableAnnotations,
+            topology_disable_full_window: topologyDisableFullWindow,
+            topology_lookup_timeout_ms: topologyLookupTimeoutMs,
+            topology_disable_ptr_lookups: topologyDisablePtrLookups,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
@@ -1369,6 +1474,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyResolutionMaxHops,
     topologyDohProvider,
     topologyDohCustomUrl,
+    topologyExportConfirmPath,
+    topologyExportFolderPreset,
+    topologyExportCustomPath,
+    topologyDisableAnnotations,
+    topologyDisableFullWindow,
+    topologyLookupTimeoutMs,
+    topologyDisablePtrLookups,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -4387,6 +4499,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   maxResolutionHops={topologyResolutionMaxHops}
                   dohProvider={topologyDohProvider}
                   dohCustomUrl={topologyDohCustomUrl}
+                  exportConfirmPath={topologyExportConfirmPath}
+                  exportFolderPreset={topologyExportFolderPreset}
+                  exportCustomPath={topologyExportCustomPath}
+                  disableAnnotations={topologyDisableAnnotations}
+                  disableFullWindow={topologyDisableFullWindow}
+                  lookupTimeoutMs={topologyLookupTimeoutMs}
+                  disablePtrLookups={topologyDisablePtrLookups}
                   onRefresh={async () => {
                     await loadRecords(activeTab);
                   }}
@@ -5341,6 +5460,154 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Lookup timeout</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(topologyLookupTimeoutMs)}
+                              onValueChange={(v) => {
+                                const next = Number(v);
+                                const clamped = Math.max(250, Math.min(10000, Number.isNaN(next) ? 1200 : next));
+                                setTopologyLookupTimeoutMs(clamped);
+                                notifySaved(`Topology lookup timeout set to ${clamped}ms.`);
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue placeholder="Timeout" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="250">250 ms</SelectItem>
+                                <SelectItem value="500">500 ms</SelectItem>
+                                <SelectItem value="800">800 ms</SelectItem>
+                                <SelectItem value="1200">1200 ms</SelectItem>
+                                <SelectItem value="2000">2000 ms</SelectItem>
+                                <SelectItem value="3000">3000 ms</SelectItem>
+                                <SelectItem value="5000">5000 ms</SelectItem>
+                                <SelectItem value="8000">8000 ms</SelectItem>
+                                <SelectItem value="10000">10000 ms</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              Per DNS/DoH lookup timeout for topology chain resolution.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Disable end-node PTR lookups</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={topologyDisablePtrLookups}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyDisablePtrLookups(checked);
+                                notifySaved(
+                                  checked
+                                    ? "PTR lookups disabled for topology end nodes."
+                                    : "PTR lookups enabled for topology end nodes.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Skip reverse DNS lookups to speed up topology loading.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Disable annotations</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={topologyDisableAnnotations}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyDisableAnnotations(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Topology annotations disabled."
+                                    : "Topology annotations enabled.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Hides annotation tools in topology view.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Disable full window</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={topologyDisableFullWindow}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyDisableFullWindow(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Full-window topology mode disabled."
+                                    : "Full-window topology mode enabled.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Hides full-window graph action in topology controls.
+                            </div>
+                          </div>
+                        </div>
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Confirm path to export</div>
+                            <div className="flex items-center gap-3">
+                              <Switch
+                                checked={topologyExportConfirmPath}
+                                onCheckedChange={(checked: boolean) => {
+                                  setTopologyExportConfirmPath(checked);
+                                  notifySaved(
+                                    checked
+                                      ? "Topology exports will ask for destination."
+                                      : "Topology exports will save directly to default path.",
+                                  );
+                                }}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Applies to topology code/SVG/PNG export actions.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Topology export path</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Select
+                                value={topologyExportFolderPreset}
+                                onValueChange={(v) => {
+                                  setTopologyExportFolderPreset(v as ExportFolderPreset);
+                                  notifySaved(`Topology export preset set to ${v}.`);
+                                }}
+                              >
+                                <SelectTrigger className="w-52">
+                                  <SelectValue placeholder="Folder preset" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="system">System default</SelectItem>
+                                  <SelectItem value="documents">Documents</SelectItem>
+                                  <SelectItem value="downloads">Downloads</SelectItem>
+                                  <SelectItem value="desktop">Desktop</SelectItem>
+                                  <SelectItem value="custom">Custom path</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-xs text-muted-foreground">
+                                Default export location for topology assets.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {isDesktop() && topologyExportFolderPreset === "custom" && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Custom export path</div>
+                            <Input
+                              value={topologyExportCustomPath}
+                              onChange={(e) => setTopologyExportCustomPath(e.target.value)}
+                              placeholder="C:\\Users\\You\\Documents\\Topology Exports"
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                     {settingsSubtab === "audit" && (

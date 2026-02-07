@@ -409,6 +409,11 @@ export class TauriClient {
     serviceHosts?: string[],
     dohProvider: "google" | "cloudflare" | "quad9" | "custom" = "cloudflare",
     dohCustomUrl = "",
+    resolverMode: "dns" | "doh" = "dns",
+    dnsServer = "1.1.1.1",
+    customDnsServer = "",
+    lookupTimeoutMs = 1200,
+    disablePtrLookups = false,
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
       hostnames,
@@ -416,6 +421,31 @@ export class TauriClient {
       service_hosts: serviceHosts,
       doh_provider: dohProvider,
       doh_custom_url: dohCustomUrl,
+      resolver_mode: resolverMode,
+      dns_server: dnsServer,
+      custom_dns_server: customDnsServer,
+      lookup_timeout_ms: lookupTimeoutMs,
+      disable_ptr_lookups: disablePtrLookups,
+    });
+  }
+
+  static async saveTopologyAsset(
+    format: "mmd" | "svg" | "png",
+    fileName: string,
+    payload: string,
+    isBase64 = false,
+    folderPreset = "documents",
+    customPath = "",
+    confirmPath = true,
+  ): Promise<string> {
+    return invoke("save_topology_asset", {
+      format,
+      fileName,
+      payload,
+      isBase64,
+      folderPreset,
+      customPath,
+      confirmPath,
     });
   }
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use base64::Engine;
 use chrono::Utc;
 use tauri::{AppHandle, State};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,7 @@ use std::net::IpAddr;
 use reqwest::redirect::Policy;
 use tokio::sync::RwLock;
 use trust_dns_resolver::TokioAsyncResolver;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use crate::storage::{Preferences, Storage};
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
@@ -945,6 +946,88 @@ pub async fn save_audit_entries(
 }
 
 #[tauri::command]
+pub async fn save_topology_asset(
+    format: String,
+    file_name: String,
+    payload: String,
+    is_base64: Option<bool>,
+    folder_preset: Option<String>,
+    custom_path: Option<String>,
+    confirm_path: Option<bool>,
+) -> Result<String, String> {
+    let fmt = format.trim().to_lowercase();
+    if fmt.is_empty() {
+        return Err("Format is required".to_string());
+    }
+    let extension = match fmt.as_str() {
+        "png" => "png",
+        "svg" => "svg",
+        "mmd" | "code" | "txt" => "mmd",
+        _ => return Err("Unsupported topology export format".to_string()),
+    };
+    let base_name = file_name.trim();
+    let fallback_name = format!("zone-topology.{}", extension);
+    let name = if base_name.is_empty() {
+        fallback_name
+    } else if base_name.to_lowercase().ends_with(&format!(".{}", extension)) {
+        base_name.to_string()
+    } else {
+        format!("{}.{}", base_name, extension)
+    };
+
+    let bytes = if is_base64.unwrap_or(false) {
+        base64::engine::general_purpose::STANDARD
+            .decode(payload.trim())
+            .map_err(|e| e.to_string())?
+    } else {
+        payload.into_bytes()
+    };
+    let should_confirm = confirm_path.unwrap_or(true);
+    if !should_confirm {
+        let base_dir = resolve_export_directory(folder_preset.as_deref(), custom_path.as_deref())
+            .or_else(dirs::document_dir)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| "Unable to resolve export directory".to_string())?;
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let final_name = if name.contains('.') {
+            let stem = std::path::Path::new(&name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("zone-topology");
+            let ext = std::path::Path::new(&name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or(extension);
+            format!("{}-{}.{}", stem, stamp, ext)
+        } else {
+            format!("{}-{}.{}", name, stamp, extension)
+        };
+        let path = base_dir.join(final_name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        return Ok(path.display().to_string());
+    }
+
+    let mut dialog = rfd::FileDialog::new().set_file_name(&name);
+    if let Some(dir) = resolve_export_directory(
+        folder_preset.as_deref(),
+        custom_path.as_deref(),
+    ) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog = match extension {
+        "png" => dialog.add_filter("PNG", &["png"]),
+        "svg" => dialog.add_filter("SVG", &["svg"]),
+        _ => dialog.add_filter("Mermaid", &["mmd", "txt"]),
+    };
+
+    let Some(path) = dialog.save_file() else {
+        return Err("Save cancelled".to_string());
+    };
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
 pub async fn clear_audit_entries(storage: State<'_, Storage>) -> Result<(), String> {
     storage
         .clear_audit_entries()
@@ -1044,6 +1127,7 @@ async fn query_doh_records(
     doh_endpoints: &[String],
     name: &str,
     record_type: &str,
+    lookup_timeout_ms: u32,
 ) -> Vec<String> {
     if doh_endpoints.is_empty() {
         return Vec::new();
@@ -1054,13 +1138,14 @@ async fn query_doh_records(
         endpoint: String,
         name: String,
         record_type: String,
+        lookup_timeout_ms: u32,
     ) -> Option<Vec<String>> {
         let send_fut = client
             .get(endpoint)
             .header("accept", "application/dns-json")
             .query(&[("name", name.as_str()), ("type", record_type.as_str())])
             .send();
-        let Ok(resp) = tokio::time::timeout(Duration::from_millis(1600), send_fut).await else {
+        let Ok(resp) = tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), send_fut).await else {
             return None;
         };
         let Ok(resp) = resp else {
@@ -1070,7 +1155,7 @@ async fn query_doh_records(
             return None;
         }
         let Ok(payload) =
-            tokio::time::timeout(Duration::from_millis(1600), resp.json::<DnsGoogleResponse>()).await
+            tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), resp.json::<DnsGoogleResponse>()).await
         else {
             return None;
         };
@@ -1105,6 +1190,7 @@ async fn query_doh_records(
             endpoint.clone(),
             name.to_string(),
             record_type.to_string(),
+            lookup_timeout_ms,
         ));
     }
     while let Some(joined) = set.join_next().await {
@@ -1121,6 +1207,8 @@ async fn resolve_chain_for_host(
     doh_endpoints: &[String],
     host: &str,
     max_hops: usize,
+    lookup_timeout_ms: u32,
+    disable_ptr_lookups: bool,
 ) -> HostnameChainResult {
     let name = normalize_domain(host);
     if name.is_empty() {
@@ -1142,7 +1230,7 @@ async fn resolve_chain_for_host(
 
     for _ in 0..max_hops {
         let cname_lookup = tokio::time::timeout(
-            Duration::from_millis(1200),
+            Duration::from_millis(u64::from(lookup_timeout_ms)),
             resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME),
         )
         .await;
@@ -1158,7 +1246,7 @@ async fn resolve_chain_for_host(
         let next = if direct_next.is_some() {
             direct_next
         } else {
-            query_doh_records(client, doh_endpoints, &cur, "CNAME")
+            query_doh_records(client, doh_endpoints, &cur, "CNAME", lookup_timeout_ms)
                 .await
                 .into_iter()
                 .next()
@@ -1175,8 +1263,8 @@ async fn resolve_chain_for_host(
     }
 
     let (v4_lookup, v6_lookup) = tokio::join!(
-        tokio::time::timeout(Duration::from_millis(1200), resolver.ipv4_lookup(cur.clone())),
-        tokio::time::timeout(Duration::from_millis(1200), resolver.ipv6_lookup(cur.clone()))
+        tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), resolver.ipv4_lookup(cur.clone())),
+        tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), resolver.ipv6_lookup(cur.clone()))
     );
 
     let mut ipv4 = Vec::new();
@@ -1203,14 +1291,14 @@ async fn resolve_chain_for_host(
         let (doh_v4, doh_v6) = tokio::join!(
             async {
                 if ipv4.is_empty() {
-                    query_doh_records(client, doh_endpoints, &cur, "A").await
+                    query_doh_records(client, doh_endpoints, &cur, "A", lookup_timeout_ms).await
                 } else {
                     Vec::new()
                 }
             },
             async {
                 if ipv6.is_empty() {
-                    query_doh_records(client, doh_endpoints, &cur, "AAAA").await
+                    query_doh_records(client, doh_endpoints, &cur, "AAAA", lookup_timeout_ms).await
                 } else {
                     Vec::new()
                 }
@@ -1225,32 +1313,34 @@ async fn resolve_chain_for_host(
     }
 
     let mut reverse_hostnames = Vec::new();
-    let mut all_ips = Vec::new();
-    all_ips.extend(ipv4.iter().cloned());
-    all_ips.extend(ipv6.iter().cloned());
-    for ip in all_ips {
-        let Ok(parsed) = ip.parse::<IpAddr>() else {
-            continue;
-        };
-        let mut names = Vec::new();
-        let ptr_lookup = tokio::time::timeout(
-            Duration::from_millis(1200),
-            resolver.reverse_lookup(parsed),
-        )
-        .await;
-        if let Ok(Ok(ptr_lookup)) = ptr_lookup {
-            for name in ptr_lookup.iter() {
-                let host = normalize_domain(&name.to_utf8());
-                if !host.is_empty() && !names.contains(&host) {
-                    names.push(host);
+    if !disable_ptr_lookups {
+        let mut all_ips = Vec::new();
+        all_ips.extend(ipv4.iter().cloned());
+        all_ips.extend(ipv6.iter().cloned());
+        for ip in all_ips {
+            let Ok(parsed) = ip.parse::<IpAddr>() else {
+                continue;
+            };
+            let mut names = Vec::new();
+            let ptr_lookup = tokio::time::timeout(
+                Duration::from_millis(u64::from(lookup_timeout_ms)),
+                resolver.reverse_lookup(parsed),
+            )
+            .await;
+            if let Ok(Ok(ptr_lookup)) = ptr_lookup {
+                for name in ptr_lookup.iter() {
+                    let host = normalize_domain(&name.to_utf8());
+                    if !host.is_empty() && !names.contains(&host) {
+                        names.push(host);
+                    }
                 }
             }
-        }
-        if !names.is_empty() {
-            reverse_hostnames.push(ReverseHostnameResult {
-                ip,
-                hostnames: names,
-            });
+            if !names.is_empty() {
+                reverse_hostnames.push(ReverseHostnameResult {
+                    ip,
+                    hostnames: names,
+                });
+            }
         }
     }
 
@@ -1276,7 +1366,45 @@ async fn probe_url(client: &reqwest::Client, url: String) -> bool {
     matches!(resp, Ok(Ok(_)))
 }
 
-fn build_dns_resolver() -> Result<TokioAsyncResolver, String> {
+fn resolve_dns_server(
+    dns_server: Option<&str>,
+    custom_dns_server: Option<&str>,
+    legacy_provider: Option<&str>,
+) -> String {
+    let selected = dns_server.unwrap_or("1.1.1.1").trim();
+    if selected.eq_ignore_ascii_case("custom") {
+        let custom = custom_dns_server.unwrap_or("").trim();
+        if !custom.is_empty() {
+            return custom.to_string();
+        }
+    }
+    if !selected.is_empty() && selected != "__legacy__" {
+        return selected.to_string();
+    }
+    match legacy_provider.unwrap_or("cloudflare").trim().to_lowercase().as_str() {
+        "google" => "8.8.8.8".to_string(),
+        "quad9" => "9.9.9.9".to_string(),
+        "cloudflare" => "1.1.1.1".to_string(),
+        _ => "1.1.1.1".to_string(),
+    }
+}
+
+fn build_dns_resolver(
+    dns_server: Option<&str>,
+    custom_dns_server: Option<&str>,
+    legacy_provider: Option<&str>,
+) -> Result<TokioAsyncResolver, String> {
+    let target = resolve_dns_server(dns_server, custom_dns_server, legacy_provider);
+    if let Ok(ip) = target.parse() {
+        let mut opts = ResolverOpts::default();
+        opts.timeout = Duration::from_secs(2);
+        opts.attempts = 1;
+        let group = NameServerConfigGroup::from_ips_clear(&[ip], 53, true);
+        return Ok(TokioAsyncResolver::tokio(
+            ResolverConfig::from_parts(None, vec![], group),
+            opts,
+        ));
+    }
     match TokioAsyncResolver::tokio_from_system_conf() {
         Ok(resolver) => Ok(resolver),
         Err(_) => Ok(TokioAsyncResolver::tokio(
@@ -1286,22 +1414,37 @@ fn build_dns_resolver() -> Result<TokioAsyncResolver, String> {
     }
 }
 
-fn resolve_doh_endpoints(provider: Option<&str>, custom_url: Option<&str>) -> Vec<String> {
-    let p = provider.unwrap_or("cloudflare").trim().to_lowercase();
-    let preferred = match p.as_str() {
-        "cloudflare" => "https://cloudflare-dns.com/dns-query".to_string(),
-        "google" => "https://dns.google/resolve".to_string(),
-        "quad9" => "https://dns.quad9.net:5053/dns-query".to_string(),
-        "custom" => {
-            let raw = custom_url.unwrap_or("").trim();
-            if raw.is_empty() {
-                "https://cloudflare-dns.com/dns-query".to_string()
+fn map_dns_server_to_doh_endpoint(dns_server: &str, custom_doh_url: Option<&str>) -> String {
+    let server = dns_server.trim();
+    if server.eq_ignore_ascii_case("custom") {
+        let custom = custom_doh_url.unwrap_or("").trim();
+        if !custom.is_empty() {
+            return custom.to_string();
+        }
+    }
+    match server {
+        "1.1.1.1" | "1.0.0.1" => "https://cloudflare-dns.com/dns-query".to_string(),
+        "8.8.8.8" | "8.8.4.4" => "https://dns.google/resolve".to_string(),
+        "9.9.9.9" | "149.112.112.112" => "https://dns.quad9.net:5053/dns-query".to_string(),
+        _ => {
+            let custom = custom_doh_url.unwrap_or("").trim();
+            if !custom.is_empty() {
+                custom.to_string()
             } else {
-                raw.to_string()
+                "https://cloudflare-dns.com/dns-query".to_string()
             }
         }
-        _ => "https://cloudflare-dns.com/dns-query".to_string(),
-    };
+    }
+}
+
+fn resolve_doh_endpoints(
+    dns_server: Option<&str>,
+    custom_dns_server: Option<&str>,
+    custom_doh_url: Option<&str>,
+    legacy_provider: Option<&str>,
+) -> Vec<String> {
+    let selected_dns = resolve_dns_server(dns_server, custom_dns_server, legacy_provider);
+    let preferred = map_dns_server_to_doh_endpoint(&selected_dns, custom_doh_url);
     let mut out = vec![
         preferred,
         "https://cloudflare-dns.com/dns-query".to_string(),
@@ -1320,16 +1463,42 @@ pub async fn resolve_topology_batch(
     service_hosts: Option<Vec<String>>,
     doh_provider: Option<String>,
     doh_custom_url: Option<String>,
+    resolver_mode: Option<String>,
+    dns_server: Option<String>,
+    custom_dns_server: Option<String>,
+    lookup_timeout_ms: Option<u32>,
+    disable_ptr_lookups: Option<bool>,
 ) -> Result<TopologyBatchResult, String> {
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
-    let doh_endpoints = resolve_doh_endpoints(doh_provider.as_deref(), doh_custom_url.as_deref());
+    let lookup_timeout_ms = lookup_timeout_ms.unwrap_or(1200).clamp(250, 10000);
+    let disable_ptr_lookups = disable_ptr_lookups.unwrap_or(false);
+    let resolver_mode = resolver_mode.unwrap_or_else(|| "dns".to_string()).trim().to_lowercase();
+    let selected_dns_server = resolve_dns_server(
+        dns_server.as_deref(),
+        custom_dns_server.as_deref(),
+        doh_provider.as_deref(),
+    );
+    let doh_endpoints = if resolver_mode == "doh" {
+        resolve_doh_endpoints(
+            Some(&selected_dns_server),
+            custom_dns_server.as_deref(),
+            doh_custom_url.as_deref(),
+            doh_provider.as_deref(),
+        )
+    } else {
+        Vec::new()
+    };
     let doh_provider_key = doh_provider
         .as_deref()
         .unwrap_or("cloudflare")
         .trim()
         .to_lowercase();
     let doh_custom_key = doh_custom_url.unwrap_or_default().trim().to_string();
-    let resolver = build_dns_resolver()?;
+    let resolver = build_dns_resolver(
+        Some(&selected_dns_server),
+        custom_dns_server.as_deref(),
+        doh_provider.as_deref(),
+    )?;
     let resolver_http_client = reqwest::Client::builder()
         .redirect(Policy::limited(4))
         .connect_timeout(Duration::from_secs(3))
@@ -1353,8 +1522,8 @@ pub async fn resolve_topology_batch(
         let cache = topology_host_cache().read().await;
         for host in &unique_hosts {
             let cache_key = format!(
-                "{}|{}|{}|{}",
-                doh_provider_key, doh_custom_key, max_hops, host
+                "{}|{}|{}|{}|{}|{}|{}",
+                resolver_mode, selected_dns_server, doh_provider_key, doh_custom_key, max_hops, disable_ptr_lookups, host
             );
             if let Some(entry) = cache.get(&cache_key) {
                 if now_ms - entry.ts_ms <= TOPOLOGY_HOST_CACHE_TTL_MS {
@@ -1382,6 +1551,8 @@ pub async fn resolve_topology_batch(
                     &doh_endpoints_cloned,
                     &host_owned,
                     max_hops,
+                    lookup_timeout_ms,
+                    disable_ptr_lookups,
                 )
                 .await
             });
@@ -1401,8 +1572,8 @@ pub async fn resolve_topology_batch(
         let mut cache = topology_host_cache().write().await;
         for (host, result) in cache_updates {
             let cache_key = format!(
-                "{}|{}|{}|{}",
-                doh_provider_key, doh_custom_key, max_hops, host
+                "{}|{}|{}|{}|{}|{}|{}",
+                resolver_mode, selected_dns_server, doh_provider_key, doh_custom_key, max_hops, disable_ptr_lookups, host
             );
             cache.insert(
                 cache_key,

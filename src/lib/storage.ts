@@ -39,8 +39,18 @@ interface StorageData {
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
+  topologyResolverMode?: "dns" | "doh";
+  topologyDnsServer?: string;
+  topologyCustomDnsServer?: string;
   topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
   topologyDohCustomUrl?: string;
+  topologyExportFolderPreset?: string;
+  topologyExportCustomPath?: string;
+  topologyExportConfirmPath?: boolean;
+  topologyDisableAnnotations?: boolean;
+  topologyDisableFullWindow?: boolean;
+  topologyLookupTimeoutMs?: number;
+  topologyDisablePtrLookups?: boolean;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -68,8 +78,18 @@ export interface SessionSettingsProfile {
   confirmWindowClose?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
+  topologyResolverMode?: "dns" | "doh";
+  topologyDnsServer?: string;
+  topologyCustomDnsServer?: string;
   topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
   topologyDohCustomUrl?: string;
+  topologyExportFolderPreset?: string;
+  topologyExportCustomPath?: string;
+  topologyExportConfirmPath?: boolean;
+  topologyDisableAnnotations?: boolean;
+  topologyDisableFullWindow?: boolean;
+  topologyLookupTimeoutMs?: number;
+  topologyDisablePtrLookups?: boolean;
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -714,6 +734,36 @@ export class StorageManager {
     return Math.max(1, Math.min(15, Math.round(value)));
   }
 
+  setTopologyResolverMode(value: "dns" | "doh"): void {
+    this.data.topologyResolverMode = value;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyResolverMode: value });
+  }
+
+  getTopologyResolverMode(): "dns" | "doh" {
+    return this.data.topologyResolverMode === "doh" ? "doh" : "dns";
+  }
+
+  setTopologyDnsServer(value: string): void {
+    this.data.topologyDnsServer = String(value ?? "").trim() || "1.1.1.1";
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDnsServer: this.data.topologyDnsServer });
+  }
+
+  getTopologyDnsServer(): string {
+    return String(this.data.topologyDnsServer ?? "1.1.1.1").trim() || "1.1.1.1";
+  }
+
+  setTopologyCustomDnsServer(value: string): void {
+    this.data.topologyCustomDnsServer = String(value ?? "").trim();
+    this.save();
+    this.dispatchPreferencesChanged({ topologyCustomDnsServer: this.data.topologyCustomDnsServer });
+  }
+
+  getTopologyCustomDnsServer(): string {
+    return String(this.data.topologyCustomDnsServer ?? "").trim();
+  }
+
   setTopologyDohProvider(value: "google" | "cloudflare" | "quad9" | "custom"): void {
     this.data.topologyDohProvider = value;
     this.save();
@@ -734,6 +784,79 @@ export class StorageManager {
 
   getTopologyDohCustomUrl(): string {
     return String(this.data.topologyDohCustomUrl ?? "").trim();
+  }
+
+  setTopologyExportFolderPreset(preset: string): void {
+    this.data.topologyExportFolderPreset = preset;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyExportFolderPreset: preset });
+  }
+
+  getTopologyExportFolderPreset(): string {
+    return this.data.topologyExportFolderPreset ?? "documents";
+  }
+
+  setTopologyExportCustomPath(path: string): void {
+    this.data.topologyExportCustomPath = String(path ?? "").trim();
+    this.save();
+    this.dispatchPreferencesChanged({ topologyExportCustomPath: this.data.topologyExportCustomPath });
+  }
+
+  getTopologyExportCustomPath(): string {
+    return String(this.data.topologyExportCustomPath ?? "").trim();
+  }
+
+  setTopologyExportConfirmPath(enabled: boolean): void {
+    this.data.topologyExportConfirmPath = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyExportConfirmPath: enabled });
+  }
+
+  getTopologyExportConfirmPath(): boolean {
+    return this.data.topologyExportConfirmPath !== false;
+  }
+
+  setTopologyDisableAnnotations(enabled: boolean): void {
+    this.data.topologyDisableAnnotations = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDisableAnnotations: enabled });
+  }
+
+  getTopologyDisableAnnotations(): boolean {
+    return this.data.topologyDisableAnnotations === true;
+  }
+
+  setTopologyDisableFullWindow(enabled: boolean): void {
+    this.data.topologyDisableFullWindow = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDisableFullWindow: enabled });
+  }
+
+  getTopologyDisableFullWindow(): boolean {
+    return this.data.topologyDisableFullWindow === true;
+  }
+
+  setTopologyLookupTimeoutMs(ms: number): void {
+    const clamped = Math.max(250, Math.min(10000, Math.round(ms)));
+    this.data.topologyLookupTimeoutMs = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyLookupTimeoutMs: clamped });
+  }
+
+  getTopologyLookupTimeoutMs(): number {
+    const value = this.data.topologyLookupTimeoutMs;
+    if (typeof value !== "number" || Number.isNaN(value)) return 1200;
+    return Math.max(250, Math.min(10000, Math.round(value)));
+  }
+
+  setTopologyDisablePtrLookups(enabled: boolean): void {
+    this.data.topologyDisablePtrLookups = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDisablePtrLookups: enabled });
+  }
+
+  getTopologyDisablePtrLookups(): boolean {
+    return this.data.topologyDisablePtrLookups === true;
   }
 
   setAuditExportDefaultDocuments(enabled: boolean): void {
@@ -931,8 +1054,18 @@ export class StorageManager {
     delete this.data.confirmWindowClose;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
+    delete this.data.topologyResolverMode;
+    delete this.data.topologyDnsServer;
+    delete this.data.topologyCustomDnsServer;
     delete this.data.topologyDohProvider;
     delete this.data.topologyDohCustomUrl;
+    delete this.data.topologyExportFolderPreset;
+    delete this.data.topologyExportCustomPath;
+    delete this.data.topologyExportConfirmPath;
+    delete this.data.topologyDisableAnnotations;
+    delete this.data.topologyDisableFullWindow;
+    delete this.data.topologyLookupTimeoutMs;
+    delete this.data.topologyDisablePtrLookups;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;

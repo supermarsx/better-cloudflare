@@ -68,6 +68,7 @@ fn main() {
             commands::get_audit_entries,
             commands::export_audit_entries,
             commands::save_audit_entries,
+            commands::save_topology_asset,
             commands::clear_audit_entries,
             commands::get_preferences,
             commands::update_preferences,

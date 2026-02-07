@@ -28,6 +28,7 @@ import type { DNSRecord } from "@/types/dns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { TauriClient } from "@/lib/tauri-client";
+import { isDesktop } from "@/lib/environment";
 
 type Annotation = {
   id: string;
@@ -73,6 +74,13 @@ type ZoneTopologyTabProps = {
   maxResolutionHops?: number;
   dohProvider?: "google" | "cloudflare" | "quad9" | "custom";
   dohCustomUrl?: string;
+  exportConfirmPath?: boolean;
+  exportFolderPreset?: "system" | "documents" | "downloads" | "desktop" | "custom";
+  exportCustomPath?: string;
+  disableAnnotations?: boolean;
+  disableFullWindow?: boolean;
+  lookupTimeoutMs?: number;
+  disablePtrLookups?: boolean;
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
 };
@@ -804,11 +812,18 @@ async function queryDoh(
   endpoints: string[],
   name: string,
   type: "CNAME" | "A" | "AAAA",
+  timeoutMs: number,
 ): Promise<string[]> {
   for (const endpoint of endpoints) {
     try {
       const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(name)}&type=${type}`;
-      const res = await fetch(url, { cache: "no-store", headers: { accept: "application/dns-json" } });
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), Math.max(250, timeoutMs));
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: { accept: "application/dns-json" },
+        signal: controller.signal,
+      }).finally(() => window.clearTimeout(timer));
       if (!res.ok) continue;
       const data = (await res.json()) as {
         Answer?: Array<{ data?: string; type?: number }>;
@@ -829,6 +844,7 @@ async function resolveExternalCnameToAddress(
   startName: string,
   maxHops: number,
   dohEndpoints: string[],
+  timeoutMs: number,
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -841,7 +857,7 @@ async function resolveExternalCnameToAddress(
   let hops = 0;
   try {
     while (hops < maxHops) {
-      const cnames = await queryDoh(dohEndpoints, cur, "CNAME");
+      const cnames = await queryDoh(dohEndpoints, cur, "CNAME", timeoutMs);
       const next = cnames.find(Boolean);
       if (!next || seen.has(next)) break;
       chain.push(next);
@@ -850,8 +866,8 @@ async function resolveExternalCnameToAddress(
       hops += 1;
     }
     const [a, aaaa] = await Promise.all([
-      queryDoh(dohEndpoints, cur, "A"),
-      queryDoh(dohEndpoints, cur, "AAAA"),
+      queryDoh(dohEndpoints, cur, "A", timeoutMs),
+      queryDoh(dohEndpoints, cur, "AAAA", timeoutMs),
     ]);
     return {
       chain,
@@ -877,6 +893,8 @@ async function resolveTopologyBatchInBackend(
   maxHops: number,
   dohProvider: "google" | "cloudflare" | "quad9" | "custom",
   dohCustomUrl: string,
+  lookupTimeoutMs: number,
+  disablePtrLookups: boolean,
   serviceHosts: string[] = [],
 ): Promise<{
   resolutions: ExternalDnsResolution[];
@@ -890,6 +908,8 @@ async function resolveTopologyBatchInBackend(
       serviceHosts,
       dohProvider,
       dohCustomUrl,
+      lookupTimeoutMs,
+      disablePtrLookups,
     );
     return {
       resolutions: (result.resolutions ?? []).map((item) => ({
@@ -925,10 +945,18 @@ export function ZoneTopologyTab({
   maxResolutionHops = 15,
   dohProvider = "cloudflare",
   dohCustomUrl = "",
+  exportConfirmPath = true,
+  exportFolderPreset = "documents",
+  exportCustomPath = "",
+  disableAnnotations = false,
+  disableFullWindow = false,
+  lookupTimeoutMs = 1200,
+  disablePtrLookups = false,
   onRefresh,
   onEditRecord,
 }: ZoneTopologyTabProps) {
   const { toast } = useToast();
+  const desktop = isDesktop();
   const [svgMarkup, setSvgMarkup] = useState("");
   const [mermaidCode, setMermaidCode] = useState("");
   const [isRendering, setIsRendering] = useState(false);
@@ -995,10 +1023,23 @@ export function ZoneTopologyTab({
     userAdjustedViewRef.current = false;
   }, []);
   const toggleExpandGraph = useCallback(() => {
+    if (disableFullWindow) return;
     setExpandGraph((prev) => !prev);
     autoFitDoneRef.current = "";
     userAdjustedViewRef.current = false;
-  }, []);
+  }, [disableFullWindow]);
+
+  useEffect(() => {
+    if (disableFullWindow && expandGraph) {
+      closeExpandGraph();
+    }
+  }, [closeExpandGraph, disableFullWindow, expandGraph]);
+
+  useEffect(() => {
+    if (disableAnnotations && annotationTool) {
+      setAnnotationTool(false);
+    }
+  }, [annotationTool, disableAnnotations]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1017,7 +1058,16 @@ export function ZoneTopologyTab({
     setMermaidCode("");
     setSvgMarkup("");
     setActiveResolutionRequests([]);
-  }, [dohCustomUrl, dohProvider, manualRefreshTick, recordsFingerprint, zoneName, maxResolutionHops]);
+  }, [
+    dohCustomUrl,
+    dohProvider,
+    manualRefreshTick,
+    recordsFingerprint,
+    zoneName,
+    maxResolutionHops,
+    lookupTimeoutMs,
+    disablePtrLookups,
+  ]);
 
   useEffect(() => {
     if (!topologyResolutionReady) return;
@@ -1107,6 +1157,8 @@ export function ZoneTopologyTab({
           clampedHops,
           dohProvider,
           dohCustomUrl,
+          lookupTimeoutMs,
+          disablePtrLookups,
         );
         if (backendBatch) {
           for (const resolved of backendBatch.resolutions) {
@@ -1130,7 +1182,7 @@ export function ZoneTopologyTab({
         } else {
           const fallback = await Promise.all(
             unresolvedQueue.map(async (name) => {
-              const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoints);
+              const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoints, lookupTimeoutMs);
               return [name, resolved] as const;
             }),
           );
@@ -1183,7 +1235,7 @@ export function ZoneTopologyTab({
       setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
       setActiveResolutionRequests([]);
     };
-  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady]);
+  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady, lookupTimeoutMs, disablePtrLookups]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1444,14 +1496,37 @@ export function ZoneTopologyTab({
   }, [annotationDraft, annotationTool, pan.x, pan.y, zoom]);
 
   const exportCode = useCallback(() => {
+    const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
+    if (desktop) {
+      void TauriClient.saveTopologyAsset(
+        "mmd",
+        `${baseName}.mmd`,
+        mermaidCode,
+        false,
+        exportFolderPreset,
+        exportCustomPath,
+        exportConfirmPath,
+      )
+        .then((path) => {
+          toast({ title: "Exported", description: path });
+        })
+        .catch((e) => {
+          toast({
+            title: "Export failed",
+            description: e instanceof Error ? e.message : String(e),
+            variant: "destructive",
+          });
+        });
+      return;
+    }
     const blob = new Blob([mermaidCode], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${normalizeDomain(zoneName) || "zone"}-topology.mmd`;
+    a.download = `${baseName}.mmd`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [mermaidCode, zoneName]);
+  }, [desktop, mermaidCode, zoneName, exportFolderPreset, exportCustomPath, exportConfirmPath, toast]);
 
   const copyCode = useCallback(async () => {
     await navigator.clipboard.writeText(mermaidCode);
@@ -1465,17 +1540,36 @@ export function ZoneTopologyTab({
         const doc = new DOMParser().parseFromString(input, "image/svg+xml");
         const isExternalRef = (value: string | null) =>
           Boolean(value && /^(https?:)?\/\//i.test(value.trim()));
+        const stripExternalUrls = (value: string) =>
+          value
+            .replace(/url\((['"]?)(https?:)?\/\/.*?\1\)/gi, "none")
+            .replace(/@import\s+url\((['"]?)(https?:)?\/\/.*?\1\)\s*;?/gi, "");
         for (const el of Array.from(doc.querySelectorAll("image,use"))) {
           const href = el.getAttribute("href") ?? el.getAttribute("xlink:href");
           if (isExternalRef(href)) {
             el.remove();
           }
         }
+        for (const el of Array.from(doc.querySelectorAll("[href],[xlink\\:href],[src]"))) {
+          const href = el.getAttribute("href") ?? el.getAttribute("xlink:href") ?? el.getAttribute("src");
+          if (isExternalRef(href)) {
+            el.removeAttribute("href");
+            el.removeAttribute("xlink:href");
+            el.removeAttribute("src");
+          }
+        }
+        for (const el of Array.from(doc.querySelectorAll("[style]"))) {
+          const style = el.getAttribute("style");
+          if (!style) continue;
+          el.setAttribute("style", stripExternalUrls(style));
+        }
         for (const styleNode of Array.from(doc.querySelectorAll("style"))) {
-          const text = styleNode.textContent ?? "";
-          styleNode.textContent = text.replace(/@import\s+url\((['"]?)(https?:)?\/\/.*?\);\s*/gi, "");
+          styleNode.textContent = stripExternalUrls(styleNode.textContent ?? "");
         }
         const svg = doc.querySelector("svg");
+        if (svg && !svg.getAttribute("xmlns")) {
+          svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        }
         return svg ? new XMLSerializer().serializeToString(svg) : input;
       } catch {
         return input;
@@ -1499,16 +1593,26 @@ export function ZoneTopologyTab({
         : Number.isFinite(vb[3]) && vb[3] > 0
           ? vb[3]
           : 900;
-    const encoded = new TextEncoder().encode(safeSvgMarkup);
-    const url = URL.createObjectURL(new Blob([encoded], { type: "image/svg+xml;charset=utf-8" }));
+    const svgBlob = new Blob([safeSvgMarkup], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(safeSvgMarkup)}`;
     try {
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const i = new Image();
-        i.crossOrigin = "anonymous";
-        i.onload = () => resolve(i);
-        i.onerror = () => reject(new Error("Failed to render SVG"));
-        i.src = url;
-      });
+      const loadSvgImage = async () =>
+        await new Promise<HTMLImageElement>((resolve, reject) => {
+          const i = new Image();
+          i.onload = () => resolve(i);
+          i.onerror = () => reject(new Error("Failed to render SVG"));
+          i.src = url;
+        }).catch(
+          async () =>
+            await new Promise<HTMLImageElement>((resolve, reject) => {
+              const i = new Image();
+              i.onload = () => resolve(i);
+              i.onerror = () => reject(new Error("Failed to render SVG data URL"));
+              i.src = dataUrl;
+            }),
+        );
+      const img = await loadSvgImage();
       const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(width * scale);
@@ -1521,13 +1625,21 @@ export function ZoneTopologyTab({
       } catch {
         return null;
       }
-      return await new Promise<Blob | null>((resolve) => {
+      const blob = await new Promise<Blob | null>((resolve) => {
         try {
           canvas.toBlob((b) => resolve(b), "image/png");
         } catch {
           resolve(null);
         }
       });
+      if (blob) return blob;
+      try {
+        const data = canvas.toDataURL("image/png");
+        const fetched = await fetch(data);
+        return await fetched.blob();
+      } catch {
+        return null;
+      }
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -1569,14 +1681,37 @@ export function ZoneTopologyTab({
 
   const exportSvg = useCallback(() => {
     if (!svgMarkup.trim()) return;
+    const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
+    if (desktop) {
+      void TauriClient.saveTopologyAsset(
+        "svg",
+        `${baseName}.svg`,
+        svgMarkup,
+        false,
+        exportFolderPreset,
+        exportCustomPath,
+        exportConfirmPath,
+      )
+        .then((path) => {
+          toast({ title: "Exported", description: path });
+        })
+        .catch((e) => {
+          toast({
+            title: "Export failed",
+            description: e instanceof Error ? e.message : String(e),
+            variant: "destructive",
+          });
+        });
+      return;
+    }
     const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${normalizeDomain(zoneName) || "zone"}-topology.svg`;
+    a.download = `${baseName}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [svgMarkup, zoneName]);
+  }, [desktop, exportConfirmPath, exportCustomPath, exportFolderPreset, svgMarkup, toast, zoneName]);
 
   const exportPng = useCallback(async () => {
     const pngBlob = await renderSvgToPngBlob();
@@ -1584,13 +1719,42 @@ export function ZoneTopologyTab({
       toast({ title: "Export failed", description: "Unable to render PNG from topology.", variant: "destructive" });
       return;
     }
+    const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
+    if (desktop) {
+      const bytes = await pngBlob.arrayBuffer();
+      const arr = new Uint8Array(bytes);
+      let binary = "";
+      for (let i = 0; i < arr.length; i += 1) {
+        binary += String.fromCharCode(arr[i]);
+      }
+      const b64 = btoa(binary);
+      try {
+        const path = await TauriClient.saveTopologyAsset(
+          "png",
+          `${baseName}.png`,
+          b64,
+          true,
+          exportFolderPreset,
+          exportCustomPath,
+          exportConfirmPath,
+        );
+        toast({ title: "Exported", description: path });
+      } catch (e) {
+        toast({
+          title: "Export failed",
+          description: e instanceof Error ? e.message : String(e),
+          variant: "destructive",
+        });
+      }
+      return;
+    }
     const url = URL.createObjectURL(pngBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${normalizeDomain(zoneName) || "zone"}-topology.png`;
+    a.download = `${baseName}.png`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [renderSvgToPngBlob, toast, zoneName]);
+  }, [desktop, exportConfirmPath, exportCustomPath, exportFolderPreset, renderSvgToPngBlob, toast, zoneName]);
 
   const printToPdf = useCallback(() => {
     if (!svgMarkup.trim()) return;
@@ -1747,6 +1911,8 @@ export function ZoneTopologyTab({
         clampedHops,
         dohProvider,
         dohCustomUrl,
+        lookupTimeoutMs,
+        disablePtrLookups,
         probeHosts,
       );
       if (backendBatch && backendBatch.probes.length > 0) {
@@ -1789,7 +1955,7 @@ export function ZoneTopologyTab({
     } finally {
       setDiscovering(false);
     }
-  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase]);
+  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups]);
 
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">
@@ -1833,24 +1999,28 @@ export function ZoneTopologyTab({
         <Hand className="h-3.5 w-3.5 mr-1" />
         Hand
       </Button>
-      <Button
-        size="sm"
-        variant={annotationTool ? "default" : "outline"}
-        className="h-8 px-2"
-        onClick={() => {
-          setAnnotationTool((v) => !v);
-          setHandTool(false);
-        }}
-      >
-        <StickyNote className="h-3.5 w-3.5 mr-1" />
-        Annotate
-      </Button>
-      <Input
-        value={annotationDraft}
-        onChange={(e) => setAnnotationDraft(e.target.value)}
-        className="h-8 w-44"
-        placeholder="Annotation text"
-      />
+      {!disableAnnotations && (
+        <>
+          <Button
+            size="sm"
+            variant={annotationTool ? "default" : "outline"}
+            className="h-8 px-2"
+            onClick={() => {
+              setAnnotationTool((v) => !v);
+              setHandTool(false);
+            }}
+          >
+            <StickyNote className="h-3.5 w-3.5 mr-1" />
+            Annotate
+          </Button>
+          <Input
+            value={annotationDraft}
+            onChange={(e) => setAnnotationDraft(e.target.value)}
+            className="h-8 w-44"
+            placeholder="Annotation text"
+          />
+        </>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button size="sm" variant="outline" className="h-8 px-2" disabled={!mermaidCode && !svgMarkup}>
@@ -1920,27 +2090,29 @@ export function ZoneTopologyTab({
       >
         <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
       </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-8 px-2"
-        onClick={() => {
-          toggleExpandGraph();
-        }}
-        title={expandGraph ? "Exit full window" : "Expand to full window"}
-      >
-        {expandGraph ? (
-          <>
-            <Minimize2 className="h-3.5 w-3.5 mr-1" />
-            Exit full window
-          </>
-        ) : (
-          <>
-            <Maximize2 className="h-3.5 w-3.5 mr-1" />
-            Full window
-          </>
-        )}
-      </Button>
+      {!disableFullWindow && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 px-2"
+          onClick={() => {
+            toggleExpandGraph();
+          }}
+          title={expandGraph ? "Exit full window" : "Expand to full window"}
+        >
+          {expandGraph ? (
+            <>
+              <Minimize2 className="h-3.5 w-3.5 mr-1" />
+              Exit full window
+            </>
+          ) : (
+            <>
+              <Maximize2 className="h-3.5 w-3.5 mr-1" />
+              Full window
+            </>
+          )}
+        </Button>
+      )}
       <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
         <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
         Discover services
