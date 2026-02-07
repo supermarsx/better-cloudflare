@@ -85,6 +85,8 @@ type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "cu
 type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
 type TopologyGeoProvider = "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+type TopologyCopyAction = "mermaid" | "svg" | "png";
+type TopologyExportAction = "mermaid" | "svg" | "png" | "pdf";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
 type AuditFilterOperator =
   | "equals"
@@ -122,6 +124,17 @@ const TOPOLOGY_TCP_SERVICE_OPTIONS: Array<{ port: number; label: string }> = [
   { port: 995, label: "POP3S (995)" },
   { port: 3306, label: "MySQL (3306)" },
   { port: 5432, label: "PostgreSQL (5432)" },
+];
+const TOPOLOGY_COPY_ACTION_OPTIONS: Array<{ value: TopologyCopyAction; label: string }> = [
+  { value: "mermaid", label: "Mermaid code" },
+  { value: "svg", label: "SVG" },
+  { value: "png", label: "PNG" },
+];
+const TOPOLOGY_EXPORT_ACTION_OPTIONS: Array<{ value: TopologyExportAction; label: string }> = [
+  { value: "mermaid", label: "Mermaid code" },
+  { value: "svg", label: "SVG" },
+  { value: "png", label: "PNG" },
+  { value: "pdf", label: "PDF" },
 ];
 
 type ZoneTab = {
@@ -527,6 +540,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyExportCustomPath, setTopologyExportCustomPath] = useState(
     storageManager.getTopologyExportCustomPath(),
   );
+  const [topologyCopyActions, setTopologyCopyActions] = useState<TopologyCopyAction[]>(
+    storageManager.getTopologyCopyActions() as TopologyCopyAction[],
+  );
+  const [topologyExportActions, setTopologyExportActions] = useState<TopologyExportAction[]>(
+    storageManager.getTopologyExportActions() as TopologyExportAction[],
+  );
   const [topologyDisableAnnotations, setTopologyDisableAnnotations] = useState(
     storageManager.getTopologyDisableAnnotations(),
   );
@@ -639,6 +658,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       topologyExportConfirmPath,
       topologyExportFolderPreset,
       topologyExportCustomPath,
+      topologyCopyActions,
+      topologyExportActions,
       topologyDisableAnnotations,
       topologyDisableFullWindow,
       topologyLookupTimeoutMs,
@@ -676,6 +697,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyExportConfirmPath,
     topologyExportFolderPreset,
     topologyExportCustomPath,
+    topologyCopyActions,
+    topologyExportActions,
     topologyDisableAnnotations,
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
@@ -761,6 +784,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyExportCustomPath === "string") {
       setTopologyExportCustomPath(profile.topologyExportCustomPath);
+    }
+    if (Array.isArray(profile.topologyCopyActions)) {
+      setTopologyCopyActions(
+        Array.from(
+          new Set(
+            profile.topologyCopyActions
+              .map((v) => String(v).trim())
+              .filter((v): v is TopologyCopyAction => v === "mermaid" || v === "svg" || v === "png"),
+          ),
+        ),
+      );
+    }
+    if (Array.isArray(profile.topologyExportActions)) {
+      setTopologyExportActions(
+        Array.from(
+          new Set(
+            profile.topologyExportActions
+              .map((v) => String(v).trim())
+              .filter((v): v is TopologyExportAction => v === "mermaid" || v === "svg" || v === "png" || v === "pdf"),
+          ),
+        ),
+      );
     }
     if (typeof profile.topologyDisableAnnotations === "boolean") {
       setTopologyDisableAnnotations(profile.topologyDisableAnnotations);
@@ -1227,6 +1272,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_export_confirm_path?: boolean;
             topology_export_folder_preset?: string;
             topology_export_custom_path?: string;
+            topology_copy_actions?: string[];
+            topology_export_actions?: string[];
             topology_disable_annotations?: boolean;
             topology_disable_full_window?: boolean;
             topology_lookup_timeout_ms?: number;
@@ -1326,6 +1373,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.topology_export_custom_path === "string") {
             setTopologyExportCustomPath(prefObj.topology_export_custom_path);
           }
+          if (Array.isArray(prefObj.topology_copy_actions)) {
+            setTopologyCopyActions(
+              Array.from(
+                new Set(
+                  prefObj.topology_copy_actions
+                    .map((v) => String(v).trim())
+                    .filter((v): v is TopologyCopyAction => v === "mermaid" || v === "svg" || v === "png"),
+                ),
+              ),
+            );
+          }
+          if (Array.isArray(prefObj.topology_export_actions)) {
+            setTopologyExportActions(
+              Array.from(
+                new Set(
+                  prefObj.topology_export_actions
+                    .map((v) => String(v).trim())
+                    .filter((v): v is TopologyExportAction => v === "mermaid" || v === "svg" || v === "png" || v === "pdf"),
+                ),
+              ),
+            );
+          }
           if (typeof prefObj.topology_disable_annotations === "boolean") {
             setTopologyDisableAnnotations(prefObj.topology_disable_annotations);
           }
@@ -1415,6 +1484,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setTopologyExportConfirmPath(storageManager.getTopologyExportConfirmPath());
     setTopologyExportFolderPreset(storageManager.getTopologyExportFolderPreset() as ExportFolderPreset);
     setTopologyExportCustomPath(storageManager.getTopologyExportCustomPath());
+    setTopologyCopyActions(storageManager.getTopologyCopyActions() as TopologyCopyAction[]);
+    setTopologyExportActions(storageManager.getTopologyExportActions() as TopologyExportAction[]);
     setTopologyDisableAnnotations(storageManager.getTopologyDisableAnnotations());
     setTopologyDisableFullWindow(storageManager.getTopologyDisableFullWindow());
     setTopologyLookupTimeoutMs(storageManager.getTopologyLookupTimeoutMs());
@@ -1554,6 +1625,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setTopologyExportConfirmPath(topologyExportConfirmPath);
     storageManager.setTopologyExportFolderPreset(topologyExportFolderPreset);
     storageManager.setTopologyExportCustomPath(topologyExportCustomPath);
+    storageManager.setTopologyCopyActions(topologyCopyActions);
+    storageManager.setTopologyExportActions(topologyExportActions);
     storageManager.setTopologyDisableAnnotations(topologyDisableAnnotations);
     storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
     storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
@@ -1598,6 +1671,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_export_confirm_path: topologyExportConfirmPath,
             topology_export_folder_preset: topologyExportFolderPreset,
             topology_export_custom_path: topologyExportCustomPath,
+            topology_copy_actions: topologyCopyActions,
+            topology_export_actions: topologyExportActions,
             topology_disable_annotations: topologyDisableAnnotations,
             topology_disable_full_window: topologyDisableFullWindow,
             topology_lookup_timeout_ms: topologyLookupTimeoutMs,
@@ -1642,6 +1717,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyExportConfirmPath,
     topologyExportFolderPreset,
     topologyExportCustomPath,
+    topologyCopyActions,
+    topologyExportActions,
     topologyDisableAnnotations,
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
@@ -4675,6 +4752,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   exportConfirmPath={topologyExportConfirmPath}
                   exportFolderPreset={topologyExportFolderPreset}
                   exportCustomPath={topologyExportCustomPath}
+                  copyActions={topologyCopyActions}
+                  exportActions={topologyExportActions}
                   disableAnnotations={topologyDisableAnnotations}
                   disableFullWindow={topologyDisableFullWindow}
                   lookupTimeoutMs={topologyLookupTimeoutMs}
@@ -5959,6 +6038,80 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             />
                           </div>
                         )}
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Copy actions</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                  {topologyCopyActions.length} selected
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                                {TOPOLOGY_COPY_ACTION_OPTIONS.map((opt) => {
+                                  const checked = topologyCopyActions.includes(opt.value);
+                                  return (
+                                    <DropdownMenuCheckboxItem
+                                      key={opt.value}
+                                      checked={checked}
+                                      onCheckedChange={(next) => {
+                                        setTopologyCopyActions((prev) => {
+                                          const set = new Set(prev);
+                                          if (next) set.add(opt.value);
+                                          else if (set.size > 1) set.delete(opt.value);
+                                          return Array.from(set);
+                                        });
+                                      }}
+                                      onSelect={(event) => event.preventDefault()}
+                                    >
+                                      {opt.label}
+                                    </DropdownMenuCheckboxItem>
+                                  );
+                                })}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <div className="text-xs text-muted-foreground">
+                              Controls which actions appear in topology Copy menu.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Export actions</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                  {topologyExportActions.length} selected
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                                {TOPOLOGY_EXPORT_ACTION_OPTIONS.map((opt) => {
+                                  const checked = topologyExportActions.includes(opt.value);
+                                  return (
+                                    <DropdownMenuCheckboxItem
+                                      key={opt.value}
+                                      checked={checked}
+                                      onCheckedChange={(next) => {
+                                        setTopologyExportActions((prev) => {
+                                          const set = new Set(prev);
+                                          if (next) set.add(opt.value);
+                                          else if (set.size > 1) set.delete(opt.value);
+                                          return Array.from(set);
+                                        });
+                                      }}
+                                      onSelect={(event) => event.preventDefault()}
+                                    >
+                                      {opt.label}
+                                    </DropdownMenuCheckboxItem>
+                                  );
+                                })}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <div className="text-xs text-muted-foreground">
+                              Controls which actions appear in topology Export menu.
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     )}
                     {settingsSubtab === "audit" && (

@@ -81,6 +81,8 @@ type ZoneTopologyTabProps = {
   exportConfirmPath?: boolean;
   exportFolderPreset?: "system" | "documents" | "downloads" | "desktop" | "custom";
   exportCustomPath?: string;
+  copyActions?: Array<"mermaid" | "svg" | "png">;
+  exportActions?: Array<"mermaid" | "svg" | "png" | "pdf">;
   disableAnnotations?: boolean;
   disableFullWindow?: boolean;
   lookupTimeoutMs?: number;
@@ -126,6 +128,12 @@ type TopologyProbeCacheEntry = {
   httpsUp: boolean;
   httpUp: boolean;
   ts: number;
+};
+type DiscoveryProgress = {
+  label: string;
+  done: number;
+  total: number;
+  requests: string[];
 };
 const TOPOLOGY_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -1049,6 +1057,8 @@ export function ZoneTopologyTab({
   exportConfirmPath = true,
   exportFolderPreset = "documents",
   exportCustomPath = "",
+  copyActions = ["mermaid", "svg", "png"],
+  exportActions = ["mermaid", "svg", "png", "pdf"],
   disableAnnotations = false,
   disableFullWindow = false,
   lookupTimeoutMs = 1200,
@@ -1084,6 +1094,12 @@ export function ZoneTopologyTab({
   const [graphSize, setGraphSize] = useState({ w: 1000, h: 600 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const [discovering, setDiscovering] = useState(false);
+  const [discoveryProgress, setDiscoveryProgress] = useState<DiscoveryProgress>({
+    label: "",
+    done: 0,
+    total: 0,
+    requests: [],
+  });
   const [discovery, setDiscovery] = useState<ServiceDiscoveryItem[]>([]);
   const [nodeContextMenu, setNodeContextMenu] = useState<{
     open: boolean;
@@ -1119,6 +1135,25 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
+  const enabledCopyActions = useMemo(
+    () =>
+      new Set(
+        (copyActions ?? []).filter(
+          (v): v is "mermaid" | "svg" | "png" => v === "mermaid" || v === "svg" || v === "png",
+        ),
+      ),
+    [copyActions],
+  );
+  const enabledExportActions = useMemo(
+    () =>
+      new Set(
+        (exportActions ?? []).filter(
+          (v): v is "mermaid" | "svg" | "png" | "pdf" =>
+            v === "mermaid" || v === "svg" || v === "png" || v === "pdf",
+        ),
+      ),
+    [exportActions],
+  );
   const dohEndpoints = useMemo(
     () => resolveDohEndpoints(resolverMode, dnsServer, customDnsServer, dohCustomUrl),
     [customDnsServer, dnsServer, dohCustomUrl, resolverMode],
@@ -1968,6 +2003,8 @@ export function ZoneTopologyTab({
   }, [annotations, svgMarkup, zoneName]);
 
   const controlsDisabled = isLoading || isRendering || topologyResolutionProgress.running;
+  const hasCopyActionsEnabled = enabledCopyActions.size > 0;
+  const hasExportActionsEnabled = enabledExportActions.size > 0;
   const cursorClass = annotationTool ? "cursor-crosshair" : handTool ? "cursor-grab" : "cursor-default";
   const graphBackgroundClass = isDarkThemeMode
     ? "bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%),linear-gradient(to_bottom_right,rgba(255,255,255,0.04),rgba(0,0,0,0.15))]"
@@ -1976,18 +2013,23 @@ export function ZoneTopologyTab({
   const panX = Math.round(pan.x);
   const panY = Math.round(pan.y);
   const topologyProgressLabel = useMemo(() => {
+    if (discovering) return discoveryProgress.label || "Discovering services...";
     if (!topologyResolutionProgress.running) return "Rendering topology...";
     const total = Math.max(1, topologyResolutionProgress.total);
     const done = Math.min(total, topologyResolutionProgress.done);
     const pct = Math.round((done / total) * 100);
     return `Resolving chain nodes ${done}/${total} (${pct}%)...`;
-  }, [topologyResolutionProgress.done, topologyResolutionProgress.running, topologyResolutionProgress.total]);
+  }, [discovering, discoveryProgress.label, topologyResolutionProgress.done, topologyResolutionProgress.running, topologyResolutionProgress.total]);
   const activeRequestPreview = useMemo(() => {
+    if (discovering) {
+      if (discoveryProgress.requests.length === 0) return "";
+      return `Requests: ${discoveryProgress.requests.join(", ")}`;
+    }
     if (!topologyResolutionProgress.running || activeResolutionRequests.length === 0) return "";
     const head = activeResolutionRequests.slice(0, 4).join(", ");
     const extra = activeResolutionRequests.length > 4 ? ` (+${activeResolutionRequests.length - 4} more)` : "";
     return `Requests: ${head}${extra}`;
-  }, [activeResolutionRequests, topologyResolutionProgress.running]);
+  }, [activeResolutionRequests, discoveryProgress.requests, discovering, topologyResolutionProgress.running]);
   const zoneBase = useMemo(() => normalizeDomain(zoneName), [zoneName]);
   const emailRecords = useMemo(
     () =>
@@ -2059,6 +2101,7 @@ export function ZoneTopologyTab({
     }
     const items: ServiceDiscoveryItem[] = [];
     setDiscovering(true);
+    setDiscoveryProgress({ label: "Preparing service discovery...", done: 0, total: 1, requests: [] });
     try {
       const hasMx = records.some((r) => r.type === "MX");
       const hasNs = records.some((r) => r.type === "NS");
@@ -2082,6 +2125,17 @@ export function ZoneTopologyTab({
         }
       }
       const probeHosts = Array.from(httpTargets).filter(Boolean).slice(0, 4);
+      const discoveryTotal = Math.max(1, probeHosts.length + 3);
+      let discoveryDone = 1;
+      const setProgress = (label: string, requests: string[] = []) => {
+        setDiscoveryProgress({
+          label,
+          done: discoveryDone,
+          total: discoveryTotal,
+          requests: requests.slice(0, 6),
+        });
+      };
+      setProgress("Building discovery probe plan...", probeHosts);
       const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
       const probePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|probe|`;
       const now = Date.now();
@@ -2094,6 +2148,8 @@ export function ZoneTopologyTab({
           probeMap.set(norm, { host: norm, httpsUp: cached.httpsUp, httpUp: cached.httpUp });
         }
       }
+      discoveryDone += 1;
+      setProgress("Running backend service probes...", probeHosts);
       const backendBatch = await resolveTopologyBatchInBackend(
         [],
         clampedHops,
@@ -2122,6 +2178,8 @@ export function ZoneTopologyTab({
           });
         }
       }
+      discoveryDone += 1;
+      setProgress("Resolving HTTP/HTTPS service checks...", probeHosts);
       if (probeMap.size > 0) {
         for (const probe of probeMap.values()) {
           const httpsStatus: "up" | "down" = probe.httpsUp ? "up" : "down";
@@ -2139,12 +2197,15 @@ export function ZoneTopologyTab({
         }
       } else {
         for (const host of probeHosts) {
+          setProgress(`Probing ${host}...`, [host]);
           const httpsStatus = await probeHttp(`https://${host}`);
           items.push({ service: `HTTPS (${host})`, status: httpsStatus, details: httpsStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
           const httpStatus = await probeHttp(`http://${host}`);
           items.push({ service: `HTTP (${host})`, status: httpStatus, details: httpStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
         }
       }
+      discoveryDone += 1;
+      setProgress("Processing TCP discovery probes...", probeHosts);
       if (backendBatch && backendBatch.tcpProbes.length > 0) {
         const serviceNameByPort: Record<number, string> = {
           21: "FTP",
@@ -2172,12 +2233,15 @@ export function ZoneTopologyTab({
           });
         }
       }
+      discoveryDone = discoveryTotal;
+      setProgress("Discovery complete", []);
       setDiscovery(items);
       toast({ title: "Discovery complete", description: `Found ${items.length} service signal(s).` });
     } finally {
       setDiscovering(false);
+      setDiscoveryProgress({ label: "", done: 0, total: 0, requests: [] });
     }
-  }, [disableServiceDiscovery, resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups, tcpServicePorts]);
+  }, [disableServiceDiscovery, resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups, tcpServicePorts, geoProvider, scanResolutionChain]);
 
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">
@@ -2245,52 +2309,68 @@ export function ZoneTopologyTab({
       )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className="h-8 px-2" disabled={!mermaidCode && !svgMarkup}>
+          <Button size="sm" variant="outline" className="h-8 px-2" disabled={(!mermaidCode && !svgMarkup) || !hasCopyActionsEnabled}>
             <Copy className="h-3.5 w-3.5 mr-1" />
             Copy
             <ChevronDown className="ml-1 h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={6} className="w-52">
-          <DropdownMenuItem onClick={() => void copyCode()} disabled={!mermaidCode}>
-            <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy Mermaid code
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void copySvg()} disabled={!svgMarkup}>
-            <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy SVG
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void copyPng()} disabled={!svgMarkup}>
-            <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy PNG
-          </DropdownMenuItem>
+          {enabledCopyActions.has("mermaid") && (
+            <DropdownMenuItem onClick={() => void copyCode()} disabled={!mermaidCode}>
+              <Copy className="mr-2 h-3.5 w-3.5" />
+              Copy Mermaid code
+            </DropdownMenuItem>
+          )}
+          {enabledCopyActions.has("svg") && (
+            <DropdownMenuItem onClick={() => void copySvg()} disabled={!svgMarkup}>
+              <Copy className="mr-2 h-3.5 w-3.5" />
+              Copy SVG
+            </DropdownMenuItem>
+          )}
+          {enabledCopyActions.has("png") && (
+            <DropdownMenuItem onClick={() => void copyPng()} disabled={!svgMarkup}>
+              <Copy className="mr-2 h-3.5 w-3.5" />
+              Copy PNG
+            </DropdownMenuItem>
+          )}
+          {!hasCopyActionsEnabled && <DropdownMenuItem disabled>No copy actions enabled</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className="h-8 px-2" disabled={!mermaidCode && !svgMarkup}>
+          <Button size="sm" variant="outline" className="h-8 px-2" disabled={(!mermaidCode && !svgMarkup) || !hasExportActionsEnabled}>
             <FileDown className="h-3.5 w-3.5 mr-1" />
             Export
             <ChevronDown className="ml-1 h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={6} className="w-52">
-          <DropdownMenuItem onClick={exportCode} disabled={!mermaidCode}>
-            <FileDown className="mr-2 h-3.5 w-3.5" />
-            Export Mermaid code
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={exportSvg} disabled={!svgMarkup}>
-            <FileDown className="mr-2 h-3.5 w-3.5" />
-            Export SVG
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void exportPng()} disabled={!svgMarkup}>
-            <FileDown className="mr-2 h-3.5 w-3.5" />
-            Export PNG
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={printToPdf} disabled={!svgMarkup}>
-            <FileDown className="mr-2 h-3.5 w-3.5" />
-            Export PDF
-          </DropdownMenuItem>
+          {enabledExportActions.has("mermaid") && (
+            <DropdownMenuItem onClick={exportCode} disabled={!mermaidCode}>
+              <FileDown className="mr-2 h-3.5 w-3.5" />
+              Export Mermaid code
+            </DropdownMenuItem>
+          )}
+          {enabledExportActions.has("svg") && (
+            <DropdownMenuItem onClick={exportSvg} disabled={!svgMarkup}>
+              <FileDown className="mr-2 h-3.5 w-3.5" />
+              Export SVG
+            </DropdownMenuItem>
+          )}
+          {enabledExportActions.has("png") && (
+            <DropdownMenuItem onClick={() => void exportPng()} disabled={!svgMarkup}>
+              <FileDown className="mr-2 h-3.5 w-3.5" />
+              Export PNG
+            </DropdownMenuItem>
+          )}
+          {enabledExportActions.has("pdf") && (
+            <DropdownMenuItem onClick={printToPdf} disabled={!svgMarkup}>
+              <FileDown className="mr-2 h-3.5 w-3.5" />
+              Export PDF
+            </DropdownMenuItem>
+          )}
+          {!hasExportActionsEnabled && <DropdownMenuItem disabled>No export actions enabled</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
       <Button
@@ -2458,7 +2538,7 @@ export function ZoneTopologyTab({
                   </div>
                 </div>
 
-                {(isRendering || isLoading || topologyResolutionProgress.running) && (
+                {(isRendering || isLoading || topologyResolutionProgress.running || discovering) && (
                   <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
                     <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
                       <div className="flex items-center gap-2">
@@ -2468,17 +2548,17 @@ export function ZoneTopologyTab({
                       {activeRequestPreview ? (
                         <div className="line-clamp-2 text-[11px] text-muted-foreground">{activeRequestPreview}</div>
                       ) : null}
-                      {topologyResolutionProgress.running && (
+                      {(topologyResolutionProgress.running || discovering) && (
                         <div className="h-1.5 w-full rounded bg-primary/20">
                           <div
                             className="h-full rounded bg-primary transition-all duration-200"
                             style={{
                               width: `${Math.round(
                                 (Math.min(
-                                  Math.max(topologyResolutionProgress.done, 0),
-                                  Math.max(topologyResolutionProgress.total, 1),
+                                  Math.max(discovering ? discoveryProgress.done : topologyResolutionProgress.done, 0),
+                                  Math.max(discovering ? discoveryProgress.total : topologyResolutionProgress.total, 1),
                                 ) /
-                                  Math.max(topologyResolutionProgress.total, 1)) *
+                                  Math.max(discovering ? discoveryProgress.total : topologyResolutionProgress.total, 1)) *
                                   100,
                               )}%`,
                             }}
@@ -2659,7 +2739,7 @@ export function ZoneTopologyTab({
             </div>
           </div>
 
-          {(isRendering || isLoading || topologyResolutionProgress.running) && (
+          {(isRendering || isLoading || topologyResolutionProgress.running || discovering) && (
             <div className={cn("absolute inset-0 z-20 flex items-center justify-center", loadingOverlayClass)}>
               <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
                 <div className="flex items-center gap-2">
@@ -2669,17 +2749,17 @@ export function ZoneTopologyTab({
                 {activeRequestPreview ? (
                   <div className="line-clamp-2 text-[11px] text-muted-foreground">{activeRequestPreview}</div>
                 ) : null}
-                {topologyResolutionProgress.running && (
+                {(topologyResolutionProgress.running || discovering) && (
                   <div className="h-1.5 w-full rounded bg-primary/20">
                     <div
                       className="h-full rounded bg-primary transition-all duration-200"
                       style={{
                         width: `${Math.round(
                           (Math.min(
-                            Math.max(topologyResolutionProgress.done, 0),
-                            Math.max(topologyResolutionProgress.total, 1),
+                            Math.max(discovering ? discoveryProgress.done : topologyResolutionProgress.done, 0),
+                            Math.max(discovering ? discoveryProgress.total : topologyResolutionProgress.total, 1),
                           ) /
-                            Math.max(topologyResolutionProgress.total, 1)) *
+                            Math.max(discovering ? discoveryProgress.total : topologyResolutionProgress.total, 1)) *
                             100,
                         )}%`,
                       }}

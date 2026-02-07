@@ -47,6 +47,8 @@ interface StorageData {
   topologyExportFolderPreset?: string;
   topologyExportCustomPath?: string;
   topologyExportConfirmPath?: boolean;
+  topologyCopyActions?: string[];
+  topologyExportActions?: string[];
   topologyDisableAnnotations?: boolean;
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
@@ -91,6 +93,8 @@ export interface SessionSettingsProfile {
   topologyExportFolderPreset?: string;
   topologyExportCustomPath?: string;
   topologyExportConfirmPath?: boolean;
+  topologyCopyActions?: string[];
+  topologyExportActions?: string[];
   topologyDisableAnnotations?: boolean;
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
@@ -826,6 +830,32 @@ export class StorageManager {
     return this.data.topologyExportConfirmPath !== false;
   }
 
+  setTopologyCopyActions(actions: string[]): void {
+    const next = Array.from(new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)));
+    this.data.topologyCopyActions = next.length ? next : ["mermaid", "svg", "png"];
+    this.save();
+    this.dispatchPreferencesChanged({ topologyCopyActions: this.data.topologyCopyActions });
+  }
+
+  getTopologyCopyActions(): string[] {
+    const value = this.data.topologyCopyActions;
+    if (!Array.isArray(value) || value.length === 0) return ["mermaid", "svg", "png"];
+    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+  }
+
+  setTopologyExportActions(actions: string[]): void {
+    const next = Array.from(new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)));
+    this.data.topologyExportActions = next.length ? next : ["mermaid", "svg", "png", "pdf"];
+    this.save();
+    this.dispatchPreferencesChanged({ topologyExportActions: this.data.topologyExportActions });
+  }
+
+  getTopologyExportActions(): string[] {
+    const value = this.data.topologyExportActions;
+    if (!Array.isArray(value) || value.length === 0) return ["mermaid", "svg", "png", "pdf"];
+    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+  }
+
   setTopologyDisableAnnotations(enabled: boolean): void {
     this.data.topologyDisableAnnotations = enabled;
     this.save();
@@ -1129,6 +1159,8 @@ export class StorageManager {
     delete this.data.topologyExportFolderPreset;
     delete this.data.topologyExportCustomPath;
     delete this.data.topologyExportConfirmPath;
+    delete this.data.topologyCopyActions;
+    delete this.data.topologyExportActions;
     delete this.data.topologyDisableAnnotations;
     delete this.data.topologyDisableFullWindow;
     delete this.data.topologyLookupTimeoutMs;
