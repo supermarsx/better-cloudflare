@@ -84,6 +84,8 @@ type ZoneTopologyTabProps = {
   disableFullWindow?: boolean;
   lookupTimeoutMs?: number;
   disablePtrLookups?: boolean;
+  disableServiceDiscovery?: boolean;
+  tcpServicePorts?: number[];
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
 };
@@ -891,10 +893,12 @@ async function resolveTopologyBatchInBackend(
   dohCustomUrl: string,
   lookupTimeoutMs: number,
   disablePtrLookups: boolean,
+  tcpServicePorts: number[],
   serviceHosts: string[] = [],
 ): Promise<{
   resolutions: ExternalDnsResolution[];
   probes: Array<{ host: string; httpsUp: boolean; httpUp: boolean }>;
+  tcpProbes: Array<{ host: string; port: number; up: boolean }>;
 } | null> {
   if (!TauriClient.isTauri()) return null;
   try {
@@ -909,6 +913,7 @@ async function resolveTopologyBatchInBackend(
       customDnsServer,
       lookupTimeoutMs,
       disablePtrLookups,
+      tcpServicePorts,
     );
     return {
       resolutions: (result.resolutions ?? []).map((item) => ({
@@ -930,6 +935,11 @@ async function resolveTopologyBatchInBackend(
         host: item.host,
         httpsUp: Boolean(item.https_up),
         httpUp: Boolean(item.http_up),
+      })),
+      tcpProbes: (result.tcp_probes ?? []).map((item) => ({
+        host: item.host,
+        port: Number(item.port),
+        up: Boolean(item.up),
       })),
     };
   } catch {
@@ -954,6 +964,8 @@ export function ZoneTopologyTab({
   disableFullWindow = false,
   lookupTimeoutMs = 1200,
   disablePtrLookups = false,
+  disableServiceDiscovery = false,
+  tcpServicePorts = [80, 443, 22],
   onRefresh,
   onEditRecord,
 }: ZoneTopologyTabProps) {
@@ -1167,6 +1179,7 @@ export function ZoneTopologyTab({
           dohCustomUrl,
           lookupTimeoutMs,
           disablePtrLookups,
+          tcpServicePorts,
         );
         if (backendBatch) {
           for (const resolved of backendBatch.resolutions) {
@@ -1877,6 +1890,10 @@ export function ZoneTopologyTab({
   }, [externalResolutionByName, maxResolutionHops, records, zoneName]);
 
   const runDiscovery = useCallback(async () => {
+    if (disableServiceDiscovery) {
+      toast({ title: "Service discovery disabled", description: "Enable it in Topology settings to run checks." });
+      return;
+    }
     const items: ServiceDiscoveryItem[] = [];
     setDiscovering(true);
     try {
@@ -1924,6 +1941,7 @@ export function ZoneTopologyTab({
         dohCustomUrl,
         lookupTimeoutMs,
         disablePtrLookups,
+        tcpServicePorts,
         probeHosts,
       );
       if (backendBatch && backendBatch.probes.length > 0) {
@@ -1961,12 +1979,39 @@ export function ZoneTopologyTab({
           items.push({ service: `HTTP (${host})`, status: httpStatus, details: httpStatus === "up" ? "Probe reachable" : "Probe failed/blocked" });
         }
       }
+      if (backendBatch && backendBatch.tcpProbes.length > 0) {
+        const serviceNameByPort: Record<number, string> = {
+          21: "FTP",
+          22: "SSH",
+          23: "Telnet",
+          25: "SMTP",
+          53: "DNS",
+          80: "HTTP",
+          110: "POP3",
+          143: "IMAP",
+          443: "HTTPS",
+          465: "SMTPS",
+          587: "Submission",
+          993: "IMAPS",
+          995: "POP3S",
+          3306: "MySQL",
+          5432: "PostgreSQL",
+        };
+        for (const tcp of backendBatch.tcpProbes) {
+          const label = serviceNameByPort[tcp.port] ?? `TCP ${tcp.port}`;
+          items.push({
+            service: `${label} (${tcp.host}:${tcp.port})`,
+            status: tcp.up ? "up" : "down",
+            details: tcp.up ? "TCP connect succeeded" : "TCP connect failed",
+          });
+        }
+      }
       setDiscovery(items);
       toast({ title: "Discovery complete", description: `Found ${items.length} service signal(s).` });
     } finally {
       setDiscovering(false);
     }
-  }, [resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups]);
+  }, [disableServiceDiscovery, resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups, tcpServicePorts]);
 
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">
@@ -2124,7 +2169,13 @@ export function ZoneTopologyTab({
           )}
         </Button>
       )}
-      <Button size="sm" variant="outline" className="h-8 px-2" onClick={() => void runDiscovery()} disabled={discovering}>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-8 px-2"
+        onClick={() => void runDiscovery()}
+        disabled={discovering || disableServiceDiscovery}
+      >
         <Search className={cn("h-3.5 w-3.5 mr-1", discovering && "animate-spin")} />
         Discover services
       </Button>

@@ -17,6 +17,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/DropdownMenu";
 import { Tag } from "@/components/ui/tag";
 import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
 import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
@@ -98,6 +104,24 @@ type AuditFilterRule = {
   operator: AuditFilterOperator;
   value: string;
 };
+
+const TOPOLOGY_TCP_SERVICE_OPTIONS: Array<{ port: number; label: string }> = [
+  { port: 21, label: "FTP (21)" },
+  { port: 22, label: "SSH (22)" },
+  { port: 23, label: "Telnet (23)" },
+  { port: 25, label: "SMTP (25)" },
+  { port: 53, label: "DNS (53)" },
+  { port: 80, label: "HTTP (80)" },
+  { port: 110, label: "POP3 (110)" },
+  { port: 143, label: "IMAP (143)" },
+  { port: 443, label: "HTTPS (443)" },
+  { port: 465, label: "SMTPS (465)" },
+  { port: 587, label: "Submission (587)" },
+  { port: 993, label: "IMAPS (993)" },
+  { port: 995, label: "POP3S (995)" },
+  { port: 3306, label: "MySQL (3306)" },
+  { port: 5432, label: "PostgreSQL (5432)" },
+];
 
 type ZoneTab = {
   kind: TabKind;
@@ -514,6 +538,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyDisablePtrLookups, setTopologyDisablePtrLookups] = useState(
     storageManager.getTopologyDisablePtrLookups(),
   );
+  const [topologyDisableServiceDiscovery, setTopologyDisableServiceDiscovery] = useState(
+    storageManager.getTopologyDisableServiceDiscovery(),
+  );
+  const [topologyTcpServices, setTopologyTcpServices] = useState<string[]>(
+    storageManager.getTopologyTcpServices(),
+  );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
   const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
   const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
@@ -603,6 +633,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       topologyDisableFullWindow,
       topologyLookupTimeoutMs,
       topologyDisablePtrLookups,
+      topologyDisableServiceDiscovery,
+      topologyTcpServices,
       auditExportDefaultDocuments,
       confirmClearAuditLogs,
       auditExportFolderPreset,
@@ -635,6 +667,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
     topologyDisablePtrLookups,
+    topologyDisableServiceDiscovery,
+    topologyTcpServices,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -723,6 +757,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyDisablePtrLookups === "boolean") {
       setTopologyDisablePtrLookups(profile.topologyDisablePtrLookups);
+    }
+    if (typeof profile.topologyDisableServiceDiscovery === "boolean") {
+      setTopologyDisableServiceDiscovery(profile.topologyDisableServiceDiscovery);
+    }
+    if (Array.isArray(profile.topologyTcpServices)) {
+      setTopologyTcpServices(
+        Array.from(new Set(profile.topologyTcpServices.map((v) => String(v).trim()).filter(Boolean))),
+      );
     }
     if (typeof profile.auditExportDefaultDocuments === "boolean") {
       setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
@@ -1158,6 +1200,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_disable_full_window?: boolean;
             topology_lookup_timeout_ms?: number;
             topology_disable_ptr_lookups?: boolean;
+            topology_disable_service_discovery?: boolean;
+            topology_tcp_services?: string[];
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -1260,6 +1304,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.topology_disable_ptr_lookups === "boolean") {
             setTopologyDisablePtrLookups(prefObj.topology_disable_ptr_lookups);
           }
+          if (typeof prefObj.topology_disable_service_discovery === "boolean") {
+            setTopologyDisableServiceDiscovery(prefObj.topology_disable_service_discovery);
+          }
+          if (Array.isArray(prefObj.topology_tcp_services)) {
+            setTopologyTcpServices(
+              Array.from(new Set(prefObj.topology_tcp_services.map((v) => String(v).trim()).filter(Boolean))),
+            );
+          }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
             setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
           }
@@ -1318,6 +1370,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setTopologyDisableFullWindow(storageManager.getTopologyDisableFullWindow());
     setTopologyLookupTimeoutMs(storageManager.getTopologyLookupTimeoutMs());
     setTopologyDisablePtrLookups(storageManager.getTopologyDisablePtrLookups());
+    setTopologyDisableServiceDiscovery(storageManager.getTopologyDisableServiceDiscovery());
+    setTopologyTcpServices(storageManager.getTopologyTcpServices());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
     setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
@@ -1452,6 +1506,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
     storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
     storageManager.setTopologyDisablePtrLookups(topologyDisablePtrLookups);
+    storageManager.setTopologyDisableServiceDiscovery(topologyDisableServiceDiscovery);
+    storageManager.setTopologyTcpServices(topologyTcpServices);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
     storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
@@ -1491,6 +1547,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_disable_full_window: topologyDisableFullWindow,
             topology_lookup_timeout_ms: topologyLookupTimeoutMs,
             topology_disable_ptr_lookups: topologyDisablePtrLookups,
+            topology_disable_service_discovery: topologyDisableServiceDiscovery,
+            topology_tcp_services: topologyTcpServices,
             audit_export_default_documents: auditExportDefaultDocuments,
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
@@ -1530,6 +1588,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
     topologyDisablePtrLookups,
+    topologyDisableServiceDiscovery,
+    topologyTcpServices,
     auditExportDefaultDocuments,
     confirmClearAuditLogs,
     auditExportFolderPreset,
@@ -4558,6 +4618,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   disableFullWindow={topologyDisableFullWindow}
                   lookupTimeoutMs={topologyLookupTimeoutMs}
                   disablePtrLookups={topologyDisablePtrLookups}
+                  disableServiceDiscovery={topologyDisableServiceDiscovery}
+                  tcpServicePorts={topologyTcpServices.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)}
                   onRefresh={async () => {
                     await loadRecords(activeTab);
                   }}
@@ -5608,6 +5670,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             />
                             <div className="text-xs text-muted-foreground">
                               Skip reverse DNS lookups to speed up topology loading.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Disable service discovery</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={topologyDisableServiceDiscovery}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyDisableServiceDiscovery(checked);
+                                notifySaved(
+                                  checked
+                                    ? "Topology service discovery disabled."
+                                    : "Topology service discovery enabled.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Disables manual service probing in topology tab.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">TCP services to probe</div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                  {topologyTcpServices.length} selected
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                                {TOPOLOGY_TCP_SERVICE_OPTIONS.map((opt) => {
+                                  const value = String(opt.port);
+                                  const checked = topologyTcpServices.includes(value);
+                                  return (
+                                    <DropdownMenuCheckboxItem
+                                      key={opt.port}
+                                      checked={checked}
+                                      onCheckedChange={(next) => {
+                                        setTopologyTcpServices((prev) => {
+                                          const set = new Set(prev);
+                                          if (next) set.add(value);
+                                          else set.delete(value);
+                                          const out = Array.from(set);
+                                          return out.length ? out : ["80", "443", "22"];
+                                        });
+                                      }}
+                                      onSelect={(event) => event.preventDefault()}
+                                    >
+                                      {opt.label}
+                                    </DropdownMenuCheckboxItem>
+                                  );
+                                })}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <div className="text-xs text-muted-foreground">
+                              Multi-select common TCP services for simple discovery.
                             </div>
                           </div>
                         </div>

@@ -1091,6 +1091,14 @@ pub struct ServiceProbeResult {
 pub struct TopologyBatchResult {
     pub resolutions: Vec<HostnameChainResult>,
     pub probes: Vec<ServiceProbeResult>,
+    pub tcp_probes: Vec<TcpServiceProbeResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpServiceProbeResult {
+    pub host: String,
+    pub port: u16,
+    pub up: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1366,6 +1374,14 @@ async fn probe_url(client: &reqwest::Client, url: String) -> bool {
     matches!(resp, Ok(Ok(_)))
 }
 
+async fn probe_tcp(host: &str, port: u16, timeout_ms: u32) -> bool {
+    let fut = tokio::net::TcpStream::connect((host, port));
+    matches!(
+        tokio::time::timeout(Duration::from_millis(u64::from(timeout_ms)), fut).await,
+        Ok(Ok(_))
+    )
+}
+
 fn resolve_dns_server(
     dns_server: Option<&str>,
     custom_dns_server: Option<&str>,
@@ -1468,6 +1484,7 @@ pub async fn resolve_topology_batch(
     custom_dns_server: Option<String>,
     lookup_timeout_ms: Option<u32>,
     disable_ptr_lookups: Option<bool>,
+    tcp_service_ports: Option<Vec<u16>>,
 ) -> Result<TopologyBatchResult, String> {
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
     let lookup_timeout_ms = lookup_timeout_ms.unwrap_or(1200).clamp(250, 10000);
@@ -1604,6 +1621,7 @@ pub async fn resolve_topology_batch(
     }
 
     let mut probes = Vec::new();
+    let mut tcp_probes = Vec::new();
     let mut seen_probe_hosts = HashSet::new();
     let mut unique_probe_hosts = Vec::new();
     for host in service_hosts.unwrap_or_default() {
@@ -1640,5 +1658,35 @@ pub async fn resolve_topology_batch(
         }
     }
 
-    Ok(TopologyBatchResult { resolutions, probes })
+    let tcp_ports: Vec<u16> = tcp_service_ports
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| *p > 0)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    if !tcp_ports.is_empty() && !unique_probe_hosts.is_empty() {
+        for chunk in unique_probe_hosts.chunks(probe_parallelism) {
+            let mut set = tokio::task::JoinSet::new();
+            for host in chunk {
+                let host_owned = host.clone();
+                let ports = tcp_ports.clone();
+                set.spawn(async move {
+                    let mut out = Vec::new();
+                    for port in ports {
+                        let up = probe_tcp(&host_owned, port, lookup_timeout_ms).await;
+                        out.push(TcpServiceProbeResult { host: host_owned.clone(), port, up });
+                    }
+                    out
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                if let Ok(items) = joined {
+                    tcp_probes.extend(items);
+                }
+            }
+        }
+    }
+
+    Ok(TopologyBatchResult { resolutions, probes, tcp_probes })
 }

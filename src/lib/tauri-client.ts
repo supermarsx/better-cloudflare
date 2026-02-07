@@ -48,9 +48,16 @@ export interface TopologyServiceProbeResult {
   http_up: boolean;
 }
 
+export interface TopologyTcpServiceProbeResult {
+  host: string;
+  port: number;
+  up: boolean;
+}
+
 export interface TopologyBatchResult {
   resolutions: TopologyHostnameResolution[];
   probes: TopologyServiceProbeResult[];
+  tcp_probes?: TopologyTcpServiceProbeResult[];
 }
 
 export class TauriClient {
@@ -414,6 +421,7 @@ export class TauriClient {
     customDnsServer = "",
     lookupTimeoutMs = 1200,
     disablePtrLookups = false,
+    tcpServicePorts?: number[],
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
       hostnames,
@@ -426,6 +434,7 @@ export class TauriClient {
       custom_dns_server: customDnsServer,
       lookup_timeout_ms: lookupTimeoutMs,
       disable_ptr_lookups: disablePtrLookups,
+      tcp_service_ports: tcpServicePorts,
     });
   }
 

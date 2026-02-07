@@ -51,6 +51,8 @@ interface StorageData {
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
   topologyDisablePtrLookups?: boolean;
+  topologyDisableServiceDiscovery?: boolean;
+  topologyTcpServices?: string[];
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -90,6 +92,8 @@ export interface SessionSettingsProfile {
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
   topologyDisablePtrLookups?: boolean;
+  topologyDisableServiceDiscovery?: boolean;
+  topologyTcpServices?: string[];
   auditExportDefaultDocuments?: boolean;
   confirmClearAuditLogs?: boolean;
   auditExportFolderPreset?: string;
@@ -859,6 +863,29 @@ export class StorageManager {
     return this.data.topologyDisablePtrLookups === true;
   }
 
+  setTopologyDisableServiceDiscovery(enabled: boolean): void {
+    this.data.topologyDisableServiceDiscovery = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDisableServiceDiscovery: enabled });
+  }
+
+  getTopologyDisableServiceDiscovery(): boolean {
+    return this.data.topologyDisableServiceDiscovery === true;
+  }
+
+  setTopologyTcpServices(services: string[]): void {
+    const next = Array.from(new Set((services ?? []).map((s) => String(s).trim()).filter(Boolean)));
+    this.data.topologyTcpServices = next;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyTcpServices: next });
+  }
+
+  getTopologyTcpServices(): string[] {
+    const value = this.data.topologyTcpServices;
+    if (!Array.isArray(value)) return ["80", "443", "22"];
+    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+  }
+
   setAuditExportDefaultDocuments(enabled: boolean): void {
     this.data.auditExportDefaultDocuments = enabled;
     this.save();
@@ -1066,6 +1093,8 @@ export class StorageManager {
     delete this.data.topologyDisableFullWindow;
     delete this.data.topologyLookupTimeoutMs;
     delete this.data.topologyDisablePtrLookups;
+    delete this.data.topologyDisableServiceDiscovery;
+    delete this.data.topologyTcpServices;
     delete this.data.auditExportDefaultDocuments;
     delete this.data.confirmClearAuditLogs;
     delete this.data.auditExportFolderPreset;
