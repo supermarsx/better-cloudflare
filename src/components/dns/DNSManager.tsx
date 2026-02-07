@@ -136,6 +136,26 @@ const TOPOLOGY_EXPORT_ACTION_OPTIONS: Array<{ value: TopologyExportAction; label
   { value: "png", label: "PNG" },
   { value: "pdf", label: "PDF" },
 ];
+const TOPOLOGY_DNS_SERVER_LABELS: Record<string, string> = {
+  "1.1.1.1": "1.1.1.1 (Cloudflare default)",
+  "1.0.0.1": "1.0.0.1 (Cloudflare)",
+  "8.8.8.8": "8.8.8.8 (Google)",
+  "8.8.4.4": "8.8.4.4 (Google)",
+  "9.9.9.9": "9.9.9.9 (Quad9)",
+  "149.112.112.112": "149.112.112.112 (Quad9)",
+  "208.67.222.222": "208.67.222.222 (OpenDNS)",
+  "208.67.220.220": "208.67.220.220 (OpenDNS)",
+  "94.140.14.14": "94.140.14.14 (AdGuard)",
+  "76.76.2.0": "76.76.2.0 (Control D)",
+  custom: "Custom",
+};
+const TOPOLOGY_GEO_PROVIDER_LABELS: Record<TopologyGeoProvider, string> = {
+  auto: "Auto (multi-provider fallback)",
+  ipwhois: "ipwho.is",
+  ipapi_co: "ipapi.co",
+  ip_api: "ip-api.com",
+  internal: "Internal only (private/reserved IPs)",
+};
 
 type ZoneTab = {
   kind: TabKind;
@@ -5697,14 +5717,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <div className="font-medium">DNS server</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
-                              value={topologyDnsServer}
+                              value={topologyDnsServer.trim()}
                               onValueChange={(v) => {
                                 setTopologyDnsServer(v);
                                 notifySaved(`Topology DNS server set to ${v}.`);
                               }}
                             >
                               <SelectTrigger className="w-52">
-                                <SelectValue placeholder="DNS server" />
+                                <SelectValue placeholder="DNS server">
+                                  {TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim()}
+                                </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="1.1.1.1">1.1.1.1 (Cloudflare default)</SelectItem>
@@ -5867,7 +5889,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 }}
                               >
                                 <SelectTrigger className="w-56">
-                                  <SelectValue placeholder="GEO provider" />
+                                  <SelectValue placeholder="GEO provider">
+                                    {TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider]}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="auto">Auto (multi-provider fallback)</SelectItem>
@@ -5918,6 +5942,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.port}
+                                      className="pl-6"
                                       checked={checked}
                                       onCheckedChange={(next) => {
                                         setTopologyTcpServices((prev) => {
@@ -6053,6 +6078,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.value}
+                                      className="pl-6"
                                       checked={checked}
                                       onCheckedChange={(next) => {
                                         setTopologyCopyActions((prev) => {
@@ -6090,6 +6116,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.value}
+                                      className="pl-6"
                                       checked={checked}
                                       onCheckedChange={(next) => {
                                         setTopologyExportActions((prev) => {
