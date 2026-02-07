@@ -72,6 +72,9 @@ type ZoneTopologyTabProps = {
   records: DNSRecord[];
   isLoading?: boolean;
   maxResolutionHops?: number;
+  resolverMode?: "dns" | "doh";
+  dnsServer?: string;
+  customDnsServer?: string;
   dohProvider?: "google" | "cloudflare" | "quad9" | "custom";
   dohCustomUrl?: string;
   exportConfirmPath?: boolean;
@@ -429,20 +432,8 @@ function buildTopology(
   const cnameChains = computeCnameChains(records, maxResolutionHops);
   const cnameMap = buildCnameMap(records);
   const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
-  const ptrByIp = new Map<string, string[]>();
   const nodeRecords = new Map<string, DNSRecord[]>();
   const edgeSet = new Set<string>();
-  for (const resolved of Object.values(externalResolutionByName)) {
-    for (const [ipRaw, hostnamesRaw] of Object.entries(resolved.reverseHostnamesByIp ?? {})) {
-      const ip = String(ipRaw ?? "").trim();
-      if (!ip) continue;
-      const hostnames = Array.from(
-        new Set((hostnamesRaw ?? []).map((h) => normalizeDomain(h)).filter(Boolean)),
-      );
-      if (!hostnames.length) continue;
-      ptrByIp.set(ip, hostnames);
-    }
-  }
   for (const record of records) {
     const nameRaw = normalizeDomain(record.name) || "@";
     const labelName = nameRaw === "@" ? zone : nameRaw;
@@ -481,11 +472,7 @@ function buildTopology(
     nodeIds.set(key, id);
     return id;
   };
-  const renderIpNodeLabel = (ip: string) => {
-    const ptr = ptrByIp.get(ip) ?? [];
-    if (!ptr.length) return esc(ip);
-    return safeNodeLabel(ip, `PTR:${ptr.join(", ")}`);
-  };
+  const renderIpNodeLabel = (ip: string) => esc(ip);
 
   lines.push("flowchart LR");
   lines.push(`  ${zoneNode}["${esc(`Zone: ${zone || zoneName}`)}"]:::zone`);
@@ -787,17 +774,23 @@ async function probeHttp(url: string, timeoutMs = 5000): Promise<"up" | "down"> 
 }
 
 function resolveDohEndpoints(
-  provider: "google" | "cloudflare" | "quad9" | "custom",
+  resolverMode: "dns" | "doh",
+  dnsServer: string,
+  customDnsServer: string,
   customUrl: string,
 ): string[] {
+  if (resolverMode !== "doh") return [];
+  const selectedDns =
+    dnsServer === "custom" ? customDnsServer.trim() || "1.1.1.1" : (dnsServer.trim() || "1.1.1.1");
   const preferred =
-    provider === "cloudflare"
+    customUrl.trim() ||
+    (selectedDns === "1.1.1.1" || selectedDns === "1.0.0.1"
       ? "https://cloudflare-dns.com/dns-query"
-      : provider === "quad9"
-        ? "https://dns.quad9.net:5053/dns-query"
-        : provider === "custom"
-          ? customUrl.trim() || "https://cloudflare-dns.com/dns-query"
-          : "https://dns.google/resolve";
+      : selectedDns === "8.8.8.8" || selectedDns === "8.8.4.4"
+        ? "https://dns.google/resolve"
+        : selectedDns === "9.9.9.9" || selectedDns === "149.112.112.112"
+          ? "https://dns.quad9.net:5053/dns-query"
+          : "https://cloudflare-dns.com/dns-query");
   return Array.from(
     new Set([
       preferred,
@@ -891,6 +884,9 @@ async function resolveExternalCnameToAddress(
 async function resolveTopologyBatchInBackend(
   hostnames: string[],
   maxHops: number,
+  resolverMode: "dns" | "doh",
+  dnsServer: string,
+  customDnsServer: string,
   dohProvider: "google" | "cloudflare" | "quad9" | "custom",
   dohCustomUrl: string,
   lookupTimeoutMs: number,
@@ -908,6 +904,9 @@ async function resolveTopologyBatchInBackend(
       serviceHosts,
       dohProvider,
       dohCustomUrl,
+      resolverMode,
+      dnsServer,
+      customDnsServer,
       lookupTimeoutMs,
       disablePtrLookups,
     );
@@ -943,6 +942,9 @@ export function ZoneTopologyTab({
   records,
   isLoading = false,
   maxResolutionHops = 15,
+  resolverMode = "dns",
+  dnsServer = "1.1.1.1",
+  customDnsServer = "",
   dohProvider = "cloudflare",
   dohCustomUrl = "",
   exportConfirmPath = true,
@@ -1004,8 +1006,8 @@ export function ZoneTopologyTab({
     nodeSummaries: [],
   });
   const dohEndpoints = useMemo(
-    () => resolveDohEndpoints(dohProvider, dohCustomUrl),
-    [dohCustomUrl, dohProvider],
+    () => resolveDohEndpoints(resolverMode, dnsServer, customDnsServer, dohCustomUrl),
+    [customDnsServer, dnsServer, dohCustomUrl, resolverMode],
   );
   const recordsFingerprint = useMemo(
     () =>
@@ -1059,6 +1061,9 @@ export function ZoneTopologyTab({
     setSvgMarkup("");
     setActiveResolutionRequests([]);
   }, [
+    resolverMode,
+    dnsServer,
+    customDnsServer,
     dohCustomUrl,
     dohProvider,
     manualRefreshTick,
@@ -1093,7 +1098,7 @@ export function ZoneTopologyTab({
     }
     let cancelled = false;
     (async () => {
-      const runKey = `${recordsFingerprint}|${zoneName}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${manualRefreshTick}`;
+      const runKey = `${recordsFingerprint}|${zoneName}|${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${manualRefreshTick}`;
       if (topologyResolutionReady && lastResolutionRunKeyRef.current === runKey) {
         return;
       }
@@ -1107,7 +1112,7 @@ export function ZoneTopologyTab({
         setTopologyResolutionProgress({ running: true, total: Math.max(0, total), done: Math.max(0, done) });
       setTopologyResolutionProgress({ running: true, total, done });
       const now = Date.now();
-      const cachePrefix = `${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|`;
+      const cachePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|${disablePtrLookups ? "noptr" : "ptr"}|`;
       if (queue.length === 0) {
         if (!cancelled) {
           setExternalResolutionByName({});
@@ -1155,6 +1160,9 @@ export function ZoneTopologyTab({
         const backendBatch = await resolveTopologyBatchInBackend(
           unresolvedQueue,
           clampedHops,
+          resolverMode,
+          dnsServer,
+          customDnsServer,
           dohProvider,
           dohCustomUrl,
           lookupTimeoutMs,
@@ -1235,7 +1243,7 @@ export function ZoneTopologyTab({
       setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
       setActiveResolutionRequests([]);
     };
-  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady, lookupTimeoutMs, disablePtrLookups]);
+  }, [resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady, lookupTimeoutMs, disablePtrLookups]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1895,7 +1903,7 @@ export function ZoneTopologyTab({
       }
       const probeHosts = Array.from(httpTargets).filter(Boolean).slice(0, 4);
       const clampedHops = Math.max(1, Math.min(15, Math.round(maxResolutionHops)));
-      const probePrefix = `${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|probe|`;
+      const probePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|probe|`;
       const now = Date.now();
       const probeMap = new Map<string, { host: string; httpsUp: boolean; httpUp: boolean }>();
       for (const host of probeHosts) {
@@ -1909,6 +1917,9 @@ export function ZoneTopologyTab({
       const backendBatch = await resolveTopologyBatchInBackend(
         [],
         clampedHops,
+        resolverMode,
+        dnsServer,
+        customDnsServer,
         dohProvider,
         dohCustomUrl,
         lookupTimeoutMs,
@@ -1955,7 +1966,7 @@ export function ZoneTopologyTab({
     } finally {
       setDiscovering(false);
     }
-  }, [dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups]);
+  }, [resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, toast, zoneBase, lookupTimeoutMs, disablePtrLookups]);
 
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">

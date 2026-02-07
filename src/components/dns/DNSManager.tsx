@@ -591,6 +591,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmWindowClose,
       loadingOverlayTimeoutMs,
       topologyResolutionMaxHops,
+      topologyResolverMode,
+      topologyDnsServer,
+      topologyCustomDnsServer,
       topologyDohProvider,
       topologyDohCustomUrl,
       topologyExportConfirmPath,
@@ -620,6 +623,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
+    topologyResolverMode,
+    topologyDnsServer,
+    topologyCustomDnsServer,
     topologyDohProvider,
     topologyDohCustomUrl,
     topologyExportConfirmPath,
@@ -676,6 +682,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyResolutionMaxHops === "number") {
       setTopologyResolutionMaxHops(Math.max(1, Math.min(15, Math.round(profile.topologyResolutionMaxHops))));
+    }
+    if (profile.topologyResolverMode === "dns" || profile.topologyResolverMode === "doh") {
+      setTopologyResolverMode(profile.topologyResolverMode);
+    }
+    if (typeof profile.topologyDnsServer === "string") {
+      setTopologyDnsServer(profile.topologyDnsServer || "1.1.1.1");
+    }
+    if (typeof profile.topologyCustomDnsServer === "string") {
+      setTopologyCustomDnsServer(profile.topologyCustomDnsServer);
     }
     if (
       profile.topologyDohProvider === "google" ||
@@ -1131,6 +1146,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close?: boolean;
             loading_overlay_timeout_ms?: number;
             topology_resolution_max_hops?: number;
+            topology_resolver_mode?: TopologyResolverMode;
+            topology_dns_server?: string;
+            topology_custom_dns_server?: string;
             topology_doh_provider?: TopologyDohProvider;
             topology_doh_custom_url?: string;
             topology_export_confirm_path?: boolean;
@@ -1200,6 +1218,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setTopologyResolutionMaxHops(
               Math.max(1, Math.min(15, Math.round(prefObj.topology_resolution_max_hops))),
             );
+          }
+          if (prefObj.topology_resolver_mode === "dns" || prefObj.topology_resolver_mode === "doh") {
+            setTopologyResolverMode(prefObj.topology_resolver_mode);
+          }
+          if (typeof prefObj.topology_dns_server === "string") {
+            setTopologyDnsServer(prefObj.topology_dns_server || "1.1.1.1");
+          }
+          if (typeof prefObj.topology_custom_dns_server === "string") {
+            setTopologyCustomDnsServer(prefObj.topology_custom_dns_server);
           }
           if (
             prefObj.topology_doh_provider === "google" ||
@@ -1279,6 +1306,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
+    setTopologyResolverMode(storageManager.getTopologyResolverMode());
+    setTopologyDnsServer(storageManager.getTopologyDnsServer());
+    setTopologyCustomDnsServer(storageManager.getTopologyCustomDnsServer());
     setTopologyDohProvider(storageManager.getTopologyDohProvider());
     setTopologyDohCustomUrl(storageManager.getTopologyDohCustomUrl());
     setTopologyExportConfirmPath(storageManager.getTopologyExportConfirmPath());
@@ -1410,6 +1440,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
+    storageManager.setTopologyResolverMode(topologyResolverMode);
+    storageManager.setTopologyDnsServer(topologyDnsServer);
+    storageManager.setTopologyCustomDnsServer(topologyCustomDnsServer);
     storageManager.setTopologyDohProvider(topologyDohProvider);
     storageManager.setTopologyDohCustomUrl(topologyDohCustomUrl);
     storageManager.setTopologyExportConfirmPath(topologyExportConfirmPath);
@@ -1446,6 +1479,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_window_close: confirmWindowClose,
             loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
             topology_resolution_max_hops: topologyResolutionMaxHops,
+            topology_resolver_mode: topologyResolverMode,
+            topology_dns_server: topologyDnsServer,
+            topology_custom_dns_server: topologyCustomDnsServer,
             topology_doh_provider: topologyDohProvider,
             topology_doh_custom_url: topologyDohCustomUrl,
             topology_export_confirm_path: topologyExportConfirmPath,
@@ -1482,6 +1518,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
+    topologyResolverMode,
+    topologyDnsServer,
+    topologyCustomDnsServer,
     topologyDohProvider,
     topologyDohCustomUrl,
     topologyExportConfirmPath,
@@ -4507,6 +4546,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   records={activeTab.records}
                   isLoading={activeTab.isLoading}
                   maxResolutionHops={topologyResolutionMaxHops}
+                  resolverMode={topologyResolverMode}
+                  dnsServer={topologyDnsServer}
+                  customDnsServer={topologyCustomDnsServer}
                   dohProvider={topologyDohProvider}
                   dohCustomUrl={topologyDohCustomUrl}
                   exportConfirmPath={topologyExportConfirmPath}
@@ -5419,57 +5461,105 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Topology DoH resolver</div>
+                          <div className="font-medium">Topology request mode</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
-                              value={topologyDohProvider}
+                              value={topologyResolverMode}
                               onValueChange={(v) => {
-                                const next =
-                                  v === "cloudflare" || v === "quad9" || v === "custom"
-                                    ? v
-                                    : "google";
-                                setTopologyDohProvider(next);
+                                const next: TopologyResolverMode = v === "doh" ? "doh" : "dns";
+                                setTopologyResolverMode(next);
                                 notifySaved(
-                                  next === "custom"
-                                    ? "Topology resolver set to custom DoH endpoint."
-                                    : `Topology resolver set to ${next}.`,
+                                  next === "doh"
+                                    ? "Topology mode set to DoH requests."
+                                    : "Topology mode set to standard DNS requests.",
                                 );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder="Resolver" />
+                                <SelectValue placeholder="Mode" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="cloudflare">Cloudflare (default)</SelectItem>
-                                <SelectItem value="google">Google</SelectItem>
-                                <SelectItem value="quad9">Quad9</SelectItem>
-                                <SelectItem value="custom">Custom</SelectItem>
+                                <SelectItem value="dns">DNS (UDP/TCP)</SelectItem>
+                                <SelectItem value="doh">DNS-over-HTTPS (DoH)</SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Primary DoH resolver used for topology hostname chain lookups.
+                              Choose whether topology resolves via normal DNS or DoH.
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Custom DoH endpoint</div>
+                          <div className="font-medium">DNS server</div>
                           <div className="flex flex-wrap items-center gap-3">
-                            <Input
-                              value={topologyDohCustomUrl}
-                              onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
-                              onBlur={() => {
-                                setTopologyDohCustomUrl((prev) => prev.trim());
-                                notifySaved("Custom DoH endpoint updated.");
+                            <Select
+                              value={topologyDnsServer}
+                              onValueChange={(v) => {
+                                setTopologyDnsServer(v);
+                                notifySaved(`Topology DNS server set to ${v}.`);
                               }}
-                              className="min-w-[320px]"
-                              placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
-                              disabled={topologyDohProvider !== "custom"}
-                            />
+                            >
+                              <SelectTrigger className="w-52">
+                                <SelectValue placeholder="DNS server" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="1.1.1.1">1.1.1.1 (Cloudflare default)</SelectItem>
+                                <SelectItem value="1.0.0.1">1.0.0.1 (Cloudflare)</SelectItem>
+                                <SelectItem value="8.8.8.8">8.8.8.8 (Google)</SelectItem>
+                                <SelectItem value="8.8.4.4">8.8.4.4 (Google)</SelectItem>
+                                <SelectItem value="9.9.9.9">9.9.9.9 (Quad9)</SelectItem>
+                                <SelectItem value="149.112.112.112">149.112.112.112 (Quad9)</SelectItem>
+                                <SelectItem value="208.67.222.222">208.67.222.222 (OpenDNS)</SelectItem>
+                                <SelectItem value="208.67.220.220">208.67.220.220 (OpenDNS)</SelectItem>
+                                <SelectItem value="94.140.14.14">94.140.14.14 (AdGuard)</SelectItem>
+                                <SelectItem value="76.76.2.0">76.76.2.0 (Control D)</SelectItem>
+                                <SelectItem value="custom">Custom</SelectItem>
+                              </SelectContent>
+                            </Select>
                             <div className="text-xs text-muted-foreground">
-                              Used only when provider is Custom.
+                              Common resolvers list. Default is 1.1.1.1.
                             </div>
                           </div>
                         </div>
+                        {topologyDnsServer === "custom" && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Custom DNS server</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Input
+                                value={topologyCustomDnsServer}
+                                onChange={(event) => setTopologyCustomDnsServer(event.target.value)}
+                                onBlur={() => {
+                                  setTopologyCustomDnsServer((prev) => prev.trim());
+                                  notifySaved("Custom DNS server updated.");
+                                }}
+                                className="min-w-[320px]"
+                                placeholder="e.g. 192.168.1.1"
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                IP address used when DNS server is set to Custom.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {topologyResolverMode === "doh" && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">Custom DoH endpoint</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Input
+                                value={topologyDohCustomUrl}
+                                onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
+                                onBlur={() => {
+                                  setTopologyDohCustomUrl((prev) => prev.trim());
+                                  notifySaved("Custom DoH endpoint updated.");
+                                }}
+                                className="min-w-[320px]"
+                                placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                Optional override for DoH mode.
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">Lookup timeout</div>
                           <div className="flex flex-wrap items-center gap-3">
