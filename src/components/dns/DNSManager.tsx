@@ -76,6 +76,7 @@ type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab = "general" | "topology" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
+type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
 type AuditFilterOperator =
@@ -476,6 +477,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
   const [topologyResolutionMaxHops, setTopologyResolutionMaxHops] = useState(
     storageManager.getTopologyResolutionMaxHops(),
+  );
+  const [topologyResolverMode, setTopologyResolverMode] = useState<TopologyResolverMode>(
+    storageManager.getTopologyResolverMode(),
+  );
+  const [topologyDnsServer, setTopologyDnsServer] = useState(
+    storageManager.getTopologyDnsServer(),
+  );
+  const [topologyCustomDnsServer, setTopologyCustomDnsServer] = useState(
+    storageManager.getTopologyCustomDnsServer(),
   );
   const [topologyDohProvider, setTopologyDohProvider] = useState<TopologyDohProvider>(
     storageManager.getTopologyDohProvider(),
