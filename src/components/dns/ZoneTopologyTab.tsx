@@ -374,8 +374,8 @@ function pickBestResolution(
 }
 
 function safeNodeLabel(name: string, info: string): string {
-  const compactInfo = info.replace(/\s*\|\s*/g, " | ").replace(/\n/g, " ");
-  return `${esc(name)}\\n${esc(compactInfo)}`;
+  const compactInfo = info.replace(/\n/g, "<br/>");
+  return `${esc(name)}<br/><span style='font-size:11px;opacity:0.82'>${esc(compactInfo)}</span>`;
 }
 
 function classifyAreas(
@@ -1290,7 +1290,7 @@ export function ZoneTopologyTab({
           },
           flowchart: {
             curve: "basis",
-            htmlLabels: false,
+            htmlLabels: true,
             defaultRenderer: "elk",
             nodeSpacing: 70,
             rankSpacing: 95,
