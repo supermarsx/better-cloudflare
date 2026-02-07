@@ -84,6 +84,7 @@ type SettingsSubtab = "general" | "topology" | "audit" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
+type TopologyGeoProvider = "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
 type AuditFilterOperator =
   | "equals"
@@ -538,6 +539,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyDisablePtrLookups, setTopologyDisablePtrLookups] = useState(
     storageManager.getTopologyDisablePtrLookups(),
   );
+  const [topologyDisableGeoLookups, setTopologyDisableGeoLookups] = useState(
+    storageManager.getTopologyDisableGeoLookups(),
+  );
+  const [topologyGeoProvider, setTopologyGeoProvider] = useState<TopologyGeoProvider>(
+    storageManager.getTopologyGeoProvider(),
+  );
+  const [topologyScanResolutionChain, setTopologyScanResolutionChain] = useState(
+    storageManager.getTopologyScanResolutionChain(),
+  );
   const [topologyDisableServiceDiscovery, setTopologyDisableServiceDiscovery] = useState(
     storageManager.getTopologyDisableServiceDiscovery(),
   );
@@ -633,6 +643,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       topologyDisableFullWindow,
       topologyLookupTimeoutMs,
       topologyDisablePtrLookups,
+      topologyDisableGeoLookups,
+      topologyGeoProvider,
+      topologyScanResolutionChain,
       topologyDisableServiceDiscovery,
       topologyTcpServices,
       auditExportDefaultDocuments,
@@ -667,6 +680,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
     topologyDisablePtrLookups,
+    topologyDisableGeoLookups,
+    topologyGeoProvider,
+    topologyScanResolutionChain,
     topologyDisableServiceDiscovery,
     topologyTcpServices,
     auditExportDefaultDocuments,
@@ -757,6 +773,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.topologyDisablePtrLookups === "boolean") {
       setTopologyDisablePtrLookups(profile.topologyDisablePtrLookups);
+    }
+    if (typeof profile.topologyDisableGeoLookups === "boolean") {
+      setTopologyDisableGeoLookups(profile.topologyDisableGeoLookups);
+    }
+    if (
+      profile.topologyGeoProvider === "auto" ||
+      profile.topologyGeoProvider === "ipwhois" ||
+      profile.topologyGeoProvider === "ipapi_co" ||
+      profile.topologyGeoProvider === "ip_api" ||
+      profile.topologyGeoProvider === "internal"
+    ) {
+      setTopologyGeoProvider(profile.topologyGeoProvider);
+    }
+    if (typeof profile.topologyScanResolutionChain === "boolean") {
+      setTopologyScanResolutionChain(profile.topologyScanResolutionChain);
     }
     if (typeof profile.topologyDisableServiceDiscovery === "boolean") {
       setTopologyDisableServiceDiscovery(profile.topologyDisableServiceDiscovery);
@@ -1200,6 +1231,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_disable_full_window?: boolean;
             topology_lookup_timeout_ms?: number;
             topology_disable_ptr_lookups?: boolean;
+            topology_disable_geo_lookups?: boolean;
+            topology_geo_provider?: TopologyGeoProvider;
+            topology_scan_resolution_chain?: boolean;
             topology_disable_service_discovery?: boolean;
             topology_tcp_services?: string[];
             audit_export_default_documents?: boolean;
@@ -1304,6 +1338,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.topology_disable_ptr_lookups === "boolean") {
             setTopologyDisablePtrLookups(prefObj.topology_disable_ptr_lookups);
           }
+          if (typeof prefObj.topology_disable_geo_lookups === "boolean") {
+            setTopologyDisableGeoLookups(prefObj.topology_disable_geo_lookups);
+          }
+          if (
+            prefObj.topology_geo_provider === "auto" ||
+            prefObj.topology_geo_provider === "ipwhois" ||
+            prefObj.topology_geo_provider === "ipapi_co" ||
+            prefObj.topology_geo_provider === "ip_api" ||
+            prefObj.topology_geo_provider === "internal"
+          ) {
+            setTopologyGeoProvider(prefObj.topology_geo_provider);
+          }
+          if (typeof prefObj.topology_scan_resolution_chain === "boolean") {
+            setTopologyScanResolutionChain(prefObj.topology_scan_resolution_chain);
+          }
           if (typeof prefObj.topology_disable_service_discovery === "boolean") {
             setTopologyDisableServiceDiscovery(prefObj.topology_disable_service_discovery);
           }
@@ -1370,6 +1419,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setTopologyDisableFullWindow(storageManager.getTopologyDisableFullWindow());
     setTopologyLookupTimeoutMs(storageManager.getTopologyLookupTimeoutMs());
     setTopologyDisablePtrLookups(storageManager.getTopologyDisablePtrLookups());
+    setTopologyDisableGeoLookups(storageManager.getTopologyDisableGeoLookups());
+    setTopologyGeoProvider(storageManager.getTopologyGeoProvider());
+    setTopologyScanResolutionChain(storageManager.getTopologyScanResolutionChain());
     setTopologyDisableServiceDiscovery(storageManager.getTopologyDisableServiceDiscovery());
     setTopologyTcpServices(storageManager.getTopologyTcpServices());
     setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
@@ -1506,6 +1558,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
     storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
     storageManager.setTopologyDisablePtrLookups(topologyDisablePtrLookups);
+    storageManager.setTopologyDisableGeoLookups(topologyDisableGeoLookups);
+    storageManager.setTopologyGeoProvider(topologyGeoProvider);
+    storageManager.setTopologyScanResolutionChain(topologyScanResolutionChain);
     storageManager.setTopologyDisableServiceDiscovery(topologyDisableServiceDiscovery);
     storageManager.setTopologyTcpServices(topologyTcpServices);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
@@ -1547,6 +1602,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_disable_full_window: topologyDisableFullWindow,
             topology_lookup_timeout_ms: topologyLookupTimeoutMs,
             topology_disable_ptr_lookups: topologyDisablePtrLookups,
+            topology_disable_geo_lookups: topologyDisableGeoLookups,
+            topology_geo_provider: topologyGeoProvider,
+            topology_scan_resolution_chain: topologyScanResolutionChain,
             topology_disable_service_discovery: topologyDisableServiceDiscovery,
             topology_tcp_services: topologyTcpServices,
             audit_export_default_documents: auditExportDefaultDocuments,
@@ -1588,6 +1646,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     topologyDisableFullWindow,
     topologyLookupTimeoutMs,
     topologyDisablePtrLookups,
+    topologyDisableGeoLookups,
+    topologyGeoProvider,
+    topologyScanResolutionChain,
     topologyDisableServiceDiscovery,
     topologyTcpServices,
     auditExportDefaultDocuments,
@@ -4618,6 +4679,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   disableFullWindow={topologyDisableFullWindow}
                   lookupTimeoutMs={topologyLookupTimeoutMs}
                   disablePtrLookups={topologyDisablePtrLookups}
+                  disableGeoLookups={topologyDisableGeoLookups}
+                  geoProvider={topologyGeoProvider}
+                  scanResolutionChain={topologyScanResolutionChain}
                   disableServiceDiscovery={topologyDisableServiceDiscovery}
                   tcpServicePorts={topologyTcpServices.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)}
                   onRefresh={async () => {
@@ -5673,6 +5737,73 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Don’t scan resolution chain</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={!topologyScanResolutionChain}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyScanResolutionChain(!checked);
+                                notifySaved(
+                                  checked
+                                    ? "Topology will skip recursive CNAME chain scanning."
+                                    : "Topology will scan full recursive CNAME chains.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Faster lookups, but omits intermediate chain hops.
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">Disable GEO detection</div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={topologyDisableGeoLookups}
+                              onCheckedChange={(checked: boolean) => {
+                                setTopologyDisableGeoLookups(checked);
+                                notifySaved(
+                                  checked
+                                    ? "IP GEO detection disabled for topology."
+                                    : "IP GEO detection enabled for topology.",
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              Turns off country enrichment for resolved IP nodes.
+                            </div>
+                          </div>
+                        </div>
+                        {!topologyDisableGeoLookups && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">GEO lookup service</div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Select
+                                value={topologyGeoProvider}
+                                onValueChange={(v) => {
+                                  const next = (v as TopologyGeoProvider) || "auto";
+                                  setTopologyGeoProvider(next);
+                                  notifySaved(`Topology GEO provider set to ${next}.`);
+                                }}
+                              >
+                                <SelectTrigger className="w-56">
+                                  <SelectValue placeholder="GEO provider" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="auto">Auto (multi-provider fallback)</SelectItem>
+                                  <SelectItem value="ipwhois">ipwho.is</SelectItem>
+                                  <SelectItem value="ipapi_co">ipapi.co</SelectItem>
+                                  <SelectItem value="ip_api">ip-api.com</SelectItem>
+                                  <SelectItem value="internal">Internal only (private/reserved IPs)</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="text-xs text-muted-foreground">
+                                Chooses GEO source; Auto tries multiple services and falls back.
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">Disable service discovery</div>
                           <div className="flex items-center gap-3">

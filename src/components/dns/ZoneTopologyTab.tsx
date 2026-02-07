@@ -84,6 +84,9 @@ type ZoneTopologyTabProps = {
   disableFullWindow?: boolean;
   lookupTimeoutMs?: number;
   disablePtrLookups?: boolean;
+  disableGeoLookups?: boolean;
+  geoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+  scanResolutionChain?: boolean;
   disableServiceDiscovery?: boolean;
   tcpServicePorts?: number[];
   onRefresh: () => Promise<void> | void;
@@ -103,6 +106,7 @@ type ExternalDnsResolution = {
   ipv4: string[];
   ipv6: string[];
   reverseHostnamesByIp?: Record<string, string[]>;
+  geoByIp?: Record<string, { country: string; countryCode?: string }>;
   source: "external";
   error?: string;
 };
@@ -446,6 +450,21 @@ function buildTopology(
   const cnameChains = computeCnameChains(records, maxResolutionHops);
   const cnameMap = buildCnameMap(records);
   const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
+  const ipGeoByIp = new Map<string, { country: string; countryCode?: string }>();
+  for (const resolution of Object.values(externalResolutionByName)) {
+    for (const [ip, geo] of Object.entries(resolution.geoByIp ?? {})) {
+      if (!geo?.country) continue;
+      if (!ipGeoByIp.has(ip)) {
+        ipGeoByIp.set(ip, geo);
+      }
+    }
+  }
+  const ipSubtitle = (ip: string) => {
+    const geo = ipGeoByIp.get(ip);
+    if (!geo?.country) return "IP";
+    const code = geo.countryCode ? `${geo.countryCode.toUpperCase()} - ` : "";
+    return `IP | GEO: ${code}${geo.country}`;
+  };
   const nodeRecords = new Map<string, DNSRecord[]>();
   const edgeSet = new Set<string>();
   for (const record of records) {
@@ -603,9 +622,9 @@ function buildTopology(
 
       if (!usedNames.has(targetKey)) {
         lines.push(
-          `  ${targetId}["${esc(buildNodeLabel(target, targetClass === "ip" ? "IP" : ""))}"]:::${targetClass}`,
+          `  ${targetId}["${esc(buildNodeLabel(target, targetClass === "ip" ? ipSubtitle(target) : ""))}"]:::${targetClass}`,
         );
-        setNodeMeta(targetId, targetClass === "ip" ? `${target} | IP` : target);
+        setNodeMeta(targetId, targetClass === "ip" ? `${target} | ${ipSubtitle(target)}` : target);
         usedNames.add(targetKey);
       }
 
@@ -662,8 +681,8 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv4) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
-            setNodeMeta(ipId, `${ip} | IP`);
+            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
+            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -676,8 +695,8 @@ function buildTopology(
         for (const ip of resolvedTarget.ipv6) {
           const ipId = idFor(`ip:${ip}`);
           if (!usedNames.has(`ip:${ip}`)) {
-            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
-            setNodeMeta(ipId, `${ip} | IP`);
+            lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
+            setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
             usedNames.add(`ip:${ip}`);
           }
           const termId = idFor(`target:${resolvedTarget.terminal || target}`);
@@ -692,8 +711,8 @@ function buildTopology(
             if (!ptrNames?.length) continue;
             const ipId = idFor(`ip:${ip}`);
             if (!usedNames.has(`ip:${ip}`)) {
-              lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, "IP"))}"]:::ip`);
-              setNodeMeta(ipId, `${ip} | IP`);
+              lines.push(`  ${ipId}["${esc(buildNodeLabel(ip, ipSubtitle(ip)))}"]:::ip`);
+              setNodeMeta(ipId, `${ip} | ${ipSubtitle(ip)}`);
               usedNames.add(`ip:${ip}`);
             }
             for (const ptrName of ptrNames) {
@@ -925,6 +944,9 @@ async function resolveTopologyBatchInBackend(
   lookupTimeoutMs: number,
   disablePtrLookups: boolean,
   tcpServicePorts: number[],
+  disableGeoLookups: boolean,
+  geoProvider: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal",
+  scanResolutionChain: boolean,
   serviceHosts: string[] = [],
 ): Promise<{
   resolutions: ExternalDnsResolution[];
@@ -945,6 +967,9 @@ async function resolveTopologyBatchInBackend(
       lookupTimeoutMs,
       disablePtrLookups,
       tcpServicePorts,
+      disableGeoLookups,
+      geoProvider,
+      scanResolutionChain,
     );
     return {
       resolutions: (result.resolutions ?? []).map((item) => ({
@@ -958,6 +983,17 @@ async function resolveTopologyBatchInBackend(
             String(entry.ip ?? ""),
             Array.from(new Set((entry.hostnames ?? []).map((value) => normalizeDomain(value)).filter(Boolean))),
           ]),
+        ),
+        geoByIp: Object.fromEntries(
+          (item.geo_by_ip ?? [])
+            .map((entry) => {
+              const ip = String(entry.ip ?? "").trim();
+              const country = String(entry.country ?? "").trim();
+              const countryCode = String(entry.country_code ?? "").trim();
+              if (!ip || !country) return null;
+              return [ip, { country, ...(countryCode ? { countryCode } : {}) }] as const;
+            })
+            .filter((entry): entry is readonly [string, { country: string; countryCode?: string }] => Boolean(entry)),
         ),
         source: "external" as const,
         error: item.error ?? undefined,
@@ -995,6 +1031,9 @@ export function ZoneTopologyTab({
   disableFullWindow = false,
   lookupTimeoutMs = 1200,
   disablePtrLookups = false,
+  disableGeoLookups = false,
+  geoProvider = "auto",
+  scanResolutionChain = true,
   disableServiceDiscovery = false,
   tcpServicePorts = [80, 443, 22],
   onRefresh,
@@ -1139,6 +1178,9 @@ export function ZoneTopologyTab({
     maxResolutionHops,
     lookupTimeoutMs,
     disablePtrLookups,
+    disableGeoLookups,
+    geoProvider,
+    scanResolutionChain,
   ]);
 
   useEffect(() => {
@@ -1166,7 +1208,7 @@ export function ZoneTopologyTab({
     }
     let cancelled = false;
     (async () => {
-      const runKey = `${recordsFingerprint}|${zoneName}|${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${manualRefreshTick}`;
+      const runKey = `${recordsFingerprint}|${zoneName}|${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${disablePtrLookups ? "noptr" : "ptr"}|${disableGeoLookups ? "nogeo" : `geo:${geoProvider}`}|${scanResolutionChain ? "chain" : "nochain"}|${manualRefreshTick}`;
       if (topologyResolutionReady && lastResolutionRunKeyRef.current === runKey) {
         return;
       }
@@ -1180,7 +1222,7 @@ export function ZoneTopologyTab({
         setTopologyResolutionProgress({ running: true, total: Math.max(0, total), done: Math.max(0, done) });
       setTopologyResolutionProgress({ running: true, total, done });
       const now = Date.now();
-      const cachePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|${disablePtrLookups ? "noptr" : "ptr"}|`;
+      const cachePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|${disablePtrLookups ? "noptr" : "ptr"}|${disableGeoLookups ? "nogeo" : `geo:${geoProvider}`}|${scanResolutionChain ? "chain" : "nochain"}|`;
       if (queue.length === 0) {
         if (!cancelled) {
           setExternalResolutionByName({});
@@ -1236,6 +1278,9 @@ export function ZoneTopologyTab({
           lookupTimeoutMs,
           disablePtrLookups,
           tcpServicePorts,
+          disableGeoLookups,
+          geoProvider,
+          scanResolutionChain,
         );
         if (backendBatch) {
           for (const resolved of backendBatch.resolutions) {
@@ -1312,7 +1357,7 @@ export function ZoneTopologyTab({
       setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
       setActiveResolutionRequests([]);
     };
-  }, [resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady, lookupTimeoutMs, disablePtrLookups]);
+  }, [resolverMode, dnsServer, customDnsServer, dohCustomUrl, dohProvider, maxResolutionHops, records, dohEndpoints, manualRefreshTick, recordsFingerprint, zoneName, topologyResolutionReady, lookupTimeoutMs, disablePtrLookups, disableGeoLookups, geoProvider, scanResolutionChain]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2024,6 +2069,9 @@ export function ZoneTopologyTab({
         lookupTimeoutMs,
         disablePtrLookups,
         tcpServicePorts,
+        true,
+        geoProvider,
+        scanResolutionChain,
         probeHosts,
       );
       if (backendBatch && backendBatch.probes.length > 0) {

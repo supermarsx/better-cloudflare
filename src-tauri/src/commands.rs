@@ -1071,6 +1071,7 @@ pub struct HostnameChainResult {
     pub ipv4: Vec<String>,
     pub ipv6: Vec<String>,
     pub reverse_hostnames: Vec<ReverseHostnameResult>,
+    pub geo_by_ip: Vec<IpGeoResult>,
     pub error: Option<String>,
 }
 
@@ -1078,6 +1079,13 @@ pub struct HostnameChainResult {
 pub struct ReverseHostnameResult {
     pub ip: String,
     pub hostnames: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpGeoResult {
+    pub ip: String,
+    pub country: String,
+    pub country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1107,11 +1115,24 @@ struct TopologyHostCacheEntry {
     value: HostnameChainResult,
 }
 
+#[derive(Debug, Clone)]
+struct TopologyIpGeoCacheEntry {
+    ts_ms: i64,
+    value: Option<IpGeoResult>,
+}
+
 const TOPOLOGY_HOST_CACHE_TTL_MS: i64 = 5 * 60 * 1000;
 const TOPOLOGY_HOST_CACHE_MAX_ENTRIES: usize = 6000;
+const TOPOLOGY_IP_GEO_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const TOPOLOGY_IP_GEO_CACHE_MAX_ENTRIES: usize = 10000;
 
 fn topology_host_cache() -> &'static RwLock<HashMap<String, TopologyHostCacheEntry>> {
     static CACHE: OnceLock<RwLock<HashMap<String, TopologyHostCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn topology_ip_geo_cache() -> &'static RwLock<HashMap<String, TopologyIpGeoCacheEntry>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, TopologyIpGeoCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
@@ -1128,6 +1149,28 @@ struct DnsGoogleAnswer {
 struct DnsGoogleResponse {
     #[serde(rename = "Answer")]
     answer: Option<Vec<DnsGoogleAnswer>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpWhoisResponse {
+    success: Option<bool>,
+    country: Option<String>,
+    country_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpApiCoResponse {
+    country_name: Option<String>,
+    country_code: Option<String>,
+    error: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpApiComResponse {
+    status: Option<String>,
+    country: Option<String>,
+    #[serde(rename = "countryCode")]
+    country_code: Option<String>,
 }
 
 async fn query_doh_records(
@@ -1215,6 +1258,7 @@ async fn resolve_chain_for_host(
     doh_endpoints: &[String],
     host: &str,
     max_hops: usize,
+    scan_resolution_chain: bool,
     lookup_timeout_ms: u32,
     disable_ptr_lookups: bool,
 ) -> HostnameChainResult {
@@ -1227,6 +1271,7 @@ async fn resolve_chain_for_host(
             ipv4: Vec::new(),
             ipv6: Vec::new(),
             reverse_hostnames: Vec::new(),
+            geo_by_ip: Vec::new(),
             error: Some("empty hostname".to_string()),
         };
     }
@@ -1236,38 +1281,40 @@ async fn resolve_chain_for_host(
     seen.insert(name.clone());
     let mut cur = name.clone();
 
-    for _ in 0..max_hops {
-        let cname_lookup = tokio::time::timeout(
-            Duration::from_millis(u64::from(lookup_timeout_ms)),
-            resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME),
-        )
-        .await;
-        let direct_next = match cname_lookup {
-            Ok(Ok(lookup)) => lookup
-                .iter()
-                .next()
-                .map(|r| normalize_domain(&r.to_string()))
-                .filter(|s| !s.is_empty()),
-            Err(_) => None,
-            Ok(Err(_)) => None,
-        };
-        let next = if direct_next.is_some() {
-            direct_next
-        } else {
-            query_doh_records(client, doh_endpoints, &cur, "CNAME", lookup_timeout_ms)
-                .await
-                .into_iter()
-                .next()
-        };
-        let Some(next_name) = next else {
-            break;
-        };
-        if seen.contains(&next_name) {
-            break;
+    if scan_resolution_chain {
+        for _ in 0..max_hops {
+            let cname_lookup = tokio::time::timeout(
+                Duration::from_millis(u64::from(lookup_timeout_ms)),
+                resolver.lookup(cur.clone(), trust_dns_resolver::proto::rr::RecordType::CNAME),
+            )
+            .await;
+            let direct_next = match cname_lookup {
+                Ok(Ok(lookup)) => lookup
+                    .iter()
+                    .next()
+                    .map(|r| normalize_domain(&r.to_string()))
+                    .filter(|s| !s.is_empty()),
+                Err(_) => None,
+                Ok(Err(_)) => None,
+            };
+            let next = if direct_next.is_some() {
+                direct_next
+            } else {
+                query_doh_records(client, doh_endpoints, &cur, "CNAME", lookup_timeout_ms)
+                    .await
+                    .into_iter()
+                    .next()
+            };
+            let Some(next_name) = next else {
+                break;
+            };
+            if seen.contains(&next_name) {
+                break;
+            }
+            chain.push(next_name.clone());
+            seen.insert(next_name.clone());
+            cur = next_name;
         }
-        chain.push(next_name.clone());
-        seen.insert(next_name.clone());
-        cur = next_name;
     }
 
     let (v4_lookup, v6_lookup) = tokio::join!(
@@ -1360,12 +1407,296 @@ async fn resolve_chain_for_host(
         ipv4,
         ipv6,
         reverse_hostnames,
+        geo_by_ip: Vec::new(),
         error: if unresolved {
             Some("no CNAME/A/AAAA records found".to_string())
         } else {
             None
         },
     }
+}
+
+fn resolve_internal_ip_geo(ip: &str) -> Option<IpGeoResult> {
+    let parsed = ip.parse::<IpAddr>().ok()?;
+    match parsed {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback() {
+                return Some(IpGeoResult {
+                    ip: ip.to_string(),
+                    country: "Loopback".to_string(),
+                    country_code: Some("LO".to_string()),
+                });
+            }
+            if v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || v4.is_documentation()
+            {
+                return Some(IpGeoResult {
+                    ip: ip.to_string(),
+                    country: "Private/Reserved".to_string(),
+                    country_code: Some("ZZ".to_string()),
+                });
+            }
+            None
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return Some(IpGeoResult {
+                    ip: ip.to_string(),
+                    country: "Loopback".to_string(),
+                    country_code: Some("LO".to_string()),
+                });
+            }
+            if v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || v6.is_documentation()
+            {
+                return Some(IpGeoResult {
+                    ip: ip.to_string(),
+                    country: "Private/Reserved".to_string(),
+                    country_code: Some("ZZ".to_string()),
+                });
+            }
+            None
+        }
+    }
+}
+
+async fn fetch_ip_geo_ipwhois(
+    client: &reqwest::Client,
+    ip: &str,
+    lookup_timeout_ms: u32,
+) -> Option<IpGeoResult> {
+    let url = format!("https://ipwho.is/{}", ip);
+    let send_fut = client.get(url).send();
+    let Ok(resp) = tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)), send_fut).await else {
+        return None;
+    };
+    let Ok(resp) = resp else {
+        return None;
+    };
+    if !resp.status().is_success() {
+        return None;
+    }
+    let Ok(payload) = tokio::time::timeout(
+        Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
+        resp.json::<IpWhoisResponse>(),
+    )
+    .await
+    else {
+        return None;
+    };
+    let Ok(payload) = payload else {
+        return None;
+    };
+    if payload.success == Some(false) {
+        return None;
+    }
+    let country = payload.country.unwrap_or_default().trim().to_string();
+    if country.is_empty() {
+        return None;
+    }
+    let country_code = payload
+        .country_code
+        .map(|value| value.trim().to_uppercase())
+        .filter(|value| !value.is_empty());
+    Some(IpGeoResult {
+        ip: ip.to_string(),
+        country,
+        country_code,
+    })
+}
+
+async fn fetch_ip_geo_ipapi_co(
+    client: &reqwest::Client,
+    ip: &str,
+    lookup_timeout_ms: u32,
+) -> Option<IpGeoResult> {
+    let url = format!("https://ipapi.co/{}/json/", ip);
+    let send_fut = client.get(url).send();
+    let Ok(resp) = tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)), send_fut).await else {
+        return None;
+    };
+    let Ok(resp) = resp else {
+        return None;
+    };
+    if !resp.status().is_success() {
+        return None;
+    }
+    let Ok(payload) = tokio::time::timeout(
+        Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
+        resp.json::<IpApiCoResponse>(),
+    )
+    .await
+    else {
+        return None;
+    };
+    let Ok(payload) = payload else {
+        return None;
+    };
+    if payload.error == Some(true) {
+        return None;
+    }
+    let country = payload.country_name.unwrap_or_default().trim().to_string();
+    if country.is_empty() {
+        return None;
+    }
+    let country_code = payload
+        .country_code
+        .map(|value| value.trim().to_uppercase())
+        .filter(|value| !value.is_empty());
+    Some(IpGeoResult {
+        ip: ip.to_string(),
+        country,
+        country_code,
+    })
+}
+
+async fn fetch_ip_geo_ip_api(
+    client: &reqwest::Client,
+    ip: &str,
+    lookup_timeout_ms: u32,
+) -> Option<IpGeoResult> {
+    let url = format!("http://ip-api.com/json/{}?fields=status,country,countryCode", ip);
+    let send_fut = client.get(url).send();
+    let Ok(resp) = tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)), send_fut).await else {
+        return None;
+    };
+    let Ok(resp) = resp else {
+        return None;
+    };
+    if !resp.status().is_success() {
+        return None;
+    }
+    let Ok(payload) = tokio::time::timeout(
+        Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
+        resp.json::<IpApiComResponse>(),
+    )
+    .await
+    else {
+        return None;
+    };
+    let Ok(payload) = payload else {
+        return None;
+    };
+    if payload.status.unwrap_or_default().to_lowercase() != "success" {
+        return None;
+    }
+    let country = payload.country.unwrap_or_default().trim().to_string();
+    if country.is_empty() {
+        return None;
+    }
+    let country_code = payload
+        .country_code
+        .map(|value| value.trim().to_uppercase())
+        .filter(|value| !value.is_empty());
+    Some(IpGeoResult {
+        ip: ip.to_string(),
+        country,
+        country_code,
+    })
+}
+
+async fn fetch_ip_geo(
+    client: &reqwest::Client,
+    ip: &str,
+    lookup_timeout_ms: u32,
+    geo_provider: &str,
+) -> Option<IpGeoResult> {
+    let provider = geo_provider.trim().to_lowercase();
+    match provider.as_str() {
+        "internal" => resolve_internal_ip_geo(ip),
+        "ipwhois" => fetch_ip_geo_ipwhois(client, ip, lookup_timeout_ms).await,
+        "ipapi_co" => fetch_ip_geo_ipapi_co(client, ip, lookup_timeout_ms).await,
+        "ip_api" => fetch_ip_geo_ip_api(client, ip, lookup_timeout_ms).await,
+        _ => {
+            if let Some(internal) = resolve_internal_ip_geo(ip) {
+                return Some(internal);
+            }
+            if let Some(value) = fetch_ip_geo_ipwhois(client, ip, lookup_timeout_ms).await {
+                return Some(value);
+            }
+            if let Some(value) = fetch_ip_geo_ipapi_co(client, ip, lookup_timeout_ms).await {
+                return Some(value);
+            }
+            fetch_ip_geo_ip_api(client, ip, lookup_timeout_ms).await
+        }
+    }
+}
+
+async fn resolve_geo_for_ips(
+    client: &reqwest::Client,
+    ips: &[String],
+    lookup_timeout_ms: u32,
+    geo_provider: &str,
+) -> HashMap<String, IpGeoResult> {
+    let now_ms = Utc::now().timestamp_millis();
+    let mut out = HashMap::new();
+    let mut unresolved = Vec::new();
+    {
+        let cache = topology_ip_geo_cache().read().await;
+        for ip in ips {
+            let cache_key = format!("{}|{}", geo_provider, ip);
+            if let Some(entry) = cache.get(&cache_key) {
+                if now_ms - entry.ts_ms <= TOPOLOGY_IP_GEO_CACHE_TTL_MS {
+                    if let Some(value) = &entry.value {
+                        out.insert(ip.clone(), value.clone());
+                    }
+                    continue;
+                }
+            }
+            unresolved.push(ip.clone());
+        }
+    }
+
+    if !unresolved.is_empty() {
+        let mut set = tokio::task::JoinSet::new();
+        for ip in unresolved {
+            let ip_owned = ip.clone();
+            let client_cloned = client.clone();
+            let geo_provider_owned = geo_provider.to_string();
+            set.spawn(async move {
+                (
+                    ip_owned.clone(),
+                    fetch_ip_geo(&client_cloned, &ip_owned, lookup_timeout_ms, &geo_provider_owned).await,
+                )
+            });
+        }
+        let write_ts = Utc::now().timestamp_millis();
+        let mut cache_updates: Vec<(String, Option<IpGeoResult>)> = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            if let Ok((ip, maybe_geo)) = joined {
+                if let Some(geo) = &maybe_geo {
+                    out.insert(ip.clone(), geo.clone());
+                }
+                cache_updates.push((ip, maybe_geo));
+            }
+        }
+        if !cache_updates.is_empty() {
+            let mut cache = topology_ip_geo_cache().write().await;
+            for (ip, value) in cache_updates {
+                let key = format!("{}|{}", geo_provider, ip);
+                cache.insert(key, TopologyIpGeoCacheEntry { ts_ms: write_ts, value });
+            }
+            cache.retain(|_, entry| write_ts - entry.ts_ms <= TOPOLOGY_IP_GEO_CACHE_TTL_MS);
+            if cache.len() > TOPOLOGY_IP_GEO_CACHE_MAX_ENTRIES {
+                let mut oldest: Vec<(String, i64)> = cache
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.ts_ms))
+                    .collect();
+                oldest.sort_by_key(|(_, ts)| *ts);
+                let remove_count = cache.len() - TOPOLOGY_IP_GEO_CACHE_MAX_ENTRIES;
+                for (k, _) in oldest.into_iter().take(remove_count) {
+                    cache.remove(&k);
+                }
+            }
+        }
+    }
+    out
 }
 
 async fn probe_url(client: &reqwest::Client, url: String) -> bool {
@@ -1484,11 +1815,17 @@ pub async fn resolve_topology_batch(
     custom_dns_server: Option<String>,
     lookup_timeout_ms: Option<u32>,
     disable_ptr_lookups: Option<bool>,
+    disable_geo_lookups: Option<bool>,
+    geo_provider: Option<String>,
+    scan_resolution_chain: Option<bool>,
     tcp_service_ports: Option<Vec<u16>>,
 ) -> Result<TopologyBatchResult, String> {
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
     let lookup_timeout_ms = lookup_timeout_ms.unwrap_or(1200).clamp(250, 10000);
     let disable_ptr_lookups = disable_ptr_lookups.unwrap_or(false);
+    let disable_geo_lookups = disable_geo_lookups.unwrap_or(false);
+    let geo_provider = geo_provider.unwrap_or_else(|| "auto".to_string()).trim().to_lowercase();
+    let scan_resolution_chain = scan_resolution_chain.unwrap_or(true);
     let resolver_mode = resolver_mode.unwrap_or_else(|| "dns".to_string()).trim().to_lowercase();
     let selected_dns_server = resolve_dns_server(
         dns_server.as_deref(),
@@ -1539,8 +1876,16 @@ pub async fn resolve_topology_batch(
         let cache = topology_host_cache().read().await;
         for host in &unique_hosts {
             let cache_key = format!(
-                "{}|{}|{}|{}|{}|{}|{}",
-                resolver_mode, selected_dns_server, doh_provider_key, doh_custom_key, max_hops, disable_ptr_lookups, host
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                resolver_mode,
+                selected_dns_server,
+                doh_provider_key,
+                doh_custom_key,
+                max_hops,
+                disable_ptr_lookups,
+                scan_resolution_chain,
+                disable_geo_lookups,
+                host
             );
             if let Some(entry) = cache.get(&cache_key) {
                 if now_ms - entry.ts_ms <= TOPOLOGY_HOST_CACHE_TTL_MS {
@@ -1568,6 +1913,7 @@ pub async fn resolve_topology_batch(
                     &doh_endpoints_cloned,
                     &host_owned,
                     max_hops,
+                    scan_resolution_chain,
                     lookup_timeout_ms,
                     disable_ptr_lookups,
                 )
@@ -1589,8 +1935,16 @@ pub async fn resolve_topology_batch(
         let mut cache = topology_host_cache().write().await;
         for (host, result) in cache_updates {
             let cache_key = format!(
-                "{}|{}|{}|{}|{}|{}|{}",
-                resolver_mode, selected_dns_server, doh_provider_key, doh_custom_key, max_hops, disable_ptr_lookups, host
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                resolver_mode,
+                selected_dns_server,
+                doh_provider_key,
+                doh_custom_key,
+                max_hops,
+                disable_ptr_lookups,
+                scan_resolution_chain,
+                disable_geo_lookups,
+                host
             );
             cache.insert(
                 cache_key,
@@ -1617,6 +1971,35 @@ pub async fn resolve_topology_batch(
     for host in unique_hosts {
         if let Some(value) = resolved_by_host.remove(&host) {
             resolutions.push(value);
+        }
+    }
+    let mut ip_set = HashSet::new();
+    let mut all_ips = Vec::new();
+    for result in &resolutions {
+        for ip in result.ipv4.iter().chain(result.ipv6.iter()) {
+            if ip_set.insert(ip.clone()) {
+                all_ips.push(ip.clone());
+            }
+        }
+    }
+    let geo_by_ip = if disable_geo_lookups {
+        HashMap::new()
+    } else {
+        resolve_geo_for_ips(&resolver_http_client, &all_ips, lookup_timeout_ms, &geo_provider).await
+    };
+    if !disable_geo_lookups && !geo_by_ip.is_empty() {
+        for result in &mut resolutions {
+            let mut assigned = Vec::new();
+            let mut seen = HashSet::new();
+            for ip in result.ipv4.iter().chain(result.ipv6.iter()) {
+                if !seen.insert(ip.clone()) {
+                    continue;
+                }
+                if let Some(geo) = geo_by_ip.get(ip) {
+                    assigned.push(geo.clone());
+                }
+            }
+            result.geo_by_ip = assigned;
         }
     }
 

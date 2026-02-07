@@ -51,6 +51,9 @@ interface StorageData {
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
   topologyDisablePtrLookups?: boolean;
+  topologyDisableGeoLookups?: boolean;
+  topologyGeoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+  topologyScanResolutionChain?: boolean;
   topologyDisableServiceDiscovery?: boolean;
   topologyTcpServices?: string[];
   auditExportDefaultDocuments?: boolean;
@@ -92,6 +95,9 @@ export interface SessionSettingsProfile {
   topologyDisableFullWindow?: boolean;
   topologyLookupTimeoutMs?: number;
   topologyDisablePtrLookups?: boolean;
+  topologyDisableGeoLookups?: boolean;
+  topologyGeoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+  topologyScanResolutionChain?: boolean;
   topologyDisableServiceDiscovery?: boolean;
   topologyTcpServices?: string[];
   auditExportDefaultDocuments?: boolean;
@@ -863,6 +869,40 @@ export class StorageManager {
     return this.data.topologyDisablePtrLookups === true;
   }
 
+  setTopologyDisableGeoLookups(enabled: boolean): void {
+    this.data.topologyDisableGeoLookups = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyDisableGeoLookups: enabled });
+  }
+
+  getTopologyDisableGeoLookups(): boolean {
+    return this.data.topologyDisableGeoLookups === true;
+  }
+
+  setTopologyGeoProvider(value: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal"): void {
+    this.data.topologyGeoProvider = value;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyGeoProvider: value });
+  }
+
+  getTopologyGeoProvider(): "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" {
+    const value = this.data.topologyGeoProvider;
+    if (value === "ipwhois" || value === "ipapi_co" || value === "ip_api" || value === "internal") {
+      return value;
+    }
+    return "auto";
+  }
+
+  setTopologyScanResolutionChain(enabled: boolean): void {
+    this.data.topologyScanResolutionChain = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ topologyScanResolutionChain: enabled });
+  }
+
+  getTopologyScanResolutionChain(): boolean {
+    return this.data.topologyScanResolutionChain !== false;
+  }
+
   setTopologyDisableServiceDiscovery(enabled: boolean): void {
     this.data.topologyDisableServiceDiscovery = enabled;
     this.save();
@@ -1093,6 +1133,9 @@ export class StorageManager {
     delete this.data.topologyDisableFullWindow;
     delete this.data.topologyLookupTimeoutMs;
     delete this.data.topologyDisablePtrLookups;
+    delete this.data.topologyDisableGeoLookups;
+    delete this.data.topologyGeoProvider;
+    delete this.data.topologyScanResolutionChain;
     delete this.data.topologyDisableServiceDiscovery;
     delete this.data.topologyTcpServices;
     delete this.data.auditExportDefaultDocuments;

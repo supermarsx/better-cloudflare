@@ -39,6 +39,7 @@ export interface TopologyHostnameResolution {
   ipv4: string[];
   ipv6: string[];
   reverse_hostnames?: Array<{ ip: string; hostnames: string[] }>;
+  geo_by_ip?: Array<{ ip: string; country: string; country_code?: string }>;
   error?: string | null;
 }
 
@@ -422,6 +423,9 @@ export class TauriClient {
     lookupTimeoutMs = 1200,
     disablePtrLookups = false,
     tcpServicePorts?: number[],
+    disableGeoLookups = false,
+    geoProvider: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" = "auto",
+    scanResolutionChain = true,
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
       hostnames,
@@ -435,6 +439,9 @@ export class TauriClient {
       lookup_timeout_ms: lookupTimeoutMs,
       disable_ptr_lookups: disablePtrLookups,
       tcp_service_ports: tcpServicePorts,
+      disable_geo_lookups: disableGeoLookups,
+      geo_provider: geoProvider,
+      scan_resolution_chain: scanResolutionChain,
     });
   }
 
