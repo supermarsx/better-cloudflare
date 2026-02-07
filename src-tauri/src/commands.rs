@@ -1442,6 +1442,8 @@ fn resolve_internal_ip_geo(ip: &str) -> Option<IpGeoResult> {
             None
         }
         IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            let is_doc = seg[0] == 0x2001 && seg[1] == 0x0db8;
             if v6.is_loopback() {
                 return Some(IpGeoResult {
                     ip: ip.to_string(),
@@ -1453,7 +1455,7 @@ fn resolve_internal_ip_geo(ip: &str) -> Option<IpGeoResult> {
                 || v6.is_unicast_link_local()
                 || v6.is_multicast()
                 || v6.is_unspecified()
-                || v6.is_documentation()
+                || is_doc
             {
                 return Some(IpGeoResult {
                     ip: ip.to_string(),

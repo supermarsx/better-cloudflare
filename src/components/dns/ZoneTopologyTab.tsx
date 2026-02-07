@@ -890,6 +890,7 @@ async function resolveExternalCnameToAddress(
   maxHops: number,
   dohEndpoints: string[],
   timeoutMs: number,
+  scanResolutionChain: boolean,
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -901,14 +902,16 @@ async function resolveExternalCnameToAddress(
   seen.add(cur);
   let hops = 0;
   try {
-    while (hops < maxHops) {
-      const cnames = await queryDoh(dohEndpoints, cur, "CNAME", timeoutMs);
-      const next = cnames.find(Boolean);
-      if (!next || seen.has(next)) break;
-      chain.push(next);
-      seen.add(next);
-      cur = next;
-      hops += 1;
+    if (scanResolutionChain) {
+      while (hops < maxHops) {
+        const cnames = await queryDoh(dohEndpoints, cur, "CNAME", timeoutMs);
+        const next = cnames.find(Boolean);
+        if (!next || seen.has(next)) break;
+        chain.push(next);
+        seen.add(next);
+        cur = next;
+        hops += 1;
+      }
     }
     const [a, aaaa] = await Promise.all([
       queryDoh(dohEndpoints, cur, "A", timeoutMs),
@@ -1304,7 +1307,13 @@ export function ZoneTopologyTab({
         } else {
           const fallback = await Promise.all(
             unresolvedQueue.map(async (name) => {
-              const resolved = await resolveExternalCnameToAddress(name, clampedHops, dohEndpoints, lookupTimeoutMs);
+              const resolved = await resolveExternalCnameToAddress(
+                name,
+                clampedHops,
+                dohEndpoints,
+                lookupTimeoutMs,
+                scanResolutionChain,
+              );
               return [name, resolved] as const;
             }),
           );
