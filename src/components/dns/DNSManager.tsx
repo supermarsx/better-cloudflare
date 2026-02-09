@@ -5728,7 +5728,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   {TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim()}
                                 </SelectValue>
                               </SelectTrigger>
-                              <SelectContent>
+                              <SelectContent className="w-[var(--radix-select-trigger-width)]">
                                 <SelectItem value="1.1.1.1">1.1.1.1 (Cloudflare default)</SelectItem>
                                 <SelectItem value="1.0.0.1">1.0.0.1 (Cloudflare)</SelectItem>
                                 <SelectItem value="8.8.8.8">8.8.8.8 (Google)</SelectItem>
@@ -5893,7 +5893,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     {TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider]}
                                   </SelectValue>
                                 </SelectTrigger>
-                                <SelectContent>
+                                <SelectContent className="w-[var(--radix-select-trigger-width)]">
                                   <SelectItem value="auto">Auto (multi-provider fallback)</SelectItem>
                                   <SelectItem value="ipwhois">ipwho.is</SelectItem>
                                   <SelectItem value="ipapi_co">ipapi.co</SelectItem>
