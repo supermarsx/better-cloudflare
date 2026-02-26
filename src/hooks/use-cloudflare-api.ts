@@ -163,6 +163,22 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  const listPasskeys = useCallback(
+    (id: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.listPasskeys(id);
+    },
+    [api],
+  );
+
+  const deletePasskey = useCallback(
+    (id: string, cid: string) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deletePasskey(id, cid);
+    },
+    [api],
+  );
+
   const exportDNSRecords = useCallback(
     (
       zoneId: string,
@@ -287,6 +303,8 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     registerPasskey,
     getPasskeyAuthOptions,
     authenticatePasskey,
+    listPasskeys,
+    deletePasskey,
     exportDNSRecords,
     purgeCache,
     getZoneSetting,
