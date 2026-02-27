@@ -518,9 +518,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { toast } = useToast();
   const notifySaved = useCallback(
     (description: string) => {
-      toast({ title: "Saved", description });
+      toast({ title: t("Saved", "Saved"), description });
     },
-    [toast],
+    [t, toast],
   );
   const [tagsZoneId, setTagsZoneId] = useState<string>("");
   const [newTag, setNewTag] = useState("");
@@ -985,7 +985,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return { tabId: zoneId, action: actionRaw };
     }
     return { tabId: zoneId };
-  }, []);
+  }, [t]);
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -1100,7 +1100,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const loadAuditEntries = useCallback(async () => {
     if (!isDesktop()) {
-      setAuditError("Audit log is only available in the desktop app.");
+      setAuditError(
+        t(
+          "Audit log is only available in the desktop app.",
+          "Audit log is only available in the desktop app.",
+        ),
+      );
       return;
     }
     setAuditLoading(true);
@@ -4270,7 +4275,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 zoneCacheLevel.value,
                               ) ? (
                                 <SelectItem value={zoneCacheLevel.value}>
-                                  {zoneCacheLevel.value} (current)
+                                  {t("{{value}} (current)", {
+                                    value: zoneCacheLevel.value,
+                                    defaultValue: `${zoneCacheLevel.value} (current)`,
+                                  })}
                                 </SelectItem>
                               ) : null}
                               <SelectItem value="basic">{t("Basic", "Basic")}</SelectItem>
@@ -6357,7 +6365,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             >
                               <SelectTrigger className="w-52">
                                 <SelectValue placeholder={t("DNS server", "DNS server")}>
-                                  {TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim()}
+                                  {t(
+                                    TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim(),
+                                    TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim(),
+                                  )}
                                 </SelectValue>
                               </SelectTrigger>
                               <SelectContent className="w-[var(--radix-select-trigger-width)]">
@@ -6574,9 +6585,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 }}
                               >
                                 <SelectTrigger className="w-56">
-                                  <SelectValue placeholder={t("GEO provider", "GEO provider")}>
-                                    {TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider]}
-                                  </SelectValue>
+                                <SelectValue placeholder={t("GEO provider", "GEO provider")}>
+                                    {t(
+                                      TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider],
+                                      TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider],
+                                    )}
+                                </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent className="w-[var(--radix-select-trigger-width)]">
                                   <SelectItem value="auto">
@@ -6664,7 +6678,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       }}
                                       onSelect={(event) => event.preventDefault()}
                                     >
-                                      {opt.label}
+                                      {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
                                   );
                                 })}
@@ -6837,7 +6851,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       }}
                                       onSelect={(event) => event.preventDefault()}
                                     >
-                                      {opt.label}
+                                      {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
                                   );
                                 })}
@@ -6881,7 +6895,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       }}
                                       onSelect={(event) => event.preventDefault()}
                                     >
-                                      {opt.label}
+                                      {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
                                   );
                                 })}
@@ -7233,7 +7247,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </DialogHeader>
           <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
             <div className="font-semibold">
-              {pendingPurgeUrls.length} URL(s)
+              {t("{{count}} URL(s)", {
+                count: pendingPurgeUrls.length,
+                defaultValue: `${pendingPurgeUrls.length} URL(s)`,
+              })}
             </div>
             {pendingPurgeIssues.length > 0 ? (
               <div className="mt-2 space-y-1">
