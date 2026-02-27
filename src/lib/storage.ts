@@ -37,6 +37,7 @@ interface StorageData {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  closeTabOnMiddleClick?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -83,6 +84,7 @@ export interface SessionSettingsProfile {
   confirmLogout?: boolean;
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
+  closeTabOnMiddleClick?: boolean;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -176,6 +178,7 @@ export function isStorageData(value: unknown): value is StorageData {
     confirmLogout?: unknown;
     idleLogoutMs?: unknown;
     confirmWindowClose?: unknown;
+    closeTabOnMiddleClick?: unknown;
   };
   if (!Array.isArray(obj.apiKeys)) return false;
   if (
@@ -200,6 +203,12 @@ export function isStorageData(value: unknown): value is StorageData {
   if (
     obj.confirmWindowClose !== undefined &&
     typeof obj.confirmWindowClose !== "boolean"
+  ) {
+    return false;
+  }
+  if (
+    obj.closeTabOnMiddleClick !== undefined &&
+    typeof obj.closeTabOnMiddleClick !== "boolean"
   ) {
     return false;
   }
@@ -765,6 +774,16 @@ export class StorageManager {
     return this.data.confirmWindowClose !== false;
   }
 
+  setCloseTabOnMiddleClick(enabled: boolean): void {
+    this.data.closeTabOnMiddleClick = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ closeTabOnMiddleClick: enabled });
+  }
+
+  getCloseTabOnMiddleClick(): boolean {
+    return this.data.closeTabOnMiddleClick !== false;
+  }
+
   setLoadingOverlayTimeoutMs(ms: number): void {
     const clamped = Math.max(1000, Math.min(60000, Math.round(ms)));
     this.data.loadingOverlayTimeoutMs = clamped;
@@ -1192,6 +1211,7 @@ export class StorageManager {
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
+    delete this.data.closeTabOnMiddleClick;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;

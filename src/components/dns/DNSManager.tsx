@@ -554,6 +554,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
+  const [closeTabOnMiddleClick, setCloseTabOnMiddleClick] = useState(
+    storageManager.getCloseTabOnMiddleClick(),
+  );
   const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
     storageManager.getLoadingOverlayTimeoutMs(),
   );
@@ -696,6 +699,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmLogout,
       idleLogoutMs,
       confirmWindowClose,
+      closeTabOnMiddleClick,
       loadingOverlayTimeoutMs,
       topologyResolutionMaxHops,
       topologyResolverMode,
@@ -735,6 +739,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    closeTabOnMiddleClick,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
     topologyResolverMode,
@@ -797,6 +802,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.confirmWindowClose === "boolean") {
       setConfirmWindowClose(profile.confirmWindowClose);
+    }
+    if (typeof profile.closeTabOnMiddleClick === "boolean") {
+      setCloseTabOnMiddleClick(profile.closeTabOnMiddleClick);
     }
     if (typeof profile.loadingOverlayTimeoutMs === "number") {
       setLoadingOverlayTimeoutMs(Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)));
@@ -1427,6 +1435,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
+            close_tab_on_middle_click?: boolean;
             loading_overlay_timeout_ms?: number;
             topology_resolution_max_hops?: number;
             topology_resolver_mode?: TopologyResolverMode;
@@ -1498,6 +1507,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           if (typeof prefObj.confirm_window_close === "boolean") {
             setConfirmWindowClose(prefObj.confirm_window_close);
+          }
+          if (typeof prefObj.close_tab_on_middle_click === "boolean") {
+            setCloseTabOnMiddleClick(prefObj.close_tab_on_middle_click);
           }
           if (typeof prefObj.loading_overlay_timeout_ms === "number") {
             setLoadingOverlayTimeoutMs(
@@ -1639,6 +1651,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
+    setCloseTabOnMiddleClick(storageManager.getCloseTabOnMiddleClick());
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
     setTopologyResolverMode(storageManager.getTopologyResolverMode());
@@ -1780,6 +1793,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmLogout(confirmLogout);
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
+    storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
     storageManager.setTopologyResolverMode(topologyResolverMode);
@@ -1826,6 +1840,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_logout: confirmLogout,
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
+            close_tab_on_middle_click: closeTabOnMiddleClick,
             loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
             topology_resolution_max_hops: topologyResolutionMaxHops,
             topology_resolver_mode: topologyResolverMode,
@@ -1872,6 +1887,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmLogout,
     idleLogoutMs,
     confirmWindowClose,
+    closeTabOnMiddleClick,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
     topologyResolverMode,
@@ -3596,6 +3612,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         onClick={() => activateTab(tab.id)}
                         onAuxClick={(event) => {
                           if (event.button !== 1) return;
+                          if (!closeTabOnMiddleClick) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          closeTab(tab.id);
+                        }}
+                        onMouseDown={(event) => {
+                          if (event.button !== 1) return;
+                          if (!closeTabOnMiddleClick) return;
                           event.preventDefault();
                           event.stopPropagation();
                           closeTab(tab.id);
@@ -3607,12 +3631,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                         draggable
                         onDragStart={(event) => {
+                          event.stopPropagation();
                           setDragTabId(tab.id);
                           event.dataTransfer.effectAllowed = "move";
                           event.dataTransfer.setData("text/plain", tab.id);
                         }}
                         onDragOver={(event) => {
                           event.preventDefault();
+                          event.stopPropagation();
                           event.dataTransfer.dropEffect = "move";
                           if (dragOverId !== tab.id) {
                             setDragOverId(tab.id);
@@ -3624,6 +3650,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                         onDrop={(event) => {
                           event.preventDefault();
+                          event.stopPropagation();
                           const sourceId =
                             dragTabId || event.dataTransfer.getData("text/plain");
                           if (sourceId) {
@@ -6321,6 +6348,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             {t(
                               "Restore tabs from the last session on launch.",
                               "Restore tabs from the last session on launch.",
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div className="font-medium">{t("Middle-click closes tabs", "Middle-click closes tabs")}</div>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={closeTabOnMiddleClick}
+                            onCheckedChange={(checked: boolean) => {
+                              setCloseTabOnMiddleClick(checked);
+                              notifySaved(
+                                checked
+                                  ? t("Middle-click tab close enabled.", "Middle-click tab close enabled.")
+                                  : t("Middle-click tab close disabled.", "Middle-click tab close disabled."),
+                              );
+                            }}
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            {t(
+                              "Controls whether pressing the mouse wheel on a tab closes it.",
+                              "Controls whether pressing the mouse wheel on a tab closes it.",
                             )}
                           </div>
                         </div>
