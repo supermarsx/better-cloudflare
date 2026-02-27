@@ -1222,16 +1222,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   useEffect(() => {
     let rafId = 0;
     let scrollTarget: HTMLElement | Window | null = null;
-    const COMPACT_ENTER_PX = 132;
-    const COMPACT_EXIT_PX = 92;
+    const COMPACT_ENTER_PX = 220;
+    const COMPACT_EXIT_PX = 64;
+    const SWITCH_COOLDOWN_MS = 240;
+    let lastToggleAt = 0;
     const updateCompactState = () => {
       const currentScrollTop =
         scrollTarget && scrollTarget !== window
           ? (scrollTarget as HTMLElement).scrollTop
           : window.scrollY || document.documentElement.scrollTop || 0;
       setCompactTopBar((prev) => {
-        if (prev) return currentScrollTop > COMPACT_EXIT_PX;
-        return currentScrollTop > COMPACT_ENTER_PX;
+        const desired = prev ? currentScrollTop > COMPACT_EXIT_PX : currentScrollTop > COMPACT_ENTER_PX;
+        if (desired === prev) return prev;
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (now - lastToggleAt < SWITCH_COOLDOWN_MS) return prev;
+        lastToggleAt = now;
+        return desired;
       });
     };
     const onScroll = () => {
@@ -3416,44 +3422,56 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </div>
       </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-          <div ref={topBarRef} className="sticky top-0 z-20">
+          <div ref={topBarRef} className="sticky top-0 z-20 flex justify-center">
             <Card
               className={cn(
-                "border-border/60 backdrop-blur transition-all duration-200",
+                "border-border/60 backdrop-blur transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
                 compactTopBar
-                  ? "bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
+                  ? "w-[min(94vw,980px)] bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
                   : "bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
               )}
             >
-            {!compactTopBar && (
-            <CardHeader>
+            <CardHeader
+              className={cn(
+                "overflow-hidden transition-[max-height,opacity,transform,padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                compactTopBar
+                  ? "max-h-0 -translate-y-1 opacity-0 p-0 pointer-events-none"
+                  : "max-h-48 translate-y-0 opacity-100",
+              )}
+            >
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="space-y-2 fade-in">
                   <CardTitle className="text-xl tracking-tight">
                     {t("DNS Manager", "DNS Manager")}
                   </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t(
-                    "Manage your Cloudflare DNS records",
-                    "Manage your Cloudflare DNS records",
-                  )}
-                </p>
-              </div>
+                  <p className="text-sm text-muted-foreground">
+                    {t(
+                      "Manage your Cloudflare DNS records",
+                      "Manage your Cloudflare DNS records",
+                    )}
+                  </p>
+                </div>
                 <div />
               </div>
             </CardHeader>
-            )}
             <CardContent className={cn(compactTopBar ? "space-y-2 px-2 py-2" : "space-y-4")}>
               <div
                 className={cn(
                   "grid gap-4 md:grid-cols-[1fr_auto] md:items-end",
-                  compactTopBar && "grid-cols-1 gap-2 md:grid-cols-[minmax(0,320px)_1fr] md:items-center",
+                  compactTopBar && "grid-cols-1 items-center justify-items-center gap-2",
                 )}
               >
-                <div className={cn("space-y-2", compactTopBar && "space-y-0")}>
-                  {!compactTopBar && (
+                <div className={cn("space-y-2", compactTopBar && "w-full max-w-xs space-y-0")}>
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      compactTopBar
+                        ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
+                        : "max-h-12 translate-y-0 opacity-100",
+                    )}
+                  >
                     <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
-                  )}
+                  </div>
                   <Select
                     value={selectedZoneId || undefined}
                     onValueChange={(value) => {
@@ -3464,7 +3482,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <SelectTrigger
                       className={cn(
                         "bg-card/70 border-border text-foreground",
-                        compactTopBar && "h-8 text-xs",
+                        compactTopBar && "h-8 w-full text-xs",
                       )}
                     >
                       <SelectValue placeholder={t("Select a domain", "Select a domain")} />
@@ -3482,12 +3500,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </SelectContent>
                   </Select>
                 </div>
-                  {!compactTopBar && activeTab && (
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      compactTopBar || !activeTab
+                        ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
+                        : "max-h-20 translate-y-0 opacity-100",
+                    )}
+                  >
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
                         {t("{{count}} records", {
-                          count: activeTab.records.length,
-                          defaultValue: `${activeTab.records.length} records`,
+                          count: activeTab?.records.length ?? 0,
+                          defaultValue: `${activeTab?.records.length ?? 0} records`,
                         })}
                       </div>
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
@@ -3498,18 +3523,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
                         {t("Zone: {{name}}", {
-                          name: selectedZoneData?.name ?? activeTab.zoneName,
-                          defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab.zoneName}`,
+                          name: selectedZoneData?.name ?? activeTab?.zoneName ?? "",
+                          defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab?.zoneName ?? ""}`,
                         })}
                       </div>
                     </div>
-                  )}
+                  </div>
               </div>
               {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit" || activeTab?.kind === "registry") && (
                 <div
                   className={cn(
                     "flex flex-wrap gap-2 fade-in",
-                    compactTopBar && "items-center overflow-x-auto whitespace-nowrap pb-0.5",
+                    compactTopBar && "w-full justify-center items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
                   )}
                   onDragOver={(event) => {
                     event.preventDefault();
