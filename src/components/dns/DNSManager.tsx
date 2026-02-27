@@ -242,6 +242,16 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   registry: "Registry",
 };
 
+function extractMcpEnabledTools(status: McpServerStatus | null): string[] {
+  if (!status) return [];
+  const raw = Array.isArray(status.enabledTools)
+    ? status.enabledTools
+    : Array.isArray(status.enabled_tools)
+      ? status.enabled_tools
+      : [];
+  return Array.from(new Set(raw.map((value) => String(value).trim()).filter(Boolean)));
+}
+
 function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
   if (!node || typeof window === "undefined") return window;
   let parent: HTMLElement | null = node.parentElement;
@@ -1351,6 +1361,57 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     };
   }, []);
 
+  const refreshMcpStatus = useCallback(async () => {
+    if (!isDesktop()) return;
+    try {
+      const status = await TauriClient.getMcpServerStatus();
+      setMcpStatus(status);
+      const tools = extractMcpEnabledTools(status);
+      if (tools.length) {
+        setMcpEnabledTools(tools);
+      }
+    } catch (error) {
+      toast({
+        title: t("MCP error", "MCP error"),
+        description: (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  }, [t, toast]);
+
+  const applyMcpEnabledTools = useCallback(
+    async (tools: string[]) => {
+      if (!isDesktop()) return;
+      const normalized = Array.from(new Set(tools.map((v) => String(v).trim()).filter(Boolean)));
+      const status = await TauriClient.setMcpEnabledTools(normalized);
+      setMcpStatus(status);
+      const fromStatus = extractMcpEnabledTools(status);
+      setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
+    },
+    [],
+  );
+
+  const setMcpServerRunning = useCallback(
+    async (enabled: boolean, host?: string, port?: number) => {
+      if (!isDesktop()) return;
+      setMcpBusy(true);
+      try {
+        const nextHost = (host ?? mcpServerHost).trim() || "127.0.0.1";
+        const nextPort = Math.max(1, Math.min(65535, Math.round(port ?? mcpServerPort)));
+        const status = enabled
+          ? await TauriClient.startMcpServer(nextHost, nextPort, mcpEnabledTools)
+          : await TauriClient.stopMcpServer();
+        setMcpStatus(status);
+        const tools = extractMcpEnabledTools(status);
+        if (tools.length) setMcpEnabledTools(tools);
+        setMcpServerEnabled(enabled);
+      } finally {
+        setMcpBusy(false);
+      }
+    },
+    [mcpEnabledTools, mcpServerHost, mcpServerPort],
+  );
+
   useEffect(() => {
     if (!prefsReady) return;
     if (!selectedZoneId) return;
@@ -1750,6 +1811,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setSessionSettingsProfiles(storageManager.getSessionSettingsProfiles());
     setPrefsReady(true);
   }, []);
+
+  useEffect(() => {
+    if (!prefsReady || !isDesktop()) return;
+    let active = true;
+    setMcpBusy(true);
+    (async () => {
+      try {
+        await TauriClient.setMcpEnabledTools(mcpEnabledTools);
+        if (mcpServerEnabled) {
+          await TauriClient.startMcpServer(mcpServerHost, mcpServerPort, mcpEnabledTools);
+        } else {
+          await TauriClient.stopMcpServer();
+        }
+        const status = await TauriClient.getMcpServerStatus();
+        if (!active) return;
+        setMcpStatus(status);
+        const tools = extractMcpEnabledTools(status);
+        if (tools.length) setMcpEnabledTools(tools);
+      } catch {
+        // best-effort sync; UI will still allow manual refresh/retry
+      } finally {
+        if (active) setMcpBusy(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [prefsReady]);
 
   const persistTabStateBestEffort = useCallback(() => {
     const openTabIds = tabs.map((tab) => tab.id);
@@ -3549,6 +3638,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     loadingOverlayTimeoutMs,
   );
   const registryOverlay = useLoadingOverlay(registryChecksLoading, loadingOverlayTimeoutMs);
+  const mcpRunning = mcpStatus?.running === true;
+  const mcpUrl = mcpStatus?.url ?? `http://${mcpServerHost}:${mcpServerPort}/mcp`;
+  const mcpLastError =
+    (typeof mcpStatus?.lastError === "string" ? mcpStatus.lastError : null) ??
+    (typeof mcpStatus?.last_error === "string" ? mcpStatus.last_error : null);
+  const mcpToolCatalog = Array.isArray(mcpStatus?.tools) ? mcpStatus.tools : [];
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
@@ -6323,6 +6418,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="ui-segment"
                       >
                         {t("Audit", "Audit")}
+                      </button>
+                      <button
+                        onClick={() => setSettingsSubtab("mcp")}
+                        data-active={settingsSubtab === "mcp"}
+                        className="ui-segment"
+                      >
+                        {t("MCP", "MCP")}
                       </button>
                       <button
                         onClick={() => setSettingsSubtab("profiles")}
