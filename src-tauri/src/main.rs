@@ -10,16 +10,19 @@ mod audit;
 mod spf;
 mod registrar;
 mod registrar_commands;
+mod mcp_server;
 
 use tauri::Manager;
 use crate::storage::Storage;
 use crate::passkey::PasskeyManager;
+use crate::mcp_server::McpServerManager;
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(Storage::default())
         .manage(PasskeyManager::default())
+        .manage(McpServerManager::default())
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
             commands::restart_app,
@@ -86,6 +89,11 @@ fn main() {
             registrar_commands::registrar_list_all_domains,
             registrar_commands::registrar_health_check,
             registrar_commands::registrar_health_check_all,
+            // MCP Server Management
+            mcp_server::mcp_get_server_status,
+            mcp_server::mcp_start_server,
+            mcp_server::mcp_stop_server,
+            mcp_server::mcp_set_enabled_tools,
         ])
         .setup(|app| {
             // Initialize storage

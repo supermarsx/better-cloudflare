@@ -61,6 +61,27 @@ export interface TopologyBatchResult {
   tcp_probes?: TopologyTcpServiceProbeResult[];
 }
 
+export interface McpToolDescriptor {
+  name: string;
+  title: string;
+  description: string;
+  inputSchema?: unknown;
+  input_schema?: unknown;
+  enabled: boolean;
+}
+
+export interface McpServerStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  url: string;
+  enabledTools?: string[];
+  enabled_tools?: string[];
+  tools: McpToolDescriptor[];
+  lastError?: string | null;
+  last_error?: string | null;
+}
+
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
@@ -477,6 +498,31 @@ export class TauriClient {
   static async updatePreferenceFields(fields: Record<string, unknown>): Promise<void> {
     const current = await this.getPreferences();
     return this.updatePreferences({ ...(current as Record<string, unknown>), ...fields });
+  }
+
+  // MCP Server
+  static async getMcpServerStatus(): Promise<McpServerStatus> {
+    return invoke("mcp_get_server_status");
+  }
+
+  static async startMcpServer(
+    host?: string,
+    port?: number,
+    enabledTools?: string[],
+  ): Promise<McpServerStatus> {
+    return invoke("mcp_start_server", {
+      host,
+      port,
+      enabledTools,
+    });
+  }
+
+  static async stopMcpServer(): Promise<McpServerStatus> {
+    return invoke("mcp_stop_server");
+  }
+
+  static async setMcpEnabledTools(enabledTools: string[]): Promise<McpServerStatus> {
+    return invoke("mcp_set_enabled_tools", { enabledTools });
   }
 
   // ─── Registrar Monitoring ────────────────────────────────────────────

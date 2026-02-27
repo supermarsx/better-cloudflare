@@ -51,7 +51,7 @@ import {
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient, type McpServerStatus } from "@/lib/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
@@ -80,7 +80,7 @@ type ActionTab =
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-type SettingsSubtab = "general" | "topology" | "audit" | "profiles";
+type SettingsSubtab = "general" | "topology" | "audit" | "mcp" | "profiles";
 type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
@@ -559,6 +559,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [closeTabOnMiddleClick, setCloseTabOnMiddleClick] = useState(
     storageManager.getCloseTabOnMiddleClick(),
   );
+  const [mcpServerEnabled, setMcpServerEnabled] = useState(
+    storageManager.getMcpServerEnabled(),
+  );
+  const [mcpServerHost, setMcpServerHost] = useState(
+    storageManager.getMcpServerHost(),
+  );
+  const [mcpServerPort, setMcpServerPort] = useState(
+    storageManager.getMcpServerPort(),
+  );
+  const [mcpEnabledTools, setMcpEnabledTools] = useState<string[]>(
+    storageManager.getMcpEnabledTools(),
+  );
+  const [mcpStatus, setMcpStatus] = useState<McpServerStatus | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
   const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
     storageManager.getLoadingOverlayTimeoutMs(),
   );
@@ -704,6 +718,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       idleLogoutMs,
       confirmWindowClose,
       closeTabOnMiddleClick,
+      mcpServerEnabled,
+      mcpServerHost,
+      mcpServerPort,
+      mcpEnabledTools,
       loadingOverlayTimeoutMs,
       topologyResolutionMaxHops,
       topologyResolverMode,
@@ -744,6 +762,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     idleLogoutMs,
     confirmWindowClose,
     closeTabOnMiddleClick,
+    mcpServerEnabled,
+    mcpServerHost,
+    mcpServerPort,
+    mcpEnabledTools,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
     topologyResolverMode,
@@ -809,6 +831,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     if (typeof profile.closeTabOnMiddleClick === "boolean") {
       setCloseTabOnMiddleClick(profile.closeTabOnMiddleClick);
+    }
+    if (typeof profile.mcpServerEnabled === "boolean") {
+      setMcpServerEnabled(profile.mcpServerEnabled);
+    }
+    if (typeof profile.mcpServerHost === "string") {
+      setMcpServerHost(profile.mcpServerHost || "127.0.0.1");
+    }
+    if (typeof profile.mcpServerPort === "number") {
+      setMcpServerPort(Math.max(1, Math.min(65535, Math.round(profile.mcpServerPort))));
+    }
+    if (Array.isArray(profile.mcpEnabledTools)) {
+      setMcpEnabledTools(
+        Array.from(
+          new Set(profile.mcpEnabledTools.map((v) => String(v).trim()).filter(Boolean)),
+        ),
+      );
     }
     if (typeof profile.loadingOverlayTimeoutMs === "number") {
       setLoadingOverlayTimeoutMs(Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)));
@@ -1440,6 +1478,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
             close_tab_on_middle_click?: boolean;
+            mcp_server_enabled?: boolean;
+            mcp_server_host?: string;
+            mcp_server_port?: number;
+            mcp_enabled_tools?: string[];
             loading_overlay_timeout_ms?: number;
             topology_resolution_max_hops?: number;
             topology_resolver_mode?: TopologyResolverMode;
@@ -1514,6 +1556,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           if (typeof prefObj.close_tab_on_middle_click === "boolean") {
             setCloseTabOnMiddleClick(prefObj.close_tab_on_middle_click);
+          }
+          if (typeof prefObj.mcp_server_enabled === "boolean") {
+            setMcpServerEnabled(prefObj.mcp_server_enabled);
+          }
+          if (typeof prefObj.mcp_server_host === "string") {
+            setMcpServerHost(prefObj.mcp_server_host || "127.0.0.1");
+          }
+          if (typeof prefObj.mcp_server_port === "number") {
+            setMcpServerPort(Math.max(1, Math.min(65535, Math.round(prefObj.mcp_server_port))));
+          }
+          if (Array.isArray(prefObj.mcp_enabled_tools)) {
+            setMcpEnabledTools(
+              Array.from(
+                new Set(prefObj.mcp_enabled_tools.map((v) => String(v).trim()).filter(Boolean)),
+              ),
+            );
           }
           if (typeof prefObj.loading_overlay_timeout_ms === "number") {
             setLoadingOverlayTimeoutMs(
@@ -1656,6 +1714,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setCloseTabOnMiddleClick(storageManager.getCloseTabOnMiddleClick());
+    setMcpServerEnabled(storageManager.getMcpServerEnabled());
+    setMcpServerHost(storageManager.getMcpServerHost());
+    setMcpServerPort(storageManager.getMcpServerPort());
+    setMcpEnabledTools(storageManager.getMcpEnabledTools());
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
     setTopologyResolverMode(storageManager.getTopologyResolverMode());
@@ -1798,6 +1860,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
+    storageManager.setMcpServerEnabled(mcpServerEnabled);
+    storageManager.setMcpServerHost(mcpServerHost);
+    storageManager.setMcpServerPort(mcpServerPort);
+    storageManager.setMcpEnabledTools(mcpEnabledTools);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
     storageManager.setTopologyResolverMode(topologyResolverMode);
@@ -1845,6 +1911,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             idle_logout_ms: idleLogoutMs,
             confirm_window_close: confirmWindowClose,
             close_tab_on_middle_click: closeTabOnMiddleClick,
+            mcp_server_enabled: mcpServerEnabled,
+            mcp_server_host: mcpServerHost,
+            mcp_server_port: mcpServerPort,
+            mcp_enabled_tools: mcpEnabledTools,
             loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
             topology_resolution_max_hops: topologyResolutionMaxHops,
             topology_resolver_mode: topologyResolverMode,
@@ -1892,6 +1962,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     idleLogoutMs,
     confirmWindowClose,
     closeTabOnMiddleClick,
+    mcpServerEnabled,
+    mcpServerHost,
+    mcpServerPort,
+    mcpEnabledTools,
     loadingOverlayTimeoutMs,
     topologyResolutionMaxHops,
     topologyResolverMode,

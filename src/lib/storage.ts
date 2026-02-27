@@ -13,6 +13,23 @@ import { getStorage, type StorageLike } from "./storage-util";
 import { generateUUID } from "./utils";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
+const DEFAULT_MCP_TOOLS = [
+  "cf_verify_token",
+  "cf_list_zones",
+  "cf_list_dns_records",
+  "cf_create_dns_record",
+  "cf_update_dns_record",
+  "cf_delete_dns_record",
+  "cf_bulk_create_dns_records",
+  "cf_export_dns_records",
+  "cf_purge_cache",
+  "cf_get_zone_setting",
+  "cf_update_zone_setting",
+  "cf_get_dnssec",
+  "cf_update_dnssec",
+  "spf_simulate",
+  "spf_graph",
+];
 
 interface StorageData {
   apiKeys: ApiKey[];
@@ -38,6 +55,10 @@ interface StorageData {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   closeTabOnMiddleClick?: boolean;
+  mcpServerEnabled?: boolean;
+  mcpServerHost?: string;
+  mcpServerPort?: number;
+  mcpEnabledTools?: string[];
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -85,6 +106,10 @@ export interface SessionSettingsProfile {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   closeTabOnMiddleClick?: boolean;
+  mcpServerEnabled?: boolean;
+  mcpServerHost?: string;
+  mcpServerPort?: number;
+  mcpEnabledTools?: string[];
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -784,6 +809,53 @@ export class StorageManager {
     return this.data.closeTabOnMiddleClick !== false;
   }
 
+  setMcpServerEnabled(enabled: boolean): void {
+    this.data.mcpServerEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ mcpServerEnabled: enabled });
+  }
+
+  getMcpServerEnabled(): boolean {
+    return this.data.mcpServerEnabled === true;
+  }
+
+  setMcpServerHost(host: string): void {
+    this.data.mcpServerHost = String(host ?? "").trim() || "127.0.0.1";
+    this.save();
+    this.dispatchPreferencesChanged({ mcpServerHost: this.data.mcpServerHost });
+  }
+
+  getMcpServerHost(): string {
+    return String(this.data.mcpServerHost ?? "127.0.0.1").trim() || "127.0.0.1";
+  }
+
+  setMcpServerPort(port: number): void {
+    const parsed = Math.round(port);
+    const next = Number.isFinite(parsed) ? Math.max(1, Math.min(65535, parsed)) : 8787;
+    this.data.mcpServerPort = next;
+    this.save();
+    this.dispatchPreferencesChanged({ mcpServerPort: next });
+  }
+
+  getMcpServerPort(): number {
+    const value = this.data.mcpServerPort;
+    if (typeof value !== "number" || Number.isNaN(value)) return 8787;
+    return Math.max(1, Math.min(65535, Math.round(value)));
+  }
+
+  setMcpEnabledTools(tools: string[]): void {
+    const next = Array.from(new Set((tools ?? []).map((t) => String(t).trim()).filter(Boolean)));
+    this.data.mcpEnabledTools = next.length ? next : [...DEFAULT_MCP_TOOLS];
+    this.save();
+    this.dispatchPreferencesChanged({ mcpEnabledTools: this.data.mcpEnabledTools });
+  }
+
+  getMcpEnabledTools(): string[] {
+    const tools = this.data.mcpEnabledTools;
+    if (!Array.isArray(tools) || tools.length === 0) return [...DEFAULT_MCP_TOOLS];
+    return Array.from(new Set(tools.map((t) => String(t).trim()).filter(Boolean)));
+  }
+
   setLoadingOverlayTimeoutMs(ms: number): void {
     const clamped = Math.max(1000, Math.min(60000, Math.round(ms)));
     this.data.loadingOverlayTimeoutMs = clamped;
@@ -1212,6 +1284,10 @@ export class StorageManager {
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
     delete this.data.closeTabOnMiddleClick;
+    delete this.data.mcpServerEnabled;
+    delete this.data.mcpServerHost;
+    delete this.data.mcpServerPort;
+    delete this.data.mcpEnabledTools;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;
