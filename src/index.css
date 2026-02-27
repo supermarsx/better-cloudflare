@@ -289,18 +289,22 @@
   }
 
   .glass-fade-table {
+    --table-bottom-fade: 1;
+    --table-bottom-solid-stop: calc(100% - (12% * var(--table-bottom-fade)));
+    --table-bottom-mid-stop: calc(100% - (5% * var(--table-bottom-fade)));
+    --table-bottom-tail-alpha: calc(0.7 * var(--table-bottom-fade));
     -webkit-mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 88%,
-      rgba(0, 0, 0, 0.7) 95%,
+      #000 var(--table-bottom-solid-stop),
+      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) var(--table-bottom-mid-stop),
       transparent 100%
     );
     mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 88%,
-      rgba(0, 0, 0, 0.7) 95%,
+      #000 var(--table-bottom-solid-stop),
+      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) var(--table-bottom-mid-stop),
       transparent 100%
     );
     -webkit-mask-repeat: no-repeat;

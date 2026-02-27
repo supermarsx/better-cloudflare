@@ -465,6 +465,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
   const topBarRef = useRef<HTMLDivElement | null>(null);
+  const recordsTableRef = useRef<HTMLDivElement | null>(null);
   const compactTopBarRef = useRef(false);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
@@ -501,6 +502,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [compactTopBar, setCompactTopBar] = useState(false);
+  const [recordsBottomFade, setRecordsBottomFade] = useState(1);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
@@ -663,6 +665,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     updateZoneSetting,
     registrarListAllDomains,
     registrarHealthCheckAll,
+    simulateSPF,
+    getSPFGraph,
   } = useCloudflareAPI(apiKey, email);
 
   useEffect(() => {
@@ -2254,6 +2258,69 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     return sorted;
   }, [activeTab, tagsVersion]);
+
+  const shouldShowRecordsTable =
+    activeTab?.kind === "zone" && actionTab === "records" && !activeTab.isLoading && filteredRecords.length > 0;
+
+  useEffect(() => {
+    if (!shouldShowRecordsTable) {
+      setRecordsBottomFade(0);
+      return;
+    }
+
+    let rafId = 0;
+    const scrollTarget = getScrollParent(recordsTableRef.current);
+    const getVisibleBottom = () => {
+      if (scrollTarget === window) {
+        return window.innerHeight || document.documentElement.clientHeight;
+      }
+      return (scrollTarget as HTMLElement).getBoundingClientRect().bottom;
+    };
+    const updateFade = () => {
+      const tableEl = recordsTableRef.current;
+      if (!tableEl) {
+        setRecordsBottomFade(0);
+        return;
+      }
+
+      const rect = tableEl.getBoundingClientRect();
+      const hiddenBottomPx = rect.bottom - getVisibleBottom();
+      if (hiddenBottomPx <= 2) {
+        setRecordsBottomFade(0);
+        return;
+      }
+      const fadeWindowPx = Math.max(72, Math.min(220, rect.height * 0.2));
+      const nextFade = Math.max(0, Math.min(1, hiddenBottomPx / fadeWindowPx));
+      setRecordsBottomFade((prev) => (Math.abs(prev - nextFade) < 0.015 ? prev : nextFade));
+    };
+
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        updateFade();
+      });
+    };
+
+    updateFade();
+
+    if (scrollTarget === window) {
+      window.addEventListener("scroll", onScroll, { passive: true });
+    } else {
+      scrollTarget.addEventListener("scroll", onScroll, { passive: true });
+    }
+    window.addEventListener("resize", onScroll, { passive: true });
+
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+      if (scrollTarget === window) {
+        window.removeEventListener("scroll", onScroll);
+      } else {
+        scrollTarget.removeEventListener("scroll", onScroll);
+      }
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [activeTab?.id, filteredRecords.length, shouldShowRecordsTable]);
 
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
@@ -3978,7 +4045,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       {t("No DNS records found", "No DNS records found")}
                     </div>
                   ) : (
-                    <div className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl">
+                    <div
+                      ref={recordsTableRef}
+                      className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
+                      style={{ ["--table-bottom-fade" as string]: recordsBottomFade.toFixed(3) }}
+                    >
                       <div className="ui-table-head">
                         <span />
                         <button
@@ -4031,9 +4102,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <RecordRow
                             key={record.id}
                             zoneId={activeTab.zoneId}
+                            zoneName={activeTab.zoneName}
                             record={record}
                             isEditing={activeTab.editingRecord === record.id}
                             isSelected={isSelected}
+                            simulateSPF={simulateSPF}
+                            getSPFGraph={getSPFGraph}
                             onSelectChange={(checked) =>
                               updateTab(activeTab.id, (prev) => ({
                                 ...prev,

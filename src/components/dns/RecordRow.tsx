@@ -33,6 +33,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
+import type { SPFGraph } from "@/lib/spf";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import { storageManager } from "@/lib/storage";
 import { useI18n } from "@/hooks/use-i18n";
@@ -47,6 +48,29 @@ import {
   composeNAPTR,
 } from "@/lib/dns-parsers";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
+import type { BuilderWarnings } from "@/components/dns/builders/types";
+import { DsBuilder } from "@/components/dns/builders/DsBuilder";
+import { DnskeyBuilder } from "@/components/dns/builders/DnskeyBuilder";
+import { SrvBuilder } from "@/components/dns/builders/SrvBuilder";
+import { CaaBuilder } from "@/components/dns/builders/CaaBuilder";
+import { TxtBuilder } from "@/components/dns/builders/TxtBuilder";
+import { SpfBuilder } from "@/components/dns/builders/SpfBuilder";
+import { UriBuilder } from "@/components/dns/builders/UriBuilder";
+import { SoaBuilder } from "@/components/dns/builders/SoaBuilder";
+import { NaptrBuilder } from "@/components/dns/builders/NaptrBuilder";
+import { SshfpBuilder } from "@/components/dns/builders/SshfpBuilder";
+import { TlsaBuilder } from "@/components/dns/builders/TlsaBuilder";
+import { HinfoBuilder } from "@/components/dns/builders/HinfoBuilder";
+import { LocBuilder } from "@/components/dns/builders/LocBuilder";
+import { RpBuilder } from "@/components/dns/builders/RpBuilder";
+import { DnameBuilder } from "@/components/dns/builders/DnameBuilder";
+import { CertBuilder } from "@/components/dns/builders/CertBuilder";
+import { AfsdbBuilder } from "@/components/dns/builders/AfsdbBuilder";
+import { AplBuilder } from "@/components/dns/builders/AplBuilder";
+import { SmimeaBuilder } from "@/components/dns/builders/SmimeaBuilder";
+import { OpenpgpkeyBuilder } from "@/components/dns/builders/OpenpgpkeyBuilder";
+import { AnameBuilder } from "@/components/dns/builders/AnameBuilder";
+import { SvcbBuilder } from "@/components/dns/builders/SvcbBuilder";
 import {
   Copy,
   Edit2,
@@ -57,6 +81,40 @@ import {
   MessageSquare,
 } from "lucide-react";
 
+function supportsRecordBuilder(type: RecordType | undefined): boolean {
+  if (!type) return false;
+  switch (type) {
+    case "TXT":
+    case "DS":
+    case "DNSKEY":
+    case "CDNSKEY":
+    case "CAA":
+    case "SRV":
+    case "TLSA":
+    case "SSHFP":
+    case "HINFO":
+    case "LOC":
+    case "AFSDB":
+    case "APL":
+    case "RP":
+    case "DNAME":
+    case "CERT":
+    case "SMIMEA":
+    case "OPENPGPKEY":
+    case "NAPTR":
+    case "ALIAS":
+    case "ANAME":
+    case "URI":
+    case "SVCB":
+    case "HTTPS":
+    case "SOA":
+    case "SPF":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /**
  * Properties for the `RecordRow` UI component which renders and optionally
  * edits a DNS record.
@@ -64,6 +122,8 @@ import {
 export interface RecordRowProps {
   /** Zone ID this record belongs to (used for local record tags). */
   zoneId: string;
+  /** Zone display name for helper/assistant guidance. */
+  zoneName?: string;
   /** The DNS record to display or edit */
   record: DNSRecord;
   /** Visible table columns in order (controls rendering of row cells). */
@@ -98,6 +158,13 @@ export interface RecordRowProps {
   onCopy?: () => void | Promise<void>;
   /** Toggle Cloudflare proxy status for supported types. */
   onToggleProxy?: (next: boolean) => void | Promise<void>;
+  /** Optional SPF simulation helper for TXT/SPF assistants. */
+  simulateSPF?: (
+    domain: string,
+    ip: string,
+  ) => Promise<{ result: string; reasons: string[]; lookups: number }>;
+  /** Optional SPF graph helper for TXT/SPF assistants. */
+  getSPFGraph?: (domain: string) => Promise<SPFGraph>;
 }
 
 /**
@@ -107,6 +174,7 @@ export interface RecordRowProps {
  */
 export function RecordRow({
   zoneId,
+  zoneName,
   record,
   columns,
   gridTemplateColumns,
@@ -119,6 +187,8 @@ export function RecordRow({
   onSelectChange,
   onCopy,
   onToggleProxy,
+  simulateSPF,
+  getSPFGraph,
 }: RecordRowProps) {
   const { t } = useI18n();
   const [editedRecord, setEditedRecord] = useState(record);
@@ -192,6 +262,11 @@ export function RecordRow({
   const [spfMechanism, setSpfMechanism] = useState<string>("include");
   const [spfValue, setSpfValue] = useState<string>("");
   const [spfBuilderError, setSpfBuilderError] = useState<string>("");
+  const [showBuilderAssistant, setShowBuilderAssistant] = useState(true);
+  const [builderWarnings, setBuilderWarnings] = useState<BuilderWarnings>({
+    issues: [],
+    nameIssues: [],
+  });
 
   const addSpfMechanism = useCallback(() => {
     const needsValue = ["ip4", "ip6", "include", "exists", "ptr"].includes(
@@ -290,6 +365,214 @@ export function RecordRow({
   }, [record.id, zoneId]);
 
   useEffect(() => {
+    if (!supportsRecordBuilder(editedRecord.type as RecordType | undefined)) {
+      setBuilderWarnings({ issues: [], nameIssues: [] });
+    }
+  }, [editedRecord.type]);
+
+  const applyBuilderDraft = useCallback((draft: Partial<DNSRecord>) => {
+    setEditedRecord((prev) => ({
+      ...prev,
+      ...draft,
+      type: (draft.type ?? prev.type) as RecordType,
+    }));
+  }, []);
+
+  const renderBuilderAssistant = useCallback(() => {
+    switch (editedRecord.type as RecordType) {
+      case "TXT":
+        return (
+          <TxtBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            zoneName={zoneName}
+            simulateSPF={simulateSPF}
+            getSPFGraph={getSPFGraph}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "DS":
+        return (
+          <DsBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "DNSKEY":
+      case "CDNSKEY":
+        return (
+          <DnskeyBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "CAA":
+        return (
+          <CaaBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            zoneName={zoneName}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SRV":
+        return (
+          <SrvBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "TLSA":
+        return (
+          <TlsaBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SSHFP":
+        return (
+          <SshfpBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "HINFO":
+        return (
+          <HinfoBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "LOC":
+        return (
+          <LocBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "AFSDB":
+        return (
+          <AfsdbBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "APL":
+        return (
+          <AplBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "RP":
+        return (
+          <RpBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "DNAME":
+        return (
+          <DnameBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "CERT":
+        return (
+          <CertBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SMIMEA":
+        return (
+          <SmimeaBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "OPENPGPKEY":
+        return (
+          <OpenpgpkeyBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "NAPTR":
+        return (
+          <NaptrBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "ALIAS":
+      case "ANAME":
+        return (
+          <AnameBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "URI":
+        return (
+          <UriBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SVCB":
+      case "HTTPS":
+        return (
+          <SvcbBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SOA":
+        return (
+          <SoaBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            zoneName={zoneName}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      case "SPF":
+        return (
+          <SpfBuilder
+            record={editedRecord}
+            onRecordChange={applyBuilderDraft}
+            zoneName={zoneName}
+            simulateSPF={simulateSPF}
+            getSPFGraph={getSPFGraph}
+            onWarningsChange={setBuilderWarnings}
+          />
+        );
+      default:
+        return null;
+    }
+  }, [editedRecord, applyBuilderDraft, zoneName, simulateSPF, getSPFGraph]);
+
+  useEffect(() => {
     const onChanged = (event: Event) => {
       const detail = (event as CustomEvent).detail as
         | { zoneId?: string; recordId?: string }
@@ -324,6 +607,9 @@ export function RecordRow({
 
   const ttlValue = editedRecord.ttl === 1 ? "auto" : editedRecord.ttl;
   const isCustomTTL = !getTTLPresets().includes(ttlValue as TTLValue);
+  const hasBuilderAssistant = supportsRecordBuilder(
+    editedRecord.type as RecordType | undefined,
+  );
   const MAX_PREVIEW_CHARS = 30;
   const tagSuggestionListId = `record-tag-suggestions-${record.id}`;
   const truncate = (value: string) =>
@@ -1047,6 +1333,63 @@ export function RecordRow({
               />
             )}
           </div>
+          {hasBuilderAssistant && (
+            <div className="col-span-12 rounded-lg border border-border/60 bg-muted/15 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                  {t("Record assistant", "Record assistant")}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{t("Enable assistant", "Enable assistant")}</span>
+                  <Switch
+                    checked={showBuilderAssistant}
+                    onCheckedChange={(checked: boolean) =>
+                      setShowBuilderAssistant(checked)
+                    }
+                  />
+                </div>
+              </div>
+              {showBuilderAssistant && (
+                <div className="mt-2 space-y-2">
+                  {renderBuilderAssistant()}
+                  {(builderWarnings.nameIssues.length > 0 ||
+                    builderWarnings.issues.length > 0) && (
+                    <div className="rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2">
+                      <div className="text-xs font-semibold text-foreground/90">
+                        {t("Builder diagnostics", "Builder diagnostics")}
+                      </div>
+                      <ul className="mt-1 list-disc pl-4 text-xs text-foreground/85">
+                        {[...builderWarnings.nameIssues, ...builderWarnings.issues].map(
+                          (issue) => (
+                            <li key={issue}>{issue}</li>
+                          ),
+                        )}
+                      </ul>
+                      {builderWarnings.canonical &&
+                        builderWarnings.canonical !== editedRecord.content && (
+                          <div className="mt-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7"
+                              onClick={() =>
+                                setEditedRecord((prev) => ({
+                                  ...prev,
+                                  content: builderWarnings.canonical ?? prev.content,
+                                }))
+                              }
+                            >
+                              {t("Apply canonical content", "Apply canonical content")}
+                            </Button>
+                          </div>
+                        )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="mt-4 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
