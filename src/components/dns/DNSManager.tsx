@@ -1521,6 +1521,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [actionTab, activeTab?.kind, activeTab?.zoneId, refreshSslSettings]);
 
   useEffect(() => {
+    if (!isDesktop()) return;
+    if (settingsSubtab !== "mcp") return;
+    void refreshMcpStatus();
+  }, [refreshMcpStatus, settingsSubtab]);
+
+  useEffect(() => {
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
@@ -7520,6 +7526,159 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </div>
                             </div>
                           </div>
+                        )}
+                      </div>
+                    )}
+                    {settingsSubtab === "mcp" && (
+                      <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                        {!isDesktop() ? (
+                          <div className="px-4 py-4 text-xs text-muted-foreground">
+                            {t(
+                              "MCP server management is only available in the desktop app.",
+                              "MCP server management is only available in the desktop app.",
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                              <div className="font-medium">{t("Server status", "Server status")}</div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Tag>{mcpRunning ? t("Running", "Running") : t("Stopped", "Stopped")}</Tag>
+                                <span className="text-xs text-muted-foreground">{mcpUrl}</span>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2"
+                                  onClick={() => void refreshMcpStatus()}
+                                  disabled={mcpBusy}
+                                >
+                                  {t("Refresh", "Refresh")}
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                              <div className="font-medium">{t("Enable MCP server", "Enable MCP server")}</div>
+                              <div className="flex items-center gap-3">
+                                <Switch
+                                  checked={mcpServerEnabled}
+                                  disabled={mcpBusy}
+                                  onCheckedChange={(checked: boolean) => {
+                                    void setMcpServerRunning(checked);
+                                  }}
+                                />
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Server is off by default. Enable to accept local MCP clients.",
+                                    "Server is off by default. Enable to accept local MCP clients.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                              <div className="font-medium">{t("Bind host", "Bind host")}</div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  value={mcpServerHost}
+                                  disabled={mcpBusy}
+                                  onChange={(event) => setMcpServerHost(event.target.value)}
+                                  placeholder="127.0.0.1"
+                                  className="h-8 w-52"
+                                />
+                                <Input
+                                  type="number"
+                                  value={String(mcpServerPort)}
+                                  disabled={mcpBusy}
+                                  onChange={(event) => {
+                                    const value = Number(event.target.value);
+                                    setMcpServerPort(
+                                      Number.isNaN(value)
+                                        ? 8787
+                                        : Math.max(1, Math.min(65535, Math.round(value))),
+                                    );
+                                  }}
+                                  className="h-8 w-28"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2"
+                                  onClick={() => void setMcpServerRunning(mcpServerEnabled, mcpServerHost, mcpServerPort)}
+                                  disabled={mcpBusy || !mcpServerEnabled}
+                                >
+                                  {t("Apply + restart", "Apply + restart")}
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start">
+                              <div className="font-medium">{t("Tool access", "Tool access")}</div>
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2"
+                                    disabled={mcpBusy || mcpToolCatalog.length === 0}
+                                    onClick={() => {
+                                      const all = mcpToolCatalog.map((tool) => tool.name);
+                                      setMcpEnabledTools(all);
+                                      void applyMcpEnabledTools(all);
+                                    }}
+                                  >
+                                    {t("Enable all", "Enable all")}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2"
+                                    disabled={mcpBusy || mcpToolCatalog.length === 0}
+                                    onClick={() => {
+                                      setMcpEnabledTools([]);
+                                      void applyMcpEnabledTools([]);
+                                    }}
+                                  >
+                                    {t("Disable all", "Disable all")}
+                                  </Button>
+                                </div>
+                                <div className="grid gap-2">
+                                  {mcpToolCatalog.map((tool) => {
+                                    const enabled = mcpEnabledTools.includes(tool.name);
+                                    return (
+                                      <label
+                                        key={tool.name}
+                                        className="flex items-start gap-2 rounded-md border border-border/50 bg-card/40 px-3 py-2"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="checkbox-themed mt-0.5"
+                                          checked={enabled}
+                                          disabled={mcpBusy}
+                                          onChange={(event) => {
+                                            const next = event.target.checked
+                                              ? Array.from(new Set([...mcpEnabledTools, tool.name]))
+                                              : mcpEnabledTools.filter((name) => name !== tool.name);
+                                            setMcpEnabledTools(next);
+                                            void applyMcpEnabledTools(next);
+                                          }}
+                                        />
+                                        <div className="space-y-0.5">
+                                          <div className="font-medium">{tool.title || tool.name}</div>
+                                          <div className="text-xs text-muted-foreground">{tool.description}</div>
+                                          <div className="text-[11px] text-muted-foreground/80">{tool.name}</div>
+                                        </div>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                            {mcpLastError && (
+                              <div className="px-4 py-3">
+                                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground/90">
+                                  {mcpLastError}
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     )}

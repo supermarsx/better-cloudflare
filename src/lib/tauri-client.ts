@@ -513,7 +513,7 @@ export class TauriClient {
     return invoke("mcp_start_server", {
       host,
       port,
-      enabledTools,
+      enabled_tools: enabledTools,
     });
   }
 
@@ -522,7 +522,7 @@ export class TauriClient {
   }
 
   static async setMcpEnabledTools(enabledTools: string[]): Promise<McpServerStatus> {
-    return invoke("mcp_set_enabled_tools", { enabledTools });
+    return invoke("mcp_set_enabled_tools", { enabled_tools: enabledTools });
   }
 
   // ─── Registrar Monitoring ────────────────────────────────────────────
