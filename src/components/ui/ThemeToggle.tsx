@@ -20,15 +20,19 @@ const themeLabels: Record<ThemeId, string> = {
   light: "Midday",
 };
 
-const themeIcons: Record<ThemeId, ReactNode> = {
-  sunset: <Flame className="h-4 w-4" />,
-  oled: <Moon className="h-4 w-4" />,
-  light: <Sun className="h-4 w-4" />,
-};
+interface ThemeToggleProps {
+  compact?: boolean;
+}
 
-export function ThemeToggle() {
+export function ThemeToggle({ compact = false }: ThemeToggleProps) {
   const { t } = useI18n();
   const [theme, setTheme] = useState<ThemeId>("sunset");
+  const iconClass = compact ? "h-3.5 w-3.5" : "h-4 w-4";
+  const icons: Record<ThemeId, ReactNode> = {
+    sunset: <Flame className={iconClass} />,
+    oled: <Moon className={iconClass} />,
+    light: <Sun className={iconClass} />,
+  };
 
   useEffect(() => {
     const apply = (next: ThemeId) => {
@@ -86,10 +90,10 @@ export function ThemeToggle() {
           <Button
             variant="ghost"
             size="icon"
-            className="ui-icon-button h-8 w-8"
+            className={compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"}
             aria-label={t("Select theme", "Select theme")}
           >
-            {themeIcons[theme]}
+            {icons[theme]}
           </Button>
         </Tooltip>
       </DropdownMenuTrigger>
@@ -103,7 +107,7 @@ export function ThemeToggle() {
             onClick={() => applyTheme(id)}
             className="cursor-pointer"
           >
-            <span className="mr-2 text-primary">{themeIcons[id]}</span>
+            <span className="mr-2 text-primary">{icons[id]}</span>
             {t(themeLabels[id], themeLabels[id])}
           </DropdownMenuItem>
         ))}

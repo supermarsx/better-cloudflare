@@ -27,7 +27,11 @@ const languageNames: Record<string, string> = {
   "id-ID": "Bahasa Indonesia",
 };
 
-export function LanguageSelector() {
+interface LanguageSelectorProps {
+  compact?: boolean;
+}
+
+export function LanguageSelector({ compact = false }: LanguageSelectorProps) {
   const { t } = useI18n();
 
   const changeLanguage = (lng: string) => {
@@ -53,10 +57,10 @@ export function LanguageSelector() {
         <Button
           variant="ghost"
           size="icon"
-          className="ui-icon-button h-8 w-8"
+          className={compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"}
           aria-label={t("Select language")}
         >
-          <Globe className="h-4 w-4" />
+          <Globe className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

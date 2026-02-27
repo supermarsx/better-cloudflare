@@ -465,6 +465,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
   const topBarRef = useRef<HTMLDivElement | null>(null);
+  const compactTopBarRef = useRef(false);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
   const [zones, setZones] = useState<Zone[]>([]);
@@ -660,6 +661,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     registrarListAllDomains,
     registrarHealthCheckAll,
   } = useCloudflareAPI(apiKey, email);
+
+  useEffect(() => {
+    compactTopBarRef.current = compactTopBar;
+  }, [compactTopBar]);
 
   const availableZones = useMemo(
     () => zones.filter((zone) => zone.id),
@@ -1223,22 +1228,51 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     let rafId = 0;
     let scrollTarget: HTMLElement | Window | null = null;
     const COMPACT_ENTER_PX = 220;
-    const COMPACT_EXIT_PX = 64;
+    const COMPACT_EXIT_PX = 8;
+    const EXPAND_STABLE_MS = 180;
     const SWITCH_COOLDOWN_MS = 240;
     let lastToggleAt = 0;
+    let expandTimerId = 0;
+    const getScrollTop = () =>
+      scrollTarget && scrollTarget !== window
+        ? (scrollTarget as HTMLElement).scrollTop
+        : window.scrollY || document.documentElement.scrollTop || 0;
+    const clearExpandTimer = () => {
+      if (!expandTimerId) return;
+      window.clearTimeout(expandTimerId);
+      expandTimerId = 0;
+    };
+    const canToggle = () => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      return now - lastToggleAt >= SWITCH_COOLDOWN_MS;
+    };
+    const applyCompactState = (next: boolean) => {
+      if (compactTopBarRef.current === next) return;
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      lastToggleAt = now;
+      compactTopBarRef.current = next;
+      setCompactTopBar(next);
+    };
     const updateCompactState = () => {
-      const currentScrollTop =
-        scrollTarget && scrollTarget !== window
-          ? (scrollTarget as HTMLElement).scrollTop
-          : window.scrollY || document.documentElement.scrollTop || 0;
-      setCompactTopBar((prev) => {
-        const desired = prev ? currentScrollTop > COMPACT_EXIT_PX : currentScrollTop > COMPACT_ENTER_PX;
-        if (desired === prev) return prev;
-        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-        if (now - lastToggleAt < SWITCH_COOLDOWN_MS) return prev;
-        lastToggleAt = now;
-        return desired;
-      });
+      const currentScrollTop = getScrollTop();
+      if (!compactTopBarRef.current) {
+        clearExpandTimer();
+        if (currentScrollTop > COMPACT_ENTER_PX && canToggle()) {
+          applyCompactState(true);
+        }
+        return;
+      }
+      if (currentScrollTop > COMPACT_EXIT_PX) {
+        clearExpandTimer();
+        return;
+      }
+      if (expandTimerId) return;
+      expandTimerId = window.setTimeout(() => {
+        expandTimerId = 0;
+        if (getScrollTop() <= COMPACT_EXIT_PX && canToggle()) {
+          applyCompactState(false);
+        }
+      }, EXPAND_STABLE_MS);
     };
     const onScroll = () => {
       if (rafId) return;
@@ -1257,6 +1291,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     window.addEventListener("resize", onScroll, { passive: true });
     return () => {
       if (rafId) window.cancelAnimationFrame(rafId);
+      clearExpandTimer();
       if (scrollTarget === window) {
         window.removeEventListener("scroll", onScroll);
       } else if (scrollTarget) {
@@ -3422,13 +3457,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </div>
       </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-          <div ref={topBarRef} className="sticky top-0 z-20 flex justify-center">
+          <div ref={topBarRef} className="sticky top-0 z-20">
             <Card
               className={cn(
                 "border-border/60 backdrop-blur transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
                 compactTopBar
                   ? "w-[min(94vw,980px)] bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
-                  : "bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
+                  : "w-full bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
               )}
             >
             <CardHeader
@@ -3458,7 +3493,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               <div
                 className={cn(
                   "grid gap-4 md:grid-cols-[1fr_auto] md:items-end",
-                  compactTopBar && "grid-cols-1 items-center justify-items-center gap-2",
+                  compactTopBar && "grid-cols-1 items-start justify-items-start gap-2",
                 )}
               >
                 <div className={cn("space-y-2", compactTopBar && "w-full max-w-xs space-y-0")}>
@@ -3534,7 +3569,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div
                   className={cn(
                     "flex flex-wrap gap-2 fade-in",
-                    compactTopBar && "w-full justify-center items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
+                    compactTopBar && "w-full justify-start items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
                   )}
                   onDragOver={(event) => {
                     event.preventDefault();
@@ -7455,4 +7490,3 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     </div>
   );
 }
-

@@ -9,6 +9,9 @@ import { WindowTitleBar } from "@/components/ui/WindowTitleBar";
 import { isDesktop } from "@/lib/environment";
 import i18n from "@/i18n";
 import { TauriClient } from "@/lib/tauri-client";
+import { cn } from "@/lib/utils";
+import { ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -18,7 +21,9 @@ function App() {
   const [activeView, setActiveView] = useState<"login" | "app">("login");
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [prefsDockOpen, setPrefsDockOpen] = useState(false);
   const timeouts = useRef<number[]>([]);
+  const prefsDockHideTimeout = useRef<number | null>(null);
 
   useEffect(() => {
     // Check if there's an active session
@@ -58,8 +63,26 @@ function App() {
     return () => {
       timeouts.current.forEach((id) => clearTimeout(id));
       timeouts.current = [];
+      if (prefsDockHideTimeout.current) {
+        window.clearTimeout(prefsDockHideTimeout.current);
+        prefsDockHideTimeout.current = null;
+      }
     };
   }, []);
+
+  const clearPrefsDockHideTimer = () => {
+    if (!prefsDockHideTimeout.current) return;
+    window.clearTimeout(prefsDockHideTimeout.current);
+    prefsDockHideTimeout.current = null;
+  };
+
+  const schedulePrefsDockHide = () => {
+    clearPrefsDockHideTimer();
+    prefsDockHideTimeout.current = window.setTimeout(() => {
+      setPrefsDockOpen(false);
+      prefsDockHideTimeout.current = null;
+    }, 1800);
+  };
 
   const beginTransition = (nextView: "login" | "app") => {
     if (isTransitioning) return;
@@ -101,9 +124,42 @@ function App() {
     <div className="h-screen bg-background text-foreground">
       {isDesktopEnv ? <WindowTitleBar /> : null}
       <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
-        <div className="flex items-center gap-2 rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-70 backdrop-blur-sm transition hover:opacity-100">
-          <LanguageSelector />
-          <ThemeToggle />
+        <div
+          className="flex items-center rounded-full border border-transparent bg-transparent px-1 py-0.5 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100"
+          onMouseEnter={() => {
+            clearPrefsDockHideTimer();
+            setPrefsDockOpen(true);
+          }}
+          onMouseLeave={schedulePrefsDockHide}
+        >
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ui-icon-button h-6 w-6"
+            aria-label="Preferences"
+            onClick={() => {
+              clearPrefsDockHideTimer();
+              setPrefsDockOpen((prev) => !prev);
+            }}
+          >
+            <ChevronRight
+              className={cn(
+                "h-3 w-3 transition-transform duration-200",
+                prefsDockOpen && "rotate-90",
+              )}
+            />
+          </Button>
+          <div
+            className={cn(
+              "flex items-center gap-2 overflow-hidden transition-all duration-300",
+              prefsDockOpen
+                ? "ml-1 max-w-[140px] opacity-100"
+                : "ml-0 max-w-0 opacity-0 pointer-events-none",
+            )}
+          >
+            <LanguageSelector compact />
+            <ThemeToggle compact />
+          </div>
         </div>
       </div>
       <main
