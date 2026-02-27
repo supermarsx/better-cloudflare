@@ -1062,8 +1062,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setZones(zonesData);
       } catch (error) {
         toast({
-          title: "Error",
-          description: "Failed to load zones: " + (error as Error).message,
+          title: t("Error", "Error"),
+          description: t("Failed to load zones: {{error}}", {
+            error: (error as Error).message,
+            defaultValue: `Failed to load zones: ${(error as Error).message}`,
+          }),
           variant: "destructive",
         });
       }
@@ -1145,9 +1148,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }
       } catch (error) {
         toast({
-          title: "Error",
-          description:
-            "Failed to load DNS records: " + (error as Error).message,
+          title: t("Error", "Error"),
+          description: t("Failed to load DNS records: {{error}}", {
+            error: (error as Error).message,
+            defaultValue: `Failed to load DNS records: ${(error as Error).message}`,
+          }),
           variant: "destructive",
         });
       } finally {
@@ -2433,7 +2438,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     link.download = `session-settings-${currentSessionId}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    toast({ title: "Exported", description: "Session settings exported." });
+    toast({
+      title: t("Exported", "Exported"),
+      description: t("Session settings exported.", "Session settings exported."),
+    });
   }, [buildSessionSettingsProfile, currentSessionId, toast]);
 
   const importSessionSettings = useCallback(
@@ -2466,10 +2474,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             session_settings_profiles: nextProfiles,
           });
         }
-        toast({ title: "Imported", description: "Session settings imported." });
+        toast({
+          title: t("Imported", "Imported"),
+          description: t("Session settings imported.", "Session settings imported."),
+        });
       } catch (error) {
         toast({
-          title: "Import failed",
+          title: t("Import failed", "Import failed"),
           description: error instanceof Error ? error.message : String(error),
           variant: "destructive",
         });
@@ -2491,8 +2502,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const profile = sessionSettingsProfiles[sourceSessionId];
       if (!profile) {
         toast({
-          title: "Clone failed",
-          description: `No saved settings found for ${sourceSessionId}.`,
+          title: t("Clone failed", "Clone failed"),
+          description: t("No saved settings found for {{session}}.", {
+            session: sourceSessionId,
+            defaultValue: `No saved settings found for ${sourceSessionId}.`,
+          }),
           variant: "destructive",
         });
         return;
@@ -2516,8 +2530,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }
       }
       toast({
-        title: "Cloned",
-        description: `Applied settings from ${sourceSessionId}.`,
+        title: t("Cloned", "Cloned"),
+        description: t("Applied settings from {{session}}.", {
+          session: sourceSessionId,
+          defaultValue: `Applied settings from ${sourceSessionId}.`,
+        }),
       });
     },
     [applySessionSettingsProfile, currentSessionId, sessionSettingsProfiles, toast],
@@ -2527,8 +2544,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const draft = activeTab.newRecord;
     if (!draft.type || !draft.name || !draft.content) {
       toast({
-        title: "Error",
-        description: "Please fill in all required fields",
+        title: t("Error", "Error"),
+        description: t("Please fill in all required fields", "Please fill in all required fields"),
         variant: "destructive",
       });
       return;
@@ -2543,13 +2560,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         showAddRecord: false,
       }));
       toast({
-        title: "Success",
-        description: "DNS record created successfully",
+        title: t("Success", "Success"),
+        description: t("DNS record created successfully", "DNS record created successfully"),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to create DNS record: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to create DNS record: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to create DNS record: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2578,13 +2598,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         editingRecord: null,
       }));
       toast({
-        title: "Success",
-        description: "DNS record updated successfully",
+        title: t("Success", "Success"),
+        description: t("DNS record updated successfully", "DNS record updated successfully"),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to update DNS record: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to update DNS record: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to update DNS record: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2616,8 +2639,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }));
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to update proxy: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to update proxy: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to update proxy: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2634,13 +2660,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         selectedIds: prev.selectedIds.filter((id) => id !== recordId),
       }));
       toast({
-        title: "Success",
-        description: "DNS record deleted successfully",
+        title: t("Success", "Success"),
+        description: t("DNS record deleted successfully", "DNS record deleted successfully"),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to delete DNS record: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to delete DNS record: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to delete DNS record: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2712,8 +2741,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     URL.revokeObjectURL(url);
 
     toast({
-      title: "Success",
-      description: `Records exported as ${format.toUpperCase()}`,
+      title: t("Success", "Success"),
+      description: t("Records exported as {{format}}", {
+        format: format.toUpperCase(),
+        defaultValue: `Records exported as ${format.toUpperCase()}`,
+      }),
     });
   };
 
@@ -2789,9 +2821,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             }
           } catch (err) {
             toast({
-              title: "Error",
-              description:
-                "Failed to import records: " + (err as Error).message,
+              title: t("Error", "Error"),
+              description: t("Failed to import records: {{error}}", {
+                error: (err as Error).message,
+                defaultValue: `Failed to import records: ${(err as Error).message}`,
+              }),
               variant: "destructive",
             });
             return;
@@ -2820,32 +2854,42 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             showImport: false,
           }));
           toast({
-            title: "Success",
-            description:
-              `Imported ${valid.length} record(s)` +
-              (skipped ? `, skipped ${skipped}` : ""),
+            title: t("Success", "Success"),
+            description: t("Imported {{imported}} record(s){{suffix}}", {
+              imported: valid.length,
+              suffix: skipped ? `, skipped ${skipped}` : "",
+              defaultValue: `Imported ${valid.length} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
+            }),
           });
         } else {
           toast({
-            title: "Dry Run",
-            description:
-              `Would import ${valid.length} record(s)` +
-              (skipped ? `, skipped ${skipped}` : ""),
+            title: t("Dry Run", "Dry Run"),
+            description: t("Would import {{imported}} record(s){{suffix}}", {
+              imported: valid.length,
+              suffix: skipped ? `, skipped ${skipped}` : "",
+              defaultValue: `Would import ${valid.length} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
+            }),
           });
         }
       } else {
         toast({
-          title: "Error",
+          title: t("Error", "Error"),
           description: skipped
-            ? `No new records imported. Skipped ${skipped} invalid or duplicate item(s).`
-            : "No valid records found.",
+            ? t("No new records imported. Skipped {{count}} invalid or duplicate item(s).", {
+                count: skipped,
+                defaultValue: `No new records imported. Skipped ${skipped} invalid or duplicate item(s).`,
+              })
+            : t("No valid records found.", "No valid records found."),
           variant: "destructive",
         });
       }
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to import records: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to import records: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to import records: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2858,8 +2902,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
     if (!selectedRecords.length) {
       toast({
-        title: "Nothing selected",
-        description: "Select one or more records to copy.",
+        title: t("Nothing selected", "Nothing selected"),
+        description: t("Select one or more records to copy.", "Select one or more records to copy."),
       });
       return;
     }
@@ -2869,8 +2913,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       sourceZoneName: activeTab.zoneName,
     });
     toast({
-      title: "Copied",
-      description: `Copied ${selectedRecords.length} record(s) from ${activeTab.zoneName}`,
+      title: t("Copied", "Copied"),
+      description: t("Copied {{count}} record(s) from {{zone}}", {
+        count: selectedRecords.length,
+        zone: activeTab.zoneName,
+        defaultValue: `Copied ${selectedRecords.length} record(s) from ${activeTab.zoneName}`,
+      }),
     });
   };
 
@@ -2882,8 +2930,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       sourceZoneName: activeTab.zoneName,
     });
     toast({
-      title: "Copied",
-      description: `Copied ${record.name} from ${activeTab.zoneName}`,
+      title: t("Copied", "Copied"),
+      description: t("Copied {{record}} from {{zone}}", {
+        record: record.name,
+        zone: activeTab.zoneName,
+        defaultValue: `Copied ${record.name} from ${activeTab.zoneName}`,
+      }),
     });
   };
 
@@ -2912,8 +2964,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           records: [...created, ...prev.records],
         }));
         toast({
-          title: "Pasted",
-          description: `Created ${created.length} record(s) in ${activeTab.zoneName}`,
+          title: t("Pasted", "Pasted"),
+          description: t("Created {{count}} record(s) in {{zone}}", {
+            count: created.length,
+            zone: activeTab.zoneName,
+            defaultValue: `Created ${created.length} record(s) in ${activeTab.zoneName}`,
+          }),
         });
         return;
       }
@@ -2927,13 +2983,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         records: [...createdRecords, ...prev.records],
       }));
       toast({
-        title: "Pasted",
-        description: `Created ${createdRecords.length} record(s) in ${activeTab.zoneName}`,
+        title: t("Pasted", "Pasted"),
+        description: t("Created {{count}} record(s) in {{zone}}", {
+          count: createdRecords.length,
+          zone: activeTab.zoneName,
+          defaultValue: `Created ${createdRecords.length} record(s) in ${activeTab.zoneName}`,
+        }),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to paste records: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to paste records: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to paste records: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -2952,16 +3015,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         );
         setZoneDevMode(next);
         toast({
-          title: "Saved",
+          title: t("Saved", "Saved"),
           description: enabled
-            ? "Development mode enabled (cache bypass)."
-            : "Development mode disabled.",
+            ? t("Development mode enabled (cache bypass).", "Development mode enabled (cache bypass).")
+            : t("Development mode disabled.", "Development mode disabled."),
         });
       } catch (error) {
         toast({
-          title: "Error",
-          description:
-            "Failed to update development mode: " + (error as Error).message,
+          title: t("Error", "Error"),
+          description: t("Failed to update development mode: {{error}}", {
+            error: (error as Error).message,
+            defaultValue: `Failed to update development mode: ${(error as Error).message}`,
+          }),
           variant: "destructive",
         });
       } finally {
@@ -2984,13 +3049,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         );
         setZoneCacheLevel(next);
         toast({
-          title: "Saved",
-          description: `Cache level set to ${level}.`,
+          title: t("Saved", "Saved"),
+          description: t("Cache level set to {{level}}.", {
+            level,
+            defaultValue: `Cache level set to ${level}.`,
+          }),
         });
       } catch (error) {
         toast({
-          title: "Error",
-          description: "Failed to update cache level: " + (error as Error).message,
+          title: t("Error", "Error"),
+          description: t("Failed to update cache level: {{error}}", {
+            error: (error as Error).message,
+            defaultValue: `Failed to update cache level: ${(error as Error).message}`,
+          }),
           variant: "destructive",
         });
       } finally {
@@ -3030,13 +3101,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     try {
       await purgeCache(activeTab.zoneId, { purge_everything: true });
       toast({
-        title: "Purged",
-        description: `Cache purged for ${activeTab.zoneName}.`,
+        title: t("Purged", "Purged"),
+        description: t("Cache purged for {{zone}}.", {
+          zone: activeTab.zoneName,
+          defaultValue: `Cache purged for ${activeTab.zoneName}.`,
+        }),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to purge cache: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to purge cache: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to purge cache: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -3050,14 +3127,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     try {
       await purgeCache(activeTab.zoneId, { files: urls });
       toast({
-        title: "Purged",
-        description: `Purged ${urls.length} URL(s) for ${activeTab.zoneName}.`,
+        title: t("Purged", "Purged"),
+        description: t("Purged {{count}} URL(s) for {{zone}}.", {
+          count: urls.length,
+          zone: activeTab.zoneName,
+          defaultValue: `Purged ${urls.length} URL(s) for ${activeTab.zoneName}.`,
+        }),
       });
       setPurgeUrlsInput("");
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to purge URLs: " + (error as Error).message,
+        title: t("Error", "Error"),
+        description: t("Failed to purge URLs: {{error}}", {
+          error: (error as Error).message,
+          defaultValue: `Failed to purge URLs: ${(error as Error).message}`,
+        }),
         variant: "destructive",
       });
     }
@@ -3100,14 +3184,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             break;
         }
         toast({
-          title: "Saved",
-          description: `${settingId.replace(/_/g, " ")} updated.`,
+          title: t("Saved", "Saved"),
+          description: t("{{setting}} updated.", {
+            setting: settingId.replace(/_/g, " "),
+            defaultValue: `${settingId.replace(/_/g, " ")} updated.`,
+          }),
         });
       } catch (error) {
         toast({
-          title: "Error",
-          description:
-            "Failed to update SSL/TLS setting: " + (error as Error).message,
+          title: t("Error", "Error"),
+          description: t("Failed to update SSL/TLS setting: {{error}}", {
+            error: (error as Error).message,
+            defaultValue: `Failed to update SSL/TLS setting: ${(error as Error).message}`,
+          }),
           variant: "destructive",
         });
       } finally {
@@ -3528,7 +3617,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       }
                     >
                       <SelectTrigger className="w-[180px]">
-                        <SelectValue placeholder="All types" />
+                        <SelectValue placeholder={t("All types", "All types")} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">
@@ -3559,7 +3648,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       }}
                     >
                       <SelectTrigger className="w-32">
-                        <SelectValue placeholder="Per page" />
+                        <SelectValue placeholder={t("Per page", "Per page")} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="25">25</SelectItem>
@@ -3567,7 +3656,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <SelectItem value="100">100</SelectItem>
                         <SelectItem value="200">200</SelectItem>
                         <SelectItem value="500">500</SelectItem>
-                        <SelectItem value="0">All</SelectItem>
+                        <SelectItem value="0">{t("All", "All")}</SelectItem>
                       </SelectContent>
                     </Select>
                     <div className="flex items-center gap-2 justify-start md:justify-end">
@@ -3577,7 +3666,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-8 px-2 text-xs"
                         onClick={() => void loadRecords(activeTab)}
                         disabled={activeTab.isLoading}
-                        title="Force refresh from Cloudflare"
+                        title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
                       >
                         <RefreshCw className={cn("h-3.5 w-3.5", activeTab.isLoading && "animate-spin")} />
                       </Button>
@@ -3594,11 +3683,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }
                       >
                         <X className="h-3 w-3 mr-1" />
-                        Clear
+                        {t("Clear", "Clear")}
                       </Button>
                       <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
                         <Filter className="h-3 w-3" />
-                        Page {activeTab.page}
+                        {t("Page {{page}}", {
+                          page: activeTab.page,
+                          defaultValue: `Page ${activeTab.page}`,
+                        })}
                       </div>
                       <Button
                         size="sm"
@@ -3611,7 +3703,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }
                         disabled={activeTab.page <= 1}
                       >
-                        Prev
+                        {t("Prev", "Prev")}
                       </Button>
                       <Button
                         size="sm"
@@ -3623,7 +3715,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }))
                         }
                       >
-                        Next
+                        {t("Next", "Next")}
                       </Button>
                     </div>
                   </div>
@@ -3656,7 +3748,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       disabled={!activeTab.selectedIds.length}
                     >
                       <Copy className="h-4 w-4 mr-2" />
-                      Copy selected
+                      {t("Copy selected", "Copy selected")}
                     </Button>
                     <Button
                       size="sm"
@@ -3665,12 +3757,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       disabled={!copyBuffer}
                     >
                       <ClipboardPaste className="h-4 w-4 mr-2" />
-                      Paste {copyBuffer ? `${copyBuffer.records.length}` : ""}
+                      {t("Paste", "Paste")} {copyBuffer ? `${copyBuffer.records.length}` : ""}
                     </Button>
                     {copyBuffer && (
                       <div className="text-xs text-muted-foreground">
-                        Buffer: {copyBuffer.records.length} from {" "}
-                        {copyBuffer.sourceZoneName}
+                        {t("Buffer: {{count}} from {{zone}}", {
+                          count: copyBuffer.records.length,
+                          zone: copyBuffer.sourceZoneName,
+                          defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
+                        })}
                       </div>
                     )}
                     {activeTab.selectedIds.length > 0 && (
@@ -3684,12 +3779,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }))
                         }
                       >
-                        Clear selection
+                        {t("Clear selection", "Clear selection")}
                       </Button>
                     )}
                   </div>
                   {activeTab.isLoading ? (
-                    <div className="text-center py-8">Loading...</div>
+                    <div className="text-center py-8">{t("Loading...", "Loading...")}</div>
                   ) : filteredRecords.length === 0 ? (
                     <div className="text-center py-8 text-muted-foreground">
                       {t("No DNS records found", "No DNS records found")}
@@ -3703,7 +3798,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-left hover:text-foreground"
                           onClick={() => toggleSort("type")}
                         >
-                          Type{" "}
+                          {t("Type", "Type")}{" "}
                           <span className="opacity-70">{sortIndicator("type")}</span>
                         </button>
                         <button
@@ -3711,7 +3806,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-left hover:text-foreground"
                           onClick={() => toggleSort("name")}
                         >
-                          Name{" "}
+                          {t("Name", "Name")}{" "}
                           <span className="opacity-70">{sortIndicator("name")}</span>
                         </button>
                         <button
@@ -3719,7 +3814,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-left hover:text-foreground"
                           onClick={() => toggleSort("content")}
                         >
-                          Content{" "}
+                          {t("Content", "Content")}{" "}
                           <span className="opacity-70">{sortIndicator("content")}</span>
                         </button>
                         <button
@@ -3727,7 +3822,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-left hover:text-foreground"
                           onClick={() => toggleSort("ttl")}
                         >
-                          TTL{" "}
+                          {t("TTL", "TTL")}{" "}
                           <span className="opacity-70">{sortIndicator("ttl")}</span>
                         </button>
                         <button
@@ -3735,10 +3830,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-left hover:text-foreground"
                           onClick={() => toggleSort("proxied")}
                         >
-                          Proxy{" "}
+                          {t("Proxy", "Proxy")}{" "}
                           <span className="opacity-70">{sortIndicator("proxied")}</span>
                         </button>
-                        <span className="text-right">Actions</span>
+                        <span className="text-right">{t("Actions", "Actions")}</span>
                       </div>
                       {filteredRecords.map((record) => {
                         const isSelected = activeTab.selectedIds.includes(
@@ -3793,12 +3888,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Card className="border-border/60 bg-card/70">
                     <CardHeader>
                       <CardTitle className="text-lg">
-                        Import Records
+                        {t("Import Records", "Import Records")}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
                       <p className="text-sm text-muted-foreground">
-                        Bring in records from CSV, JSON, or BIND zone files.
+                        {t(
+                          "Bring in records from CSV, JSON, or BIND zone files.",
+                          "Bring in records from CSV, JSON, or BIND zone files.",
+                        )}
                       </p>
                       <ImportExportDialog
                         open={activeTab.showImport}
@@ -3848,15 +3946,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             a.click();
                             URL.revokeObjectURL(url);
                             toast({
-                              title: "Success",
-                              description: `Server export ${format.toUpperCase()} completed`,
+                              title: t("Success", "Success"),
+                              description: t("Server export {{format}} completed", {
+                                format: format.toUpperCase(),
+                                defaultValue: `Server export ${format.toUpperCase()} completed`,
+                              }),
                             });
                           } catch (err) {
                             toast({
-                              title: "Error",
-                              description:
-                                "Server export failed: " +
-                                (err as Error).message,
+                              title: t("Error", "Error"),
+                              description: t("Server export failed: {{error}}", {
+                                error: (err as Error).message,
+                                defaultValue: `Server export failed: ${(err as Error).message}`,
+                              }),
                               variant: "destructive",
                             });
                           }
@@ -3868,12 +3970,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <Card className="border-border/60 bg-card/70">
                     <CardHeader>
                       <CardTitle className="text-lg">
-                        Export Records
+                        {t("Export Records", "Export Records")}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
                       <p className="text-sm text-muted-foreground">
-                        Download zone data locally or run server-side exports.
+                        {t(
+                          "Download zone data locally or run server-side exports.",
+                          "Download zone data locally or run server-side exports.",
+                        )}
                       </p>
                       <div className="flex flex-wrap gap-2">
                         <Button
@@ -3881,21 +3986,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           onClick={() => handleExport("json")}
                         >
                           <FileDown className="h-4 w-4 mr-2" />
-                          Export JSON
+                          {t("Export JSON", "Export JSON")}
                         </Button>
                         <Button
                           variant="outline"
                           onClick={() => handleExport("csv")}
                         >
                           <FileDown className="h-4 w-4 mr-2" />
-                          Export CSV
+                          {t("Export CSV", "Export CSV")}
                         </Button>
                         <Button
                           variant="outline"
                           onClick={() => handleExport("bind")}
                         >
                           <FileDown className="h-4 w-4 mr-2" />
-                          Export BIND
+                          {t("Export BIND", "Export BIND")}
                         </Button>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -3904,7 +4009,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           onClick={() => setActionTab("records")}
                         >
                           <FileUp className="h-4 w-4 mr-2" />
-                          Back to records
+                          {t("Back to records", "Back to records")}
                         </Button>
                       </div>
                     </CardContent>
@@ -4608,7 +4713,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       </span>
                                       {isOverridden && (
                                         <span className="rounded-md border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] uppercase tracking-widest text-emerald-200">
-                                          overridden
+                                          {t("overridden", "overridden")}
                                         </span>
                                       )}
                                       <div
@@ -4631,9 +4736,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         variant="ghost"
                                         className="text-xs"
                                         onClick={() => handleOverrideAuditItem(item.id)}
-                                        title="Mark as acknowledged/passing"
+                                        title={t("Mark as acknowledged/passing", "Mark as acknowledged/passing")}
                                       >
-                                        Override
+                                        {t("Override", "Override")}
                                       </Button>
                                     )}
                                     {isOverridden && (
@@ -4642,9 +4747,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         variant="ghost"
                                         className="text-xs"
                                         onClick={() => handleClearAuditOverride(item.id)}
-                                        title="Remove override"
+                                        title={t("Remove override", "Remove override")}
                                       >
-                                        Restore
+                                        {t("Restore", "Restore")}
                                       </Button>
                                     )}
                                     {item.suggestion && (
@@ -4665,7 +4770,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           }))
                                         }
                                       >
-                                        Add suggested record…
+                                        {t("Add suggested record…", "Add suggested record…")}
                                       </Button>
                                     )}
                                   </div>
@@ -4678,8 +4783,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="text-xs text-muted-foreground">
-                      These checks are best-practice heuristics based only on records currently
-                      present in this zone.
+                      {t(
+                        "These checks are best-practice heuristics based only on records currently present in this zone.",
+                        "These checks are best-practice heuristics based only on records currently present in this zone.",
+                      )}
                     </div>
                     {auditOverlay.visible && (
                       <SectionLoadingOverlay
@@ -4701,7 +4808,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Input
                         value={registryLookupDomain}
                         onChange={(e) => setRegistryLookupDomain(e.target.value)}
-                        placeholder="example.com"
+                        placeholder={t("example.com", "example.com")}
                       />
                       <Button
                         onClick={() => void runDomainRegistryChecks()}
@@ -4757,21 +4864,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                     <div className="grid gap-3 lg:grid-cols-2">
                       <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">Registrar API Match</div>
+                        <div className="text-sm font-medium">{t("Registrar API Match", "Registrar API Match")}</div>
                         {registrarDomainResult ? (
                           <div className="text-xs text-muted-foreground space-y-1">
                             <div>
-                              Domain: <span className="text-foreground">{registrarDomainResult.domain}</span>
+                              {t("Domain:", "Domain:")}{" "}
+                              <span className="text-foreground">{registrarDomainResult.domain}</span>
                             </div>
                             <div>
-                              Registrar:{" "}
+                              {t("Registrar:", "Registrar:")}{" "}
                               <span className="text-foreground">{registrarDomainResult.registrar}</span>
                             </div>
                             <div>
-                              Status: <span className="text-foreground">{registrarDomainResult.status}</span>
+                              {t("Status:", "Status:")}{" "}
+                              <span className="text-foreground">{registrarDomainResult.status}</span>
                             </div>
                             <div>
-                              Expires:{" "}
+                              {t("Expires:", "Expires:")}{" "}
                               <span
                                 className="text-foreground"
                                 title={formatHumanizedDateTime(registrarDomainResult.expires_at).full}
@@ -4791,11 +4900,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
 
                       <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">Health Checks</div>
+                        <div className="text-sm font-medium">{t("Health Checks", "Health Checks")}</div>
                         {registrarHealthResult ? (
                           <div className="text-xs text-muted-foreground space-y-1">
                             <div>
-                              Overall: <span className="text-foreground">{registrarHealthResult.status}</span>
+                              {t("Overall:", "Overall:")}{" "}
+                              <span className="text-foreground">{registrarHealthResult.status}</span>
                             </div>
                             {registrarHealthResult.checks.map((check) => (
                               <div key={check.name}>
@@ -4817,7 +4927,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
                     <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">RDAP Response</div>
+                        <div className="text-sm font-medium">{t("RDAP Response", "RDAP Response")}</div>
                         <div className="flex items-center gap-2">
                           <Button
                             size="sm"
@@ -4839,13 +4949,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 .writeText(payload)
                                 .then(() =>
                                   toast({
-                                    title: "Copied",
-                                    description: "Registry data copied to clipboard.",
+                                    title: t("Copied", "Copied"),
+                                    description: t(
+                                      "Registry data copied to clipboard.",
+                                      "Registry data copied to clipboard.",
+                                    ),
                                   }),
                                 )
                                 .catch((error) =>
                                   toast({
-                                    title: "Copy failed",
+                                    title: t("Copy failed", "Copy failed"),
                                     description:
                                       error instanceof Error ? error.message : String(error),
                                     variant: "destructive",
@@ -4855,7 +4968,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!rdapResult}
                           >
                             <Copy className="h-3.5 w-3.5 mr-1" />
-                            Copy
+                            {t("Copy", "Copy")}
                           </Button>
                           <Button
                             size="sm"
@@ -4863,7 +4976,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             onClick={() => setShowRawRdap((prev) => !prev)}
                             disabled={!rdapResult}
                           >
-                            {showRawRdap ? "Show Table" : "Show Raw JSON"}
+                            {showRawRdap
+                              ? t("Show Table", "Show Table")
+                              : t("Show Raw JSON", "Show Raw JSON")}
                           </Button>
                         </div>
                       </div>
@@ -4878,29 +4993,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Domain</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Domain", "Domain")}</td>
                                     <td className="px-3 py-2">{String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}</td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Handle</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Handle", "Handle")}</td>
                                     <td className="px-3 py-2">{String(rdapObject.handle ?? "—")}</td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Object Class</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Object Class", "Object Class")}</td>
                                     <td className="px-3 py-2">{String(rdapObject.objectClassName ?? "—")}</td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Port 43</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Port 43", "Port 43")}</td>
                                     <td className="px-3 py-2">{String(rdapObject.port43 ?? "—")}</td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Registrar (API)</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Registrar (API)", "Registrar (API)")}</td>
                                     <td className="px-3 py-2">
                                       {registrarDomainResult?.registrar ?? "—"}
                                     </td>
                                   </tr>
                                   <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Status</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Status", "Status")}</td>
                                     <td className="px-3 py-2">
                                       {rdapStatuses.length ? rdapStatuses.join(", ") : "—"}
                                     </td>
@@ -4913,8 +5028,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <thead>
                                   <tr className="border-b border-border/40 text-muted-foreground">
-                                    <th className="px-3 py-2 text-left font-medium">Event</th>
-                                    <th className="px-3 py-2 text-left font-medium">Date</th>
+                                    <th className="px-3 py-2 text-left font-medium">{t("Event", "Event")}</th>
+                                    <th className="px-3 py-2 text-left font-medium">{t("Date", "Date")}</th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -4929,7 +5044,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     ))
                                   ) : (
                                     <tr>
-                                      <td className="px-3 py-2 text-muted-foreground" colSpan={2}>No events returned.</td>
+                                      <td className="px-3 py-2 text-muted-foreground" colSpan={2}>{t("No events returned.", "No events returned.")}</td>
                                     </tr>
                                   )}
                                 </tbody>
@@ -4940,11 +5055,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Registrar Entity</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Registrar Entity", "Registrar Entity")}</td>
                                     <td className="px-3 py-2">{String(rdapRegistrarEntity?.handle ?? "—")}</td>
                                   </tr>
                                   <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">Nameservers</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Nameservers", "Nameservers")}</td>
                                     <td className="px-3 py-2">
                                       {rdapNameservers.length ? rdapNameservers.join(", ") : "—"}
                                     </td>
@@ -5009,17 +5124,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <CardTitle className="text-lg">Audit log</CardTitle>
+                      <CardTitle className="text-lg">{t("Audit log", "Audit log")}</CardTitle>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
                           size="sm"
                           variant="outline"
                           className="h-8 gap-1 px-2"
                           onClick={() => loadAuditEntries()}
-                          title="Refresh"
+                          title={t("Refresh", "Refresh")}
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
-                          <span className="text-xs">Refresh</span>
+                          <span className="text-xs">{t("Refresh", "Refresh")}</span>
                         </Button>
                         <Button
                           size="sm"
@@ -5033,10 +5148,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             void clearAuditEntriesNow();
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
-                          title="Clear logs"
+                          title={t("Clear logs", "Clear logs")}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                          <span className="text-xs">Clear</span>
+                          <span className="text-xs">{t("Clear", "Clear")}</span>
                         </Button>
                         <Button
                           size="sm"
@@ -5052,16 +5167,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 auditExportSkipDestinationConfirm,
                               );
                               toast({
-                                title: "Export complete",
-                                description: `Saved to ${path}`,
+                                title: t("Export complete", "Export complete"),
+                                description: t("Saved to {{path}}", {
+                                  path,
+                                  defaultValue: `Saved to ${path}`,
+                                }),
                                 action: (
                                   <ToastAction
-                                    altText="Open export folder"
+                                    altText={t("Open export folder", "Open export folder")}
                                     onClick={() => {
                                       void TauriClient.openPathInFileManager(path).catch(
                                         (error) => {
                                           toast({
-                                            title: "Open folder failed",
+                                            title: t("Open folder failed", "Open folder failed"),
                                             description:
                                               error instanceof Error
                                                 ? error.message
@@ -5072,7 +5190,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       );
                                     }}
                                   >
-                                    Open folder
+                                    {t("Open folder", "Open folder")}
                                   </ToastAction>
                                 ),
                               });
@@ -5081,17 +5199,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 error instanceof Error ? error.message : String(error);
                               if (message.toLowerCase().includes("cancel")) return;
                               toast({
-                                title: "Export failed",
+                                title: t("Export failed", "Export failed"),
                                 description: message,
                                 variant: "destructive",
                               });
                             }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
-                          title="Export JSON"
+                          title={t("Export JSON", "Export JSON")}
                         >
                           <FileDown className="h-3.5 w-3.5" />
-                          <span className="text-xs">JSON</span>
+                          <span className="text-xs">{t("JSON", "JSON")}</span>
                         </Button>
                         <Button
                           size="sm"
@@ -5107,16 +5225,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 auditExportSkipDestinationConfirm,
                               );
                               toast({
-                                title: "Export complete",
-                                description: `Saved to ${path}`,
+                                title: t("Export complete", "Export complete"),
+                                description: t("Saved to {{path}}", {
+                                  path,
+                                  defaultValue: `Saved to ${path}`,
+                                }),
                                 action: (
                                   <ToastAction
-                                    altText="Open export folder"
+                                    altText={t("Open export folder", "Open export folder")}
                                     onClick={() => {
                                       void TauriClient.openPathInFileManager(path).catch(
                                         (error) => {
                                           toast({
-                                            title: "Open folder failed",
+                                            title: t("Open folder failed", "Open folder failed"),
                                             description:
                                               error instanceof Error
                                                 ? error.message
@@ -5127,7 +5248,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       );
                                     }}
                                   >
-                                    Open folder
+                                    {t("Open folder", "Open folder")}
                                   </ToastAction>
                                 ),
                               });
@@ -5136,17 +5257,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 error instanceof Error ? error.message : String(error);
                               if (message.toLowerCase().includes("cancel")) return;
                               toast({
-                                title: "Export failed",
+                                title: t("Export failed", "Export failed"),
                                 description: message,
                                 variant: "destructive",
                               });
                             }
                           }}
                           disabled={!isDesktop() || auditEntries.length === 0}
-                          title="Export CSV"
+                          title={t("Export CSV", "Export CSV")}
                         >
                           <FileDown className="h-3.5 w-3.5" />
-                          <span className="text-xs">CSV</span>
+                          <span className="text-xs">{t("CSV", "CSV")}</span>
                         </Button>
                       </div>
                     </div>
@@ -5156,7 +5277,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="relative">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
-                          placeholder="Search audit entries"
+                          placeholder={t("Search audit entries", "Search audit entries")}
                           value={auditSearch}
                           onChange={(e) => setAuditSearch(e.target.value)}
                           className="h-8 pl-9 text-xs"
@@ -5164,7 +5285,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                       <Select value={auditLimit} onValueChange={setAuditLimit}>
                         <SelectTrigger className="h-8 text-xs">
-                          <SelectValue placeholder="Limit" />
+                          <SelectValue placeholder={t("Limit", "Limit")} />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="50">50</SelectItem>
@@ -5172,12 +5293,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <SelectItem value="250">250</SelectItem>
                           <SelectItem value="500">500</SelectItem>
                           <SelectItem value="1000">1000</SelectItem>
-                          <SelectItem value="all">All</SelectItem>
+                          <SelectItem value="all">{t("All", "All")}</SelectItem>
                         </SelectContent>
                       </Select>
                       <Button size="sm" variant="outline" className="h-8 gap-1 px-2" onClick={addAuditFilter}>
                         <Plus className="h-3.5 w-3.5" />
-                        <span className="text-xs">Add filter</span>
+                        <span className="text-xs">{t("Add filter", "Add filter")}</span>
                       </Button>
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
@@ -5187,7 +5308,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("errors")}
                       >
-                        Errors
+                        {t("Errors", "Errors")}
                       </Button>
                       <Button
                         size="sm"
@@ -5195,7 +5316,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("auth")}
                       >
-                        Auth Ops
+                        {t("Auth Ops", "Auth Ops")}
                       </Button>
                       <Button
                         size="sm"
@@ -5203,7 +5324,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("dns")}
                       >
-                        DNS Ops
+                        {t("DNS Ops", "DNS Ops")}
                       </Button>
                       <Button
                         size="sm"
@@ -5211,7 +5332,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("api_keys")}
                       >
-                        API Keys
+                        {t("API Keys", "API Keys")}
                       </Button>
                       <Button
                         size="sm"
@@ -5219,7 +5340,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("zone_settings")}
                       >
-                        Zone Settings
+                        {t("Zone Settings", "Zone Settings")}
                       </Button>
                       <Button
                         size="sm"
@@ -5227,7 +5348,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("cache")}
                       >
-                        Cache Ops
+                        {t("Cache Ops", "Cache Ops")}
                       </Button>
                       <Button
                         size="sm"
@@ -5235,7 +5356,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("last24h")}
                       >
-                        Last 24h
+                        {t("Last 24h", "Last 24h")}
                       </Button>
                       <Button
                         size="sm"
@@ -5243,7 +5364,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("last7d")}
                       >
-                        Last 7d
+                        {t("Last 7d", "Last 7d")}
                       </Button>
                       <Button
                         size="sm"
@@ -5251,7 +5372,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("today")}
                       >
-                        Today
+                        {t("Today", "Today")}
                       </Button>
                       <Button
                         size="sm"
@@ -5259,7 +5380,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => applyAuditPreset("clear")}
                       >
-                        Clear Filters
+                        {t("Clear Filters", "Clear Filters")}
                       </Button>
                     </div>
                     {auditFilters.length > 0 && (
@@ -5273,13 +5394,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               }
                             >
                               <SelectTrigger className="h-8">
-                                <SelectValue placeholder="Field" />
+                                <SelectValue placeholder={t("Field", "Field")} />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="operation">Operation</SelectItem>
-                                <SelectItem value="resource">Resource</SelectItem>
-                                <SelectItem value="timestamp">Timestamp</SelectItem>
-                                <SelectItem value="details">Details</SelectItem>
+                                <SelectItem value="operation">{t("Operation", "Operation")}</SelectItem>
+                                <SelectItem value="resource">{t("Resource", "Resource")}</SelectItem>
+                                <SelectItem value="timestamp">{t("Timestamp", "Timestamp")}</SelectItem>
+                                <SelectItem value="details">{t("Details", "Details")}</SelectItem>
                               </SelectContent>
                             </Select>
                             <Select
@@ -5291,20 +5412,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               }
                             >
                               <SelectTrigger className="h-8">
-                                <SelectValue placeholder="Operator" />
+                                <SelectValue placeholder={t("Operator", "Operator")} />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="equals">equals</SelectItem>
-                                <SelectItem value="not_equals">not equals</SelectItem>
-                                <SelectItem value="contains">contains</SelectItem>
-                                <SelectItem value="not_contains">not contains</SelectItem>
-                                <SelectItem value="starts_with">starts with</SelectItem>
-                                <SelectItem value="ends_with">ends with</SelectItem>
-                                <SelectItem value="matches">matches (regex)</SelectItem>
-                                <SelectItem value="gt">greater than (&gt;)</SelectItem>
-                                <SelectItem value="gte">greater/equal (&gt;=)</SelectItem>
-                                <SelectItem value="lt">less than (&lt;)</SelectItem>
-                                <SelectItem value="lte">less/equal (&lt;=)</SelectItem>
+                                <SelectItem value="equals">{t("equals", "equals")}</SelectItem>
+                                <SelectItem value="not_equals">{t("not equals", "not equals")}</SelectItem>
+                                <SelectItem value="contains">{t("contains", "contains")}</SelectItem>
+                                <SelectItem value="not_contains">{t("not contains", "not contains")}</SelectItem>
+                                <SelectItem value="starts_with">{t("starts with", "starts with")}</SelectItem>
+                                <SelectItem value="ends_with">{t("ends with", "ends with")}</SelectItem>
+                                <SelectItem value="matches">{t("matches (regex)", "matches (regex)")}</SelectItem>
+                                <SelectItem value="gt">{t("greater than (&gt;)", "greater than (&gt;)")}</SelectItem>
+                                <SelectItem value="gte">{t("greater/equal (&gt;=)", "greater/equal (&gt;=)")}</SelectItem>
+                                <SelectItem value="lt">{t("less than (&lt;)", "less than (&lt;)")}</SelectItem>
+                                <SelectItem value="lte">{t("less/equal (&lt;=)", "less/equal (&lt;=)")}</SelectItem>
                               </SelectContent>
                             </Select>
                             <Input
@@ -5313,39 +5434,53 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 updateAuditFilter(rule.id, { value: e.target.value })
                               }
                               className="h-8 text-xs"
-                              placeholder="Value"
+                              placeholder={t("Value", "Value")}
                             />
                             <Button
                               size="sm"
                               variant="ghost"
                               className="h-8 px-2"
                               onClick={() => removeAuditFilter(rule.id)}
-                              title="Remove filter"
+                              title={t("Remove filter", "Remove filter")}
                             >
                               <X className="h-3.5 w-3.5" />
                             </Button>
                           </div>
                         ))}
                         <div className="text-[11px] text-muted-foreground">
-                          For timestamp comparisons, use ISO date/time values (example:
-                          {" "}2026-02-06T12:00:00Z).
+                          {t(
+                            "For timestamp comparisons, use ISO date/time values (example: {{value}}).",
+                            {
+                              value: "2026-02-06T12:00:00Z",
+                              defaultValue:
+                                "For timestamp comparisons, use ISO date/time values (example: 2026-02-06T12:00:00Z).",
+                            },
+                          )}
                         </div>
                       </div>
                     )}
                     {!isDesktop() && (
                       <div className="text-xs text-muted-foreground">
-                        Audit log is only available in the desktop app.
+                        {t(
+                          "Audit log is only available in the desktop app.",
+                          "Audit log is only available in the desktop app.",
+                        )}
                       </div>
                     )}
                     {auditLoading && (
-                      <div className="text-sm text-muted-foreground">Loading audit entries…</div>
+                      <div className="text-sm text-muted-foreground">
+                        {t("Loading audit entries…", "Loading audit entries…")}
+                      </div>
                     )}
                     {auditError && (
                       <div className="text-sm text-destructive">{auditError}</div>
                     )}
                     {!auditLoading && !auditError && limitedAuditEntries.length === 0 && (
                       <div className="text-sm text-muted-foreground">
-                        No audit entries match the current filters.
+                        {t(
+                          "No audit entries match the current filters.",
+                          "No audit entries match the current filters.",
+                        )}
                       </div>
                     )}
                     {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
@@ -5356,13 +5491,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             className="flex items-center gap-1 text-left hover:text-foreground"
                             onClick={() => toggleAuditSort("timestamp")}
                           >
-                            Timestamp
+                            {t("Timestamp", "Timestamp")}
                             <ArrowUpDown className="h-3 w-3" />
                             <span className="text-[10px]">
                               {auditSort.field === "timestamp"
                                 ? auditSort.dir === "asc"
-                                  ? "ASC"
-                                  : "DESC"
+                                  ? t("ASC", "ASC")
+                                  : t("DESC", "DESC")
                                 : ""}
                             </span>
                           </button>
@@ -5371,13 +5506,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             className="flex items-center gap-1 text-left hover:text-foreground"
                             onClick={() => toggleAuditSort("operation")}
                           >
-                            Operation
+                            {t("Operation", "Operation")}
                             <ArrowUpDown className="h-3 w-3" />
                             <span className="text-[10px]">
                               {auditSort.field === "operation"
                                 ? auditSort.dir === "asc"
-                                  ? "ASC"
-                                  : "DESC"
+                                  ? t("ASC", "ASC")
+                                  : t("DESC", "DESC")
                                 : ""}
                             </span>
                           </button>
@@ -5386,17 +5521,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             className="flex items-center gap-1 text-left hover:text-foreground"
                             onClick={() => toggleAuditSort("resource")}
                           >
-                            Resource
+                            {t("Resource", "Resource")}
                             <ArrowUpDown className="h-3 w-3" />
                             <span className="text-[10px]">
                               {auditSort.field === "resource"
                                 ? auditSort.dir === "asc"
-                                  ? "ASC"
-                                  : "DESC"
+                                  ? t("ASC", "ASC")
+                                  : t("DESC", "DESC")
                                 : ""}
                             </span>
                           </button>
-                          <div>Details</div>
+                          <div>{t("Details", "Details")}</div>
                         </div>
                         <div className="divide-y divide-white/10">
                           {limitedAuditEntries.map((entry, index) => {
@@ -5416,12 +5551,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     {resource}
                                   </div>
                                   <div className="text-xs text-muted-foreground hover:text-foreground">
-                                    View
+                                    {t("View", "View")}
                                   </div>
                                 </summary>
                                 <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
                                   <div className="mb-2">
-                                    <span className="font-medium text-foreground">Full timestamp:</span>{" "}
+                                    <span className="font-medium text-foreground">{t("Full timestamp:", "Full timestamp:")}</span>{" "}
                                     {timestampFull}
                                   </div>
                                   <pre className="whitespace-pre-wrap">
