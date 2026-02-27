@@ -318,16 +318,51 @@ export class StorageManager {
     return Array.isArray(tags) ? [...tags] : [];
   }
 
+  getZoneRecordTagMap(zoneId: string): Record<string, string[]> {
+    const zone = this.data.recordTags?.[zoneId];
+    if (!zone || typeof zone !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(zone).map(([recordId, tags]) => [recordId, [...(tags ?? [])]]),
+    );
+  }
+
   setRecordTags(zoneId: string, recordId: string, tags: string[]): void {
     const nextTags = Array.from(
       new Set(tags.map((t) => t.trim()).filter(Boolean)),
     ).slice(0, 32);
     for (const tag of nextTags) this.ensureTagInCatalog(zoneId, tag);
-    const recordTags = (this.data.recordTags ??= {});
-    const zoneMap = (recordTags[zoneId] ??= {});
+    if (nextTags.length === 0) {
+      const zoneMap = this.data.recordTags?.[zoneId];
+      if (zoneMap && Object.prototype.hasOwnProperty.call(zoneMap, recordId)) {
+        delete zoneMap[recordId];
+        if (Object.keys(zoneMap).length === 0) {
+          delete this.data.recordTags?.[zoneId];
+        }
+      }
+      this.save();
+      this.dispatchRecordTagsChanged(zoneId, recordId);
+      return;
+    }
+    const allRecordTags = (this.data.recordTags ??= {});
+    const zoneMap = (allRecordTags[zoneId] ??= {});
     zoneMap[recordId] = nextTags;
     this.save();
     this.dispatchRecordTagsChanged(zoneId, recordId);
+  }
+
+  clearRecordTags(zoneId: string, recordId: string): void {
+    this.setRecordTags(zoneId, recordId, []);
+  }
+
+  moveRecordTags(zoneId: string, fromRecordId: string, toRecordId: string): void {
+    const fromId = fromRecordId.trim();
+    const toId = toRecordId.trim();
+    if (!fromId || !toId || fromId === toId) return;
+    const prev = this.getRecordTags(zoneId, fromId);
+    if (!prev.length) return;
+    const target = this.getRecordTags(zoneId, toId);
+    this.setRecordTags(zoneId, toId, [...target, ...prev]);
+    this.clearRecordTags(zoneId, fromId);
   }
 
   getTagUsageCounts(zoneId: string): Record<string, number> {
@@ -347,13 +382,13 @@ export class StorageManager {
     if (!prev || !next) return;
     if (prev === next) return;
     const zone = this.data.recordTags?.[zoneId];
-    if (!zone) return;
-
-    for (const [recordId, tags] of Object.entries(zone)) {
-      if (!Array.isArray(tags) || !tags.includes(prev)) continue;
-      zone[recordId] = Array.from(
-        new Set(tags.map((t) => (t === prev ? next : t))),
-      ).slice(0, 32);
+    if (zone) {
+      for (const [recordId, tags] of Object.entries(zone)) {
+        if (!Array.isArray(tags) || !tags.includes(prev)) continue;
+        zone[recordId] = Array.from(
+          new Set(tags.map((t) => (t === prev ? next : t))),
+        ).slice(0, 32);
+      }
     }
     const catalog = this.data.tagCatalog?.[zoneId];
     if (Array.isArray(catalog)) {
@@ -376,11 +411,19 @@ export class StorageManager {
     const target = tag.trim();
     if (!target) return;
     const zone = this.data.recordTags?.[zoneId];
-    if (!zone) return;
-
-    for (const [recordId, tags] of Object.entries(zone)) {
-      if (!Array.isArray(tags) || !tags.includes(target)) continue;
-      zone[recordId] = tags.filter((t) => t !== target);
+    if (zone) {
+      for (const [recordId, tags] of Object.entries(zone)) {
+        if (!Array.isArray(tags) || !tags.includes(target)) continue;
+        const next = tags.filter((t) => t !== target);
+        if (next.length === 0) {
+          delete zone[recordId];
+        } else {
+          zone[recordId] = next;
+        }
+      }
+      if (Object.keys(zone).length === 0) {
+        delete this.data.recordTags?.[zoneId];
+      }
     }
     const catalog = this.data.tagCatalog?.[zoneId];
     if (Array.isArray(catalog)) {
@@ -1226,7 +1269,15 @@ export class StorageManager {
       throw new Error("Invalid data format");
     }
 
-    this.data = imported as StorageData;
+    const obj = imported as StorageData & {
+      recordTags?: unknown;
+      tagCatalog?: unknown;
+    };
+    this.data = {
+      ...obj,
+      recordTags: parseRecordTags(obj.recordTags),
+      tagCatalog: parseTagCatalog(obj.tagCatalog),
+    };
     this.save();
   }
 

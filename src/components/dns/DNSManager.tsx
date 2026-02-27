@@ -527,6 +527,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [renameTagFrom, setRenameTagFrom] = useState<string | null>(null);
   const [renameTagTo, setRenameTagTo] = useState("");
   const [tagsVersion, setTagsVersion] = useState(0);
+  const [tagManagerRecords, setTagManagerRecords] = useState<DNSRecord[]>([]);
+  const [tagManagerRecordsLoading, setTagManagerRecordsLoading] = useState(false);
+  const [tagManagerRecordsError, setTagManagerRecordsError] = useState<string | null>(null);
+  const [tagAssociationSearch, setTagAssociationSearch] = useState("");
+  const [tagAssociationDrafts, setTagAssociationDrafts] = useState<Record<string, string>>(
+    {},
+  );
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
@@ -1148,6 +1155,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
     },
     [getDNSRecords, toast, updateTab],
+  );
+
+  const loadTagManagerRecords = useCallback(
+    async (zoneId: string, signal?: AbortSignal) => {
+      if (!zoneId) {
+        setTagManagerRecords([]);
+        setTagManagerRecordsError(null);
+        return;
+      }
+      setTagManagerRecordsLoading(true);
+      setTagManagerRecordsError(null);
+      try {
+        const pageSize = 500;
+        let currentPage = 1;
+        let combined: DNSRecord[] = [];
+        while (true) {
+          const batch = await getDNSRecords(zoneId, currentPage, pageSize, signal);
+          combined = combined.concat(batch);
+          if (batch.length < pageSize) break;
+          currentPage += 1;
+        }
+        setTagManagerRecords(combined);
+      } catch (error) {
+        if ((error as Error).name === "AbortError") return;
+        setTagManagerRecordsError((error as Error).message);
+      } finally {
+        setTagManagerRecordsLoading(false);
+      }
+    },
+    [getDNSRecords],
   );
 
   useEffect(() => {
@@ -1925,6 +1962,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [activeTab?.kind, availableZones, tagsZoneId]);
 
   useEffect(() => {
+    if (activeTab?.kind !== "tags" || !tagsZoneId) return;
+    const controller = new AbortController();
+    void loadTagManagerRecords(tagsZoneId, controller.signal);
+    return () => controller.abort();
+  }, [activeTab?.kind, tagsZoneId, loadTagManagerRecords]);
+
+  useEffect(() => {
+    setTagAssociationSearch("");
+    setTagAssociationDrafts({});
+  }, [tagsZoneId]);
+
+  useEffect(() => {
     if (!activeTab || activeTab.kind !== "zone") return;
     const overrides = storageManager.getAuditOverrides(activeTab.zoneId);
     setAuditOverridesByZone((prev) => ({
@@ -2040,10 +2089,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
-    const base = filterRecords(activeTab.records, activeTab.searchTerm).filter(
-      (record: DNSRecord) =>
-        activeTab.typeFilter ? record.type === activeTab.typeFilter : true,
-    );
+    const query = activeTab.searchTerm.trim().toLowerCase();
+    const base = activeTab.records.filter((record: DNSRecord) => {
+      if (activeTab.typeFilter && record.type !== activeTab.typeFilter) return false;
+      if (!query) return true;
+      const matchesRecord = filterRecords([record], query).length > 0;
+      if (matchesRecord) return true;
+      const recordTags = storageManager.getRecordTags(activeTab.zoneId, record.id);
+      return recordTags.some((tag) => tag.toLowerCase().includes(query));
+    });
 
     if (!activeTab.sortKey || !activeTab.sortDir) return base;
     const dir = activeTab.sortDir === "asc" ? 1 : -1;
@@ -2075,7 +2129,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     });
 
     return sorted;
-  }, [activeTab]);
+  }, [activeTab, tagsVersion]);
 
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
@@ -2086,6 +2140,66 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (!tagsZoneId) return [];
     return storageManager.getZoneTags(tagsZoneId);
   }, [tagsZoneId, tagsVersion]);
+
+  const tagManagerRecordsByTag = useMemo(() => {
+    const byTag: Record<string, DNSRecord[]> = {};
+    if (!tagsZoneId) return byTag;
+    for (const record of tagManagerRecords) {
+      const recordTags = storageManager.getRecordTags(tagsZoneId, record.id);
+      for (const tag of recordTags) {
+        if (!byTag[tag]) byTag[tag] = [];
+        byTag[tag].push(record);
+      }
+    }
+    return byTag;
+  }, [tagManagerRecords, tagsVersion, tagsZoneId]);
+
+  const filteredTagManagerRecords = useMemo(() => {
+    const search = tagAssociationSearch.trim().toLowerCase();
+    const sorted = [...tagManagerRecords].sort((a, b) =>
+      `${a.name}|${a.type}`.localeCompare(`${b.name}|${b.type}`, undefined, {
+        sensitivity: "base",
+      }),
+    );
+    if (!search || !tagsZoneId) return sorted;
+    return sorted.filter((record) => {
+      if (record.name.toLowerCase().includes(search)) return true;
+      if (record.type.toLowerCase().includes(search)) return true;
+      if (record.content.toLowerCase().includes(search)) return true;
+      const tags = storageManager.getRecordTags(tagsZoneId, record.id);
+      return tags.some((tag) => tag.toLowerCase().includes(search));
+    });
+  }, [tagAssociationSearch, tagManagerRecords, tagsVersion, tagsZoneId]);
+
+  const visibleTagManagerRecords = useMemo(
+    () => filteredTagManagerRecords.slice(0, 150),
+    [filteredTagManagerRecords],
+  );
+
+  const attachTagToRecord = useCallback(
+    (recordId: string, tagValue: string) => {
+      if (!tagsZoneId) return;
+      const tag = tagValue.trim();
+      if (!tag) return;
+      const current = storageManager.getRecordTags(tagsZoneId, recordId);
+      if (current.includes(tag)) return;
+      storageManager.setRecordTags(tagsZoneId, recordId, [...current, tag]);
+    },
+    [tagsZoneId],
+  );
+
+  const detachTagFromRecord = useCallback(
+    (recordId: string, tagValue: string) => {
+      if (!tagsZoneId) return;
+      const current = storageManager.getRecordTags(tagsZoneId, recordId);
+      storageManager.setRecordTags(
+        tagsZoneId,
+        recordId,
+        current.filter((tag) => tag !== tagValue),
+      );
+    },
+    [tagsZoneId],
+  );
 
   const getAuditFieldValue = useCallback(
     (entry: Record<string, unknown>, field: AuditFilterField): string => {
@@ -2449,10 +2563,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         record.id,
         record,
       );
+      const nextRecordId = updatedRecord.id || record.id;
+      if (nextRecordId !== record.id) {
+        storageManager.moveRecordTags(activeTab.zoneId, record.id, nextRecordId);
+      }
       updateTab(activeTab.id, (prev) => ({
         ...prev,
         records: prev.records.map((r) =>
-          r.id === record.id ? updatedRecord : r,
+          r.id === record.id ? { ...updatedRecord, id: nextRecordId } : r,
+        ),
+        selectedIds: Array.from(
+          new Set(prev.selectedIds.map((id) => (id === record.id ? nextRecordId : id))),
         ),
         editingRecord: null,
       }));
@@ -2480,10 +2601,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           proxied,
         },
       );
+      const nextRecordId = updatedRecord.id || record.id;
+      if (nextRecordId !== record.id) {
+        storageManager.moveRecordTags(activeTab.zoneId, record.id, nextRecordId);
+      }
       updateTab(activeTab.id, (prev) => ({
         ...prev,
         records: prev.records.map((r) =>
-          r.id === record.id ? updatedRecord : r,
+          r.id === record.id ? { ...updatedRecord, id: nextRecordId } : r,
+        ),
+        selectedIds: Array.from(
+          new Set(prev.selectedIds.map((id) => (id === record.id ? nextRecordId : id))),
         ),
       }));
     } catch (error) {
@@ -2499,6 +2627,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (!activeTab) return;
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
+      storageManager.clearRecordTags(activeTab.zoneId, recordId);
       updateTab(activeTab.id, (prev) => ({
         ...prev,
         records: prev.records.filter((r) => r.id !== recordId),
@@ -3008,7 +3137,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const selectedZoneData = activeTab
     ? availableZones.find((z) => z.id === activeTab.zoneId)
     : undefined;
-  const actionHint = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
+  const actionHintRaw = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
+  const actionHint = actionHintRaw ? t(actionHintRaw, actionHintRaw) : "";
 
   const toggleSort = useCallback(
     (key: SortKey) => {
@@ -3183,13 +3313,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   {activeTab && (
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        {activeTab.records.length} records
+                        {t("{{count}} records", {
+                          count: activeTab.records.length,
+                          defaultValue: `${activeTab.records.length} records`,
+                        })}
                       </div>
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        {filteredRecords.length} visible
+                        {t("{{count}} visible", {
+                          count: filteredRecords.length,
+                          defaultValue: `${filteredRecords.length} visible`,
+                        })}
                       </div>
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        Zone: {selectedZoneData?.name ?? activeTab.zoneName}
+                        {t("Zone: {{name}}", {
+                          name: selectedZoneData?.name ?? activeTab.zoneName,
+                          defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab.zoneName}`,
+                        })}
                       </div>
                     </div>
                   )}
@@ -3266,11 +3405,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       >
                         <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         <span className="max-w-[140px] truncate">
-                          {tab.zoneName}
+                          {tab.kind === "zone" ? tab.zoneName : t(tab.zoneName, tab.zoneName)}
                         </span>
                         {tab.kind === "zone" && (
                           <span className="text-[10px] uppercase tracking-widest opacity-60">
-                            {tab.status ?? "zone"}
+                            {tab.status ?? t("zone", "zone")}
                           </span>
                         )}
                         <button
@@ -3279,7 +3418,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             closeTab(tab.id);
                           }}
                           className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground"
-                          aria-label="Close tab"
+                          aria-label={t("Close tab", "Close tab")}
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -3297,7 +3436,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
                   <CardTitle className="text-xl">
-                    {activeTab.zoneName}
+                    {activeTab.kind === "zone" ? activeTab.zoneName : t(activeTab.zoneName, activeTab.zoneName)}
                   </CardTitle>
                   {activeTab.kind === "zone" && (
                     <p className="text-xs text-muted-foreground">{actionHint}</p>
@@ -3314,7 +3453,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       data-active={actionTab === tab.id}
                       className="ui-segment"
                     >
-                      {tab.label}
+                      {t(tab.label, tab.label)}
                     </button>
                   ))}
                 </div>
@@ -3325,7 +3464,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div className="space-y-4 fade-in">
                   <div className="rounded-xl border border-border/60 bg-card/60 p-3">
                     <div className="mb-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                      Assigned nameservers
+                      {t("Assigned nameservers", "Assigned nameservers")}
                     </div>
                     {selectedZoneData?.name_servers && selectedZoneData.name_servers.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
@@ -3339,7 +3478,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         ))}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">Not available for this zone.</div>
+                      <div className="text-xs text-muted-foreground">
+                        {t("Not available for this zone.", "Not available for this zone.")}
+                      </div>
                     )}
                   </div>
                   {activeTab.isLoading && (
@@ -3773,11 +3914,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "zone-settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">Zone settings</CardTitle>
+                    <CardTitle className="text-lg">{t("Zone settings", "Zone settings")}</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Per-page override</div>
+                      <div className="font-medium text-sm">{t("Per-page override", "Per-page override")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         <Select
                           value={
@@ -3798,7 +3939,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 page: 1,
                               }));
                               notifySaved(
-                                `Zone per-page set to inherit (${globalPerPage}).`,
+                                t("Zone per-page set to inherit ({{count}}).", {
+                                  count: globalPerPage,
+                                  defaultValue: `Zone per-page set to inherit (${globalPerPage}).`,
+                                }),
                               );
                               return;
                             }
@@ -3813,32 +3957,40 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               perPage: value,
                               page: 1,
                             }));
-                            notifySaved(`Zone per-page set to ${value}.`);
+                            notifySaved(
+                              t("Zone per-page set to {{count}}.", {
+                                count: value,
+                                defaultValue: `Zone per-page set to ${value}.`,
+                              }),
+                            );
                           }}
                         >
                           <SelectTrigger className="w-48">
-                            <SelectValue placeholder="Per page" />
+                            <SelectValue placeholder={t("Per page", "Per page")} />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="inherit">
-                              Inherit ({globalPerPage})
+                              {t("Inherit", "Inherit")} ({globalPerPage})
                             </SelectItem>
                             <SelectItem value="25">25</SelectItem>
                             <SelectItem value="50">50</SelectItem>
                             <SelectItem value="100">100</SelectItem>
                             <SelectItem value="200">200</SelectItem>
                             <SelectItem value="500">500</SelectItem>
-                            <SelectItem value="0">All</SelectItem>
+                            <SelectItem value="0">{t("All", "All")}</SelectItem>
                           </SelectContent>
                         </Select>
                         <div className="text-xs text-muted-foreground">
-                          Overrides the global default for this zone only.
+                          {t(
+                            "Overrides the global default for this zone only.",
+                            "Overrides the global default for this zone only.",
+                          )}
                         </div>
                       </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
                       <div className="font-medium text-sm">
-                        Unsupported record types
+                        {t("Unsupported record types", "Unsupported record types")}
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
                         <Select
@@ -3860,9 +4012,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 return next;
                               });
                               notifySaved(
-                                `Zone unsupported record types set to inherit (${
-                                  showUnsupportedRecordTypes ? "show" : "hide"
-                                }).`,
+                                t("Zone unsupported record types set to inherit ({{state}}).", {
+                                  state: showUnsupportedRecordTypes
+                                    ? t("Show", "Show").toLowerCase()
+                                    : t("Hide", "Hide").toLowerCase(),
+                                  defaultValue: `Zone unsupported record types set to inherit (${
+                                    showUnsupportedRecordTypes ? "show" : "hide"
+                                  }).`,
+                                }),
                               );
                               return;
                             }
@@ -3873,29 +4030,39 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }));
                             notifySaved(
                               enabled
-                                ? "Zone will show unsupported record types in Add Record."
-                                : "Zone will hide unsupported record types in Add Record.",
+                                ? t(
+                                    "Zone will show unsupported record types in Add Record.",
+                                    "Zone will show unsupported record types in Add Record.",
+                                  )
+                                : t(
+                                    "Zone will hide unsupported record types in Add Record.",
+                                    "Zone will hide unsupported record types in Add Record.",
+                                  ),
                             );
                           }}
                         >
                           <SelectTrigger className="w-48">
-                            <SelectValue placeholder="Inherit" />
+                            <SelectValue placeholder={t("Inherit", "Inherit")} />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="inherit">
-                              Inherit ({showUnsupportedRecordTypes ? "Show" : "Hide"})
+                              {t("Inherit", "Inherit")} (
+                              {showUnsupportedRecordTypes ? t("Show", "Show") : t("Hide", "Hide")})
                             </SelectItem>
-                            <SelectItem value="hide">Hide</SelectItem>
-                            <SelectItem value="show">Show</SelectItem>
+                            <SelectItem value="hide">{t("Hide", "Hide")}</SelectItem>
+                            <SelectItem value="show">{t("Show", "Show")}</SelectItem>
                           </SelectContent>
                         </Select>
                         <div className="text-xs text-muted-foreground">
-                          Controls whether non-Cloudflare record types appear in the Type dropdown for this zone.
+                          {t(
+                            "Controls whether non-Cloudflare record types appear in the Type dropdown for this zone.",
+                            "Controls whether non-Cloudflare record types appear in the Type dropdown for this zone.",
+                          )}
                         </div>
                       </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Reopen on launch</div>
+                      <div className="font-medium text-sm">{t("Reopen on launch", "Reopen on launch")}</div>
                       <div className="flex items-center gap-3">
                         <Switch
                           checked={reopenZoneTabs[activeTab.zoneId] !== false}
@@ -3906,13 +4073,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }));
                             notifySaved(
                               checked
-                                ? "Zone will reopen on launch."
-                                : "Zone will not reopen on launch.",
+                                ? t("Zone will reopen on launch.", "Zone will reopen on launch.")
+                                : t("Zone will not reopen on launch.", "Zone will not reopen on launch."),
                             );
                           }}
                         />
                         <div className="text-xs text-muted-foreground">
-                          Controls whether this zone restores when tabs reopen.
+                          {t(
+                            "Controls whether this zone restores when tabs reopen.",
+                            "Controls whether this zone restores when tabs reopen.",
+                          )}
                         </div>
                       </div>
                     </div>
@@ -3922,12 +4092,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "cache" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">Cache</CardTitle>
+                    <CardTitle className="text-lg">{t("Cache", "Cache")}</CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-sm text-muted-foreground">
-                        Cloudflare cache controls for {activeTab.zoneName}.
+                        {t("Cloudflare cache controls for {{zone}}.", {
+                          zone: activeTab.zoneName,
+                          defaultValue: `Cloudflare cache controls for ${activeTab.zoneName}.`,
+                        })}
                       </div>
                       <div className="flex items-center gap-2">
                         <Button
@@ -3936,14 +4109,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="h-8 px-2 text-xs"
                           onClick={() => void refreshCacheSettings(activeTab.zoneId)}
                           disabled={cacheSettingsLoading}
-                          title="Force refresh from Cloudflare"
+                          title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
                         >
                           <RefreshCw
                             className={cn("h-3.5 w-3.5", cacheSettingsLoading && "animate-spin")}
                           />
                         </Button>
                         {cacheSettingsLoading && (
-                          <div className="text-xs text-muted-foreground">Loading…</div>
+                          <div className="text-xs text-muted-foreground">{t("Loading…", "Loading…")}</div>
                         )}
                       </div>
                     </div>
@@ -3952,7 +4125,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Development mode</div>
+                      <div className="font-medium text-sm">{t("Development mode", "Development mode")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneDevMode ? (
                           <Switch
@@ -3963,16 +4136,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || cacheSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).
+                          {t(
+                            "Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).",
+                            "Temporarily bypasses cache (Cloudflare may auto-disable after a few hours).",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Cache level</div>
+                      <div className="font-medium text-sm">{t("Cache level", "Cache level")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneCacheLevel ? (
                           <Select
@@ -3981,7 +4157,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || cacheSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder="Cache level" />
+                              <SelectValue placeholder={t("Cache level", "Cache level")} />
                             </SelectTrigger>
                             <SelectContent>
                               {zoneCacheLevel.value &&
@@ -3992,16 +4168,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   {zoneCacheLevel.value} (current)
                                 </SelectItem>
                               ) : null}
-                              <SelectItem value="basic">Basic</SelectItem>
-                              <SelectItem value="aggressive">Aggressive</SelectItem>
-                              <SelectItem value="simplified">Simplified</SelectItem>
+                              <SelectItem value="basic">{t("Basic", "Basic")}</SelectItem>
+                              <SelectItem value="aggressive">{t("Aggressive", "Aggressive")}</SelectItem>
+                              <SelectItem value="simplified">{t("Simplified", "Simplified")}</SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Controls how aggressively Cloudflare caches your content.
+                          {t(
+                            "Controls how aggressively Cloudflare caches your content.",
+                            "Controls how aggressively Cloudflare caches your content.",
+                          )}
                         </div>
                         <div className="w-full space-y-1 rounded-lg border border-border/60 bg-card/55 p-2 text-[11px] text-muted-foreground">
                           {(["basic", "aggressive", "simplified"] as const).map((level) => (
@@ -4015,7 +4194,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               )}
                             >
                               <span className="font-medium capitalize">{level}</span>:{" "}
-                              {CACHE_LEVEL_DETAILS[level]}
+                              {t(CACHE_LEVEL_DETAILS[level], CACHE_LEVEL_DETAILS[level])}
                             </div>
                           ))}
                         </div>
@@ -4023,7 +4202,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
-                      <div className="font-medium text-sm">Purge cache</div>
+                      <div className="font-medium text-sm">{t("Purge cache", "Purge cache")}</div>
                       <div className="space-y-2">
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -4032,12 +4211,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             onClick={() => setShowPurgeEverythingConfirm(true)}
                             disabled={!apiKey}
                           >
-                            Purge everything
+                            {t("Purge everything", "Purge everything")}
                           </Button>
                         </div>
                         <div className="space-y-2">
                           <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                            Purge URLs (one per line)
+                            {t("Purge URLs (one per line)", "Purge URLs (one per line)")}
                           </Label>
                           <Textarea
                             value={purgeUrlsInput}
@@ -4052,10 +4231,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               onClick={() => preparePurgeUrls()}
                               disabled={!apiKey || !purgeUrlsInput.trim()}
                             >
-                              Purge URLs…
+                              {t("Purge URLs…", "Purge URLs…")}
                             </Button>
                             <div className="text-xs text-muted-foreground">
-                              Validations warn, but you can still force purge.
+                              {t(
+                                "Validations warn, but you can still force purge.",
+                                "Validations warn, but you can still force purge.",
+                              )}
                             </div>
                           </div>
                         </div>
@@ -4072,12 +4254,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "ssl-tls" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">SSL/TLS</CardTitle>
+                    <CardTitle className="text-lg">{t("SSL/TLS", "SSL/TLS")}</CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-sm text-muted-foreground">
-                        SSL/TLS controls for {activeTab.zoneName}.
+                        {t("SSL/TLS controls for {{zone}}.", {
+                          zone: activeTab.zoneName,
+                          defaultValue: `SSL/TLS controls for ${activeTab.zoneName}.`,
+                        })}
                       </div>
                       <div className="flex items-center gap-2">
                         <Button
@@ -4086,14 +4271,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="h-8 px-2 text-xs"
                           onClick={() => void refreshSslSettings(activeTab.zoneId)}
                           disabled={sslSettingsLoading}
-                          title="Force refresh from Cloudflare"
+                          title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
                         >
                           <RefreshCw
                             className={cn("h-3.5 w-3.5", sslSettingsLoading && "animate-spin")}
                           />
                         </Button>
                         {sslSettingsLoading && (
-                          <div className="text-xs text-muted-foreground">Loading…</div>
+                          <div className="text-xs text-muted-foreground">{t("Loading…", "Loading…")}</div>
                         )}
                       </div>
                     </div>
@@ -4102,7 +4287,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Encryption mode</div>
+                      <div className="font-medium text-sm">{t("Encryption mode", "Encryption mode")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneSslMode ? (
                           <Select
@@ -4111,26 +4296,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder="SSL mode" />
+                              <SelectValue placeholder={t("SSL mode", "SSL mode")} />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="off">Off</SelectItem>
-                              <SelectItem value="flexible">Flexible</SelectItem>
-                              <SelectItem value="full">Full</SelectItem>
-                              <SelectItem value="strict">Full (strict)</SelectItem>
+                              <SelectItem value="off">{t("Off", "Off")}</SelectItem>
+                              <SelectItem value="flexible">{t("Flexible", "Flexible")}</SelectItem>
+                              <SelectItem value="full">{t("Full", "Full")}</SelectItem>
+                              <SelectItem value="strict">{t("Full (strict)", "Full (strict)")}</SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Controls how Cloudflare connects to your origin.
+                          {t(
+                            "Controls how Cloudflare connects to your origin.",
+                            "Controls how Cloudflare connects to your origin.",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Minimum TLS version</div>
+                      <div className="font-medium text-sm">{t("Minimum TLS version", "Minimum TLS version")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneMinTlsVersion ? (
                           <Select
@@ -4141,7 +4329,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder="Min TLS" />
+                              <SelectValue placeholder={t("Min TLS", "Min TLS")} />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="1.0">1.0</SelectItem>
@@ -4151,16 +4339,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Affects client connections to Cloudflare edge.
+                          {t(
+                            "Affects client connections to Cloudflare edge.",
+                            "Affects client connections to Cloudflare edge.",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">TLS 1.3</div>
+                      <div className="font-medium text-sm">{t("TLS 1.3", "TLS 1.3")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneTls13 ? (
                           <Switch
@@ -4171,16 +4362,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Enables TLS 1.3 for client connections.
+                          {t(
+                            "Enables TLS 1.3 for client connections.",
+                            "Enables TLS 1.3 for client connections.",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Always Use HTTPS</div>
+                      <div className="font-medium text-sm">{t("Always Use HTTPS", "Always Use HTTPS")}</div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneAlwaysUseHttps ? (
                           <Switch
@@ -4194,16 +4388,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Redirect HTTP to HTTPS at the edge.
+                          {t("Redirect HTTP to HTTPS at the edge.", "Redirect HTTP to HTTPS at the edge.")}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Automatic HTTPS Rewrites</div>
+                      <div className="font-medium text-sm">
+                        {t("Automatic HTTPS Rewrites", "Automatic HTTPS Rewrites")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneAutoHttpsRewrites ? (
                           <Switch
@@ -4217,16 +4413,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Rewrites mixed content links to HTTPS when possible.
+                          {t(
+                            "Rewrites mixed content links to HTTPS when possible.",
+                            "Rewrites mixed content links to HTTPS when possible.",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">Opportunistic encryption</div>
+                      <div className="font-medium text-sm">
+                        {t("Opportunistic encryption", "Opportunistic encryption")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneOpportunisticEncryption ? (
                           <Switch
@@ -4240,10 +4441,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">Unavailable.</div>
+                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          Enables opportunistic encryption to the edge when supported.
+                          {t(
+                            "Enables opportunistic encryption to the edge when supported.",
+                            "Enables opportunistic encryption to the edge when supported.",
+                          )}
                         </div>
                       </div>
                     </div>
@@ -4263,7 +4467,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-sm text-muted-foreground">
-                        Audits run against the records currently loaded for{" "}
+                        {t("Audits run against the records currently loaded for", "Audits run against the records currently loaded for")}{" "}
                         <span className="font-medium text-foreground/90">
                           {activeTab.zoneName}
                         </span>
@@ -4278,13 +4482,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             void loadRecords(activeTab, controller.signal);
                           }}
                         >
-                          Refresh records
+                          {t("Refresh records", "Refresh records")}
                         </Button>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/60 p-3 text-sm">
-                      <div className="font-medium">Checks</div>
+                      <div className="font-medium">{t("Checks", "Checks")}</div>
                       <label className="flex items-center gap-2 text-xs text-muted-foreground">
                         <input
                           type="checkbox"
@@ -4297,7 +4501,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }))
                           }
                         />
-                        Email (SPF/DKIM/DMARC)
+                        {t("Email (SPF/DKIM/DMARC)", "Email (SPF/DKIM/DMARC)")}
                       </label>
                       <label className="flex items-center gap-2 text-xs text-muted-foreground">
                         <input
@@ -4311,7 +4515,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }))
                           }
                         />
-                        Security (CAA)
+                        {t("Security (CAA)", "Security (CAA)")}
                       </label>
                       <label className="flex items-center gap-2 text-xs text-muted-foreground">
                         <input
@@ -4325,7 +4529,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }))
                           }
                         />
-                        Hygiene (private IPs, deprecated)
+                        {t("Hygiene (private IPs, deprecated)", "Hygiene (private IPs, deprecated)")}
                       </label>
                       <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
                         <Switch
@@ -4334,7 +4538,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             setDomainAuditShowPassed(checked)
                           }
                         />
-                        Show passed
+                        {t("Show passed", "Show passed")}
                       </div>
                       {auditOverridesByZone[activeTab.zoneId]?.size > 0 && (
                         <Button
@@ -4343,7 +4547,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           className="text-xs"
                           onClick={handleClearAllAuditOverrides}
                         >
-                          Clear {auditOverridesByZone[activeTab.zoneId].size} override
+                          {t("Clear {{count}} override", {
+                            count: auditOverridesByZone[activeTab.zoneId].size,
+                            defaultValue: `Clear ${auditOverridesByZone[activeTab.zoneId].size} override`,
+                          })}
                           {auditOverridesByZone[activeTab.zoneId].size !== 1 ? "s" : ""}
                         </Button>
                       )}
@@ -4352,7 +4559,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="rounded-xl border border-border/60 bg-card/60 p-2">
                       {domainAuditVisibleItems.length === 0 ? (
                         <div className="px-3 py-6 text-sm text-muted-foreground">
-                          No issues detected (with current filters).
+                          {t(
+                            "No issues detected (with current filters).",
+                            "No issues detected (with current filters).",
+                          )}
                         </div>
                       ) : (
                         <div className="space-y-2">
@@ -5230,11 +5440,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "tags" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">Tag manager</CardTitle>
+                    <CardTitle className="text-lg">{t("Tag manager", "Tag manager")}</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-[180px_1fr] md:items-center">
-                      <div className="font-medium">Zone</div>
+                      <div className="font-medium">{t("Zone", "Zone")}</div>
                       <Select
                         value={tagsZoneId || undefined}
                         onValueChange={(value) => {
@@ -5244,7 +5454,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                       >
                         <SelectTrigger className="w-72">
-                          <SelectValue placeholder="Select a zone" />
+                          <SelectValue placeholder={t("Select a zone", "Select a zone")} />
                         </SelectTrigger>
                         <SelectContent className="bg-popover/70 text-foreground">
                           {availableZones.map((zone: Zone) => (
@@ -5258,7 +5468,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
                     {!tagsZoneId ? (
                       <div className="text-sm text-muted-foreground">
-                        Select a zone to manage its tags.
+                        {t(
+                          "Select a zone to manage its tags.",
+                          "Select a zone to manage its tags.",
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -5266,7 +5479,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <Input
                             value={newTag}
                             onChange={(e) => setNewTag(e.target.value)}
-                            placeholder="New tag"
+                            placeholder={t("New tag", "New tag")}
                             className="h-9 w-56"
                             onKeyDown={(e) => {
                               if (e.key !== "Enter") return;
@@ -5274,7 +5487,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               const next = newTag.trim();
                               if (!next) return;
                               storageManager.addZoneTag(tagsZoneId, next);
-                              notifySaved(`Tag added: ${next}`);
+                              notifySaved(
+                                t("Tag added: {{tag}}", {
+                                  tag: next,
+                                  defaultValue: `Tag added: ${next}`,
+                                }),
+                              );
                               setNewTag("");
                             }}
                           />
@@ -5285,118 +5503,312 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               const next = newTag.trim();
                               if (!next) return;
                               storageManager.addZoneTag(tagsZoneId, next);
-                              notifySaved(`Tag added: ${next}`);
+                              notifySaved(
+                                t("Tag added: {{tag}}", {
+                                  tag: next,
+                                  defaultValue: `Tag added: ${next}`,
+                                }),
+                              );
                               setNewTag("");
                             }}
                           >
-                            Add tag
+                            {t("Add tag", "Add tag")}
                           </Button>
                           <div className="text-xs text-muted-foreground">
-                            Tags are local-only and can be attached to records.
+                            {t(
+                              "Tags are local-only and can be attached to records.",
+                              "Tags are local-only and can be attached to records.",
+                            )}
                           </div>
                         </div>
 
                         <div className="glass-surface glass-sheen glass-fade rounded-xl overflow-hidden">
-                          <div className="grid grid-cols-[1fr_90px_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
-                            <div>Tag</div>
-                            <div className="text-right">Used</div>
-                            <div className="text-right">Actions</div>
+                          <div className="grid grid-cols-[1fr_90px_1fr_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
+                            <div>{t("Tag", "Tag")}</div>
+                            <div className="text-right">{t("Used", "Used")}</div>
+                            <div>{t("Linked records", "Linked records")}</div>
+                            <div className="text-right">{t("Actions", "Actions")}</div>
                           </div>
                           {zoneTags.length === 0 ? (
                             <div className="px-3 py-6 text-sm text-muted-foreground">
-                              No tags yet. Add one above or create tags from a record’s expanded panel.
+                              {t(
+                                "No tags yet. Add one above or create tags from a record's expanded panel.",
+                                "No tags yet. Add one above or create tags from a record's expanded panel.",
+                              )}
                             </div>
                           ) : (
                             <div className="divide-y divide-white/10">
-                              {zoneTags.map((tag) => (
-                                <div
-                                  key={tag}
-                                  className="grid grid-cols-[1fr_90px_160px] items-center gap-2 px-3 py-2"
-                                >
-                                  <div className="min-w-0">
-                                    {renameTagFrom === tag ? (
-                                      <Input
-                                        value={renameTagTo}
-                                        onChange={(e) => setRenameTagTo(e.target.value)}
-                                        className="h-8"
-                                        autoFocus
-                                        onKeyDown={(e) => {
-                                          if (e.key !== "Enter") return;
-                                          e.preventDefault();
-                                          const next = renameTagTo.trim();
-                                          if (!next) return;
-                                          storageManager.renameTag(tagsZoneId, tag, next);
-                                          notifySaved(`Tag renamed: ${tag} → ${next}`);
-                                          setRenameTagFrom(null);
-                                          setRenameTagTo("");
-                                        }}
-                                      />
-                                    ) : (
-                                      <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
-                                    )}
-                                  </div>
-                                  <div className="text-right text-sm text-muted-foreground">
-                                    {tagCounts[tag] ?? 0}
-                                  </div>
-                                  <div className="flex justify-end gap-2">
-                                    {renameTagFrom === tag ? (
-                                      <>
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
+                              {zoneTags.map((tag) => {
+                                const linkedRecords = tagManagerRecordsByTag[tag] ?? [];
+                                const preview = linkedRecords.slice(0, 2);
+                                const remaining = Math.max(0, linkedRecords.length - preview.length);
+                                return (
+                                  <div
+                                    key={tag}
+                                    className="grid grid-cols-[1fr_90px_1fr_160px] items-center gap-2 px-3 py-2"
+                                  >
+                                    <div className="min-w-0">
+                                      {renameTagFrom === tag ? (
+                                        <Input
+                                          value={renameTagTo}
+                                          onChange={(e) => setRenameTagTo(e.target.value)}
                                           className="h-8"
-                                          onClick={() => {
+                                          autoFocus
+                                          onKeyDown={(e) => {
+                                            if (e.key !== "Enter") return;
+                                            e.preventDefault();
                                             const next = renameTagTo.trim();
                                             if (!next) return;
                                             storageManager.renameTag(tagsZoneId, tag, next);
-                                            notifySaved(`Tag renamed: ${tag} → ${next}`);
+                                            notifySaved(
+                                              t("Tag renamed: {{from}} -> {{to}}", {
+                                                from: tag,
+                                                to: next,
+                                                defaultValue: `Tag renamed: ${tag} -> ${next}`,
+                                              }),
+                                            );
                                             setRenameTagFrom(null);
                                             setRenameTagTo("");
                                           }}
-                                        >
-                                          Save
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className="h-8"
-                                          onClick={() => {
-                                            setRenameTagFrom(null);
-                                            setRenameTagTo("");
-                                          }}
-                                        >
-                                          Cancel
-                                        </Button>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
-                                          className="h-8"
-                                          onClick={() => {
-                                            setRenameTagFrom(tag);
-                                            setRenameTagTo(tag);
-                                          }}
-                                        >
-                                          Rename
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          variant="destructive"
-                                          className="h-8"
-                                          onClick={() => {
-                                            storageManager.deleteTag(tagsZoneId, tag);
-                                            notifySaved(`Tag deleted: ${tag}`);
-                                          }}
-                                        >
-                                          Delete
-                                        </Button>
-                                      </>
-                                    )}
+                                        />
+                                      ) : (
+                                        <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                                      )}
+                                    </div>
+                                    <div className="text-right text-sm text-muted-foreground">
+                                      {tagCounts[tag] ?? 0}
+                                    </div>
+                                    <div className="min-w-0 text-xs text-muted-foreground">
+                                      {preview.length ? (
+                                        <>
+                                          {preview.map((record) => (
+                                            <span key={record.id} className="mr-2 inline-block truncate max-w-[180px]">
+                                              {record.name} ({record.type})
+                                            </span>
+                                          ))}
+                                          {remaining > 0 && (
+                                            <span>
+                                              +{t("{{count}} more", {
+                                                count: remaining,
+                                                defaultValue: `${remaining} more`,
+                                              })}
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <span>{t("Not linked", "Not linked")}</span>
+                                      )}
+                                    </div>
+                                    <div className="flex justify-end gap-2">
+                                      {renameTagFrom === tag ? (
+                                        <>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-8"
+                                            onClick={() => {
+                                              const next = renameTagTo.trim();
+                                              if (!next) return;
+                                              storageManager.renameTag(tagsZoneId, tag, next);
+                                              notifySaved(
+                                                t("Tag renamed: {{from}} -> {{to}}", {
+                                                  from: tag,
+                                                  to: next,
+                                                  defaultValue: `Tag renamed: ${tag} -> ${next}`,
+                                                }),
+                                              );
+                                              setRenameTagFrom(null);
+                                              setRenameTagTo("");
+                                            }}
+                                          >
+                                            {t("Save", "Save")}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-8"
+                                            onClick={() => {
+                                              setRenameTagFrom(null);
+                                              setRenameTagTo("");
+                                            }}
+                                          >
+                                            {t("Cancel", "Cancel")}
+                                          </Button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-8"
+                                            onClick={() => {
+                                              setRenameTagFrom(tag);
+                                              setRenameTagTo(tag);
+                                            }}
+                                          >
+                                            {t("Rename", "Rename")}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="destructive"
+                                            className="h-8"
+                                            onClick={() => {
+                                              storageManager.deleteTag(tagsZoneId, tag);
+                                              notifySaved(
+                                                t("Tag deleted: {{tag}}", {
+                                                  tag,
+                                                  defaultValue: `Tag deleted: ${tag}`,
+                                                }),
+                                              );
+                                            }}
+                                          >
+                                            {t("Delete", "Delete")}
+                                          </Button>
+                                        </>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-border/60 bg-card/40 p-3 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-medium">
+                              {t("Record associations", "Record associations")}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                value={tagAssociationSearch}
+                                onChange={(e) => setTagAssociationSearch(e.target.value)}
+                                placeholder={t("Search records or tags", "Search records or tags")}
+                                className="h-8 w-64"
+                              />
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8"
+                                onClick={() => void loadTagManagerRecords(tagsZoneId)}
+                                disabled={tagManagerRecordsLoading}
+                              >
+                                {t("Refresh", "Refresh")}
+                              </Button>
+                            </div>
+                          </div>
+                          {tagManagerRecordsLoading ? (
+                            <div className="text-sm text-muted-foreground">
+                              {t("Loading records...", "Loading records...")}
+                            </div>
+                          ) : tagManagerRecordsError ? (
+                            <div className="text-sm text-destructive">
+                              {t("Failed to load records: {{error}}", {
+                                error: tagManagerRecordsError,
+                                defaultValue: `Failed to load records: ${tagManagerRecordsError}`,
+                              })}
+                            </div>
+                          ) : filteredTagManagerRecords.length === 0 ? (
+                            <div className="text-sm text-muted-foreground">
+                              {t("No records found for this zone.", "No records found for this zone.")}
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-white/10 rounded-lg border border-border/50 bg-card/40">
+                              {visibleTagManagerRecords.map((record) => {
+                                const recordTags = storageManager.getRecordTags(tagsZoneId, record.id);
+                                const draftTag = tagAssociationDrafts[record.id] ?? "";
+                                const listId = `tag-association-options-${record.id}`;
+                                return (
+                                  <div
+                                    key={record.id}
+                                    className="grid gap-3 px-3 py-3 md:grid-cols-[1.2fr_1.6fr_1fr]"
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-medium">{record.name}</div>
+                                      <div className="truncate text-xs text-muted-foreground">
+                                        {record.type} | {record.content}
+                                      </div>
+                                    </div>
+                                    <div className="flex min-w-0 flex-wrap items-center gap-1">
+                                      {recordTags.length ? (
+                                        recordTags.map((tag) => (
+                                          <span key={tag} className="inline-flex items-center gap-1">
+                                            <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                                            <button
+                                              type="button"
+                                              className="ui-icon-button h-5 w-5"
+                                              aria-label={t("Remove tag {{tag}}", {
+                                                tag,
+                                                defaultValue: `Remove tag ${tag}`,
+                                              })}
+                                              onClick={() => detachTagFromRecord(record.id, tag)}
+                                            >
+                                              <X className="h-3 w-3" />
+                                            </button>
+                                          </span>
+                                        ))
+                                      ) : (
+                                        <span className="text-xs text-muted-foreground">
+                                          {t("No tags", "No tags")}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Input
+                                        list={listId}
+                                        value={draftTag}
+                                        onChange={(e) =>
+                                          setTagAssociationDrafts((prev) => ({
+                                            ...prev,
+                                            [record.id]: e.target.value,
+                                          }))
+                                        }
+                                        onKeyDown={(e) => {
+                                          if (e.key !== "Enter") return;
+                                          e.preventDefault();
+                                          attachTagToRecord(record.id, draftTag);
+                                          setTagAssociationDrafts((prev) => ({
+                                            ...prev,
+                                            [record.id]: "",
+                                          }));
+                                        }}
+                                        placeholder={t("Attach tag", "Attach tag")}
+                                        className="h-8"
+                                      />
+                                      <datalist id={listId}>
+                                        {zoneTags.map((tag) => (
+                                          <option key={tag} value={tag} />
+                                        ))}
+                                      </datalist>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-8"
+                                        onClick={() => {
+                                          attachTagToRecord(record.id, draftTag);
+                                          setTagAssociationDrafts((prev) => ({
+                                            ...prev,
+                                            [record.id]: "",
+                                          }));
+                                        }}
+                                      >
+                                        {t("Attach", "Attach")}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {filteredTagManagerRecords.length > visibleTagManagerRecords.length && (
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Showing first {{count}} records. Refine search to narrow the list.",
+                                {
+                                  count: visibleTagManagerRecords.length,
+                                  defaultValue: `Showing first ${visibleTagManagerRecords.length} records. Refine search to narrow the list.`,
+                                },
+                              )}
                             </div>
                           )}
                         </div>
@@ -5412,7 +5824,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <CardTitle className="text-lg">
-                      Session settings
+                      {t("Session settings", "Session settings")}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -5422,34 +5834,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         data-active={settingsSubtab === "general"}
                         className="ui-segment"
                       >
-                        General
+                        {t("General", "General")}
                       </button>
                       <button
                         onClick={() => setSettingsSubtab("topology")}
                         data-active={settingsSubtab === "topology"}
                         className="ui-segment"
                       >
-                        Topology
+                        {t("Topology", "Topology")}
                       </button>
                       <button
                         onClick={() => setSettingsSubtab("audit")}
                         data-active={settingsSubtab === "audit"}
                         className="ui-segment"
                       >
-                        Audit
+                        {t("Audit", "Audit")}
                       </button>
                       <button
                         onClick={() => setSettingsSubtab("profiles")}
                         data-active={settingsSubtab === "profiles"}
                         className="ui-segment"
                       >
-                        Profiles
+                        {t("Profiles", "Profiles")}
                       </button>
                     </div>
                     {settingsSubtab === "general" && (
                     <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Auto refresh</div>
+                        <div className="font-medium">{t("Auto refresh", "Auto refresh")}</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(autoRefreshInterval ?? 0)}
@@ -5458,29 +5870,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               setAutoRefreshInterval(next ? next : null);
                               notifySaved(
                                 next
-                                  ? `Auto refresh set to ${next / 1000}s.`
-                                  : "Auto refresh off.",
+                                  ? t("Auto refresh set to {{seconds}}s.", {
+                                      seconds: next / 1000,
+                                      defaultValue: `Auto refresh set to ${next / 1000}s.`,
+                                    })
+                                  : t("Auto refresh off.", "Auto refresh off."),
                               );
                             }}
                           >
                             <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Auto-refresh" />
+                              <SelectValue placeholder={t("Auto-refresh", "Auto-refresh")} />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="0">Off</SelectItem>
-                              <SelectItem value="60000">1 min</SelectItem>
-                              <SelectItem value="300000">5 min</SelectItem>
-                              <SelectItem value="600000">10 min</SelectItem>
-                              <SelectItem value="1800000">30 min</SelectItem>
+                              <SelectItem value="0">{t("Off", "Off")}</SelectItem>
+                              <SelectItem value="60000">{t("1 min", "1 min")}</SelectItem>
+                              <SelectItem value="300000">{t("5 min", "5 min")}</SelectItem>
+                              <SelectItem value="600000">{t("10 min", "10 min")}</SelectItem>
+                              <SelectItem value="1800000">{t("30 min", "30 min")}</SelectItem>
                             </SelectContent>
                           </Select>
                           <div className="text-xs text-muted-foreground">
-                            Pauses while editing records or dialogs are open.
+                            {t(
+                              "Pauses while editing records or dialogs are open.",
+                              "Pauses while editing records or dialogs are open.",
+                            )}
                           </div>
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Default per-page</div>
+                        <div className="font-medium">{t("Default per-page", "Default per-page")}</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(globalPerPage)}
@@ -5488,11 +5906,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               const value = Number(v);
                               const next = Number.isNaN(value) ? 50 : value;
                               setGlobalPerPage(next);
-                              notifySaved(`Default per-page set to ${next}.`);
+                              notifySaved(
+                                t("Default per-page set to {{count}}.", {
+                                  count: next,
+                                  defaultValue: `Default per-page set to ${next}.`,
+                                }),
+                              );
                             }}
                           >
                             <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Per page" />
+                              <SelectValue placeholder={t("Per page", "Per page")} />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="25">25</SelectItem>
@@ -5500,16 +5923,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <SelectItem value="100">100</SelectItem>
                               <SelectItem value="200">200</SelectItem>
                               <SelectItem value="500">500</SelectItem>
-                              <SelectItem value="0">All</SelectItem>
+                              <SelectItem value="0">{t("All", "All")}</SelectItem>
                             </SelectContent>
                           </Select>
                           <div className="text-xs text-muted-foreground">
-                            New zone tabs inherit this value unless overridden.
+                            {t(
+                              "New zone tabs inherit this value unless overridden.",
+                              "New zone tabs inherit this value unless overridden.",
+                            )}
                           </div>
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Loader timeout</div>
+                        <div className="font-medium">{t("Loader timeout", "Loader timeout")}</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(Math.round(loadingOverlayTimeoutMs / 1000))}
@@ -5517,28 +5943,38 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               const sec = Number(v);
                               const clampedSec = Math.max(1, Math.min(60, Number.isNaN(sec) ? 60 : sec));
                               setLoadingOverlayTimeoutMs(clampedSec * 1000);
-                              notifySaved(`Loader timeout set to ${clampedSec}s.`);
+                              notifySaved(
+                                t("Loader timeout set to {{seconds}}s.", {
+                                  seconds: clampedSec,
+                                  defaultValue: `Loader timeout set to ${clampedSec}s.`,
+                                }),
+                              );
                             }}
                           >
                             <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Timeout" />
+                              <SelectValue placeholder={t("Timeout", "Timeout")} />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="5">5 s</SelectItem>
-                              <SelectItem value="10">10 s</SelectItem>
-                              <SelectItem value="20">20 s</SelectItem>
-                              <SelectItem value="30">30 s</SelectItem>
-                              <SelectItem value="45">45 s</SelectItem>
-                              <SelectItem value="60">60 s</SelectItem>
+                              <SelectItem value="5">{t("5 s", "5 s")}</SelectItem>
+                              <SelectItem value="10">{t("10 s", "10 s")}</SelectItem>
+                              <SelectItem value="20">{t("20 s", "20 s")}</SelectItem>
+                              <SelectItem value="30">{t("30 s", "30 s")}</SelectItem>
+                              <SelectItem value="45">{t("45 s", "45 s")}</SelectItem>
+                              <SelectItem value="60">{t("60 s", "60 s")}</SelectItem>
                             </SelectContent>
                           </Select>
                           <div className="text-xs text-muted-foreground">
-                            Max 60s. Loading overlay auto-hides after timeout.
+                            {t(
+                              "Max 60s. Loading overlay auto-hides after timeout.",
+                              "Max 60s. Loading overlay auto-hides after timeout.",
+                            )}
                           </div>
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Unsupported record types</div>
+                        <div className="font-medium">
+                          {t("Unsupported record types", "Unsupported record types")}
+                        </div>
                         <div className="flex items-center gap-3">
                           <Switch
                             checked={showUnsupportedRecordTypes}
@@ -5546,18 +5982,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               setShowUnsupportedRecordTypes(checked);
                               notifySaved(
                                 checked
-                                  ? "Unsupported record types will show in Add Record."
-                                  : "Add Record will show Cloudflare-supported types only.",
+                                  ? t(
+                                      "Unsupported record types will show in Add Record.",
+                                      "Unsupported record types will show in Add Record.",
+                                    )
+                                  : t(
+                                      "Add Record will show Cloudflare-supported types only.",
+                                      "Add Record will show Cloudflare-supported types only.",
+                                    ),
                               );
                             }}
                           />
                           <div className="text-xs text-muted-foreground">
-                            Controls the Type dropdown default. Zones can override this.
+                            {t(
+                              "Controls the Type dropdown default. Zones can override this.",
+                              "Controls the Type dropdown default. Zones can override this.",
+                            )}
                           </div>
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Reopen last tabs</div>
+                        <div className="font-medium">{t("Reopen last tabs", "Reopen last tabs")}</div>
                         <div className="flex items-center gap-3">
                           <Switch
                             checked={reopenLastTabs}
@@ -5565,18 +6010,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               setReopenLastTabs(checked);
                               notifySaved(
                                 checked
-                                  ? "Will reopen last tabs on launch."
-                                  : "Will not reopen last tabs on launch.",
+                                  ? t("Will reopen last tabs on launch.", "Will reopen last tabs on launch.")
+                                  : t(
+                                      "Will not reopen last tabs on launch.",
+                                      "Will not reopen last tabs on launch.",
+                                    ),
                               );
                             }}
                           />
                           <div className="text-xs text-muted-foreground">
-                            Restore tabs from the last session on launch.
+                            {t(
+                              "Restore tabs from the last session on launch.",
+                              "Restore tabs from the last session on launch.",
+                            )}
                           </div>
                         </div>
                       </div>
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Confirm logout</div>
+                        <div className="font-medium">{t("Confirm logout", "Confirm logout")}</div>
                         <div className="flex items-center gap-3">
                           <Switch
                             checked={confirmLogout}
@@ -5584,19 +6035,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               setConfirmLogout(checked);
                               notifySaved(
                                 checked
-                                  ? "Logout confirmation enabled."
-                                  : "Logout confirmation disabled.",
+                                  ? t("Logout confirmation enabled.", "Logout confirmation enabled.")
+                                  : t("Logout confirmation disabled.", "Logout confirmation disabled."),
                               );
                             }}
                           />
                           <div className="text-xs text-muted-foreground">
-                            Show a confirmation dialog when logging out.
+                            {t(
+                              "Show a confirmation dialog when logging out.",
+                              "Show a confirmation dialog when logging out.",
+                            )}
                           </div>
                         </div>
                       </div>
                       {isDesktop() && (
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Confirm window close</div>
+                          <div className="font-medium">{t("Confirm window close", "Confirm window close")}</div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={confirmWindowClose}
@@ -5604,19 +6058,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setConfirmWindowClose(checked);
                                 notifySaved(
                                   checked
-                                    ? "Window close confirmation enabled."
-                                    : "Window close confirmation disabled.",
+                                    ? t(
+                                        "Window close confirmation enabled.",
+                                        "Window close confirmation enabled.",
+                                      )
+                                    : t(
+                                        "Window close confirmation disabled.",
+                                        "Window close confirmation disabled.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Show a confirmation dialog when closing the app window.
+                              {t(
+                                "Show a confirmation dialog when closing the app window.",
+                                "Show a confirmation dialog when closing the app window.",
+                              )}
                             </div>
                           </div>
                         </div>
                       )}
                       <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">Auto logout (idle)</div>
+                        <div className="font-medium">{t("Auto logout (idle)", "Auto logout (idle)")}</div>
                         <div className="flex flex-wrap items-center gap-3">
                           <Select
                             value={String(idleLogoutMs ?? 0)}
@@ -5625,28 +6088,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               setIdleLogoutMs(next ? next : null);
                               notifySaved(
                                 next
-                                  ? `Auto logout after ${Math.round(next / 60000)} min idle.`
-                                  : "Auto logout disabled.",
+                                  ? t("Auto logout after {{minutes}} min idle.", {
+                                      minutes: Math.round(next / 60000),
+                                      defaultValue: `Auto logout after ${Math.round(next / 60000)} min idle.`,
+                                    })
+                                  : t("Auto logout disabled.", "Auto logout disabled."),
                               );
                             }}
                           >
                             <SelectTrigger className="w-44">
-                              <SelectValue placeholder="Idle timeout" />
+                              <SelectValue placeholder={t("Idle timeout", "Idle timeout")} />
                             </SelectTrigger>
                             <SelectContent className="bg-popover/70 text-foreground">
-                              <SelectItem value="0">Never</SelectItem>
-                              <SelectItem value="60000">1 min</SelectItem>
-                              <SelectItem value="120000">2 min</SelectItem>
-                              <SelectItem value="300000">5 min</SelectItem>
-                              <SelectItem value="600000">10 min</SelectItem>
-                              <SelectItem value="1800000">30 min</SelectItem>
-                              <SelectItem value="3600000">1 hour</SelectItem>
-                              <SelectItem value="14400000">4 hours</SelectItem>
-                              <SelectItem value="86400000">24 hours</SelectItem>
+                              <SelectItem value="0">{t("Never", "Never")}</SelectItem>
+                              <SelectItem value="60000">{t("1 min", "1 min")}</SelectItem>
+                              <SelectItem value="120000">{t("2 min", "2 min")}</SelectItem>
+                              <SelectItem value="300000">{t("5 min", "5 min")}</SelectItem>
+                              <SelectItem value="600000">{t("10 min", "10 min")}</SelectItem>
+                              <SelectItem value="1800000">{t("30 min", "30 min")}</SelectItem>
+                              <SelectItem value="3600000">{t("1 hour", "1 hour")}</SelectItem>
+                              <SelectItem value="14400000">{t("4 hours", "4 hours")}</SelectItem>
+                              <SelectItem value="86400000">{t("24 hours", "24 hours")}</SelectItem>
                             </SelectContent>
                           </Select>
                           <div className="text-xs text-muted-foreground">
-                            Logs out automatically after inactivity.
+                            {t(
+                              "Logs out automatically after inactivity.",
+                              "Logs out automatically after inactivity.",
+                            )}
                           </div>
                         </div>
                       </div>
@@ -5655,7 +6124,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {settingsSubtab === "topology" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Topology resolution hops</div>
+                          <div className="font-medium">
+                            {t("Topology resolution hops", "Topology resolution hops")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={String(topologyResolutionMaxHops)}
@@ -5663,11 +6134,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 const next = Number(v);
                                 const clamped = Math.max(1, Math.min(15, Number.isNaN(next) ? 15 : next));
                                 setTopologyResolutionMaxHops(clamped);
-                                notifySaved(`Topology CNAME resolution hops set to ${clamped}.`);
+                                notifySaved(
+                                  t("Topology CNAME resolution hops set to {{count}}.", {
+                                    count: clamped,
+                                    defaultValue: `Topology CNAME resolution hops set to ${clamped}.`,
+                                  }),
+                                );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder="Max hops" />
+                                <SelectValue placeholder={t("Max hops", "Max hops")} />
                               </SelectTrigger>
                               <SelectContent>
                                 {Array.from({ length: 15 }).map((_, idx) => {
@@ -5681,12 +6157,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Max recursive hostname resolution depth for topology (1-15).
+                              {t(
+                                "Max recursive hostname resolution depth for topology (1-15).",
+                                "Max recursive hostname resolution depth for topology (1-15).",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Topology request mode</div>
+                          <div className="font-medium">
+                            {t("Topology request mode", "Topology request mode")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={topologyResolverMode}
@@ -5695,100 +6176,125 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyResolverMode(next);
                                 notifySaved(
                                   next === "doh"
-                                    ? "Topology mode set to DoH requests."
-                                    : "Topology mode set to standard DNS requests.",
+                                    ? t(
+                                        "Topology mode set to DoH requests.",
+                                        "Topology mode set to DoH requests.",
+                                      )
+                                    : t(
+                                        "Topology mode set to standard DNS requests.",
+                                        "Topology mode set to standard DNS requests.",
+                                      ),
                                 );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder="Mode" />
+                                <SelectValue placeholder={t("Mode", "Mode")} />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="dns">DNS (UDP/TCP)</SelectItem>
-                                <SelectItem value="doh">DNS-over-HTTPS (DoH)</SelectItem>
+                                <SelectItem value="dns">{t("DNS (UDP/TCP)", "DNS (UDP/TCP)")}</SelectItem>
+                                <SelectItem value="doh">
+                                  {t("DNS-over-HTTPS (DoH)", "DNS-over-HTTPS (DoH)")}
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Choose whether topology resolves via normal DNS or DoH.
+                              {t(
+                                "Choose whether topology resolves via normal DNS or DoH.",
+                                "Choose whether topology resolves via normal DNS or DoH.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">DNS server</div>
+                          <div className="font-medium">{t("DNS server", "DNS server")}</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={topologyDnsServer.trim()}
                               onValueChange={(v) => {
                                 setTopologyDnsServer(v);
-                                notifySaved(`Topology DNS server set to ${v}.`);
+                                notifySaved(
+                                  t("Topology DNS server set to {{server}}.", {
+                                    server: v,
+                                    defaultValue: `Topology DNS server set to ${v}.`,
+                                  }),
+                                );
                               }}
                             >
                               <SelectTrigger className="w-52">
-                                <SelectValue placeholder="DNS server">
+                                <SelectValue placeholder={t("DNS server", "DNS server")}>
                                   {TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim()}
                                 </SelectValue>
                               </SelectTrigger>
                               <SelectContent className="w-[var(--radix-select-trigger-width)]">
-                                <SelectItem value="1.1.1.1">1.1.1.1 (Cloudflare default)</SelectItem>
-                                <SelectItem value="1.0.0.1">1.0.0.1 (Cloudflare)</SelectItem>
-                                <SelectItem value="8.8.8.8">8.8.8.8 (Google)</SelectItem>
-                                <SelectItem value="8.8.4.4">8.8.4.4 (Google)</SelectItem>
-                                <SelectItem value="9.9.9.9">9.9.9.9 (Quad9)</SelectItem>
-                                <SelectItem value="149.112.112.112">149.112.112.112 (Quad9)</SelectItem>
-                                <SelectItem value="208.67.222.222">208.67.222.222 (OpenDNS)</SelectItem>
-                                <SelectItem value="208.67.220.220">208.67.220.220 (OpenDNS)</SelectItem>
-                                <SelectItem value="94.140.14.14">94.140.14.14 (AdGuard)</SelectItem>
-                                <SelectItem value="76.76.2.0">76.76.2.0 (Control D)</SelectItem>
-                                <SelectItem value="custom">Custom</SelectItem>
+                                <SelectItem value="1.1.1.1">{t("1.1.1.1 (Cloudflare default)", "1.1.1.1 (Cloudflare default)")}</SelectItem>
+                                <SelectItem value="1.0.0.1">{t("1.0.0.1 (Cloudflare)", "1.0.0.1 (Cloudflare)")}</SelectItem>
+                                <SelectItem value="8.8.8.8">{t("8.8.8.8 (Google)", "8.8.8.8 (Google)")}</SelectItem>
+                                <SelectItem value="8.8.4.4">{t("8.8.4.4 (Google)", "8.8.4.4 (Google)")}</SelectItem>
+                                <SelectItem value="9.9.9.9">{t("9.9.9.9 (Quad9)", "9.9.9.9 (Quad9)")}</SelectItem>
+                                <SelectItem value="149.112.112.112">{t("149.112.112.112 (Quad9)", "149.112.112.112 (Quad9)")}</SelectItem>
+                                <SelectItem value="208.67.222.222">{t("208.67.222.222 (OpenDNS)", "208.67.222.222 (OpenDNS)")}</SelectItem>
+                                <SelectItem value="208.67.220.220">{t("208.67.220.220 (OpenDNS)", "208.67.220.220 (OpenDNS)")}</SelectItem>
+                                <SelectItem value="94.140.14.14">{t("94.140.14.14 (AdGuard)", "94.140.14.14 (AdGuard)")}</SelectItem>
+                                <SelectItem value="76.76.2.0">{t("76.76.2.0 (Control D)", "76.76.2.0 (Control D)")}</SelectItem>
+                                <SelectItem value="custom">{t("Custom", "Custom")}</SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Common resolvers list. Default is 1.1.1.1.
+                              {t(
+                                "Common resolvers list. Default is 1.1.1.1.",
+                                "Common resolvers list. Default is 1.1.1.1.",
+                              )}
                             </div>
                           </div>
                         </div>
                         {topologyDnsServer === "custom" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Custom DNS server</div>
+                            <div className="font-medium">{t("Custom DNS server", "Custom DNS server")}</div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Input
                                 value={topologyCustomDnsServer}
                                 onChange={(event) => setTopologyCustomDnsServer(event.target.value)}
                                 onBlur={() => {
                                   setTopologyCustomDnsServer((prev) => prev.trim());
-                                  notifySaved("Custom DNS server updated.");
+                                  notifySaved(t("Custom DNS server updated.", "Custom DNS server updated."));
                                 }}
                                 className="min-w-[320px]"
-                                placeholder="e.g. 192.168.1.1"
+                                placeholder={t("e.g. 192.168.1.1", "e.g. 192.168.1.1")}
                               />
                               <div className="text-xs text-muted-foreground">
-                                IP address used when DNS server is set to Custom.
+                                {t(
+                                  "IP address used when DNS server is set to Custom.",
+                                  "IP address used when DNS server is set to Custom.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         {topologyResolverMode === "doh" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Custom DoH endpoint</div>
+                            <div className="font-medium">{t("Custom DoH endpoint", "Custom DoH endpoint")}</div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Input
                                 value={topologyDohCustomUrl}
                                 onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
                                 onBlur={() => {
                                   setTopologyDohCustomUrl((prev) => prev.trim());
-                                  notifySaved("Custom DoH endpoint updated.");
+                                  notifySaved(t("Custom DoH endpoint updated.", "Custom DoH endpoint updated."));
                                 }}
                                 className="min-w-[320px]"
-                                placeholder="https://dns.google/resolve or https://your-doh.example/dns-query"
+                                placeholder={t(
+                                  "https://dns.google/resolve or https://your-doh.example/dns-query",
+                                  "https://dns.google/resolve or https://your-doh.example/dns-query",
+                                )}
                               />
                               <div className="text-xs text-muted-foreground">
-                                Optional override for DoH mode.
+                                {t("Optional override for DoH mode.", "Optional override for DoH mode.")}
                               </div>
                             </div>
                           </div>
                         )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Lookup timeout</div>
+                          <div className="font-medium">{t("Lookup timeout", "Lookup timeout")}</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={String(topologyLookupTimeoutMs)}
@@ -5796,31 +6302,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 const next = Number(v);
                                 const clamped = Math.max(250, Math.min(10000, Number.isNaN(next) ? 1200 : next));
                                 setTopologyLookupTimeoutMs(clamped);
-                                notifySaved(`Topology lookup timeout set to ${clamped}ms.`);
+                                notifySaved(
+                                  t("Topology lookup timeout set to {{ms}}ms.", {
+                                    ms: clamped,
+                                    defaultValue: `Topology lookup timeout set to ${clamped}ms.`,
+                                  }),
+                                );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder="Timeout" />
+                                <SelectValue placeholder={t("Timeout", "Timeout")} />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="250">250 ms</SelectItem>
-                                <SelectItem value="500">500 ms</SelectItem>
-                                <SelectItem value="800">800 ms</SelectItem>
-                                <SelectItem value="1200">1200 ms</SelectItem>
-                                <SelectItem value="2000">2000 ms</SelectItem>
-                                <SelectItem value="3000">3000 ms</SelectItem>
-                                <SelectItem value="5000">5000 ms</SelectItem>
-                                <SelectItem value="8000">8000 ms</SelectItem>
-                                <SelectItem value="10000">10000 ms</SelectItem>
+                                <SelectItem value="250">{t("250 ms", "250 ms")}</SelectItem>
+                                <SelectItem value="500">{t("500 ms", "500 ms")}</SelectItem>
+                                <SelectItem value="800">{t("800 ms", "800 ms")}</SelectItem>
+                                <SelectItem value="1200">{t("1200 ms", "1200 ms")}</SelectItem>
+                                <SelectItem value="2000">{t("2000 ms", "2000 ms")}</SelectItem>
+                                <SelectItem value="3000">{t("3000 ms", "3000 ms")}</SelectItem>
+                                <SelectItem value="5000">{t("5000 ms", "5000 ms")}</SelectItem>
+                                <SelectItem value="8000">{t("8000 ms", "8000 ms")}</SelectItem>
+                                <SelectItem value="10000">{t("10000 ms", "10000 ms")}</SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Per DNS/DoH lookup timeout for topology chain resolution.
+                              {t(
+                                "Per DNS/DoH lookup timeout for topology chain resolution.",
+                                "Per DNS/DoH lookup timeout for topology chain resolution.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Disable end-node PTR lookups</div>
+                          <div className="font-medium">
+                            {t("Disable end-node PTR lookups", "Disable end-node PTR lookups")}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisablePtrLookups}
@@ -5828,18 +6344,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisablePtrLookups(checked);
                                 notifySaved(
                                   checked
-                                    ? "PTR lookups disabled for topology end nodes."
-                                    : "PTR lookups enabled for topology end nodes.",
+                                    ? t(
+                                        "PTR lookups disabled for topology end nodes.",
+                                        "PTR lookups disabled for topology end nodes.",
+                                      )
+                                    : t(
+                                        "PTR lookups enabled for topology end nodes.",
+                                        "PTR lookups enabled for topology end nodes.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Skip reverse DNS lookups to speed up topology loading.
+                              {t(
+                                "Skip reverse DNS lookups to speed up topology loading.",
+                                "Skip reverse DNS lookups to speed up topology loading.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Don’t scan resolution chain</div>
+                          <div className="font-medium">
+                            {t("Don't scan resolution chain", "Don't scan resolution chain")}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={!topologyScanResolutionChain}
@@ -5847,18 +6374,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyScanResolutionChain(!checked);
                                 notifySaved(
                                   checked
-                                    ? "Topology will skip recursive CNAME chain scanning."
-                                    : "Topology will scan full recursive CNAME chains.",
+                                    ? t(
+                                        "Topology will skip recursive CNAME chain scanning.",
+                                        "Topology will skip recursive CNAME chain scanning.",
+                                      )
+                                    : t(
+                                        "Topology will scan full recursive CNAME chains.",
+                                        "Topology will scan full recursive CNAME chains.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Faster lookups, but omits intermediate chain hops.
+                              {t(
+                                "Faster lookups, but omits intermediate chain hops.",
+                                "Faster lookups, but omits intermediate chain hops.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Disable GEO detection</div>
+                          <div className="font-medium">{t("Disable GEO detection", "Disable GEO detection")}</div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableGeoLookups}
@@ -5866,49 +6402,75 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisableGeoLookups(checked);
                                 notifySaved(
                                   checked
-                                    ? "IP GEO detection disabled for topology."
-                                    : "IP GEO detection enabled for topology.",
+                                    ? t(
+                                        "IP GEO detection disabled for topology.",
+                                        "IP GEO detection disabled for topology.",
+                                      )
+                                    : t(
+                                        "IP GEO detection enabled for topology.",
+                                        "IP GEO detection enabled for topology.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Turns off country enrichment for resolved IP nodes.
+                              {t(
+                                "Turns off country enrichment for resolved IP nodes.",
+                                "Turns off country enrichment for resolved IP nodes.",
+                              )}
                             </div>
                           </div>
                         </div>
                         {!topologyDisableGeoLookups && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">GEO lookup service</div>
+                            <div className="font-medium">{t("GEO lookup service", "GEO lookup service")}</div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={topologyGeoProvider}
                                 onValueChange={(v) => {
                                   const next = (v as TopologyGeoProvider) || "auto";
                                   setTopologyGeoProvider(next);
-                                  notifySaved(`Topology GEO provider set to ${next}.`);
+                                  notifySaved(
+                                    t("Topology GEO provider set to {{provider}}.", {
+                                      provider: next,
+                                      defaultValue: `Topology GEO provider set to ${next}.`,
+                                    }),
+                                  );
                                 }}
                               >
                                 <SelectTrigger className="w-56">
-                                  <SelectValue placeholder="GEO provider">
+                                  <SelectValue placeholder={t("GEO provider", "GEO provider")}>
                                     {TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider]}
                                   </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent className="w-[var(--radix-select-trigger-width)]">
-                                  <SelectItem value="auto">Auto (multi-provider fallback)</SelectItem>
+                                  <SelectItem value="auto">
+                                    {t("Auto (multi-provider fallback)", "Auto (multi-provider fallback)")}
+                                  </SelectItem>
                                   <SelectItem value="ipwhois">ipwho.is</SelectItem>
                                   <SelectItem value="ipapi_co">ipapi.co</SelectItem>
                                   <SelectItem value="ip_api">ip-api.com</SelectItem>
-                                  <SelectItem value="internal">Internal only (private/reserved IPs)</SelectItem>
+                                  <SelectItem value="internal">
+                                    {t(
+                                      "Internal only (private/reserved IPs)",
+                                      "Internal only (private/reserved IPs)",
+                                    )}
+                                  </SelectItem>
                                 </SelectContent>
                               </Select>
                               <div className="text-xs text-muted-foreground">
-                                Chooses GEO source; Auto tries multiple services and falls back.
+                                {t(
+                                  "Chooses GEO source; Auto tries multiple services and falls back.",
+                                  "Chooses GEO source; Auto tries multiple services and falls back.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Disable service discovery</div>
+                          <div className="font-medium">
+                            {t("Disable service discovery", "Disable service discovery")}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableServiceDiscovery}
@@ -5916,23 +6478,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisableServiceDiscovery(checked);
                                 notifySaved(
                                   checked
-                                    ? "Topology service discovery disabled."
-                                    : "Topology service discovery enabled.",
+                                    ? t(
+                                        "Topology service discovery disabled.",
+                                        "Topology service discovery disabled.",
+                                      )
+                                    : t(
+                                        "Topology service discovery enabled.",
+                                        "Topology service discovery enabled.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Disables manual service probing in topology tab.
+                              {t(
+                                "Disables manual service probing in topology tab.",
+                                "Disables manual service probing in topology tab.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">TCP services to probe</div>
+                          <div className="font-medium">{t("TCP services to probe", "TCP services to probe")}</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="h-8 px-2">
-                                  {topologyTcpServices.length} selected
+                                  {t("{{count}} selected", {
+                                    count: topologyTcpServices.length,
+                                    defaultValue: `${topologyTcpServices.length} selected`,
+                                  })}
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
@@ -5962,12 +6536,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </DropdownMenuContent>
                             </DropdownMenu>
                             <div className="text-xs text-muted-foreground">
-                              Multi-select common TCP services for simple discovery.
+                              {t(
+                                "Multi-select common TCP services for simple discovery.",
+                                "Multi-select common TCP services for simple discovery.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Disable annotations</div>
+                          <div className="font-medium">{t("Disable annotations", "Disable annotations")}</div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableAnnotations}
@@ -5975,18 +6552,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisableAnnotations(checked);
                                 notifySaved(
                                   checked
-                                    ? "Topology annotations disabled."
-                                    : "Topology annotations enabled.",
+                                    ? t("Topology annotations disabled.", "Topology annotations disabled.")
+                                    : t("Topology annotations enabled.", "Topology annotations enabled."),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Hides annotation tools in topology view.
+                              {t(
+                                "Hides annotation tools in topology view.",
+                                "Hides annotation tools in topology view.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Disable full window</div>
+                          <div className="font-medium">{t("Disable full window", "Disable full window")}</div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableFullWindow}
@@ -5994,19 +6574,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisableFullWindow(checked);
                                 notifySaved(
                                   checked
-                                    ? "Full-window topology mode disabled."
-                                    : "Full-window topology mode enabled.",
+                                    ? t(
+                                        "Full-window topology mode disabled.",
+                                        "Full-window topology mode disabled.",
+                                      )
+                                    : t(
+                                        "Full-window topology mode enabled.",
+                                        "Full-window topology mode enabled.",
+                                      ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
-                              Hides full-window graph action in topology controls.
+                              {t(
+                                "Hides full-window graph action in topology controls.",
+                                "Hides full-window graph action in topology controls.",
+                              )}
                             </div>
                           </div>
                         </div>
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Confirm path to export</div>
+                            <div className="font-medium">{t("Confirm path to export", "Confirm path to export")}</div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={topologyExportConfirmPath}
@@ -6014,62 +6603,85 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   setTopologyExportConfirmPath(checked);
                                   notifySaved(
                                     checked
-                                      ? "Topology exports will ask for destination."
-                                      : "Topology exports will save directly to default path.",
+                                      ? t(
+                                          "Topology exports will ask for destination.",
+                                          "Topology exports will ask for destination.",
+                                        )
+                                      : t(
+                                          "Topology exports will save directly to default path.",
+                                          "Topology exports will save directly to default path.",
+                                        ),
                                   );
                                 }}
                               />
                               <div className="text-xs text-muted-foreground">
-                                Applies to topology code/SVG/PNG export actions.
+                                {t(
+                                  "Applies to topology code/SVG/PNG export actions.",
+                                  "Applies to topology code/SVG/PNG export actions.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Topology export path</div>
+                            <div className="font-medium">{t("Topology export path", "Topology export path")}</div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={topologyExportFolderPreset}
                                 onValueChange={(v) => {
                                   setTopologyExportFolderPreset(v as ExportFolderPreset);
-                                  notifySaved(`Topology export preset set to ${v}.`);
+                                  notifySaved(
+                                    t("Topology export preset set to {{preset}}.", {
+                                      preset: v,
+                                      defaultValue: `Topology export preset set to ${v}.`,
+                                    }),
+                                  );
                                 }}
                               >
                                 <SelectTrigger className="w-52">
-                                  <SelectValue placeholder="Folder preset" />
+                                  <SelectValue placeholder={t("Folder preset", "Folder preset")} />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="system">System default</SelectItem>
-                                  <SelectItem value="documents">Documents</SelectItem>
-                                  <SelectItem value="downloads">Downloads</SelectItem>
-                                  <SelectItem value="desktop">Desktop</SelectItem>
-                                  <SelectItem value="custom">Custom path</SelectItem>
+                                  <SelectItem value="system">{t("System default", "System default")}</SelectItem>
+                                  <SelectItem value="documents">{t("Documents", "Documents")}</SelectItem>
+                                  <SelectItem value="downloads">{t("Downloads", "Downloads")}</SelectItem>
+                                  <SelectItem value="desktop">{t("Desktop", "Desktop")}</SelectItem>
+                                  <SelectItem value="custom">{t("Custom path", "Custom path")}</SelectItem>
                                 </SelectContent>
                               </Select>
                               <div className="text-xs text-muted-foreground">
-                                Default export location for topology assets.
+                                {t(
+                                  "Default export location for topology assets.",
+                                  "Default export location for topology assets.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         {isDesktop() && topologyExportFolderPreset === "custom" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Custom export path</div>
+                            <div className="font-medium">{t("Custom export path", "Custom export path")}</div>
                             <Input
                               value={topologyExportCustomPath}
                               onChange={(e) => setTopologyExportCustomPath(e.target.value)}
-                              placeholder="C:\\Users\\You\\Documents\\Topology Exports"
+                              placeholder={t(
+                                "C:\\Users\\You\\Documents\\Topology Exports",
+                                "C:\\Users\\You\\Documents\\Topology Exports",
+                              )}
                             />
                           </div>
                         )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Copy actions</div>
+                          <div className="font-medium">{t("Copy actions", "Copy actions")}</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="h-8 px-2">
-                                  {topologyCopyActions.length} selected
+                                  {t("{{count}} selected", {
+                                    count: topologyCopyActions.length,
+                                    defaultValue: `${topologyCopyActions.length} selected`,
+                                  })}
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
@@ -6097,17 +6709,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </DropdownMenuContent>
                             </DropdownMenu>
                             <div className="text-xs text-muted-foreground">
-                              Controls which actions appear in topology Copy menu.
+                              {t(
+                                "Controls which actions appear in topology Copy menu.",
+                                "Controls which actions appear in topology Copy menu.",
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Export actions</div>
+                          <div className="font-medium">{t("Export actions", "Export actions")}</div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="h-8 px-2">
-                                  {topologyExportActions.length} selected
+                                  {t("{{count}} selected", {
+                                    count: topologyExportActions.length,
+                                    defaultValue: `${topologyExportActions.length} selected`,
+                                  })}
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
@@ -6135,7 +6753,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </DropdownMenuContent>
                             </DropdownMenu>
                             <div className="text-xs text-muted-foreground">
-                              Controls which actions appear in topology Export menu.
+                              {t(
+                                "Controls which actions appear in topology Export menu.",
+                                "Controls which actions appear in topology Export menu.",
+                              )}
                             </div>
                           </div>
                         </div>
@@ -6144,7 +6765,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {settingsSubtab === "audit" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">Audit categories</div>
+                          <div className="font-medium">{t("Audit categories", "Audit categories")}</div>
                           <div className="flex flex-wrap gap-4">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <input
@@ -6158,7 +6779,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   }))
                                 }
                               />
-                              Email
+                              {t("Email", "Email")}
                             </label>
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <input
@@ -6172,7 +6793,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   }))
                                 }
                               />
-                              Security
+                              {t("Security", "Security")}
                             </label>
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <input
@@ -6186,41 +6807,49 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   }))
                                 }
                               />
-                              Hygiene
+                              {t("Hygiene", "Hygiene")}
                             </label>
                           </div>
                         </div>
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Export folder preset</div>
+                            <div className="font-medium">{t("Export folder preset", "Export folder preset")}</div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={auditExportFolderPreset}
                                 onValueChange={(v) => {
                                   setAuditExportFolderPreset(v as ExportFolderPreset);
-                                  notifySaved(`Audit export preset set to ${v}.`);
+                                  notifySaved(
+                                    t("Audit export preset set to {{preset}}.", {
+                                      preset: v,
+                                      defaultValue: `Audit export preset set to ${v}.`,
+                                    }),
+                                  );
                                 }}
                               >
                                 <SelectTrigger className="w-52">
-                                  <SelectValue placeholder="Folder preset" />
+                                  <SelectValue placeholder={t("Folder preset", "Folder preset")} />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="system">System default</SelectItem>
-                                  <SelectItem value="documents">Documents</SelectItem>
-                                  <SelectItem value="downloads">Downloads</SelectItem>
-                                  <SelectItem value="desktop">Desktop</SelectItem>
-                                  <SelectItem value="custom">Custom path</SelectItem>
+                                  <SelectItem value="system">{t("System default", "System default")}</SelectItem>
+                                  <SelectItem value="documents">{t("Documents", "Documents")}</SelectItem>
+                                  <SelectItem value="downloads">{t("Downloads", "Downloads")}</SelectItem>
+                                  <SelectItem value="desktop">{t("Desktop", "Desktop")}</SelectItem>
+                                  <SelectItem value="custom">{t("Custom path", "Custom path")}</SelectItem>
                                 </SelectContent>
                               </Select>
                               <div className="text-xs text-muted-foreground">
-                                Choose the default start folder for audit exports.
+                                {t(
+                                  "Choose the default start folder for audit exports.",
+                                  "Choose the default start folder for audit exports.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Don’t confirm destination</div>
+                            <div className="font-medium">{t("Don't confirm destination", "Don't confirm destination")}</div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={auditExportSkipDestinationConfirm}
@@ -6228,30 +6857,39 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   setAuditExportSkipDestinationConfirm(checked);
                                   notifySaved(
                                     checked
-                                      ? "Audit exports will save directly without destination dialog."
-                                      : "Audit exports will ask for destination.",
+                                      ? t(
+                                          "Audit exports will save directly without destination dialog.",
+                                          "Audit exports will save directly without destination dialog.",
+                                        )
+                                      : t(
+                                          "Audit exports will ask for destination.",
+                                          "Audit exports will ask for destination.",
+                                        ),
                                   );
                                 }}
                               />
                               <div className="text-xs text-muted-foreground">
-                                Enabled by default.
+                                {t("Enabled by default.", "Enabled by default.")}
                               </div>
                             </div>
                           </div>
                         )}
                         {isDesktop() && auditExportFolderPreset === "custom" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Custom export path</div>
+                            <div className="font-medium">{t("Custom export path", "Custom export path")}</div>
                             <Input
                               value={auditExportCustomPath}
                               onChange={(e) => setAuditExportCustomPath(e.target.value)}
-                              placeholder="C:\\Users\\You\\Documents\\Audit Exports"
+                              placeholder={t(
+                                "C:\\Users\\You\\Documents\\Audit Exports",
+                                "C:\\Users\\You\\Documents\\Audit Exports",
+                              )}
                             />
                           </div>
                         )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">Confirm clear audit logs</div>
+                            <div className="font-medium">{t("Confirm clear audit logs", "Confirm clear audit logs")}</div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={confirmClearAuditLogs}
@@ -6259,13 +6897,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   setConfirmClearAuditLogs(checked);
                                   notifySaved(
                                     checked
-                                      ? "Clear-audit confirmation enabled."
-                                      : "Clear-audit confirmation disabled.",
+                                      ? t(
+                                          "Clear-audit confirmation enabled.",
+                                          "Clear-audit confirmation enabled.",
+                                        )
+                                      : t(
+                                          "Clear-audit confirmation disabled.",
+                                          "Clear-audit confirmation disabled.",
+                                        ),
                                   );
                                 }}
                               />
                               <div className="text-xs text-muted-foreground">
-                                Ask before deleting all audit entries.
+                                {t(
+                                  "Ask before deleting all audit entries.",
+                                  "Ask before deleting all audit entries.",
+                                )}
                               </div>
                             </div>
                           </div>
@@ -6275,13 +6922,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {settingsSubtab === "profiles" && (
                       <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 text-sm">
                         <div className="text-xs text-muted-foreground">
-                          Current session:{" "}
+                          {t("Current session:", "Current session:")}{" "}
                           <span className="font-medium text-foreground">{currentSessionId}</span>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="outline" onClick={exportSessionSettings}>
                             <FileDown className="mr-2 h-4 w-4" />
-                            Export settings
+                            {t("Export settings", "Export settings")}
                           </Button>
                           <Button
                             size="sm"
@@ -6289,7 +6936,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             onClick={() => settingsImportInputRef.current?.click()}
                           >
                             <FileUp className="mr-2 h-4 w-4" />
-                            Import settings
+                            {t("Import settings", "Import settings")}
                           </Button>
                           <input
                             ref={settingsImportInputRef}
@@ -6301,10 +6948,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
                           <div className="space-y-1">
-                            <Label>Clone from session</Label>
+                            <Label>{t("Clone from session", "Clone from session")}</Label>
                             <Select value={cloneSourceSessionId} onValueChange={setCloneSourceSessionId}>
                               <SelectTrigger>
-                                <SelectValue placeholder="Pick saved session profile" />
+                                <SelectValue
+                                  placeholder={t("Pick saved session profile", "Pick saved session profile")}
+                                />
                               </SelectTrigger>
                               <SelectContent>
                                 {sessionProfileIds
@@ -6322,14 +6971,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!cloneSourceSessionId}
                             onClick={() => void cloneSessionSettingsFrom(cloneSourceSessionId)}
                           >
-                            Clone
+                            {t("Clone", "Clone")}
                           </Button>
                         </div>
                       </div>
                     )}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Settings className="h-4 w-4" />
-                      Settings can be exported/imported and cloned across sessions.
+                      {t(
+                        "Settings can be exported/imported and cloned across sessions.",
+                        "Settings can be exported/imported and cloned across sessions.",
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -6339,7 +6991,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ) : (
           <Card className="border-border/60 bg-card/60">
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              Select a zone to open it in a new tab.
+              {t("Select a zone to open it in a new tab.", "Select a zone to open it in a new tab.")}
             </CardContent>
           </Card>
         )}
@@ -6347,9 +6999,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       <Dialog open={showClearAuditConfirm} onOpenChange={setShowClearAuditConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Clear audit logs</DialogTitle>
+            <DialogTitle>{t("Clear audit logs", "Clear audit logs")}</DialogTitle>
             <DialogDescription>
-              This deletes all audit entries stored on this device. This cannot be undone.
+              {t(
+                "This deletes all audit entries stored on this device. This cannot be undone.",
+                "This deletes all audit entries stored on this device. This cannot be undone.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -6362,16 +7017,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 setConfirmClearAuditLogs(!disable);
                 notifySaved(
                   disable
-                    ? "Clear-audit confirmation disabled."
-                    : "Clear-audit confirmation enabled.",
+                    ? t(
+                        "Clear-audit confirmation disabled.",
+                        "Clear-audit confirmation disabled.",
+                      )
+                    : t("Clear-audit confirmation enabled.", "Clear-audit confirmation enabled."),
                 );
               }}
             />
-            Don’t ask again
+            {t("Don't ask again", "Don't ask again")}
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setShowClearAuditConfirm(false)}>
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -6382,7 +7040,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 setShowClearAuditConfirm(false);
               }}
             >
-              Clear logs
+              {t("Clear logs", "Clear logs")}
             </Button>
           </div>
         </DialogContent>
@@ -6393,15 +7051,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Purge entire cache?</DialogTitle>
+            <DialogTitle>{t("Purge entire cache?", "Purge entire cache?")}</DialogTitle>
             <DialogDescription>
-              This purges cached content for the active zone. It can temporarily increase origin load.
+              {t(
+                "This purges cached content for the active zone. It can temporarily increase origin load.",
+                "This purges cached content for the active zone. It can temporarily increase origin load.",
+              )}
             </DialogDescription>
           </DialogHeader>
           {activeTab?.kind === "zone" ? (
             <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
               <div className="font-semibold">{activeTab.zoneName}</div>
-              <div className="mt-1 text-muted-foreground">Purge: everything</div>
+              <div className="mt-1 text-muted-foreground">
+                {t("Purge: everything", "Purge: everything")}
+              </div>
             </div>
           ) : null}
           <div className="flex gap-2">
@@ -6410,14 +7073,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               className="flex-1"
               onClick={() => setShowPurgeEverythingConfirm(false)}
             >
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button
               variant="destructive"
               className="flex-1"
               onClick={() => void confirmPurgeEverything()}
             >
-              Purge
+              {t("Purge", "Purge")}
             </Button>
           </div>
         </DialogContent>
@@ -6425,9 +7088,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       <Dialog open={showPurgeUrlsConfirm} onOpenChange={setShowPurgeUrlsConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Purge URLs?</DialogTitle>
+            <DialogTitle>{t("Purge URLs?", "Purge URLs?")}</DialogTitle>
             <DialogDescription>
-              Cloudflare may reject invalid URLs. You can still attempt to purge anyway.
+              {t(
+                "Cloudflare may reject invalid URLs. You can still attempt to purge anyway.",
+                "Cloudflare may reject invalid URLs. You can still attempt to purge anyway.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs">
@@ -6436,7 +7102,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </div>
             {pendingPurgeIssues.length > 0 ? (
               <div className="mt-2 space-y-1">
-                <div className="text-destructive font-medium">Warnings</div>
+                <div className="text-destructive font-medium">{t("Warnings", "Warnings")}</div>
                 <ul className="list-disc pl-4 text-destructive/90">
                   {pendingPurgeIssues.slice(0, 8).map((issue) => (
                     <li key={issue}>{issue}</li>
@@ -6444,12 +7110,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </ul>
                 {pendingPurgeIssues.length > 8 ? (
                   <div className="text-muted-foreground">
-                    +{pendingPurgeIssues.length - 8} more…
+                    +{t("{{count}} more…", {
+                      count: pendingPurgeIssues.length - 8,
+                      defaultValue: `${pendingPurgeIssues.length - 8} more…`,
+                    })}
                   </div>
                 ) : null}
               </div>
             ) : (
-              <div className="mt-2 text-muted-foreground">No issues detected.</div>
+              <div className="mt-2 text-muted-foreground">
+                {t("No issues detected.", "No issues detected.")}
+              </div>
             )}
           </div>
           <div className="flex gap-2">
@@ -6458,10 +7129,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               className="flex-1"
               onClick={() => setShowPurgeUrlsConfirm(false)}
             >
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button className="flex-1" onClick={() => void confirmPurgeUrls()}>
-              Purge
+              {t("Purge", "Purge")}
             </Button>
           </div>
         </DialogContent>
@@ -6469,9 +7140,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       <Dialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Log out</DialogTitle>
+            <DialogTitle>{t("Log out", "Log out")}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to log out? You’ll need to sign in again to manage records.
+              {t(
+                "Are you sure you want to log out? You'll need to sign in again to manage records.",
+                "Are you sure you want to log out? You'll need to sign in again to manage records.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -6484,12 +7158,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 setConfirmLogout(!disable);
                 notifySaved(
                   disable
-                    ? "Logout confirmation disabled."
-                    : "Logout confirmation enabled.",
+                    ? t("Logout confirmation disabled.", "Logout confirmation disabled.")
+                    : t("Logout confirmation enabled.", "Logout confirmation enabled."),
                 );
               }}
             />
-            Don’t ask again
+            {t("Don't ask again", "Don't ask again")}
           </div>
           <div className="flex gap-2">
             <Button
@@ -6497,10 +7171,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               className="flex-1"
               onClick={() => setShowLogoutConfirm(false)}
             >
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
             <Button variant="destructive" className="flex-1" onClick={confirmAndLogout}>
-              Log out
+              {t("Log out", "Log out")}
             </Button>
           </div>
         </DialogContent>

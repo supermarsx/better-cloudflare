@@ -35,6 +35,7 @@ import {
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
 import { storageManager } from "@/lib/storage";
+import { useI18n } from "@/hooks/use-i18n";
 import {
   parseSRV,
   composeSRV,
@@ -119,6 +120,7 @@ export function RecordRow({
   onCopy,
   onToggleProxy,
 }: RecordRowProps) {
+  const { t } = useI18n();
   const [editedRecord, setEditedRecord] = useState(record);
   const [expandedName, setExpandedName] = useState(false);
   const [expandedContent, setExpandedContent] = useState(false);
@@ -126,6 +128,9 @@ export function RecordRow({
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [tags, setTags] = useState<string[]>(() =>
     storageManager.getRecordTags(zoneId, record.id),
+  );
+  const [zoneTags, setZoneTags] = useState<string[]>(() =>
+    storageManager.getZoneTags(zoneId),
   );
   const [tagDraft, setTagDraft] = useState("");
   
@@ -193,7 +198,9 @@ export function RecordRow({
       spfMechanism,
     );
     if (needsValue && !spfValue.trim()) {
-      setSpfBuilderError("Value required for this mechanism");
+      setSpfBuilderError(
+        t("Value required for this mechanism", "Value required for this mechanism"),
+      );
       return;
     }
     const parsed = parseSPF(editedRecord.content) ?? {
@@ -215,7 +222,7 @@ export function RecordRow({
     });
     setSpfBuilderError("");
     if (spfMechanism === "all") setSpfValue("");
-  }, [editedRecord, spfMechanism, spfQualifier, spfValue]);
+  }, [editedRecord, spfMechanism, spfQualifier, spfValue, t]);
 
   useEffect(() => {
     setEditedRecord(record);
@@ -278,6 +285,7 @@ export function RecordRow({
 
   useEffect(() => {
     setTags(storageManager.getRecordTags(zoneId, record.id));
+    setZoneTags(storageManager.getZoneTags(zoneId));
     setTagDraft("");
   }, [record.id, zoneId]);
 
@@ -288,6 +296,7 @@ export function RecordRow({
         | undefined;
       if (!detail?.zoneId) return;
       if (detail.zoneId !== zoneId) return;
+      setZoneTags(storageManager.getZoneTags(zoneId));
       if (detail.recordId && detail.recordId !== record.id) return;
       setTags(storageManager.getRecordTags(zoneId, record.id));
     };
@@ -316,6 +325,7 @@ export function RecordRow({
   const ttlValue = editedRecord.ttl === 1 ? "auto" : editedRecord.ttl;
   const isCustomTTL = !getTTLPresets().includes(ttlValue as TTLValue);
   const MAX_PREVIEW_CHARS = 30;
+  const tagSuggestionListId = `record-tag-suggestions-${record.id}`;
   const truncate = (value: string) =>
     value.length > MAX_PREVIEW_CHARS
       ? `${value.slice(0, MAX_PREVIEW_CHARS)}...`
@@ -330,7 +340,7 @@ export function RecordRow({
           }}
         >
           <Edit2 className="mr-2 h-3.5 w-3.5" />
-          Edit
+          {t("Edit", "Edit")}
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={!onCopy}
@@ -339,7 +349,7 @@ export function RecordRow({
           }}
         >
           <Copy className="mr-2 h-3.5 w-3.5" />
-          Copy
+          {t("Copy", "Copy")}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -349,11 +359,11 @@ export function RecordRow({
           }}
         >
           <Trash2 className="mr-2 h-3.5 w-3.5" />
-          Delete
+          {t("Delete", "Delete")}
         </DropdownMenuItem>
       </>
     );
-  }, [onCopy, onDelete, onEdit]);
+  }, [onCopy, onDelete, onEdit, t]);
 
   const renderContextMenuItems = useCallback(() => {
     return (
@@ -364,7 +374,7 @@ export function RecordRow({
           }}
         >
           <Edit2 className="mr-2 h-3.5 w-3.5" />
-          Edit
+          {t("Edit", "Edit")}
         </ContextMenuItem>
         <ContextMenuItem
           disabled={!onCopy}
@@ -373,7 +383,7 @@ export function RecordRow({
           }}
         >
           <Copy className="mr-2 h-3.5 w-3.5" />
-          Copy
+          {t("Copy", "Copy")}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -383,11 +393,11 @@ export function RecordRow({
           }}
         >
           <Trash2 className="mr-2 h-3.5 w-3.5" />
-          Delete
+          {t("Delete", "Delete")}
         </ContextMenuItem>
       </>
     );
-  }, [onCopy, onDelete, onEdit]);
+  }, [onCopy, onDelete, onEdit, t]);
 
   if (isEditing) {
     return (
@@ -395,20 +405,20 @@ export function RecordRow({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-              Editing
+              {t("Editing", "Editing")}
             </div>
             <div className="text-sm text-foreground/90">
-              {record.name || "Unnamed record"}
+              {record.name || t("Unnamed record", "Unnamed record")}
             </div>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => onSave(editedRecord)}>
               <Save className="h-3.5 w-3.5 mr-1" />
-              Save
+              {t("Save", "Save")}
             </Button>
             <Button size="sm" variant="outline" onClick={onCancel}>
               <X className="h-3.5 w-3.5 mr-1" />
-              Cancel
+              {t("Cancel", "Cancel")}
             </Button>
           </div>
         </div>
@@ -416,10 +426,11 @@ export function RecordRow({
         <div className="mt-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 glass-fade">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Tags
+              {t("Tags", "Tags")}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <input
+                list={tagSuggestionListId}
                 value={tagDraft}
                 onChange={(e) => setTagDraft(e.target.value)}
                 onKeyDown={(event) => {
@@ -428,16 +439,21 @@ export function RecordRow({
                     addTag();
                   }
                 }}
-                placeholder="Add tag"
+                placeholder={t("Add tag", "Add tag")}
                 className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
               />
+              <datalist id={tagSuggestionListId}>
+                {zoneTags.map((tag) => (
+                  <option key={tag} value={tag} />
+                ))}
+              </datalist>
               <Button
                 size="sm"
                 variant="outline"
                 className="h-7 px-2"
                 onClick={addTag}
               >
-                Add
+                {t("Add", "Add")}
               </Button>
             </div>
           </div>
@@ -449,7 +465,10 @@ export function RecordRow({
                   <button
                     type="button"
                     className="ui-icon-button h-5 w-5"
-                    aria-label={`Remove tag ${tag}`}
+                    aria-label={t("Remove tag {{tag}}", {
+                      tag,
+                      defaultValue: `Remove tag ${tag}`,
+                    })}
                     onClick={() => removeTag(tag)}
                   >
                     <X className="h-3 w-3" />
@@ -458,7 +477,7 @@ export function RecordRow({
               ))
             ) : (
               <span className="text-[10px] text-muted-foreground/70">
-                No tags
+                {t("No tags", "No tags")}
               </span>
             )}
           </div>
@@ -466,7 +485,7 @@ export function RecordRow({
         <div className="mt-4 grid grid-cols-12 gap-4 items-start">
           <div className="col-span-2 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Type
+              {t("Type", "Type")}
             </Label>
             <Select
               value={editedRecord.type}
@@ -496,7 +515,7 @@ export function RecordRow({
           </div>
           <div className="col-span-3 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Name
+              {t("Name", "Name")}
             </Label>
             <Input
               value={editedRecord.name}
@@ -506,19 +525,19 @@ export function RecordRow({
                   name: e.target.value,
                 })
               }
-              placeholder="e.g. www"
+              placeholder={t("e.g. www", "e.g. www")}
               className="h-8"
             />
           </div>
           <div className="col-span-4 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Content
+              {t("Content", "Content")}
             </Label>
             {editedRecord.type === "SRV" ? (
               <div className="grid grid-cols-4 gap-2">
                 <Input
                   type="number"
-                  placeholder="priority"
+                  placeholder={t("SRV priority", "priority")}
                   value={srvPriority ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -533,7 +552,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="weight"
+                  placeholder={t("SRV weight", "weight")}
                   value={srvWeight ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -548,7 +567,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="port"
+                  placeholder={t("SRV port", "port")}
                   value={srvPort ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -567,7 +586,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="target"
+                  placeholder={t("SRV target", "target")}
                   value={srvTarget}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setSrvTarget(e.target.value);
@@ -588,7 +607,7 @@ export function RecordRow({
               <div className="grid grid-cols-4 gap-2">
                 <Input
                   type="number"
-                  placeholder="usage"
+                  placeholder={t("TLSA usage", "usage")}
                   value={tlsaUsage ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -608,7 +627,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="selector"
+                  placeholder={t("TLSA selector", "selector")}
                   value={tlsaSelector ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -628,7 +647,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="matching type"
+                  placeholder={t("TLSA matching type", "matching type")}
                   value={tlsaMatchingType ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -647,7 +666,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="data"
+                  placeholder={t("TLSA data", "data")}
                   value={tlsaData}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setTlsaData(e.target.value);
@@ -668,7 +687,7 @@ export function RecordRow({
               <div className="grid grid-cols-3 gap-2">
                 <Input
                   type="number"
-                  placeholder="algorithm"
+                  placeholder={t("SSHFP algorithm", "algorithm")}
                   value={sshfpAlgorithm ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -683,7 +702,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="fptype"
+                  placeholder={t("SSHFP fptype", "fptype")}
                   value={sshfpFptype ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -701,7 +720,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="fingerprint"
+                  placeholder={t("SSHFP fingerprint", "fingerprint")}
                   value={sshfpFingerprint}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setSshfpFingerprint(e.target.value);
@@ -721,7 +740,7 @@ export function RecordRow({
               <div className="grid grid-cols-6 gap-2">
                 <Input
                   type="number"
-                  placeholder="order"
+                  placeholder={t("NAPTR order", "order")}
                   value={naptrOrder ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -743,7 +762,7 @@ export function RecordRow({
                 />
                 <Input
                   type="number"
-                  placeholder="preference"
+                  placeholder={t("NAPTR preference", "preference")}
                   value={naptrPref ?? ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
@@ -764,7 +783,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="flags"
+                  placeholder={t("NAPTR flags", "flags")}
                   value={naptrFlags}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setNaptrFlags(e.target.value);
@@ -783,7 +802,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="service"
+                  placeholder={t("NAPTR service", "service")}
                   value={naptrService}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setNaptrService(e.target.value);
@@ -802,7 +821,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="regexp"
+                  placeholder={t("NAPTR regexp", "regexp")}
                   value={naptrRegexp}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setNaptrRegexp(e.target.value);
@@ -821,7 +840,7 @@ export function RecordRow({
                   className="h-8"
                 />
                 <Input
-                  placeholder="replacement"
+                  placeholder={t("NAPTR replacement", "replacement")}
                   value={naptrReplacement}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     setNaptrReplacement(e.target.value);
@@ -893,7 +912,7 @@ export function RecordRow({
                     <option value="all">all</option>
                   </select>
                   <Input
-                    placeholder="value (optional)"
+                    placeholder={t("value (optional)", "value (optional)")}
                     value={spfValue}
                     onChange={(e: ChangeEvent<HTMLInputElement>) =>
                       setSpfValue(e.target.value)
@@ -906,7 +925,7 @@ export function RecordRow({
                     onClick={addSpfMechanism}
                     className="h-8"
                   >
-                    Add
+                    {t("Add", "Add")}
                   </Button>
                 </div>
                 {spfBuilderError && (
@@ -914,7 +933,7 @@ export function RecordRow({
                 )}
                 {!validateSPF(editedRecord.content).ok && (
                   <div className="text-red-600">
-                    SPF validation issues:{" "}
+                    {t("SPF validation issues:", "SPF validation issues:")}{" "}
                     {validateSPF(editedRecord.content).problems.join(", ")}
                   </div>
                 )}
@@ -952,7 +971,7 @@ export function RecordRow({
           </div>
           <div className="col-span-1 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              TTL
+              {t("TTL", "TTL")}
             </Label>
             <Select
               value={isCustomTTL ? "custom" : String(ttlValue)}
@@ -973,10 +992,10 @@ export function RecordRow({
               <SelectContent>
                 {getTTLPresets().map((ttl) => (
                   <SelectItem key={ttl} value={String(ttl)}>
-                    {ttl === "auto" ? "Auto" : ttl}
+                    {ttl === "auto" ? t("Auto", "Auto") : ttl}
                   </SelectItem>
                 ))}
-                <SelectItem value="custom">Custom</SelectItem>
+                <SelectItem value="custom">{t("Custom", "Custom")}</SelectItem>
               </SelectContent>
             </Select>
             {isCustomTTL && (
@@ -1012,7 +1031,7 @@ export function RecordRow({
           </div>
           <div className="col-span-1 space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Proxy
+              {t("Proxy", "Proxy")}
             </Label>
             {(editedRecord.type === "A" ||
               editedRecord.type === "AAAA" ||
@@ -1030,9 +1049,9 @@ export function RecordRow({
           </div>
         </div>
         <div className="mt-4 space-y-1">
-          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            Comment
-          </Label>
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              {t("Comment", "Comment")}
+            </Label>
           <Textarea
             value={editedRecord.comment ?? ""}
             onChange={(e) =>
@@ -1041,11 +1060,14 @@ export function RecordRow({
                 comment: e.target.value,
               })
             }
-            placeholder="Optional: add a note for this record"
+            placeholder={t("Optional: add a note for this record", "Optional: add a note for this record")}
             className="min-h-20 resize-y"
           />
           <div className="text-[11px] text-muted-foreground">
-            Stored with the record in Cloudflare.
+            {t(
+              "Stored with the record in Cloudflare.",
+              "Stored with the record in Cloudflare.",
+            )}
           </div>
         </div>
       </div>
@@ -1096,7 +1118,7 @@ export function RecordRow({
                       onChange={(event) => onSelectChange?.(event.target.checked)}
                       onClick={(event) => event.stopPropagation()}
                       className="checkbox-themed"
-                      aria-label="Select record"
+                      aria-label={t("Select record", "Select record")}
                     />
                   </div>
                 );
@@ -1203,7 +1225,7 @@ export function RecordRow({
                     key={col}
                     className="text-[10px] text-muted-foreground whitespace-nowrap"
                   >
-                    TTL {record.ttl === 1 ? "Auto" : record.ttl}
+                    {t("TTL", "TTL")} {record.ttl === 1 ? t("Auto", "Auto") : record.ttl}
                     {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
                   </div>
                 );
@@ -1217,7 +1239,7 @@ export function RecordRow({
                   >
                     {record.proxied ? (
                       <Tag variant="primary" className="ui-tag-proxied">
-                        Proxied
+                        {t("Proxied", "Proxied")}
                       </Tag>
                     ) : (
                       <span className="text-xs text-muted-foreground/80">—</span>
@@ -1246,13 +1268,13 @@ export function RecordRow({
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
                     <DropdownMenu open={dotMenuOpen} onOpenChange={setDotMenuOpen}>
-                      <Tooltip tip="Actions" side="top">
+                      <Tooltip tip={t("Actions", "Actions")} side="top">
                         <DropdownMenuTrigger asChild>
                           <Button
                               size="sm"
                               variant="ghost"
                               className="ui-icon-button h-7 w-7 p-0"
-                              aria-label="Record Actions"
+                              aria-label={t("Record Actions", "Record Actions")}
                               onClick={(event) => event.stopPropagation()}
                             >
                             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -1280,12 +1302,12 @@ export function RecordRow({
             onClick={(event) => event.stopPropagation()}
           >
             {expandedName && (
-              <Tooltip tip="Copy name" side="left">
+              <Tooltip tip={t("Copy name", "Copy name")} side="left">
                 <Button
                   size="sm"
                   variant="ghost"
                   className="ui-icon-button h-7 w-7 p-0"
-                  aria-label="Copy name"
+                  aria-label={t("Copy name", "Copy name")}
                   onClick={() =>
                     void navigator.clipboard?.writeText(record.name)
                   }
@@ -1295,12 +1317,12 @@ export function RecordRow({
               </Tooltip>
             )}
             {expandedContent && (
-              <Tooltip tip="Copy content" side="left">
+              <Tooltip tip={t("Copy content", "Copy content")} side="left">
                 <Button
                   size="sm"
                   variant="ghost"
                   className="ui-icon-button h-7 w-7 p-0"
-                  aria-label="Copy content"
+                  aria-label={t("Copy content", "Copy content")}
                   onClick={() =>
                     void navigator.clipboard?.writeText(record.content)
                   }
@@ -1312,9 +1334,9 @@ export function RecordRow({
           </div>
           {expandedName && (
             <div className="break-all pr-16">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                Name
-              </span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Name", "Name")}
+                </span>
               <div className="mt-1 font-mono text-sm text-foreground">
                 {record.name}
               </div>
@@ -1322,23 +1344,23 @@ export function RecordRow({
           )}
           {expandedContent && (
             <div className="break-all pr-16">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                Content
-              </span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Content", "Content")}
+                </span>
               <div className="mt-1 text-foreground">{record.content}</div>
             </div>
           )}
           {!!(record.comment ?? "").trim() && (
             <div className="break-all pr-16">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                Comment
-              </span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Comment", "Comment")}
+                </span>
               <div className="mt-1 text-foreground">{record.comment}</div>
             </div>
           )}
           <div className="pr-16">
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Tags
+              {t("Tags", "Tags")}
             </span>
             <div className="mt-2 flex flex-wrap items-center gap-1">
               {tags.length ? (
@@ -1348,7 +1370,10 @@ export function RecordRow({
                     <button
                       type="button"
                       className="ui-icon-button h-5 w-5"
-                      aria-label={`Remove tag ${tag}`}
+                      aria-label={t("Remove tag {{tag}}", {
+                        tag,
+                        defaultValue: `Remove tag ${tag}`,
+                      })}
                       onClick={(event) => {
                         event.stopPropagation();
                         removeTag(tag);
@@ -1360,12 +1385,13 @@ export function RecordRow({
                 ))
               ) : (
                 <span className="text-[10px] text-muted-foreground/70">
-                  No tags
+                  {t("No tags", "No tags")}
                 </span>
               )}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <input
+                list={tagSuggestionListId}
                 value={tagDraft}
                 onChange={(e) => setTagDraft(e.target.value)}
                 onClick={(event) => event.stopPropagation()}
@@ -1375,9 +1401,14 @@ export function RecordRow({
                     addTag();
                   }
                 }}
-                placeholder="Add tag"
+                placeholder={t("Add tag", "Add tag")}
                 className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
               />
+              <datalist id={tagSuggestionListId}>
+                {zoneTags.map((tag) => (
+                  <option key={tag} value={tag} />
+                ))}
+              </datalist>
               <Button
                 size="sm"
                 variant="outline"
@@ -1387,7 +1418,7 @@ export function RecordRow({
                   addTag();
                 }}
               >
-                Add
+                {t("Add", "Add")}
               </Button>
             </div>
           </div>

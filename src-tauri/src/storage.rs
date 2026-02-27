@@ -5,6 +5,38 @@ use std::sync::Mutex;
 use thiserror::Error;
 use crate::crypto::EncryptionConfig;
 
+const KEYRING_CHUNK_MARKER: &str = "__chunked__:";
+const KEYRING_MAX_VALUE_BYTES: usize = 2000;
+
+fn parse_chunk_marker(value: &str) -> Option<usize> {
+    value
+        .strip_prefix(KEYRING_CHUNK_MARKER)
+        .and_then(|raw| raw.parse::<usize>().ok())
+}
+
+fn split_value_for_keyring(value: &str, max_bytes: usize) -> Vec<String> {
+    if value.is_empty() {
+        return vec![String::new()];
+    }
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_bytes = 0usize;
+    for ch in value.chars() {
+        let ch_bytes = ch.len_utf8();
+        if current_bytes + ch_bytes > max_bytes && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            current_bytes = 0;
+        }
+        current.push(ch);
+        current_bytes += ch_bytes;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Preferences {
     pub vault_enabled: Option<bool>,
@@ -95,17 +127,80 @@ impl Storage {
             .map_err(|e| StorageError::KeyringError(e.to_string()))
     }
 
+    fn chunk_key(key: &str, index: usize) -> String {
+        format!("{key}::chunk:{index}")
+    }
+
+    fn delete_chunk_entries(&self, key: &str, chunk_count: usize) {
+        for idx in 0..chunk_count {
+            if let Ok(entry) = self.get_entry(&Self::chunk_key(key, idx)) {
+                let _ = entry.delete_password();
+            }
+        }
+    }
+
+    fn write_keyring_secret(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let entry = self.get_entry(key)?;
+        let previous_chunk_count = entry
+            .get_password()
+            .ok()
+            .and_then(|v| parse_chunk_marker(&v))
+            .unwrap_or(0);
+
+        let chunks = split_value_for_keyring(value, KEYRING_MAX_VALUE_BYTES);
+        if chunks.len() == 1 {
+            entry
+                .set_password(value)
+                .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+            if previous_chunk_count > 0 {
+                self.delete_chunk_entries(key, previous_chunk_count);
+            }
+            return Ok(());
+        }
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let chunk_entry = self.get_entry(&Self::chunk_key(key, idx))?;
+            chunk_entry
+                .set_password(chunk)
+                .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+        }
+        let marker = format!("{KEYRING_CHUNK_MARKER}{}", chunks.len());
+        entry
+            .set_password(&marker)
+            .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+        if previous_chunk_count > chunks.len() {
+            for idx in chunks.len()..previous_chunk_count {
+                if let Ok(chunk_entry) = self.get_entry(&Self::chunk_key(key, idx)) {
+                    let _ = chunk_entry.delete_password();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_keyring_secret(&self, key: &str) -> Result<String, StorageError> {
+        let entry = self.get_entry(key)?;
+        let password = entry
+            .get_password()
+            .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+        if let Some(chunk_count) = parse_chunk_marker(&password) {
+            let mut combined = String::new();
+            for idx in 0..chunk_count {
+                let chunk_entry = self.get_entry(&Self::chunk_key(key, idx))?;
+                let chunk = chunk_entry
+                    .get_password()
+                    .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+                combined.push_str(&chunk);
+            }
+            return Ok(combined);
+        }
+        Ok(password)
+    }
+
     pub async fn store_secret(&self, key: &str, value: &str) -> Result<(), StorageError> {
         if self.use_keyring {
-            match self.get_entry(key) {
-                Ok(entry) => {
-                    entry.set_password(value)
-                        .map_err(|e| StorageError::KeyringError(e.to_string()))?;
-                    return Ok(());
-                }
-                Err(_) => {
-                    // Fall through to memory store
-                }
+            if self.write_keyring_secret(key, value).is_ok() {
+                return Ok(());
             }
         }
 
@@ -117,10 +212,8 @@ impl Storage {
 
     pub async fn get_secret(&self, key: &str) -> Result<String, StorageError> {
         if self.use_keyring {
-            if let Ok(entry) = self.get_entry(key) {
-                if let Ok(password) = entry.get_password() {
-                    return Ok(password);
-                }
+            if let Ok(password) = self.read_keyring_secret(key) {
+                return Ok(password);
             }
         }
 
@@ -134,7 +227,15 @@ impl Storage {
     pub async fn delete_secret(&self, key: &str) -> Result<(), StorageError> {
         if self.use_keyring {
             if let Ok(entry) = self.get_entry(key) {
+                let chunk_count = entry
+                    .get_password()
+                    .ok()
+                    .and_then(|v| parse_chunk_marker(&v))
+                    .unwrap_or(0);
                 let _ = entry.delete_password();
+                if chunk_count > 0 {
+                    self.delete_chunk_entries(key, chunk_count);
+                }
             }
         }
 
@@ -488,6 +589,17 @@ impl Storage {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn chunk_helpers_roundtrip() {
+        let input = "a".repeat(KEYRING_MAX_VALUE_BYTES * 2 + 15);
+        let chunks = split_value_for_keyring(&input, KEYRING_MAX_VALUE_BYTES);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|c| c.len() <= KEYRING_MAX_VALUE_BYTES));
+        assert_eq!(chunks.concat(), input);
+        assert_eq!(parse_chunk_marker("__chunked__:12"), Some(12));
+        assert_eq!(parse_chunk_marker("plain"), None);
+    }
 
     #[tokio::test]
     async fn api_key_lifecycle() {

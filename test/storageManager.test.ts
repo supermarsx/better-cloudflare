@@ -131,3 +131,57 @@ test("updateApiKey modifies metadata and re-encrypts with new password", async (
   const old = await mgr.getDecryptedApiKey(id, "pw");
   assert.equal(old, null);
 });
+
+test("tag catalog rename/delete works before any record association exists", () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const zoneId = "zone-1";
+
+  mgr.addZoneTag(zoneId, "ops");
+  assert.deepEqual(mgr.getZoneTags(zoneId), ["ops"]);
+
+  mgr.renameTag(zoneId, "ops", "production");
+  assert.deepEqual(mgr.getZoneTags(zoneId), ["production"]);
+
+  mgr.deleteTag(zoneId, "production");
+  assert.deepEqual(mgr.getZoneTags(zoneId), []);
+});
+
+test("record tag clear and move keep associations consistent", () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const zoneId = "zone-1";
+
+  mgr.setRecordTags(zoneId, "from", ["one", "two"]);
+  mgr.moveRecordTags(zoneId, "from", "to");
+  assert.deepEqual(mgr.getRecordTags(zoneId, "from"), []);
+  assert.deepEqual(mgr.getRecordTags(zoneId, "to"), ["one", "two"]);
+
+  mgr.clearRecordTags(zoneId, "to");
+  assert.deepEqual(mgr.getRecordTags(zoneId, "to"), []);
+  assert.deepEqual(mgr.getTagUsageCounts(zoneId), {});
+});
+
+test("importData sanitizes record tags and tag catalog payloads", () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const imported = {
+    apiKeys: [],
+    recordTags: {
+      "zone-1": {
+        r1: [" alpha ", "", "alpha", 123],
+      },
+    },
+    tagCatalog: {
+      "zone-1": [" beta ", "beta", "", 456],
+    },
+  };
+
+  mgr.importData(JSON.stringify(imported));
+
+  assert.deepEqual(mgr.getRecordTags("zone-1", "r1"), ["alpha"]);
+  assert.deepEqual(mgr.getZoneTags("zone-1"), ["beta"]);
+});
