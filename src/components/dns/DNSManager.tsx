@@ -484,6 +484,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [compactTopBar, setCompactTopBar] = useState(false);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
@@ -1202,6 +1203,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     loadZones(controller.signal);
     return () => controller.abort();
   }, [loadZones]);
+
+  useEffect(() => {
+    let rafId = 0;
+    const updateCompactState = () => {
+      const nextCompact = window.scrollY > 120;
+      setCompactTopBar((prev) => (prev === nextCompact ? prev : nextCompact));
+    };
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        updateCompactState();
+      });
+    };
+    updateCompactState();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
 
   useEffect(() => {
     if (!prefsReady) return;
@@ -3360,7 +3382,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
           <div className="sticky top-0 z-20">
-            <Card className="border-border/60 bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)] backdrop-blur">
+            <Card
+              className={cn(
+                "border-border/60 backdrop-blur transition-all duration-200",
+                compactTopBar
+                  ? "bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
+                  : "bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
+              )}
+            >
+            {!compactTopBar && (
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="space-y-2 fade-in">
@@ -3377,7 +3407,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div />
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            )}
+            <CardContent className={cn(compactTopBar ? "px-3 py-2" : "space-y-4")}>
+              {!compactTopBar && (
               <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
                 <div className="space-y-2">
                   <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
@@ -3427,9 +3459,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   )}
               </div>
+              )}
               {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit" || activeTab?.kind === "registry") && (
                 <div
-                  className="flex flex-wrap gap-2 fade-in"
+                  className={cn(
+                    "flex flex-wrap gap-2 fade-in",
+                    compactTopBar && "items-center overflow-x-auto whitespace-nowrap pb-0.5",
+                  )}
                   onDragOver={(event) => {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
