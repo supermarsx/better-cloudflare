@@ -241,6 +241,20 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   tags: "Tags",
   registry: "Registry",
 };
+
+function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
+  if (!node || typeof window === "undefined") return window;
+  let parent: HTMLElement | null = node.parentElement;
+  while (parent) {
+    const style = window.getComputedStyle(parent);
+    const overflowY = style.overflowY;
+    if ((overflowY === "auto" || overflowY === "scroll") && parent.scrollHeight > parent.clientHeight) {
+      return parent;
+    }
+    parent = parent.parentElement;
+  }
+  return window;
+}
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
   basic: "Standard caching behavior. Query strings are respected for cache variation.",
   aggressive:
@@ -450,6 +464,7 @@ function sanitizeDomainAuditCategories(
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
+  const topBarRef = useRef<HTMLDivElement | null>(null);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
   const [zones, setZones] = useState<Zone[]>([]);
@@ -1206,9 +1221,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     let rafId = 0;
+    let scrollTarget: HTMLElement | Window | null = null;
+    const COMPACT_ENTER_PX = 132;
+    const COMPACT_EXIT_PX = 92;
     const updateCompactState = () => {
-      const nextCompact = window.scrollY > 120;
-      setCompactTopBar((prev) => (prev === nextCompact ? prev : nextCompact));
+      const currentScrollTop =
+        scrollTarget && scrollTarget !== window
+          ? (scrollTarget as HTMLElement).scrollTop
+          : window.scrollY || document.documentElement.scrollTop || 0;
+      setCompactTopBar((prev) => {
+        if (prev) return currentScrollTop > COMPACT_EXIT_PX;
+        return currentScrollTop > COMPACT_ENTER_PX;
+      });
     };
     const onScroll = () => {
       if (rafId) return;
@@ -1217,11 +1241,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         updateCompactState();
       });
     };
+    scrollTarget = getScrollParent(topBarRef.current);
     updateCompactState();
-    window.addEventListener("scroll", onScroll, { passive: true });
+    if (scrollTarget === window) {
+      window.addEventListener("scroll", onScroll, { passive: true });
+    } else {
+      scrollTarget.addEventListener("scroll", onScroll, { passive: true });
+    }
+    window.addEventListener("resize", onScroll, { passive: true });
     return () => {
       if (rafId) window.cancelAnimationFrame(rafId);
-      window.removeEventListener("scroll", onScroll);
+      if (scrollTarget === window) {
+        window.removeEventListener("scroll", onScroll);
+      } else if (scrollTarget) {
+        scrollTarget.removeEventListener("scroll", onScroll);
+      }
+      window.removeEventListener("resize", onScroll);
     };
   }, []);
 
@@ -3381,7 +3416,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </div>
       </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-          <div className="sticky top-0 z-20">
+          <div ref={topBarRef} className="sticky top-0 z-20">
             <Card
               className={cn(
                 "border-border/60 backdrop-blur transition-all duration-200",
@@ -3408,11 +3443,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               </div>
             </CardHeader>
             )}
-            <CardContent className={cn(compactTopBar ? "px-3 py-2" : "space-y-4")}>
-              {!compactTopBar && (
-              <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-                <div className="space-y-2">
-                  <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
+            <CardContent className={cn(compactTopBar ? "space-y-2 px-2 py-2" : "space-y-4")}>
+              <div
+                className={cn(
+                  "grid gap-4 md:grid-cols-[1fr_auto] md:items-end",
+                  compactTopBar && "grid-cols-1 gap-2 md:grid-cols-[minmax(0,320px)_1fr] md:items-center",
+                )}
+              >
+                <div className={cn("space-y-2", compactTopBar && "space-y-0")}>
+                  {!compactTopBar && (
+                    <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
+                  )}
                   <Select
                     value={selectedZoneId || undefined}
                     onValueChange={(value) => {
@@ -3420,7 +3461,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       openZoneTab(value);
                     }}
                   >
-                    <SelectTrigger className="bg-card/70 border-border text-foreground">
+                    <SelectTrigger
+                      className={cn(
+                        "bg-card/70 border-border text-foreground",
+                        compactTopBar && "h-8 text-xs",
+                      )}
+                    >
                       <SelectValue placeholder={t("Select a domain", "Select a domain")} />
                     </SelectTrigger>
                     <SelectContent className="bg-popover/70 text-foreground">
@@ -3436,7 +3482,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </SelectContent>
                   </Select>
                 </div>
-                  {activeTab && (
+                  {!compactTopBar && activeTab && (
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
                         {t("{{count}} records", {
@@ -3459,7 +3505,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   )}
               </div>
-              )}
               {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit" || activeTab?.kind === "registry") && (
                 <div
                   className={cn(
@@ -3530,14 +3575,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         data-active={isActive}
                         className={cn(
                           "ui-tab cursor-grab",
+                          compactTopBar && "h-7 min-h-0 gap-1 px-2 text-[11px]",
                           dragOverId === tab.id && "ring-1 ring-primary/30",
                         )}
                       >
-                        <GripVertical className="h-3 w-3 text-muted-foreground/60" />
-                        <span className="max-w-[140px] truncate">
+                        {!compactTopBar && (
+                          <GripVertical className="h-3 w-3 text-muted-foreground/60" />
+                        )}
+                        <span className={cn("truncate", compactTopBar ? "max-w-[112px]" : "max-w-[140px]")}>
                           {tab.kind === "zone" ? tab.zoneName : t(tab.zoneName, tab.zoneName)}
                         </span>
-                        {tab.kind === "zone" && (
+                        {!compactTopBar && tab.kind === "zone" && (
                           <span className="text-[10px] uppercase tracking-widest opacity-60">
                             {tab.status ?? t("zone", "zone")}
                           </span>
@@ -3547,10 +3595,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             event.stopPropagation();
                             closeTab(tab.id);
                           }}
-                          className="ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground"
+                          className={cn(
+                            "ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground",
+                            compactTopBar && "ml-0",
+                          )}
                           aria-label={t("Close tab", "Close tab")}
                         >
-                          <X className="h-3 w-3" />
+                          <X className={cn(compactTopBar ? "h-2.5 w-2.5" : "h-3 w-3")} />
                         </button>
                       </div>
                     );
@@ -3562,33 +3613,42 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </div>
         {activeTab ? (
           <Card className="min-h-[70vh] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
-            <CardHeader className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <CardTitle className="text-xl">
-                    {activeTab.kind === "zone" ? activeTab.zoneName : t(activeTab.zoneName, activeTab.zoneName)}
-                  </CardTitle>
-                  {activeTab.kind === "zone" && (
-                    <p className="text-xs text-muted-foreground">{actionHint}</p>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2" />
-              </div>
-              {activeTab.kind === "zone" && (
-                <div className="glass-surface glass-sheen glass-fade ui-segment-group fade-in">
-                  {ACTION_TABS.map((tab) => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActionTab(tab.id)}
-                      data-active={actionTab === tab.id}
-                      className="ui-segment"
-                    >
-                      {t(tab.label, tab.label)}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </CardHeader>
+            {(!compactTopBar || activeTab.kind === "zone") && (
+              <CardHeader className={cn("space-y-4", compactTopBar && "space-y-2 py-3")}>
+                {!compactTopBar && (
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <CardTitle className="text-xl">
+                        {activeTab.kind === "zone" ? activeTab.zoneName : t(activeTab.zoneName, activeTab.zoneName)}
+                      </CardTitle>
+                      {activeTab.kind === "zone" && (
+                        <p className="text-xs text-muted-foreground">{actionHint}</p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2" />
+                  </div>
+                )}
+                {activeTab.kind === "zone" && (
+                  <div
+                    className={cn(
+                      "glass-surface glass-sheen glass-fade ui-segment-group fade-in",
+                      compactTopBar && "gap-1 p-1",
+                    )}
+                  >
+                    {ACTION_TABS.map((tab) => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setActionTab(tab.id)}
+                        data-active={actionTab === tab.id}
+                        className={cn("ui-segment", compactTopBar && "h-7 px-2 text-[11px]")}
+                      >
+                        {t(tab.label, tab.label)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </CardHeader>
+            )}
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <div className="space-y-4 fade-in">
