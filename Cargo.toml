@@ -7,6 +7,7 @@ members = [
     "crates/bc-spf",
     "crates/bc-passkey",
     "crates/bc-registrar",
+    "crates/bc-topology",
 ]
 resolver = "2"
 
