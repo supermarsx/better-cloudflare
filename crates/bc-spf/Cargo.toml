@@ -1,0 +1,10 @@
+[package]
+name = "bc-spf"
+version = "0.1.0"
+edition = "2021"
+description = "SPF record parser, simulator, and include/redirect graph builder"
+
+[dependencies]
+ipnet = "2"
+serde = { version = "1", features = ["derive"] }
+trust-dns-resolver = "0.23"
