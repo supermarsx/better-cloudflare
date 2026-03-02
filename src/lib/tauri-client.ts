@@ -578,4 +578,151 @@ export class TauriClient {
   static async registrarHealthCheckAll(): Promise<unknown[]> {
     return invoke("registrar_health_check_all");
   }
+
+  // ── DNS Tools ───────────────────────────────────────────────────────────
+
+  static async parseCsvRecords(text: string): Promise<PartialDNSRecord[]> {
+    return invoke("parse_csv_records", { text });
+  }
+
+  static async parseBindZone(text: string): Promise<PartialDNSRecord[]> {
+    return invoke("parse_bind_zone", { text });
+  }
+
+  static async validateDnsRecord(input: DNSRecordValidationInput): Promise<ValidationResult> {
+    return invoke("validate_dns_record", { input });
+  }
+
+  static async parseSrv(content: string): Promise<SRVFields> {
+    return invoke("parse_srv", { content });
+  }
+
+  static async composeSrv(priority?: number, weight?: number, port?: number, target?: string): Promise<string> {
+    return invoke("compose_srv", { priority, weight, port, target: target ?? "" });
+  }
+
+  static async parseTlsa(content: string): Promise<TLSAFields> {
+    return invoke("parse_tlsa", { content });
+  }
+
+  static async composeTlsa(usage?: number, selector?: number, matchingType?: number, data?: string): Promise<string> {
+    return invoke("compose_tlsa", { usage, selector, matchingType, data: data ?? "" });
+  }
+
+  static async parseSshfp(content: string): Promise<SSHFPFields> {
+    return invoke("parse_sshfp", { content });
+  }
+
+  static async composeSshfp(algorithm?: number, fptype?: number, fingerprint?: string): Promise<string> {
+    return invoke("compose_sshfp", { algorithm, fptype, fingerprint: fingerprint ?? "" });
+  }
+
+  static async parseNaptr(content: string): Promise<NAPTRFields> {
+    return invoke("parse_naptr", { content });
+  }
+
+  static async composeNaptr(
+    order?: number,
+    preference?: number,
+    flags?: string,
+    service?: string,
+    regexp?: string,
+    replacement?: string,
+  ): Promise<string> {
+    return invoke("compose_naptr", {
+      order,
+      preference,
+      flags: flags ?? "",
+      service: service ?? "",
+      regexp: regexp ?? "",
+      replacement: replacement ?? "",
+    });
+  }
+
+  static async recordsToCsv(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_csv", { records });
+  }
+
+  static async recordsToBind(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_bind", { records });
+  }
+
+  static async recordsToJson(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_json", { records });
+  }
+
+  static async parseSpf(content: string): Promise<SPFRecord | null> {
+    return invoke("parse_spf", { content });
+  }
+}
+
+// ── DNS Tools types ───────────────────────────────────────────────────────────
+
+export interface PartialDNSRecord {
+  type?: string;
+  name?: string;
+  content?: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+}
+
+export interface DNSRecordValidationInput {
+  type: string;
+  name: string;
+  content: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+}
+
+export interface ValidationResult {
+  ok: boolean;
+  issues: string[];
+}
+
+export interface SRVFields {
+  priority?: number;
+  weight?: number;
+  port?: number;
+  target: string;
+}
+
+export interface TLSAFields {
+  usage?: number;
+  selector?: number;
+  matching_type?: number;
+  data: string;
+}
+
+export interface SSHFPFields {
+  algorithm?: number;
+  fptype?: number;
+  fingerprint: string;
+}
+
+export interface NAPTRFields {
+  order?: number;
+  preference?: number;
+  flags: string;
+  service: string;
+  regexp: string;
+  replacement: string;
+}
+
+export interface SPFMechanism {
+  qualifier?: string;
+  mechanism: string;
+  value?: string;
+}
+
+export interface SPFModifier {
+  key: string;
+  value: string;
+}
+
+export interface SPFRecord {
+  version: string;
+  mechanisms: SPFMechanism[];
+  modifiers: SPFModifier[];
 }

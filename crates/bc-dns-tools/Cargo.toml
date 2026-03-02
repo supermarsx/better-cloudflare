@@ -1,0 +1,11 @@
+[package]
+name = "bc-dns-tools"
+version = "0.1.0"
+edition = "2021"
+description = "DNS record parsing, validation, import/export, and structured record builders"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bc-cloudflare-api = { path = "../bc-cloudflare-api" }
+bc-spf = { path = "../bc-spf" }

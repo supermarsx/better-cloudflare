@@ -91,6 +91,22 @@ fn main() {
             mcp_server::mcp_start_server,
             mcp_server::mcp_stop_server,
             mcp_server::mcp_set_enabled_tools,
+            // DNS Tools
+            commands::parse_csv_records,
+            commands::parse_bind_zone,
+            commands::validate_dns_record,
+            commands::parse_srv,
+            commands::compose_srv,
+            commands::parse_tlsa,
+            commands::compose_tlsa,
+            commands::parse_sshfp,
+            commands::compose_sshfp,
+            commands::parse_naptr,
+            commands::compose_naptr,
+            commands::records_to_csv,
+            commands::records_to_bind,
+            commands::records_to_json,
+            commands::parse_spf,
         ])
         .setup(|app| {
             // Initialize storage

@@ -29,6 +29,7 @@ bc-passkey = { path = "../crates/bc-passkey" }
 bc-registrar = { path = "../crates/bc-registrar" }
 bc-topology = { path = "../crates/bc-topology" }
 bc-mcp = { path = "../crates/bc-mcp" }
+bc-dns-tools = { path = "../crates/bc-dns-tools" }
 
 [features]
 default = ["custom-protocol"]

@@ -485,6 +485,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-dns-tools"
+version = "0.1.0"
+dependencies = [
+ "bc-cloudflare-api",
+ "bc-spf",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bc-mcp"
 version = "0.1.0"
 dependencies = [
@@ -559,6 +569,7 @@ dependencies = [
  "base64 0.22.1",
  "bc-cloudflare-api",
  "bc-crypto",
+ "bc-dns-tools",
  "bc-mcp",
  "bc-passkey",
  "bc-registrar",

@@ -1030,3 +1030,99 @@ pub async fn resolve_topology_batch(
     )
     .await
 }
+
+// ─── DNS Tools ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn parse_csv_records(text: String) -> Vec<bc_dns_tools::PartialDNSRecord> {
+    bc_dns_tools::parse_csv_records(&text)
+}
+
+#[tauri::command]
+pub fn parse_bind_zone(text: String) -> Vec<bc_dns_tools::PartialDNSRecord> {
+    bc_dns_tools::parse_bind_zone(&text)
+}
+
+#[tauri::command]
+pub fn validate_dns_record(
+    input: bc_dns_tools::DNSRecordValidationInput,
+) -> bc_dns_tools::ValidationResult {
+    bc_dns_tools::validate_dns_record(&input)
+}
+
+#[tauri::command]
+pub fn parse_srv(content: String) -> bc_dns_tools::SRVFields {
+    bc_dns_tools::parse_srv(&content)
+}
+
+#[tauri::command]
+pub fn compose_srv(
+    priority: Option<u16>,
+    weight: Option<u16>,
+    port: Option<u16>,
+    target: String,
+) -> String {
+    bc_dns_tools::compose_srv(priority, weight, port, &target)
+}
+
+#[tauri::command]
+pub fn parse_tlsa(content: String) -> bc_dns_tools::TLSAFields {
+    bc_dns_tools::parse_tlsa(&content)
+}
+
+#[tauri::command]
+pub fn compose_tlsa(
+    usage: Option<u8>,
+    selector: Option<u8>,
+    matching_type: Option<u8>,
+    data: String,
+) -> String {
+    bc_dns_tools::compose_tlsa(usage, selector, matching_type, &data)
+}
+
+#[tauri::command]
+pub fn parse_sshfp(content: String) -> bc_dns_tools::SSHFPFields {
+    bc_dns_tools::parse_sshfp(&content)
+}
+
+#[tauri::command]
+pub fn compose_sshfp(algorithm: Option<u8>, fptype: Option<u8>, fingerprint: String) -> String {
+    bc_dns_tools::compose_sshfp(algorithm, fptype, &fingerprint)
+}
+
+#[tauri::command]
+pub fn parse_naptr(content: String) -> bc_dns_tools::NAPTRFields {
+    bc_dns_tools::parse_naptr(&content)
+}
+
+#[tauri::command]
+pub fn compose_naptr(
+    order: Option<u16>,
+    preference: Option<u16>,
+    flags: String,
+    service: String,
+    regexp: String,
+    replacement: String,
+) -> String {
+    bc_dns_tools::compose_naptr(order, preference, &flags, &service, &regexp, &replacement)
+}
+
+#[tauri::command]
+pub fn records_to_csv(records: Vec<DNSRecord>) -> String {
+    bc_dns_tools::records_to_csv(&records)
+}
+
+#[tauri::command]
+pub fn records_to_bind(records: Vec<DNSRecord>) -> String {
+    bc_dns_tools::records_to_bind(&records)
+}
+
+#[tauri::command]
+pub fn records_to_json(records: Vec<DNSRecord>) -> String {
+    bc_dns_tools::records_to_json(&records)
+}
+
+#[tauri::command]
+pub fn parse_spf(content: String) -> Option<bc_spf::SPFRecord> {
+    bc_spf::parse_spf(&content)
+}
