@@ -495,6 +495,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-domain-audit"
+version = "0.1.0"
+dependencies = [
+ "bc-cloudflare-api",
+ "bc-dns-tools",
+ "bc-spf",
+ "chrono",
+ "serde",
+]
+
+[[package]]
 name = "bc-mcp"
 version = "0.1.0"
 dependencies = [
@@ -570,6 +581,7 @@ dependencies = [
  "bc-cloudflare-api",
  "bc-crypto",
  "bc-dns-tools",
+ "bc-domain-audit",
  "bc-mcp",
  "bc-passkey",
  "bc-registrar",

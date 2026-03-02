@@ -25,6 +25,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Upload, Download } from "lucide-react";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
+import { isDesktop } from "@/lib/environment";
+import { TauriClient } from "@/lib/tauri-client";
 import { ImportPreviewDialog } from "./ImportPreviewDialog";
 import type { DNSRecord } from "@/types/dns";
 
@@ -111,7 +113,7 @@ export function ImportExportDialog({
               />
             </div>
             <Button
-              onClick={() => {
+              onClick={async () => {
                 // Parse and show preview based on selected import format
                 let items: Partial<Record<string, unknown>>[] | null = null;
                 try {
@@ -126,12 +128,16 @@ export function ImportExportDialog({
                       break;
                     }
                     case "csv":
-                      items = parseCSVRecords
-                        ? parseCSVRecords(importData)
-                        : null;
+                      items = isDesktop()
+                        ? (await TauriClient.parseCsvRecords(importData)) as unknown as Partial<Record<string, unknown>>[]
+                        : parseCSVRecords
+                          ? parseCSVRecords(importData)
+                          : null;
                       break;
                     case "bind":
-                      items = parseBINDZone ? parseBINDZone(importData) : null;
+                      items = isDesktop()
+                        ? (await TauriClient.parseBindZone(importData)) as unknown as Partial<Record<string, unknown>>[]
+                        : parseBINDZone ? parseBINDZone(importData) : null;
                       break;
                   }
                 } catch {

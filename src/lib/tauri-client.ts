@@ -654,6 +654,16 @@ export class TauriClient {
   static async parseSpf(content: string): Promise<SPFRecord | null> {
     return invoke("parse_spf", { content });
   }
+
+  // ── Domain Audit ────────────────────────────────────────────────────────
+
+  static async runDomainAudit(
+    zoneName: string,
+    records: TauriDNSRecord[],
+    options: DomainAuditOptions,
+  ): Promise<DomainAuditItem[]> {
+    return invoke("run_domain_audit", { zoneName, records, options });
+  }
 }
 
 // ── DNS Tools types ───────────────────────────────────────────────────────────
@@ -725,4 +735,33 @@ export interface SPFRecord {
   version: string;
   mechanisms: SPFMechanism[];
   modifiers: SPFModifier[];
+}
+
+// ── Domain Audit types ────────────────────────────────────────────────────────
+
+export type DomainAuditSeverity = "pass" | "info" | "warn" | "fail";
+export type DomainAuditCategory = "email" | "security" | "hygiene";
+
+export interface DomainAuditSuggestion {
+  recordType: string;
+  name: string;
+  content: string;
+}
+
+export interface DomainAuditItem {
+  id: string;
+  category: DomainAuditCategory;
+  severity: DomainAuditSeverity;
+  title: string;
+  details: string;
+  suggestion?: DomainAuditSuggestion;
+}
+
+export interface DomainAuditOptions {
+  includeCategories: {
+    email: boolean;
+    security: boolean;
+    hygiene: boolean;
+  };
+  domainExpiresAt?: string | null;
 }

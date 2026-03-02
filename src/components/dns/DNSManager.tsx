@@ -64,7 +64,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
 import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
-import { runDomainAudit, type DomainAuditCategory } from "@/lib/domain-audit";
+import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
 
 
@@ -988,8 +988,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return showUnsupportedRecordTypes;
   }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
 
-  const domainAuditItems = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return [];
+  const [domainAuditItems, setDomainAuditItems] = useState<DomainAuditItem[]>([]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") {
+      setDomainAuditItems([]);
+      return;
+    }
     const zone = activeTab.zoneName.trim().toLowerCase();
     const registrarExpiry =
       registrarDomainResult &&
@@ -1007,10 +1012,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             .includes("expiration"),
         )
         ?.eventDate?.toString() ?? null;
-    return runDomainAudit(activeTab.zoneName, activeTab.records, {
+    const opts = {
       includeCategories: domainAuditCategories,
       domainExpiresAt: registrarExpiry ?? rdapExpiryEvent,
-    });
+    };
+    if (isDesktop()) {
+      const records = activeTab.records as unknown as import("@/lib/tauri-client").TauriDNSRecord[];
+      TauriClient.runDomainAudit(activeTab.zoneName, records, opts)
+        .then(setDomainAuditItems)
+        .catch(() => {
+          // Fallback to frontend implementation on error
+          setDomainAuditItems(runDomainAudit(activeTab.zoneName, activeTab.records, opts));
+        });
+    } else {
+      setDomainAuditItems(runDomainAudit(activeTab.zoneName, activeTab.records, opts));
+    }
   }, [activeTab, domainAuditCategories, rdapResult, registrarDomainResult]);
 
   const domainAuditItemsWithOverrides = useMemo(() => {
@@ -3030,60 +3046,87 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
-  const handleExport = (format: "json" | "csv" | "bind") => {
+  const handleExport = async (format: "json" | "csv" | "bind") => {
     if (!activeTab) return;
     let content = "";
     let filename = "";
     let mimeType = "";
 
-    switch (format) {
-      case "json": {
-        content = JSON.stringify(activeTab.records, null, 2);
-        filename = `${activeTab.zoneId}-records.json`;
-        mimeType = "application/json";
-        break;
+    if (isDesktop()) {
+      const records = activeTab.records as unknown as import("@/lib/tauri-client").TauriDNSRecord[];
+      try {
+        switch (format) {
+          case "json":
+            content = await TauriClient.recordsToJson(records);
+            filename = `${activeTab.zoneId}-records.json`;
+            mimeType = "application/json";
+            break;
+          case "csv":
+            content = await TauriClient.recordsToCsv(records);
+            filename = `${activeTab.zoneId}-records.csv`;
+            mimeType = "text/csv";
+            break;
+          case "bind":
+            content = await TauriClient.recordsToBind(records);
+            filename = `${activeTab.zoneId}.zone`;
+            mimeType = "text/plain";
+            break;
+        }
+      } catch {
+        // Fallback to frontend on error — fall through to web path
       }
-      case "csv": {
-        const headers = [
-          "Type",
-          "Name",
-          "Content",
-          "TTL",
-          "Priority",
-          "Proxied",
-        ];
-        const escapeCSV = (value: unknown) =>
-          `"${String(value ?? "").replace(/"/g, '""')}"`;
-        const rows = activeTab.records
-          .map((r: DNSRecord) =>
-            [
-              r.type,
-              r.name,
-              r.content,
-              r.ttl,
-              r.priority ?? "",
-              r.proxied ?? false,
-            ]
-              .map(escapeCSV)
-              .join(","),
-          )
-          .join("\n");
-        content = headers.map(escapeCSV).join(",") + "\n" + rows;
-        filename = `${activeTab.zoneId}-records.csv`;
-        mimeType = "text/csv";
-        break;
-      }
-      case "bind": {
-        content = activeTab.records
-          .map((r: DNSRecord) => {
-            const ttl = r.ttl || 300;
-            const priority = r.priority ? `${r.priority} ` : "";
-            return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
-          })
-          .join("\n");
-        filename = `${activeTab.zoneId}.zone`;
-        mimeType = "text/plain";
-        break;
+    }
+
+    if (!content) {
+      switch (format) {
+        case "json": {
+          content = JSON.stringify(activeTab.records, null, 2);
+          filename = `${activeTab.zoneId}-records.json`;
+          mimeType = "application/json";
+          break;
+        }
+        case "csv": {
+          const headers = [
+            "Type",
+            "Name",
+            "Content",
+            "TTL",
+            "Priority",
+            "Proxied",
+          ];
+          const escapeCSV = (value: unknown) =>
+            `"${String(value ?? "").replace(/"/g, '""')}"`;
+          const rows = activeTab.records
+            .map((r: DNSRecord) =>
+              [
+                r.type,
+                r.name,
+                r.content,
+                r.ttl,
+                r.priority ?? "",
+                r.proxied ?? false,
+              ]
+                .map(escapeCSV)
+                .join(","),
+            )
+            .join("\n");
+          content = headers.map(escapeCSV).join(",") + "\n" + rows;
+          filename = `${activeTab.zoneId}-records.csv`;
+          mimeType = "text/csv";
+          break;
+        }
+        case "bind": {
+          content = activeTab.records
+            .map((r: DNSRecord) => {
+              const ttl = r.ttl || 300;
+              const priority = r.priority ? `${r.priority} ` : "";
+              return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
+            })
+            .join("\n");
+          filename = `${activeTab.zoneId}.zone`;
+          mimeType = "text/plain";
+          break;
+        }
       }
     }
 
@@ -3124,10 +3167,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             break;
           }
           case "csv":
-            items = parseCSVRecords(tab.importData);
+            items = isDesktop()
+              ? (await TauriClient.parseCsvRecords(tab.importData)) as Partial<DNSRecord>[]
+              : parseCSVRecords(tab.importData);
             break;
           case "bind":
-            items = parseBINDZone(tab.importData);
+            items = isDesktop()
+              ? (await TauriClient.parseBindZone(tab.importData)) as Partial<DNSRecord>[]
+              : parseBINDZone(tab.importData);
             break;
         }
       }

@@ -1126,3 +1126,14 @@ pub fn records_to_json(records: Vec<DNSRecord>) -> String {
 pub fn parse_spf(content: String) -> Option<bc_spf::SPFRecord> {
     bc_spf::parse_spf(&content)
 }
+
+// ─── Domain Audit ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn run_domain_audit(
+    zone_name: String,
+    records: Vec<DNSRecord>,
+    options: bc_domain_audit::AuditOptions,
+) -> Vec<bc_domain_audit::AuditItem> {
+    bc_domain_audit::run_domain_audit(&zone_name, &records, &options)
+}

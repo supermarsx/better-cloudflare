@@ -1,0 +1,12 @@
+[package]
+name = "bc-domain-audit"
+version = "0.1.0"
+edition = "2021"
+description = "DNS domain health audit engine: email, security, and hygiene checks"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+bc-cloudflare-api = { path = "../bc-cloudflare-api" }
+bc-spf = { path = "../bc-spf" }
+bc-dns-tools = { path = "../bc-dns-tools" }
+chrono = { version = "0.4", features = ["serde"] }

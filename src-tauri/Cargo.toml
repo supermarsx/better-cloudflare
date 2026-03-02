@@ -30,6 +30,7 @@ bc-registrar = { path = "../crates/bc-registrar" }
 bc-topology = { path = "../crates/bc-topology" }
 bc-mcp = { path = "../crates/bc-mcp" }
 bc-dns-tools = { path = "../crates/bc-dns-tools" }
+bc-domain-audit = { path = "../crates/bc-domain-audit" }
 
 [features]
 default = ["custom-protocol"]

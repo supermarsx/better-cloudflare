@@ -10,6 +10,7 @@ members = [
     "crates/bc-topology",
     "crates/bc-mcp",
     "crates/bc-dns-tools",
+    "crates/bc-domain-audit",
 ]
 resolver = "2"
 

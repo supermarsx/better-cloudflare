@@ -107,6 +107,8 @@ fn main() {
             commands::records_to_bind,
             commands::records_to_json,
             commands::parse_spf,
+            // Domain Audit
+            commands::run_domain_audit,
         ])
         .setup(|app| {
             // Initialize storage
