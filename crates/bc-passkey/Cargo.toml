@@ -1,0 +1,15 @@
+[package]
+name = "bc-passkey"
+version = "0.1.0"
+edition = "2021"
+description = "WebAuthn passkey registration, authentication, and token management"
+
+[dependencies]
+base64 = "0.22"
+rand = "0.8"
+serde_json = "1"
+thiserror = "1"
+bc-storage = { path = "../bc-storage" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

@@ -5,6 +5,7 @@ members = [
     "crates/bc-storage",
     "crates/bc-cloudflare-api",
     "crates/bc-spf",
+    "crates/bc-passkey",
 ]
 resolver = "2"
 
