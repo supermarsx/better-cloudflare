@@ -3,6 +3,7 @@ members = [
     "src-tauri",
     "crates/bc-crypto",
     "crates/bc-storage",
+    "crates/bc-cloudflare-api",
 ]
 resolver = "2"
 
