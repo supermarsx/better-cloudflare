@@ -601,6 +601,19 @@ impl Storage {
         self.store_secret("registrar_credentials", &json).await
     }
 
+    /// Fetch a single registrar credential by its `id` field.
+    pub async fn get_registrar_credential<T: DeserializeOwned>(
+        &self,
+        id: &str,
+    ) -> Result<T, StorageError> {
+        let creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
+        let val = creds
+            .into_iter()
+            .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+            .ok_or(StorageError::NotFound)?;
+        serde_json::from_value(val).map_err(|e| StorageError::Error(e.to_string()))
+    }
+
     pub async fn delete_registrar_credential(&self, id: &str) -> Result<(), StorageError> {
         let mut creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
         creds.retain(|c| c.get("id").and_then(|v| v.as_str()) != Some(id));

@@ -13,24 +13,22 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
-sha2 = "0.10"
-pbkdf2 = { version = "0.12", features = ["simple"] }
-aes-gcm = "0.10"
-rand = "0.8"
-keyring = "2"
 uuid = { version = "1", features = ["v4"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
-thiserror = "1"
-async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-trust-dns-resolver = "0.23"
-ipnet = "2"
 rfd = "0.15"
 dirs = "5"
-axum = { version = "0.7", features = ["json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
+
+# Workspace crates
+bc-crypto = { path = "../crates/bc-crypto" }
+bc-storage = { path = "../crates/bc-storage" }
+bc-cloudflare-api = { path = "../crates/bc-cloudflare-api" }
+bc-spf = { path = "../crates/bc-spf" }
+bc-passkey = { path = "../crates/bc-passkey" }
+bc-registrar = { path = "../crates/bc-registrar" }
+bc-topology = { path = "../crates/bc-topology" }
+bc-mcp = { path = "../crates/bc-mcp" }
 
 [features]
 default = ["custom-protocol"]

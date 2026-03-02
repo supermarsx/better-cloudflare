@@ -6,9 +6,6 @@ mod crypto;
 mod storage;
 mod cloudflare_api;
 mod passkey;
-mod audit;
-mod spf;
-mod registrar;
 mod registrar_commands;
 mod mcp_server;
 
