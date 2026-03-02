@@ -606,7 +606,7 @@ export class TauriClient {
   }
 
   static async composeTlsa(usage?: number, selector?: number, matchingType?: number, data?: string): Promise<string> {
-    return invoke("compose_tlsa", { usage, selector, matchingType, data: data ?? "" });
+    return invoke("compose_tlsa", { usage, selector, matching_type: matchingType, data: data ?? "" });
   }
 
   static async parseSshfp(content: string): Promise<SSHFPFields> {

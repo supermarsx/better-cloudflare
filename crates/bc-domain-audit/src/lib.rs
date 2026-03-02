@@ -238,16 +238,18 @@ fn is_dkim_record(txt: &str) -> bool {
 
 fn get_spf_all_qualifier(spf: &str) -> Option<char> {
     let s = spf.to_lowercase();
+    let bytes = s.as_bytes();
     // Match pattern: space + qualifier + "all" + (space or end)
     for (i, ch) in s.char_indices() {
-        if i > 0 && matches!(ch, '~' | '-' | '+' | '?') {
-            if s[i + 1..].starts_with("all") {
-                let after = i + 1 + 3;
-                if after >= s.len() || s.as_bytes()[after] == b' ' {
-                    // Check preceding char is space
-                    if s.as_bytes()[i - 1] == b' ' {
-                        return Some(ch);
-                    }
+        if i > 0
+            && matches!(ch, '~' | '-' | '+' | '?')
+            && s[i + ch.len_utf8()..].starts_with("all")
+        {
+            let after = i + ch.len_utf8() + 3;
+            if after >= s.len() || bytes[after] == b' ' {
+                // Check preceding char is space
+                if bytes[i - 1] == b' ' {
+                    return Some(ch);
                 }
             }
         }
@@ -330,7 +332,7 @@ fn compute_cname_chain(
 }
 
 fn parse_caa(content: &str) -> (Option<u8>, Option<String>, Option<String>) {
-    let parts: Vec<&str> = content.trim().split_whitespace().collect();
+    let parts: Vec<&str> = content.split_whitespace().collect();
     if parts.len() < 3 {
         return (None, None, None);
     }
@@ -341,15 +343,24 @@ fn parse_caa(content: &str) -> (Option<u8>, Option<String>, Option<String>) {
     (flag, tag, Some(value))
 }
 
-fn parse_mx_content(content: &str, zone_name: &str) -> (Option<u16>, Option<String>) {
-    let parts: Vec<&str> = content.trim().split_whitespace().filter(|s| !s.is_empty()).collect();
-    if parts.len() < 2 {
-        return (None, None);
+fn parse_mx_record(record: &DNSRecord, zone_name: &str) -> (Option<u16>, Option<String>) {
+    // Cloudflare API returns MX priority as a separate field; content is just the target hostname.
+    // Fall back to parsing "priority target" from content for compatibility with other sources.
+    let content = record.content.trim();
+    let parts: Vec<&str> = content.split_whitespace().collect();
+    if parts.len() >= 2 {
+        // Legacy format: "priority target"
+        let priority = record.priority.or_else(|| parts[0].parse::<u16>().ok());
+        let target_raw = parts[1..].join(" ");
+        let target = normalize_target_domain(&target_raw, zone_name);
+        (priority, Some(target))
+    } else if !content.is_empty() {
+        // Cloudflare API format: content is just the target, priority is separate
+        let target = normalize_target_domain(content, zone_name);
+        (record.priority, Some(target))
+    } else {
+        (record.priority, None)
     }
-    let priority = parts[0].parse::<u16>().ok();
-    let target_raw = parts[1..].join(" ");
-    let target = normalize_target_domain(&target_raw, zone_name);
-    (priority, Some(target))
 }
 
 fn item(id: &str, cat: AuditCategory, sev: AuditSeverity, title: &str, details: impl Into<String>) -> AuditItem {
@@ -363,6 +374,7 @@ fn item(id: &str, cat: AuditCategory, sev: AuditSeverity, title: &str, details: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn item_with_suggestion(
     id: &str,
     cat: AuditCategory,
@@ -466,7 +478,7 @@ pub fn run_domain_audit(
             &mut items,
             records,
             normalized_zone,
-            &options,
+            options,
             &spf_type_records,
             &cname_records,
             &cname_map,
@@ -507,6 +519,7 @@ pub fn run_domain_audit(
 
 // ── Hygiene ─────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn audit_hygiene(
     items: &mut Vec<AuditItem>,
     records: &[DNSRecord],
@@ -899,7 +912,7 @@ fn audit_hygiene(
         ));
     } else {
         let soa = soa_records[0];
-        let parts: Vec<&str> = soa.content.trim().split_whitespace().collect();
+        let parts: Vec<&str> = soa.content.split_whitespace().collect();
         let mut issues = Vec::new();
         if !record_name_is_apex(&soa.name, normalized_zone) {
             issues.push("SOA name is usually \"@\".".to_string());
@@ -972,7 +985,7 @@ fn audit_hygiene(
             if let Some(m) = minimum {
                 let lowest_ttl = records
                     .iter()
-                    .filter_map(|r| get_ttl_seconds(r))
+                    .filter_map(get_ttl_seconds)
                     .filter(|&t| t > 0)
                     .min();
                 if let Some(lt) = lowest_ttl {
@@ -1035,7 +1048,7 @@ fn audit_hygiene(
         let mut issues = Vec::new();
         for r in srv_records.iter().take(50) {
             let name = r.name.trim();
-            if !name.starts_with('_') || !name.to_lowercase().contains("._tcp") && !name.to_lowercase().contains("._udp") {
+            if !name.starts_with('_') || (!name.to_lowercase().contains("._tcp") && !name.to_lowercase().contains("._udp")) {
                 issues.push(format!(
                     "SRV {}: name should be like _service._tcp (or _udp).",
                     name
@@ -1252,7 +1265,7 @@ fn audit_email(
     if mx_at_apex.len() > 1 {
         let parsed: Vec<(Option<u16>, Option<String>)> = mx_at_apex
             .iter()
-            .map(|r| parse_mx_content(&r.content, normalized_zone))
+            .map(|r| parse_mx_record(r, normalized_zone))
             .collect();
         let priorities: Vec<u16> = parsed.iter().filter_map(|(p, _)| *p).collect();
         let unique_priorities: HashSet<u16> = priorities.iter().copied().collect();

@@ -243,8 +243,8 @@ pub fn compose_naptr(
         "{} {} {} {} {} {}",
         order.unwrap_or(0),
         preference.unwrap_or(0),
-        flags,
-        service,
+        quote_if_needed(flags),
+        quote_if_needed(service),
         quote_if_needed(regexp),
         replacement
     )

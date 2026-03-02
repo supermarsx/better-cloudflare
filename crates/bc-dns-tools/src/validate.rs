@@ -137,10 +137,10 @@ pub fn validate_dns_record(input: &DNSRecordValidationInput) -> ValidationResult
     }
 
     // Hostname-like records: CNAME, NS, PTR, ALIAS, ANAME
-    if matches!(input.r#type.as_str(), "CNAME" | "NS" | "PTR" | "ALIAS" | "ANAME") {
-        if !is_valid_hostname(&input.content) {
-            issues.push(format!("{} content must be a valid hostname", input.r#type));
-        }
+    if matches!(input.r#type.as_str(), "CNAME" | "NS" | "PTR" | "ALIAS" | "ANAME")
+        && !is_valid_hostname(&input.content)
+    {
+        issues.push(format!("{} content must be a valid hostname", input.r#type));
     }
 
     // SPF record: must start with v=spf1 and parse
