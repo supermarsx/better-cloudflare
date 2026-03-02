@@ -216,15 +216,28 @@ function parseCaa(content: string): { flag?: number; tag?: string; value?: strin
 }
 
 function parseMx(
-  content: string,
+  record: DNSRecord,
   zoneName: string,
 ): { priority?: number; target?: string } {
-  const parts = String(content ?? "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return {};
-  const priority = Number(parts[0]);
-  const targetRaw = parts.slice(1).join(" ");
+  // Cloudflare returns MX priority in record.priority and the target hostname
+  // in record.content. Some providers put "priority target" in content, so
+  // handle both formats.
+  const raw = String(record.content ?? "").trim();
+  const parts = raw.split(/\s+/).filter(Boolean);
+  let priority: number | undefined = record.priority;
+  let targetRaw: string;
+
+  if (parts.length >= 2 && /^\d+$/.test(parts[0])) {
+    // "10 mail.example.com" format
+    priority = priority ?? Number(parts[0]);
+    targetRaw = parts.slice(1).join(" ");
+  } else {
+    // plain hostname format
+    targetRaw = raw;
+  }
+
   const target = normalizeTargetDomain(targetRaw, zoneName);
-  return { priority: Number.isFinite(priority) ? priority : undefined, target };
+  return { priority: Number.isFinite(priority!) ? priority : undefined, target: target || undefined };
 }
 
 export function runDomainAudit(
@@ -787,7 +800,7 @@ export function runDomainAudit(
     }
 
     if (mxAtApex.length > 1) {
-      const parsed = mxAtApex.map((r) => parseMx(r.content, normalizedZone));
+      const parsed = mxAtApex.map((r) => parseMx(r, normalizedZone));
       const priorities = parsed
         .map((p) => p.priority)
         .filter((p): p is number => p !== undefined);

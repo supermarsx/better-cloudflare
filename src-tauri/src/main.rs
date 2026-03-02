@@ -109,6 +109,13 @@ fn main() {
             commands::parse_spf,
             // Domain Audit
             commands::run_domain_audit,
+            // Biometric Authentication
+            commands::biometric_status,
+            commands::biometric_authenticate,
+            commands::biometric_store_secret,
+            commands::biometric_get_secret,
+            commands::biometric_delete_secret,
+            commands::biometric_has_secret,
         ])
         .setup(|app| {
             // Initialize storage

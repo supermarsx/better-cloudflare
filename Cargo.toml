@@ -1,16 +1,17 @@
 [workspace]
 members = [
     "src-tauri",
-    "crates/bc-crypto",
-    "crates/bc-storage",
-    "crates/bc-cloudflare-api",
-    "crates/bc-spf",
-    "crates/bc-passkey",
-    "crates/bc-registrar",
-    "crates/bc-topology",
-    "crates/bc-mcp",
-    "crates/bc-dns-tools",
-    "crates/bc-domain-audit",
+    "src-tauri/crates/bc-crypto",
+    "src-tauri/crates/bc-storage",
+    "src-tauri/crates/bc-cloudflare-api",
+    "src-tauri/crates/bc-spf",
+    "src-tauri/crates/bc-passkey",
+    "src-tauri/crates/bc-registrar",
+    "src-tauri/crates/bc-topology",
+    "src-tauri/crates/bc-mcp",
+    "src-tauri/crates/bc-dns-tools",
+    "src-tauri/crates/bc-domain-audit",
+    "src-tauri/crates/bc-biometrics",
 ]
 resolver = "2"
 

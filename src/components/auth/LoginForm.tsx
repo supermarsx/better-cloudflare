@@ -8,6 +8,7 @@ import { LoginHeader } from "./login-form/LoginHeader";
 import { LoginKeySelector } from "./login-form/LoginKeySelector";
 import { LoginActionButtons } from "./login-form/LoginActionButtons";
 import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
+import { LoginBiometricSection } from "./login-form/LoginBiometricSection";
 import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -82,6 +83,14 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     handleUpdateSettings,
     handleManagePasskeys,
     handleRemoveVaultSecret,
+    biometricAvailable,
+    biometricLabel,
+    biometricEnrolled,
+    biometricLoading,
+    desktop,
+    handleBiometricLogin,
+    handleBiometricEnroll,
+    handleBiometricRemove,
   } = useLoginForm(onLogin);
   const selectedKey = apiKeys.find((key) => key.id === selectedKeyId) ?? null;
   const [deleteTarget, setDeleteTarget] = useState<typeof selectedKey>(null);
@@ -136,6 +145,20 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             registerLoading={passkeyRegisterLoading}
             authLoading={passkeyAuthLoading}
             hasKeys={apiKeys.length > 0}
+          />
+
+          <LoginBiometricSection
+            biometricAvailable={biometricAvailable}
+            biometricLabel={biometricLabel}
+            biometricEnrolled={biometricEnrolled}
+            onBiometricLogin={handleBiometricLogin}
+            onBiometricEnroll={handleBiometricEnroll}
+            onBiometricRemove={handleBiometricRemove}
+            biometricLoading={biometricLoading}
+            selectedKeyId={selectedKeyId}
+            password={password}
+            hasKeys={apiKeys.length > 0}
+            desktop={desktop}
           />
 
           {vaultEnabled && (

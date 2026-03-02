@@ -704,4 +704,53 @@ export class ServerClient {
     }
     return this.request("/registrar/health", { signal });
   }
+
+  // ── Biometric Authentication ──────────────────────────────────────────────
+
+  /**
+   * Check biometric availability on the current device.
+   * Only available on desktop (Touch ID on macOS, Windows Hello).
+   */
+  static async biometricStatus(): Promise<{
+    available: boolean;
+    biometricType: string;
+    reason?: string;
+  }> {
+    if (isDesktop()) {
+      return TauriClient.biometricStatus();
+    }
+    return { available: false, biometricType: "none", reason: "Web mode" };
+  }
+
+  /** Prompt for biometric authentication (Touch ID / Windows Hello). */
+  static async biometricAuthenticate(reason: string): Promise<void> {
+    if (!isDesktop()) throw new Error("Biometrics only available on desktop");
+    return TauriClient.biometricAuthenticate(reason);
+  }
+
+  /** Store an API key protected by biometrics in the OS keychain. */
+  static async biometricStoreSecret(key: string, secret: string): Promise<void> {
+    if (!isDesktop()) throw new Error("Biometrics only available on desktop");
+    return TauriClient.biometricStoreSecret(key, secret);
+  }
+
+  /** Retrieve a biometric-protected API key (triggers Touch ID). */
+  static async biometricGetSecret(key: string, reason: string): Promise<string> {
+    if (!isDesktop()) throw new Error("Biometrics only available on desktop");
+    return TauriClient.biometricGetSecret(key, reason);
+  }
+
+  /** Delete a biometric-protected secret. */
+  static async biometricDeleteSecret(key: string): Promise<void> {
+    if (!isDesktop()) throw new Error("Biometrics only available on desktop");
+    return TauriClient.biometricDeleteSecret(key);
+  }
+
+  /** Check if a biometric-protected secret exists for a key without triggering auth. */
+  static async biometricHasSecret(key: string): Promise<boolean> {
+    if (isDesktop()) {
+      return TauriClient.biometricHasSecret(key);
+    }
+    return false;
+  }
 }

@@ -606,7 +606,7 @@ export class TauriClient {
   }
 
   static async composeTlsa(usage?: number, selector?: number, matchingType?: number, data?: string): Promise<string> {
-    return invoke("compose_tlsa", { usage, selector, matching_type: matchingType, data: data ?? "" });
+    return invoke("compose_tlsa", { usage, selector, matchingType, data: data ?? "" });
   }
 
   static async parseSshfp(content: string): Promise<SSHFPFields> {
@@ -663,6 +663,32 @@ export class TauriClient {
     options: DomainAuditOptions,
   ): Promise<DomainAuditItem[]> {
     return invoke("run_domain_audit", { zoneName, records, options });
+  }
+
+  // ── Biometric Authentication ──────────────────────────────────────────────
+
+  static async biometricStatus(): Promise<BiometricStatus> {
+    return invoke("biometric_status");
+  }
+
+  static async biometricAuthenticate(reason: string): Promise<void> {
+    return invoke("biometric_authenticate", { reason });
+  }
+
+  static async biometricStoreSecret(key: string, secret: string): Promise<void> {
+    return invoke("biometric_store_secret", { key, secret });
+  }
+
+  static async biometricGetSecret(key: string, reason: string): Promise<string> {
+    return invoke("biometric_get_secret", { key, reason });
+  }
+
+  static async biometricDeleteSecret(key: string): Promise<void> {
+    return invoke("biometric_delete_secret", { key });
+  }
+
+  static async biometricHasSecret(key: string): Promise<boolean> {
+    return invoke("biometric_has_secret", { key });
   }
 }
 
@@ -764,4 +790,14 @@ export interface DomainAuditOptions {
     hygiene: boolean;
   };
   domainExpiresAt?: string | null;
+}
+
+// ── Biometric types ────────────────────────────────────────────────────────
+
+export type BiometricType = "touchId" | "faceId" | "windowsHello" | "fingerprint" | "none";
+
+export interface BiometricStatus {
+  available: boolean;
+  biometricType: BiometricType;
+  reason?: string;
 }

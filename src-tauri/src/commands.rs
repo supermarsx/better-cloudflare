@@ -33,7 +33,7 @@ fn serialize_audit_entries(
             let detail_str = serde_json::to_string(&details).unwrap_or_else(|_| "{}".to_string());
             let escape = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
             rows.push(
-                vec![escape(timestamp), escape(operation), escape(resource), escape(&detail_str)]
+                [escape(timestamp), escape(operation), escape(resource), escape(&detail_str)]
                     .join(","),
             );
         }
@@ -1136,4 +1136,49 @@ pub fn run_domain_audit(
     options: bc_domain_audit::AuditOptions,
 ) -> Vec<bc_domain_audit::AuditItem> {
     bc_domain_audit::run_domain_audit(&zone_name, &records, &options)
+}
+
+// ─── Biometric Authentication ───────────────────────────────────────────────
+
+#[tauri::command]
+pub fn biometric_status() -> Result<serde_json::Value, String> {
+    serde_json::to_value(bc_biometrics::BiometricAuth::status()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn biometric_authenticate(reason: String) -> Result<(), String> {
+    bc_biometrics::BiometricAuth::authenticate(&reason).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn biometric_store_secret(key: String, secret: String) -> Result<(), String> {
+    bc_biometrics::BiometricAuth::store_protected_secret(
+        bc_biometrics::DEFAULT_SERVICE,
+        &key,
+        secret.as_bytes(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn biometric_get_secret(key: String, reason: String) -> Result<String, String> {
+    let data = bc_biometrics::BiometricAuth::get_protected_secret(
+        bc_biometrics::DEFAULT_SERVICE,
+        &key,
+        &reason,
+    )
+    .map_err(|e| e.to_string())?;
+    String::from_utf8(data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn biometric_delete_secret(key: String) -> Result<(), String> {
+    bc_biometrics::BiometricAuth::delete_protected_secret(bc_biometrics::DEFAULT_SERVICE, &key)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn biometric_has_secret(key: String) -> Result<bool, String> {
+    bc_biometrics::BiometricAuth::has_protected_secret(bc_biometrics::DEFAULT_SERVICE, &key)
+        .map_err(|e| e.to_string())
 }

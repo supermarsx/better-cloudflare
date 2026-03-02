@@ -74,6 +74,12 @@ export function useLoginForm(
     storageManager.getVaultEnabled(),
   );
 
+  // ── Biometric state ───────────────────────────────────────────────────────
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricLabel, setBiometricLabel] = useState("Biometric");
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [biometricLoading, setBiometricLoading] = useState(false);
+
   useEffect(() => {
     if (backend !== "indexeddb") {
       toast({
@@ -146,6 +152,34 @@ export function useLoginForm(
       setApiKeys([]);
     });
   }, [desktop]);
+
+  // Check biometric hardware availability on mount
+  useEffect(() => {
+    if (!desktop) return;
+    ServerClient.biometricStatus()
+      .then((status) => {
+        setBiometricAvailable(status.available);
+        const labels: Record<string, string> = {
+          touchId: "Touch ID",
+          faceId: "Face ID",
+          windowsHello: "Windows Hello",
+          fingerprint: "Fingerprint",
+        };
+        setBiometricLabel(labels[status.biometricType] ?? "Biometric");
+      })
+      .catch(() => setBiometricAvailable(false));
+  }, [desktop]);
+
+  // Check whether the selected key has a biometric enrolment
+  useEffect(() => {
+    if (!desktop || !biometricAvailable || !selectedKeyId) {
+      setBiometricEnrolled(false);
+      return;
+    }
+    ServerClient.biometricHasSecret(selectedKeyId)
+      .then((has) => setBiometricEnrolled(has))
+      .catch(() => setBiometricEnrolled(false));
+  }, [desktop, biometricAvailable, selectedKeyId]);
 
   const handleLogin = async () => {
     if (!selectedKeyId || !password) {
@@ -692,6 +726,88 @@ export function useLoginForm(
     }
   };
 
+  // ── Biometric handlers ──────────────────────────────────────────────────
+
+  /** Login using biometric-protected secret (Touch ID / Windows Hello). */
+  const handleBiometricLogin = async () => {
+    if (!selectedKeyId) return;
+    setBiometricLoading(true);
+    try {
+      const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+      const decryptedKey = await ServerClient.biometricGetSecret(
+        selectedKeyId,
+        `Unlock ${selectedKey?.label ?? "API key"} with ${biometricLabel}`,
+      );
+      if (!decryptedKey) {
+        toast({ title: "Error", description: "No key returned from keychain", variant: "destructive" });
+        return;
+      }
+
+      // Verify the key still works
+      try {
+        await verifyToken(decryptedKey, selectedKey?.email);
+      } catch (err) {
+        toast({ title: "Error", description: formatError(err), variant: "destructive" });
+        return;
+      }
+
+      storageManager.setCurrentSession(selectedKeyId);
+      onLogin(decryptedKey, selectedKey?.email);
+      toast({ title: "Success", description: `Logged in with ${biometricLabel}` });
+    } catch (err) {
+      const msg = formatError(err);
+      if (msg.toLowerCase().includes("cancel")) {
+        // User cancelled biometric prompt — no toast needed
+        return;
+      }
+      toast({ title: "Error", description: `${biometricLabel} login failed: ${msg}`, variant: "destructive" });
+    } finally {
+      setBiometricLoading(false);
+    }
+  };
+
+  /** Enrol the currently selected key for biometric unlock. Requires password. */
+  const handleBiometricEnroll = async () => {
+    if (!selectedKeyId || !password) {
+      toast({ title: "Error", description: "Select a key and enter your password first", variant: "destructive" });
+      return;
+    }
+    setBiometricLoading(true);
+    try {
+      const decrypted = desktop
+        ? await TauriClient.decryptApiKey(selectedKeyId, password)
+        : await storageManager.getDecryptedApiKey(selectedKeyId, password);
+      const decryptedKey = typeof decrypted === "string" ? decrypted : decrypted?.key;
+      if (!decryptedKey) {
+        toast({ title: "Error", description: "Invalid password or corrupted key", variant: "destructive" });
+        return;
+      }
+
+      await ServerClient.biometricStoreSecret(selectedKeyId, decryptedKey);
+      setBiometricEnrolled(true);
+      toast({ title: "Success", description: `${biometricLabel} unlock enabled` });
+    } catch (err) {
+      toast({ title: "Error", description: `Failed to enable ${biometricLabel}: ${formatError(err)}`, variant: "destructive" });
+    } finally {
+      setBiometricLoading(false);
+    }
+  };
+
+  /** Remove biometric enrolment for the currently selected key. */
+  const handleBiometricRemove = async () => {
+    if (!selectedKeyId) return;
+    setBiometricLoading(true);
+    try {
+      await ServerClient.biometricDeleteSecret(selectedKeyId);
+      setBiometricEnrolled(false);
+      toast({ title: "Success", description: `${biometricLabel} unlock removed` });
+    } catch (err) {
+      toast({ title: "Error", description: `Failed to remove ${biometricLabel}: ${formatError(err)}`, variant: "destructive" });
+    } finally {
+      setBiometricLoading(false);
+    }
+  };
+
   const handleRemoveVaultSecret = async () => {
     if (!selectedKeyId || !password) {
       toast({
@@ -804,5 +920,14 @@ export function useLoginForm(
     handleUpdateSettings,
     handleManagePasskeys,
     handleRemoveVaultSecret,
+    // Biometric
+    biometricAvailable,
+    biometricLabel,
+    biometricEnrolled,
+    biometricLoading,
+    desktop,
+    handleBiometricLogin,
+    handleBiometricEnroll,
+    handleBiometricRemove,
   };
 }
