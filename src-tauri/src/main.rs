@@ -8,11 +8,13 @@ mod cloudflare_api;
 mod passkey;
 mod registrar_commands;
 mod mcp_server;
+mod session;
 
 use tauri::Manager;
 use crate::storage::Storage;
 use crate::passkey::PasskeyManager;
 use crate::mcp_server::McpServerManager;
+use crate::session::SessionManager;
 
 fn main() {
     tauri::Builder::default()
@@ -20,6 +22,7 @@ fn main() {
         .manage(Storage::default())
         .manage(PasskeyManager::default())
         .manage(McpServerManager::default())
+        .manage(SessionManager::default())
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
             commands::restart_app,
@@ -143,6 +146,12 @@ fn main() {
             commands::delete_bulk_dns_records,
             // DNS Propagation
             commands::check_dns_propagation,
+            // Session Management
+            commands::session_login,
+            commands::session_logout,
+            commands::session_status,
+            commands::session_touch,
+            commands::session_set_idle_timeout,
         ])
         .setup(|app| {
             // Initialize storage

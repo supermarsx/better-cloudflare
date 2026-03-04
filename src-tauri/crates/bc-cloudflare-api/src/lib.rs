@@ -51,6 +51,16 @@ impl CloudflareClient {
         }
     }
 
+    /// Create a client sharing an existing `reqwest::Client` for connection pooling.
+    pub fn with_client(client: Client, api_key: &str, email: Option<&str>) -> Self {
+        Self {
+            client,
+            api_key: api_key.to_string(),
+            email: email.map(|s| s.to_string()),
+            max_retries: MAX_RETRIES,
+        }
+    }
+
     /// Set the maximum number of retries for rate-limited or server-error responses.
     pub fn with_max_retries(mut self, retries: u32) -> Self {
         self.max_retries = retries;

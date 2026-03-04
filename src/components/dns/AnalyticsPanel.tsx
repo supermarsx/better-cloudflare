@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/hooks/use-i18n";
 import {
   Select,
   SelectContent,
@@ -65,6 +66,35 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+/** Simple SVG sparkline for timeseries data */
+function Sparkline({
+  data,
+  width = 280,
+  height = 60,
+  color = "currentColor",
+}: {
+  data: number[];
+  width?: number;
+  height?: number;
+  color?: string;
+}) {
+  if (data.length < 2) return null;
+  const max = Math.max(...data, 1);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const step = width / (data.length - 1);
+  const points = data
+    .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height * 0.9 - height * 0.05).toFixed(1)}`)
+    .join(" ");
+  const areaPoints = `0,${height} ${points} ${width},${height}`;
+  return (
+    <svg width={width} height={height} className="overflow-visible">
+      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
+      <polygon fill={color} fillOpacity="0.1" points={areaPoints} />
+    </svg>
+  );
+}
+
 interface AnalyticsPanelProps {
   zoneId: string;
   getZoneAnalytics: (
@@ -76,6 +106,7 @@ interface AnalyticsPanelProps {
 }
 
 function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) {
+  const { t } = useI18n();
   const [data, setData] = useState<ZoneAnalyticsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +122,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
         if (!signal?.aborted) setData(result);
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : "Failed to load analytics");
+          setError(err instanceof Error ? err.message : t("Failed to load analytics", "Failed to load analytics"));
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -111,7 +142,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
       <div className="flex flex-col items-center gap-2 py-12 text-center">
         <p className="text-sm text-destructive">{error}</p>
         <Button size="sm" variant="outline" onClick={() => fetchData()}>
-          Retry
+          {t("Retry", "Retry")}
         </Button>
       </div>
     );
@@ -120,7 +151,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Zone Analytics</h3>
+        <h3 className="text-lg font-semibold">{t("Zone Analytics", "Zone Analytics")}</h3>
         <div className="flex items-center gap-2">
           <Select value={range} onValueChange={(v) => setRange(v as TimeRange)}>
             <SelectTrigger className="w-40">
@@ -129,13 +160,13 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             <SelectContent>
               {TIME_RANGES.map((r) => (
                 <SelectItem key={r.value} value={r.value}>
-                  {r.label}
+                  {t(r.label, r.label)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Button size="sm" variant="outline" onClick={() => fetchData()} disabled={loading}>
-            {loading ? "Loading…" : "Refresh"}
+            {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
           </Button>
         </div>
       </div>
@@ -147,7 +178,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Requests
+                  {t("Requests", "Requests")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -157,7 +188,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Bandwidth
+                  {t("Bandwidth", "Bandwidth")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -167,7 +198,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Threats
+                  {t("Threats", "Threats")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -177,7 +208,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Page Views
+                  {t("Page Views", "Page Views")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -186,22 +217,48 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
             </Card>
           </div>
 
+          {/* Sparkline charts */}
+          {data.timeseries.length >= 2 && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Card>
+                <CardHeader className="pb-1">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">
+                    {t("Requests Over Time", "Requests Over Time")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Sparkline data={data.timeseries.map((p) => p.requests)} color="var(--color-primary, #3b82f6)" />
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-1">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">
+                    {t("Bandwidth Over Time", "Bandwidth Over Time")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Sparkline data={data.timeseries.map((p) => p.bandwidth)} color="var(--color-primary, #10b981)" />
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {/* Timeseries table */}
           {data.timeseries.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Timeseries</CardTitle>
+                <CardTitle className="text-sm">{t("Timeseries", "Timeseries")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="max-h-64 overflow-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">
-                        <th className="pb-1 pr-3">Period</th>
-                        <th className="pb-1 pr-3 text-right">Requests</th>
-                        <th className="pb-1 pr-3 text-right">Bandwidth</th>
-                        <th className="pb-1 pr-3 text-right">Threats</th>
-                        <th className="pb-1 text-right">Views</th>
+                        <th className="pb-1 pr-3">{t("Period", "Period")}</th>
+                        <th className="pb-1 pr-3 text-right">{t("Requests", "Requests")}</th>
+                        <th className="pb-1 pr-3 text-right">{t("Bandwidth", "Bandwidth")}</th>
+                        <th className="pb-1 pr-3 text-right">{t("Threats", "Threats")}</th>
+                        <th className="pb-1 text-right">{t("Views", "Views")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -232,7 +289,7 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
 
       {loading && !data && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading analytics…</p>
+          <p className="text-sm text-muted-foreground">{t("Loading analytics…", "Loading analytics…")}</p>
         </div>
       )}
     </div>

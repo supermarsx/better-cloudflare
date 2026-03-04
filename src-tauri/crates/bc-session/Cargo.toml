@@ -1,0 +1,16 @@
+[package]
+name = "bc-session"
+version = "0.1.0"
+edition = "2021"
+description = "Session state management: holds decrypted API credentials, shared reqwest::Client, and idle timeout"
+
+[dependencies]
+bc-cloudflare-api = { path = "../bc-cloudflare-api" }
+bc-error = { path = "../bc-error" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "time"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

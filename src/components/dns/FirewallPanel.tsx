@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import { useI18n } from "@/hooks/use-i18n";
 
 interface FirewallRule {
   id: string;
@@ -46,6 +47,12 @@ interface FirewallPanelProps {
   getFirewallRules: (zoneId: string, signal?: AbortSignal) => Promise<unknown[]>;
   createFirewallRule: (
     zoneId: string,
+    rule: { action: string; description?: string; filter: { expression: string } },
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
+  updateFirewallRule?: (
+    zoneId: string,
+    ruleId: string,
     rule: { action: string; description?: string; filter: { expression: string } },
     signal?: AbortSignal,
   ) => Promise<unknown>;
@@ -84,18 +91,26 @@ function FirewallPanelInner({
   zoneId,
   getFirewallRules,
   createFirewallRule,
+  updateFirewallRule,
   deleteFirewallRule,
   getIpAccessRules,
   createIpAccessRule,
   deleteIpAccessRule,
   getWafRulesets,
 }: FirewallPanelProps) {
+  const { t } = useI18n();
   const [subtab, setSubtab] = useState<FirewallSubtab>("rules");
   const [rules, setRules] = useState<FirewallRule[]>([]);
   const [ipRules, setIpRules] = useState<IpAccessRule[]>([]);
   const [wafRulesets, setWafRulesets] = useState<WafRuleset[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Inline editing
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editExpression, setEditExpression] = useState("");
+  const [editAction, setEditAction] = useState("block");
+  const [editDescription, setEditDescription] = useState("");
 
   // New rule form
   const [newExpression, setNewExpression] = useState("");
@@ -124,7 +139,7 @@ function FirewallPanelInner({
         }
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : "Failed to load firewall data");
+          setError(err instanceof Error ? err.message : t("Failed to load firewall data", "Failed to load firewall data"));
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -151,7 +166,7 @@ function FirewallPanelInner({
       setNewDescription("");
       fetchRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create rule");
+      setError(err instanceof Error ? err.message : t("Failed to create rule", "Failed to create rule"));
     }
   };
 
@@ -160,7 +175,29 @@ function FirewallPanelInner({
       await deleteFirewallRule(zoneId, ruleId);
       setRules((prev) => prev.filter((r) => r.id !== ruleId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete rule");
+      setError(err instanceof Error ? err.message : t("Failed to delete rule", "Failed to delete rule"));
+    }
+  };
+
+  const startEditRule = (rule: FirewallRule) => {
+    setEditingRuleId(rule.id);
+    setEditExpression(rule.filter.expression);
+    setEditAction(rule.action);
+    setEditDescription(rule.description ?? "");
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingRuleId || !updateFirewallRule) return;
+    try {
+      await updateFirewallRule(zoneId, editingRuleId, {
+        action: editAction,
+        description: editDescription || undefined,
+        filter: { expression: editExpression },
+      });
+      setEditingRuleId(null);
+      fetchRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("Failed to update rule", "Failed to update rule"));
     }
   };
 
@@ -172,7 +209,7 @@ function FirewallPanelInner({
       setNewIpNotes("");
       fetchRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create IP rule");
+      setError(err instanceof Error ? err.message : t("Failed to create IP rule", "Failed to create IP rule"));
     }
   };
 
@@ -181,16 +218,16 @@ function FirewallPanelInner({
       await deleteIpAccessRule(zoneId, ruleId);
       setIpRules((prev) => prev.filter((r) => r.id !== ruleId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete IP rule");
+      setError(err instanceof Error ? err.message : t("Failed to delete IP rule", "Failed to delete IP rule"));
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Firewall & WAF</h3>
+        <h3 className="text-lg font-semibold">{t("Firewall & WAF", "Firewall & WAF")}</h3>
         <Button size="sm" variant="outline" onClick={() => fetchRules()} disabled={loading}>
-          {loading ? "Loading…" : "Refresh"}
+          {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
         </Button>
       </div>
 
@@ -200,9 +237,9 @@ function FirewallPanelInner({
       <div className="flex gap-1 rounded-lg border p-0.5">
         {(
           [
-            { id: "rules", label: `Rules (${rules.length})` },
-            { id: "ip-access", label: `IP Access (${ipRules.length})` },
-            { id: "waf", label: `WAF (${wafRulesets.length})` },
+            { id: "rules", label: t("Rules ({{count}})", { count: rules.length, defaultValue: "Rules ({{count}})" }) },
+            { id: "ip-access", label: t("IP Access ({{count}})", { count: ipRules.length, defaultValue: "IP Access ({{count}})" }) },
+            { id: "waf", label: t("WAF ({{count}})", { count: wafRulesets.length, defaultValue: "WAF ({{count}})" }) },
           ] as { id: FirewallSubtab; label: string }[]
         ).map((tab) => (
           <button
@@ -225,11 +262,11 @@ function FirewallPanelInner({
         <div className="space-y-3">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Add Firewall Rule</CardTitle>
+              <CardTitle className="text-sm">{t("Add Firewall Rule", "Add Firewall Rule")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div>
-                <Label className="text-xs">Filter Expression</Label>
+                <Label className="text-xs">{t("Filter Expression", "Filter Expression")}</Label>
                 <Input
                   value={newExpression}
                   onChange={(e) => setNewExpression(e.target.value)}
@@ -239,7 +276,7 @@ function FirewallPanelInner({
               </div>
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <Label className="text-xs">Action</Label>
+                  <Label className="text-xs">{t("Action", "Action")}</Label>
                   <Select value={newAction} onValueChange={setNewAction}>
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue />
@@ -247,24 +284,24 @@ function FirewallPanelInner({
                     <SelectContent>
                       {FIREWALL_ACTIONS.map((a) => (
                         <SelectItem key={a.value} value={a.value}>
-                          {a.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                        {t(a.label, a.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 </div>
                 <div className="flex-1">
-                  <Label className="text-xs">Description</Label>
+                  <Label className="text-xs">{t("Description", "Description")}</Label>
                   <Input
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="Optional description"
+                    placeholder={t("Optional description", "Optional description")}
                     className="h-8 text-xs"
                   />
                 </div>
               </div>
               <Button size="sm" onClick={handleCreateRule} disabled={!newExpression.trim()}>
-                Create Rule
+                {t("Create Rule", "Create Rule")}
               </Button>
             </CardContent>
           </Card>
@@ -274,40 +311,91 @@ function FirewallPanelInner({
               {rules.map((rule) => (
                 <div
                   key={rule.id}
-                  className="flex items-center justify-between rounded-md border px-3 py-2"
+                  className="rounded-md border px-3 py-2"
                 >
-                  <div className="flex-1 space-y-0.5">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                          rule.action === "block"
-                            ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                            : rule.action === "allow"
-                              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                              : "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
-                        }`}
-                      >
-                        {rule.action}
-                      </span>
-                      {rule.description && (
-                        <span className="text-xs text-muted-foreground">{rule.description}</span>
-                      )}
-                      {rule.paused && (
-                        <span className="text-[10px] text-muted-foreground italic">paused</span>
-                      )}
+                  {editingRuleId === rule.id ? (
+                    <div className="space-y-2">
+                      <Input
+                        value={editExpression}
+                        onChange={(e) => setEditExpression(e.target.value)}
+                        className="font-mono text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <Select value={editAction} onValueChange={setEditAction}>
+                          <SelectTrigger className="h-8 w-40 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {FIREWALL_ACTIONS.map((a) => (
+                              <SelectItem key={a.value} value={a.value}>
+                                {t(a.label, a.label)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={editDescription}
+                          onChange={(e) => setEditDescription(e.target.value)}
+                          placeholder={t("Description", "Description")}
+                          className="h-8 flex-1 text-xs"
+                        />
+                      </div>
+                      <div className="flex gap-1">
+                        <Button size="sm" onClick={handleSaveEdit} disabled={!editExpression.trim()}>
+                          {t("Save", "Save")}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingRuleId(null)}>
+                          {t("Cancel", "Cancel")}
+                        </Button>
+                      </div>
                     </div>
-                    <p className="truncate font-mono text-[11px] text-muted-foreground">
-                      {rule.filter.expression}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => handleDeleteRule(rule.id)}
-                  >
-                    Delete
-                  </Button>
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                              rule.action === "block"
+                                ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                                : rule.action === "allow"
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  : "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+                            }`}
+                          >
+                            {rule.action}
+                          </span>
+                          {rule.description && (
+                            <span className="text-xs text-muted-foreground">{rule.description}</span>
+                          )}
+                          {rule.paused && (
+                            <span className="text-[10px] text-muted-foreground italic">{t("paused", "paused")}</span>
+                          )}
+                        </div>
+                        <p className="truncate font-mono text-[11px] text-muted-foreground">
+                          {rule.filter.expression}
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        {updateFirewallRule && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => startEditRule(rule)}
+                          >
+                            {t("Edit", "Edit")}
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => handleDeleteRule(rule.id)}
+                        >
+                          {t("Delete", "Delete")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -320,12 +408,12 @@ function FirewallPanelInner({
         <div className="space-y-3">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Add IP Access Rule</CardTitle>
+              <CardTitle className="text-sm">{t("Add IP Access Rule", "Add IP Access Rule")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <Label className="text-xs">IP Address / Range</Label>
+                  <Label className="text-xs">{t("IP Address / Range", "IP Address / Range")}</Label>
                   <Input
                     value={newIp}
                     onChange={(e) => setNewIp(e.target.value)}
@@ -334,7 +422,7 @@ function FirewallPanelInner({
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Mode</Label>
+                  <Label className="text-xs">{t("Mode", "Mode")}</Label>
                   <Select value={newIpMode} onValueChange={setNewIpMode}>
                     <SelectTrigger className="h-8 w-36 text-xs">
                       <SelectValue />
@@ -342,7 +430,7 @@ function FirewallPanelInner({
                     <SelectContent>
                       {IP_ACCESS_MODES.map((m) => (
                         <SelectItem key={m.value} value={m.value}>
-                          {m.label}
+                          {t(m.label, m.label)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -350,16 +438,16 @@ function FirewallPanelInner({
                 </div>
               </div>
               <div>
-                <Label className="text-xs">Notes</Label>
+                <Label className="text-xs">{t("Notes", "Notes")}</Label>
                 <Input
                   value={newIpNotes}
                   onChange={(e) => setNewIpNotes(e.target.value)}
-                  placeholder="Optional notes"
+                  placeholder={t("Optional notes", "Optional notes")}
                   className="h-8 text-xs"
                 />
               </div>
               <Button size="sm" onClick={handleCreateIpRule} disabled={!newIp.trim()}>
-                Add Rule
+                {t("Add Rule", "Add Rule")}
               </Button>
             </CardContent>
           </Card>
@@ -388,7 +476,7 @@ function FirewallPanelInner({
                     className="text-destructive hover:text-destructive"
                     onClick={() => handleDeleteIpRule(rule.id)}
                   >
-                    Delete
+                    {t("Delete", "Delete")}
                   </Button>
                 </div>
               ))}
@@ -396,7 +484,7 @@ function FirewallPanelInner({
           )}
 
           {ipRules.length === 0 && !loading && (
-            <p className="py-6 text-center text-sm text-muted-foreground">No IP access rules</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">{t("No IP access rules", "No IP access rules")}</p>
           )}
         </div>
       )}
@@ -420,14 +508,14 @@ function FirewallPanelInner({
               </div>
             ))
           ) : (
-            <p className="py-6 text-center text-sm text-muted-foreground">No WAF rulesets</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">{t("No WAF rulesets", "No WAF rulesets")}</p>
           )}
         </div>
       )}
 
       {loading && !rules.length && !ipRules.length && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading firewall data…</p>
+          <p className="text-sm text-muted-foreground">{t("Loading firewall data…", "Loading firewall data…")}</p>
         </div>
       )}
     </div>

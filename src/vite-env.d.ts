@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 declare module "*.css";
+declare module "mermaid";
 
 interface ImportMetaEnv {
   readonly [key: string]: string | undefined;

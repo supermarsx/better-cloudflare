@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import { useI18n } from "@/hooks/use-i18n";
 import type { EmailRoutingRuleInput } from "@/lib/api/tauri-client";
 
 interface EmailRoutingSettings {
@@ -58,6 +59,7 @@ function EmailRoutingPanelInner({
   createEmailRoutingRule,
   deleteEmailRoutingRule,
 }: EmailRoutingPanelProps) {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<EmailRoutingSettings | null>(null);
   const [rules, setRules] = useState<EmailRoutingRule[]>([]);
   const [loading, setLoading] = useState(false);
@@ -84,7 +86,7 @@ function EmailRoutingPanelInner({
         }
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : "Failed to load email routing");
+          setError(err instanceof Error ? err.message : t("Failed to load email routing", "Failed to load email routing"));
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -113,7 +115,7 @@ function EmailRoutingPanelInner({
       setNewForwardTo("");
       fetchData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create rule");
+      setError(err instanceof Error ? err.message : t("Failed to create rule", "Failed to create rule"));
     }
   };
 
@@ -122,16 +124,16 @@ function EmailRoutingPanelInner({
       await deleteEmailRoutingRule(zoneId, ruleId);
       setRules((prev) => prev.filter((r) => (r.id ?? r.tag) !== ruleId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete rule");
+      setError(err instanceof Error ? err.message : t("Failed to delete rule", "Failed to delete rule"));
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Email Routing</h3>
+        <h3 className="text-lg font-semibold">{t("Email Routing", "Email Routing")}</h3>
         <Button size="sm" variant="outline" onClick={() => fetchData()} disabled={loading}>
-          {loading ? "Loading…" : "Refresh"}
+          {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
         </Button>
       </div>
 
@@ -141,7 +143,7 @@ function EmailRoutingPanelInner({
       {settings && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Settings</CardTitle>
+            <CardTitle className="text-sm">{t("Settings", "Settings")}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-4 text-sm">
@@ -155,10 +157,10 @@ function EmailRoutingPanelInner({
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${settings.enabled ? "bg-green-500" : "bg-muted-foreground"}`}
                 />
-                {settings.enabled ? "Enabled" : "Disabled"}
+                {settings.enabled ? t("Enabled", "Enabled") : t("Disabled", "Disabled")}
               </span>
               {settings.status && (
-                <span className="text-xs text-muted-foreground">Status: {settings.status}</span>
+                <span className="text-xs text-muted-foreground">{t("Status: {{status}}", { status: settings.status, defaultValue: "Status: {{status}}" })}</span>
               )}
             </div>
           </CardContent>
@@ -168,21 +170,21 @@ function EmailRoutingPanelInner({
       {/* New rule form */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">New Routing Rule</CardTitle>
+          <CardTitle className="text-sm">{t("New Routing Rule", "New Routing Rule")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <div>
-            <Label className="text-xs">Rule Name</Label>
+            <Label className="text-xs">{t("Rule Name", "Rule Name")}</Label>
             <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="Optional name"
+              placeholder={t("Optional name", "Optional name")}
               className="h-8 text-xs"
             />
           </div>
           <div className="flex gap-2">
             <div className="flex-1">
-              <Label className="text-xs">Match Address (To)</Label>
+              <Label className="text-xs">{t("Match Address (To)", "Match Address (To)")}</Label>
               <Input
                 value={newMatchAddress}
                 onChange={(e) => setNewMatchAddress(e.target.value)}
@@ -191,7 +193,7 @@ function EmailRoutingPanelInner({
               />
             </div>
             <div className="flex-1">
-              <Label className="text-xs">Forward To</Label>
+              <Label className="text-xs">{t("Forward To", "Forward To")}</Label>
               <Input
                 value={newForwardTo}
                 onChange={(e) => setNewForwardTo(e.target.value)}
@@ -202,14 +204,14 @@ function EmailRoutingPanelInner({
           </div>
           <div className="flex items-center gap-2">
             <Switch checked={newEnabled} onCheckedChange={setNewEnabled} />
-            <Label className="text-xs">Enabled</Label>
+            <Label className="text-xs">{t("Enabled", "Enabled")}</Label>
           </div>
           <Button
             size="sm"
             onClick={handleCreateRule}
             disabled={!newMatchAddress.trim() || !newForwardTo.trim()}
           >
-            Create Rule
+            {t("Create Rule", "Create Rule")}
           </Button>
         </CardContent>
       </Card>
@@ -230,7 +232,7 @@ function EmailRoutingPanelInner({
                     <span
                       className={`text-[10px] ${rule.enabled ? "text-green-600" : "text-muted-foreground"}`}
                     >
-                      {rule.enabled ? "Active" : "Disabled"}
+                      {rule.enabled ? t("Active", "Active") : t("Disabled", "Disabled")}
                     </span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -253,7 +255,7 @@ function EmailRoutingPanelInner({
                   className="text-destructive hover:text-destructive"
                   onClick={() => handleDeleteRule(ruleId)}
                 >
-                  Delete
+                  {t("Delete", "Delete")}
                 </Button>
               </div>
             );
@@ -263,14 +265,14 @@ function EmailRoutingPanelInner({
         !loading &&
         settings && (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            No email routing rules configured
+            {t("No email routing rules configured", "No email routing rules configured")}
           </p>
         )
       )}
 
       {loading && !settings && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading email routing…</p>
+          <p className="text-sm text-muted-foreground">{t("Loading email routing…", "Loading email routing…")}</p>
         </div>
       )}
     </div>

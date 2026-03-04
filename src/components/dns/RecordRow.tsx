@@ -73,6 +73,7 @@ import { AnameBuilder } from "@/components/dns/builders/AnameBuilder";
 import { SvcbBuilder } from "@/components/dns/builders/SvcbBuilder";
 import {
   Copy,
+  CopyPlus,
   Edit2,
   Trash2,
   Save,
@@ -156,6 +157,8 @@ export interface RecordRowProps {
   onSelectChange?: (selected: boolean) => void | Promise<void>;
   /** Copy the record to the clipboard buffer */
   onCopy?: () => void | Promise<void>;
+  /** Clone this record (pre-fill the add dialog with this record's data) */
+  onClone?: () => void | Promise<void>;
   /** Toggle Cloudflare proxy status for supported types. */
   onToggleProxy?: (next: boolean) => void | Promise<void>;
   /** Optional SPF simulation helper for TXT/SPF assistants. */
@@ -186,6 +189,7 @@ export function RecordRow({
   onDelete,
   onSelectChange,
   onCopy,
+  onClone,
   onToggleProxy,
   simulateSPF,
   getSPFGraph,
@@ -637,6 +641,16 @@ export function RecordRow({
           <Copy className="mr-2 h-3.5 w-3.5" />
           {t("Copy", "Copy")}
         </DropdownMenuItem>
+        {onClone && (
+          <DropdownMenuItem
+            onSelect={() => {
+              onClone();
+            }}
+          >
+            <CopyPlus className="mr-2 h-3.5 w-3.5" />
+            {t("Clone", "Clone")}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className="text-destructive focus:text-destructive"
@@ -649,7 +663,7 @@ export function RecordRow({
         </DropdownMenuItem>
       </>
     );
-  }, [onCopy, onDelete, onEdit, t]);
+  }, [onClone, onCopy, onDelete, onEdit, t]);
 
   const renderContextMenuItems = useCallback(() => {
     return (
@@ -671,6 +685,16 @@ export function RecordRow({
           <Copy className="mr-2 h-3.5 w-3.5" />
           {t("Copy", "Copy")}
         </ContextMenuItem>
+        {onClone && (
+          <ContextMenuItem
+            onSelect={() => {
+              onClone();
+            }}
+          >
+            <CopyPlus className="mr-2 h-3.5 w-3.5" />
+            {t("Clone", "Clone")}
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"
@@ -683,7 +707,7 @@ export function RecordRow({
         </ContextMenuItem>
       </>
     );
-  }, [onCopy, onDelete, onEdit, t]);
+  }, [onClone, onCopy, onDelete, onEdit, t]);
 
   if (isEditing) {
     return (

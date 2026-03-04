@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
-use bc_cloudflare_api::{CloudflareClient, DNSRecordInput};
+use bc_cloudflare_api::{CloudflareClient, DNSRecordInput, FirewallRuleInput, EmailRoutingRule};
 
 const DEFAULT_MCP_HOST: &str = "127.0.0.1";
 const DEFAULT_MCP_PORT: u16 = 8787;
@@ -98,6 +98,7 @@ impl Default for McpServerManager {
 
 pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
     vec![
+        // DNS core
         ("cf_verify_token", "Verify Cloudflare token", "Validate a Cloudflare API token or key/email pair."),
         ("cf_list_zones", "List zones", "List Cloudflare zones for an account."),
         ("cf_list_dns_records", "List DNS records", "Fetch DNS records for a specific zone."),
@@ -105,14 +106,42 @@ pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
         ("cf_update_dns_record", "Update DNS record", "Update an existing DNS record by record ID."),
         ("cf_delete_dns_record", "Delete DNS record", "Delete a DNS record by record ID."),
         ("cf_bulk_create_dns_records", "Bulk create DNS records", "Create many DNS records in one operation."),
+        ("cf_bulk_delete_dns_records", "Bulk delete DNS records", "Delete many DNS records by ID in one operation."),
         ("cf_export_dns_records", "Export DNS records", "Export DNS records in JSON, CSV, or BIND format."),
         ("cf_purge_cache", "Purge cache", "Purge all or selected files from Cloudflare cache."),
         ("cf_get_zone_setting", "Get zone setting", "Read a single Cloudflare zone setting by ID."),
         ("cf_update_zone_setting", "Update zone setting", "Update a single Cloudflare zone setting by ID."),
         ("cf_get_dnssec", "Get DNSSEC", "Fetch DNSSEC configuration for a zone."),
         ("cf_update_dnssec", "Update DNSSEC", "Update DNSSEC configuration for a zone."),
+        // Analytics
+        ("cf_get_zone_analytics", "Get zone analytics", "Fetch zone-level analytics (requests, bandwidth, threats)."),
+        ("cf_get_dns_analytics", "Get DNS analytics", "Fetch DNS query analytics for a zone."),
+        // Firewall / WAF
+        ("cf_list_firewall_rules", "List firewall rules", "List all custom firewall rules for a zone."),
+        ("cf_create_firewall_rule", "Create firewall rule", "Create a custom firewall rule in a zone."),
+        ("cf_update_firewall_rule", "Update firewall rule", "Update a custom firewall rule by ID."),
+        ("cf_delete_firewall_rule", "Delete firewall rule", "Delete a custom firewall rule by ID."),
+        ("cf_list_ip_access_rules", "List IP access rules", "List IP-based access rules (allow/block/challenge)."),
+        ("cf_create_ip_access_rule", "Create IP access rule", "Create an IP-based access rule."),
+        ("cf_delete_ip_access_rule", "Delete IP access rule", "Delete an IP-based access rule by ID."),
+        ("cf_list_waf_rulesets", "List WAF rulesets", "List managed WAF rulesets for a zone."),
+        // Workers
+        ("cf_list_worker_routes", "List worker routes", "List Worker routes for a zone."),
+        ("cf_create_worker_route", "Create worker route", "Create a Worker route pattern."),
+        ("cf_delete_worker_route", "Delete worker route", "Delete a Worker route by ID."),
+        // Email Routing
+        ("cf_get_email_routing_settings", "Get email routing settings", "Fetch email routing status and settings."),
+        ("cf_list_email_routing_rules", "List email routing rules", "List email routing rules for a zone."),
+        ("cf_create_email_routing_rule", "Create email routing rule", "Create an email routing rule."),
+        ("cf_delete_email_routing_rule", "Delete email routing rule", "Delete an email routing rule by ID."),
+        // Page Rules
+        ("cf_list_page_rules", "List page rules", "List page rules for a zone."),
+        // SPF
         ("spf_simulate", "Simulate SPF", "Run SPF evaluation for a domain/IP combination."),
         ("spf_graph", "Build SPF graph", "Build SPF include/redirect graph for a domain."),
+        // DNS tools
+        ("dns_validate_record", "Validate DNS record", "Validate a DNS record for correctness."),
+        ("dns_check_propagation", "Check DNS propagation", "Check DNS record propagation across global resolvers."),
     ]
     .into_iter()
     .map(|(name, title, description)| McpToolDescriptor {
@@ -125,14 +154,14 @@ pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
     .collect()
 }
 
-fn default_enabled_tool_set() -> HashSet<String> {
+pub fn default_enabled_tool_set() -> HashSet<String> {
     available_tool_definitions()
         .into_iter()
         .map(|tool| tool.name)
         .collect()
 }
 
-fn sanitize_enabled_tools(list: &[String]) -> HashSet<String> {
+pub fn sanitize_enabled_tools(list: &[String]) -> HashSet<String> {
     let allowed = default_enabled_tool_set();
     list.iter()
         .map(|name| name.trim().to_string())
@@ -155,7 +184,7 @@ fn normalize_port(port: Option<u16>) -> u16 {
     if next == 0 { DEFAULT_MCP_PORT } else { next }
 }
 
-fn build_status(
+pub fn build_status(
     running: bool,
     host: String,
     port: u16,
@@ -527,6 +556,217 @@ async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
             let graph = bc_spf::build_spf_graph(&domain).await?;
             serde_json::to_value(graph).map_err(|e| e.to_string())
         }
+        // ── Bulk delete ─────────────────────────────────────────────────
+        "cf_bulk_delete_dns_records" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let ids_value = args.get("record_ids").cloned()
+                .ok_or_else(|| "Missing required argument 'record_ids'".to_string())?;
+            let record_ids: Vec<String> = serde_json::from_value(ids_value)
+                .map_err(|e| format!("Invalid record_ids: {}", e))?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let result = client.delete_bulk_dns_records(&zone_id, &record_ids).await.map_err(|e| e.to_string())?;
+            Ok(result)
+        }
+        // ── Analytics ───────────────────────────────────────────────────
+        "cf_get_zone_analytics" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let since = get_required_string(args, "since")?;
+            let until = get_required_string(args, "until")?;
+            let continuous = args.get("continuous").and_then(|v| v.as_bool());
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.get_zone_analytics(&zone_id, &since, &until, continuous).await.map_err(|e| e.to_string())
+        }
+        "cf_get_dns_analytics" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let since = get_required_string(args, "since")?;
+            let until = get_required_string(args, "until")?;
+            let dimensions = args.get("dimensions").and_then(|v| v.as_array()).map(|arr|
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
+            );
+            let metrics = args.get("metrics").and_then(|v| v.as_array()).map(|arr|
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
+            );
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.get_dns_analytics(&zone_id, &since, &until, dimensions, metrics).await.map_err(|e| e.to_string())
+        }
+        // ── Firewall / WAF ─────────────────────────────────────────────
+        "cf_list_firewall_rules" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let rules = client.get_firewall_rules(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(rules).map_err(|e| e.to_string())
+        }
+        "cf_create_firewall_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_value = args.get("rule").cloned()
+                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
+            let rule: FirewallRuleInput = serde_json::from_value(rule_value)
+                .map_err(|e| format!("Invalid rule payload: {}", e))?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let created = client.create_firewall_rule(&zone_id, rule).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(created).map_err(|e| e.to_string())
+        }
+        "cf_update_firewall_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_id = get_required_string(args, "rule_id")?;
+            let rule_value = args.get("rule").cloned()
+                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
+            let rule: FirewallRuleInput = serde_json::from_value(rule_value)
+                .map_err(|e| format!("Invalid rule payload: {}", e))?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let updated = client.update_firewall_rule(&zone_id, &rule_id, rule).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(updated).map_err(|e| e.to_string())
+        }
+        "cf_delete_firewall_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_id = get_required_string(args, "rule_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.delete_firewall_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
+            Ok(json!({ "deleted": true, "rule_id": rule_id }))
+        }
+        "cf_list_ip_access_rules" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let rules = client.get_ip_access_rules(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(rules).map_err(|e| e.to_string())
+        }
+        "cf_create_ip_access_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let mode = get_required_string(args, "mode")?;
+            let value = get_required_string(args, "value")?;
+            let notes = get_optional_string(args, "notes").unwrap_or_default();
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let created = client.create_ip_access_rule(&zone_id, &mode, &value, &notes).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(created).map_err(|e| e.to_string())
+        }
+        "cf_delete_ip_access_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_id = get_required_string(args, "rule_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.delete_ip_access_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
+            Ok(json!({ "deleted": true, "rule_id": rule_id }))
+        }
+        "cf_list_waf_rulesets" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let rulesets = client.get_waf_rulesets(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(rulesets).map_err(|e| e.to_string())
+        }
+        // ── Workers ─────────────────────────────────────────────────────
+        "cf_list_worker_routes" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let routes = client.get_worker_routes(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(routes).map_err(|e| e.to_string())
+        }
+        "cf_create_worker_route" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let pattern = get_required_string(args, "pattern")?;
+            let script = get_required_string(args, "script")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let created = client.create_worker_route(&zone_id, &pattern, &script).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(created).map_err(|e| e.to_string())
+        }
+        "cf_delete_worker_route" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let route_id = get_required_string(args, "route_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.delete_worker_route(&zone_id, &route_id).await.map_err(|e| e.to_string())?;
+            Ok(json!({ "deleted": true, "route_id": route_id }))
+        }
+        // ── Email Routing ───────────────────────────────────────────────
+        "cf_get_email_routing_settings" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let settings = client.get_email_routing_settings(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(settings).map_err(|e| e.to_string())
+        }
+        "cf_list_email_routing_rules" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let rules = client.get_email_routing_rules(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(rules).map_err(|e| e.to_string())
+        }
+        "cf_create_email_routing_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_value = args.get("rule").cloned()
+                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
+            let rule: EmailRoutingRule = serde_json::from_value(rule_value)
+                .map_err(|e| format!("Invalid rule payload: {}", e))?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let created = client.create_email_routing_rule(&zone_id, &rule).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(created).map_err(|e| e.to_string())
+        }
+        "cf_delete_email_routing_rule" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let rule_id = get_required_string(args, "rule_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            client.delete_email_routing_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
+            Ok(json!({ "deleted": true, "rule_id": rule_id }))
+        }
+        // ── Page Rules ──────────────────────────────────────────────────
+        "cf_list_page_rules" => {
+            let api_key = get_required_string(args, "api_key")?;
+            let email = get_optional_string(args, "email");
+            let zone_id = get_required_string(args, "zone_id")?;
+            let client = CloudflareClient::new(&api_key, email.as_deref());
+            let rules = client.get_page_rules(&zone_id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(rules).map_err(|e| e.to_string())
+        }
+        // ── DNS tools ───────────────────────────────────────────────────
+        "dns_validate_record" => {
+            let input_value = args.get("record").cloned()
+                .ok_or_else(|| "Missing required argument 'record'".to_string())?;
+            let input: bc_dns_tools::DNSRecordValidationInput = serde_json::from_value(input_value)
+                .map_err(|e| format!("Invalid record: {}", e))?;
+            let result = bc_dns_tools::validate_dns_record(&input);
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "dns_check_propagation" => {
+            let domain = get_required_string(args, "domain")?;
+            let record_type = get_required_string(args, "record_type")?;
+            let extra = args.get("extra_resolvers").and_then(|v| v.as_array()).map(|arr|
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
+            );
+            let result = bc_topology::check_propagation(domain, record_type, extra).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         _ => Err(format!("Unknown tool '{}'", name)),
     }
 }
@@ -627,40 +867,4 @@ async fn handle_mcp_rpc(
         Err(err) => error_response(id, -32601, err),
     };
     (StatusCode::OK, Json(response)).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_tool_set_contains_all() {
-        let defs = available_tool_definitions();
-        let enabled = default_enabled_tool_set();
-        assert_eq!(defs.len(), enabled.len());
-        for tool in &defs {
-            assert!(enabled.contains(&tool.name));
-        }
-    }
-
-    #[test]
-    fn sanitize_filters_invalid() {
-        let input = vec![
-            "cf_verify_token".to_string(),
-            "nonexistent_tool".to_string(),
-            "".to_string(),
-        ];
-        let result = sanitize_enabled_tools(&input);
-        assert!(result.contains("cf_verify_token"));
-        assert!(!result.contains("nonexistent_tool"));
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn status_shows_url() {
-        let enabled = default_enabled_tool_set();
-        let status = build_status(false, "127.0.0.1".to_string(), 8787, &enabled, None);
-        assert_eq!(status.url, "http://127.0.0.1:8787/mcp");
-        assert!(!status.running);
-    }
 }

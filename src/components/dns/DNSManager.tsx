@@ -73,6 +73,9 @@ import { EmailRoutingPanel } from "./EmailRoutingPanel";
 import { PropagationChecker } from "./PropagationChecker";
 import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
+import { HotkeyHelpDialog } from "./HotkeyHelpDialog";
+import { useUndoRedo } from "@/hooks/use-undo-redo";
+import { cacheZoneRecords, getCachedZoneRecords } from "@/lib/storage/offline-cache";
 
 
 type ActionTab =
@@ -738,6 +741,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     getZoneAnalytics,
     getFirewallRules,
     createFirewallRule,
+    updateFirewallRule,
     deleteFirewallRule,
     getIpAccessRules,
     createIpAccessRule,
@@ -753,6 +757,122 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     deleteBulkDnsRecords,
     checkDnsPropagation,
   } = useCloudflareAPI(apiKey, email);
+
+  /* ── Undo / Redo ────────────────────────────────────── */
+  type DNSOp =
+    | { kind: "create"; zoneId: string; record: DNSRecord }
+    | { kind: "update"; zoneId: string; record: DNSRecord }
+    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord };
+
+  const {
+    push: pushUndo,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+  } = useUndoRedo<DNSOp>({
+    onUndo: async (reverse) => {
+      switch (reverse.kind) {
+        case "create": {
+          // Undo a create → delete the record
+          await deleteDNSRecord(reverse.zoneId, reverse.record.id);
+          updateTabByZone(reverse.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => r.id !== reverse.record.id),
+          }));
+          break;
+        }
+        case "delete": {
+          // Undo a delete → re-create the record
+          const restored = await createDNSRecord(reverse.zoneId, reverse.record);
+          updateTabByZone(reverse.zoneId, (prev) => ({
+            ...prev,
+            records: [restored, ...prev.records],
+          }));
+          break;
+        }
+        case "update": {
+          // Undo an update → restore old version
+          const reverted = await updateDNSRecord(
+            reverse.zoneId,
+            reverse.record.id,
+            reverse.record,
+          );
+          updateTabByZone(reverse.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.map((r) =>
+              r.id === reverse.record.id ? reverted : r,
+            ),
+          }));
+          break;
+        }
+      }
+    },
+    onRedo: async (forward) => {
+      switch (forward.kind) {
+        case "create": {
+          const created = await createDNSRecord(forward.zoneId, forward.record);
+          updateTabByZone(forward.zoneId, (prev) => ({
+            ...prev,
+            records: [created, ...prev.records],
+          }));
+          break;
+        }
+        case "delete": {
+          await deleteDNSRecord(forward.zoneId, forward.recordId);
+          updateTabByZone(forward.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => r.id !== forward.recordId),
+          }));
+          break;
+        }
+        case "update": {
+          const updated = await updateDNSRecord(
+            forward.zoneId,
+            forward.record.id,
+            forward.record,
+          );
+          updateTabByZone(forward.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.map((r) =>
+              r.id === forward.record.id ? updated : r,
+            ),
+          }));
+          break;
+        }
+      }
+    },
+  });
+
+  /* Helper: update any tab whose zoneId matches */
+  const updateTabByZone = useCallback(
+    (zoneId: string, fn: (prev: ZoneTab) => ZoneTab) => {
+      setTabs((prev) =>
+        prev.map((tab) => (tab.zoneId === zoneId ? fn(tab) : tab)),
+      );
+    },
+    [],
+  );
+
+  /* Global keyboard shortcuts: Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z redo */
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((e.key === "z" && e.shiftKey) || e.key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo]);
 
   useEffect(() => {
     compactTopBarRef.current = compactTopBar;
@@ -1284,10 +1404,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (!tab.zoneId) return;
       updateTab(tab.id, (prev) => ({ ...prev, isLoading: true }));
       try {
+        let combined: DNSRecord[];
         if (tab.perPage === 0) {
           const pageSize = 500;
           let currentPage = 1;
-          let combined: DNSRecord[] = [];
+          combined = [];
           while (true) {
             const batch = await getDNSRecords(
               tab.zoneId,
@@ -1299,25 +1420,42 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             if (batch.length < pageSize) break;
             currentPage += 1;
           }
-          updateTab(tab.id, (prev) => ({ ...prev, records: combined }));
         } else {
-          const recordsData = await getDNSRecords(
+          combined = await getDNSRecords(
             tab.zoneId,
             tab.page,
             tab.perPage,
             signal,
           );
-          updateTab(tab.id, (prev) => ({ ...prev, records: recordsData }));
         }
+        updateTab(tab.id, (prev) => ({ ...prev, records: combined }));
+        // Persist to offline cache on success
+        cacheZoneRecords(tab.zoneId, tab.zoneName, combined);
       } catch (error) {
-        toast({
-          title: t("Error", "Error"),
-          description: t("Failed to load DNS records: {{error}}", {
-            error: (error as Error).message,
-            defaultValue: `Failed to load DNS records: ${(error as Error).message}`,
-          }),
-          variant: "destructive",
-        });
+        // Try offline cache fallback
+        const cached = getCachedZoneRecords(tab.zoneId);
+        if (cached) {
+          updateTab(tab.id, (prev) => ({
+            ...prev,
+            records: cached.records as DNSRecord[],
+          }));
+          toast({
+            title: t("Offline", "Offline"),
+            description: t("Showing cached records from {{time}}", {
+              time: new Date(cached.cachedAt).toLocaleString(),
+              defaultValue: `Showing cached records from ${new Date(cached.cachedAt).toLocaleString()}`,
+            }),
+          });
+        } else {
+          toast({
+            title: t("Error", "Error"),
+            description: t("Failed to load DNS records: {{error}}", {
+              error: (error as Error).message,
+              defaultValue: `Failed to load DNS records: ${(error as Error).message}`,
+            }),
+            variant: "destructive",
+          });
+        }
       } finally {
         updateTab(tab.id, (prev) => ({ ...prev, isLoading: false }));
       }
@@ -2991,6 +3129,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         newRecord: createEmptyRecord(),
         showAddRecord: false,
       }));
+      pushUndo({
+        description: `Create ${createdRecord.type} ${createdRecord.name}`,
+        forward: { kind: "create", zoneId: activeTab.zoneId, record: createdRecord },
+        reverse: { kind: "delete", zoneId: activeTab.zoneId, recordId: createdRecord.id, record: createdRecord },
+      });
       toast({
         title: t("Success", "Success"),
         description: t("DNS record created successfully", "DNS record created successfully"),
@@ -3009,6 +3152,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleUpdateRecord = async (record: DNSRecord) => {
     if (!activeTab) return;
+    const oldRecord = activeTab.records.find((r) => r.id === record.id);
     try {
       const updatedRecord = await updateDNSRecord(
         activeTab.zoneId,
@@ -3029,6 +3173,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ),
         editingRecord: null,
       }));
+      if (oldRecord) {
+        pushUndo({
+          description: `Update ${record.type} ${record.name}`,
+          forward: { kind: "update", zoneId: activeTab.zoneId, record: { ...updatedRecord, id: nextRecordId } },
+          reverse: { kind: "update", zoneId: activeTab.zoneId, record: oldRecord },
+        });
+      }
       toast({
         title: t("Success", "Success"),
         description: t("DNS record updated successfully", "DNS record updated successfully"),
@@ -3083,6 +3234,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handleDeleteRecord = async (recordId: string) => {
     if (!activeTab) return;
+    const deletedRecord = activeTab.records.find((r) => r.id === recordId);
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
       storageManager.clearRecordTags(activeTab.zoneId, recordId);
@@ -3091,6 +3243,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         records: prev.records.filter((r) => r.id !== recordId),
         selectedIds: prev.selectedIds.filter((id) => id !== recordId),
       }));
+      if (deletedRecord) {
+        pushUndo({
+          description: `Delete ${deletedRecord.type} ${deletedRecord.name}`,
+          forward: { kind: "delete", zoneId: activeTab.zoneId, recordId, record: deletedRecord },
+          reverse: { kind: "create", zoneId: activeTab.zoneId, record: deletedRecord },
+        });
+      }
       toast({
         title: t("Success", "Success"),
         description: t("DNS record deleted successfully", "DNS record deleted successfully"),
@@ -4422,6 +4581,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               handleToggleProxy(record, next)
                             }
                             onCopy={() => handleCopySingle(record)}
+                            onClone={async () => {
+                              try {
+                                const cloned = await createDNSRecord(activeTab.zoneId, {
+                                  ...record,
+                                  name: `${record.name}-copy`,
+                                });
+                                updateTab(activeTab.id, (prev) => ({
+                                  ...prev,
+                                  records: [cloned, ...prev.records],
+                                }));
+                                pushUndo({
+                                  description: `Clone ${record.type} ${record.name}`,
+                                  forward: { kind: "create", zoneId: activeTab.zoneId, record: cloned },
+                                  reverse: { kind: "delete", zoneId: activeTab.zoneId, recordId: cloned.id, record: cloned },
+                                });
+                                toast({ title: t("Cloned", "Cloned"), description: `${cloned.type} ${cloned.name}` });
+                              } catch (err) {
+                                toast({
+                                  title: t("Error", "Error"),
+                                  description: err instanceof Error ? err.message : "Clone failed",
+                                  variant: "destructive",
+                                });
+                              }
+                            }}
                           />
                         );
                       })}
@@ -4463,6 +4646,55 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       selectedIds: [],
                     }))
                   }
+                  onBulkSetTTL={async (ttl: number) => {
+                    if (!activeTab.selectedIds.length) return;
+                    const selected = activeTab.records.filter((r) =>
+                      activeTab.selectedIds.includes(r.id),
+                    );
+                    for (const rec of selected) {
+                      await updateDNSRecord(activeTab.zoneId, rec.id, { ...rec, ttl });
+                    }
+                    updateTab(activeTab.id, (prev) => ({
+                      ...prev,
+                      records: prev.records.map((r) =>
+                        activeTab.selectedIds.includes(r.id)
+                          ? { ...r, ttl }
+                          : r,
+                      ),
+                    }));
+                    toast({
+                      title: t("Updated", "Updated"),
+                      description: t("TTL set on {{count}} records", {
+                        count: selected.length,
+                        defaultValue: `TTL set on ${selected.length} records`,
+                      }),
+                    });
+                  }}
+                  onBulkSetProxy={async (proxied: boolean) => {
+                    if (!activeTab.selectedIds.length) return;
+                    const selected = activeTab.records.filter((r) =>
+                      activeTab.selectedIds.includes(r.id),
+                    );
+                    for (const rec of selected) {
+                      await updateDNSRecord(activeTab.zoneId, rec.id, { ...rec, proxied });
+                    }
+                    updateTab(activeTab.id, (prev) => ({
+                      ...prev,
+                      records: prev.records.map((r) =>
+                        activeTab.selectedIds.includes(r.id)
+                          ? { ...r, proxied }
+                          : r,
+                      ),
+                    }));
+                    toast({
+                      title: t("Updated", "Updated"),
+                      description: t("Proxy set on {{count}} records", {
+                        count: selected.length,
+                        defaultValue: `Proxy set on ${selected.length} records`,
+                      }),
+                    });
+                  }}
+                  onBulkExport={() => handleExport("json")}
                 />
                 </>
               )}
@@ -5721,6 +5953,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   zoneId={activeTab.zoneId}
                   getFirewallRules={getFirewallRules}
                   createFirewallRule={createFirewallRule}
+                  updateFirewallRule={updateFirewallRule}
                   deleteFirewallRule={deleteFirewallRule}
                   getIpAccessRules={getIpAccessRules}
                   createIpAccessRule={createIpAccessRule}
@@ -8148,6 +8381,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </div>
         </DialogContent>
       </Dialog>
+      <HotkeyHelpDialog />
     </div>
   );
 }

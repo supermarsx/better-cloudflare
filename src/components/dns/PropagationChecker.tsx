@@ -2,7 +2,7 @@
  * DNS Propagation Checker — queries multiple global resolvers to verify
  * DNS propagation status for a given record.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import { useI18n } from "@/hooks/use-i18n";
 
 interface PropagationResolverResult {
   resolver: string;
@@ -45,11 +46,16 @@ interface PropagationCheckerProps {
 }
 
 function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationCheckerProps) {
+  const { t } = useI18n();
   const [domain, setDomain] = useState(zoneName ?? "");
   const [recordType, setRecordType] = useState("A");
   const [result, setResult] = useState<PropagationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [watching, setWatching] = useState(false);
+  const [watchInterval, setWatchInterval] = useState(15);
+  const watchRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [checkCount, setCheckCount] = useState(0);
 
   const check = useCallback(async () => {
     if (!domain.trim()) return;
@@ -58,12 +64,43 @@ function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationC
     try {
       const res = (await checkDnsPropagation(domain, recordType)) as PropagationResult;
       setResult(res);
+      setCheckCount((c) => c + 1);
+      // Auto-stop watch when fully propagated
+      if (res.consistent && watching) {
+        setWatching(false);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Propagation check failed");
+      setError(err instanceof Error ? err.message : t("Propagation check failed", "Propagation check failed"));
     } finally {
       setLoading(false);
     }
-  }, [domain, recordType, checkDnsPropagation]);
+  }, [domain, recordType, checkDnsPropagation, watching]);
+
+  // Watch mode: poll at interval
+  useEffect(() => {
+    if (watching) {
+      check(); // Run immediately on start
+      watchRef.current = setInterval(check, watchInterval * 1000);
+    } else if (watchRef.current) {
+      clearInterval(watchRef.current);
+      watchRef.current = null;
+    }
+    return () => {
+      if (watchRef.current) {
+        clearInterval(watchRef.current);
+        watchRef.current = null;
+      }
+    };
+  }, [watching, watchInterval, check]);
+
+  const toggleWatch = () => {
+    if (watching) {
+      setWatching(false);
+    } else {
+      setCheckCount(0);
+      setWatching(true);
+    }
+  };
 
   const rcodeColor = (rcode: string) => {
     if (rcode === "NOERROR") return "text-green-600 dark:text-green-400";
@@ -74,41 +111,69 @@ function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationC
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">DNS Propagation Checker</h3>
+        <h3 className="text-lg font-semibold">{t("DNS Propagation Checker", "DNS Propagation Checker")}</h3>
       </div>
 
       <Card>
         <CardContent className="pt-4">
           <div className="flex flex-wrap gap-2">
             <div className="flex-1 min-w-[200px]">
-              <Label className="text-xs">Domain</Label>
+              <Label className="text-xs">{t("Domain", "Domain")}</Label>
               <Input
                 value={domain}
                 onChange={(e) => setDomain(e.target.value)}
-                placeholder="example.com"
+                placeholder={t("example.com", "example.com")}
                 className="h-8 text-xs font-mono"
                 onKeyDown={(e) => e.key === "Enter" && check()}
               />
             </div>
             <div className="w-28">
-              <Label className="text-xs">Type</Label>
+              <Label className="text-xs">{t("Type", "Type")}</Label>
               <Select value={recordType} onValueChange={setRecordType}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {RECORD_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
+                  {RECORD_TYPES.map((rt) => (
+                    <SelectItem key={rt} value={rt}>
+                      {rt}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-end">
+            <div className="flex items-end gap-1">
               <Button size="sm" onClick={check} disabled={loading || !domain.trim()}>
-                {loading ? "Checking…" : "Check"}
+                {loading ? t("Checking…", "Checking…") : t("Check", "Check")}
               </Button>
+              <div className="flex items-end gap-1">
+                <div className="w-16">
+                  <Label className="text-[10px]">{t("Interval", "Interval")}</Label>
+                  <Select
+                    value={String(watchInterval)}
+                    onValueChange={(v) => setWatchInterval(parseInt(v, 10))}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[10, 15, 30, 60].map((s) => (
+                        <SelectItem key={s} value={String(s)}>
+                          {s}s
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  size="sm"
+                  variant={watching ? "destructive" : "outline"}
+                  onClick={toggleWatch}
+                  disabled={!domain.trim()}
+                >
+                  {watching ? t("Stop", "Stop") : t("Watch", "Watch")}
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -130,17 +195,17 @@ function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationC
               <span
                 className={`h-2 w-2 rounded-full ${result.consistent ? "bg-green-500" : "bg-yellow-500"}`}
               />
-              {result.consistent ? "Fully Propagated" : "Inconsistent"}
+              {result.consistent ? t("Fully Propagated", "Fully Propagated") : t("Inconsistent", "Inconsistent")}
             </span>
             <span className="text-xs text-muted-foreground">
-              {result.domain} {result.record_type} — {result.resolvers.length} resolvers
+              {t("{{domain}} {{recordType}} — {{count}} resolvers", { domain: result.domain, recordType: result.record_type, count: result.resolvers.length, defaultValue: "{{domain}} {{recordType}} — {{count}} resolvers" })}
             </span>
           </div>
 
           {/* Resolver results */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Resolver Results</CardTitle>
+              <CardTitle className="text-sm">{t("Resolver Results", "Resolver Results")}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-1">
@@ -173,7 +238,7 @@ function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationC
                       ) : r.error ? (
                         <p className="text-[11px] text-destructive">{r.error}</p>
                       ) : (
-                        <p className="text-[11px] text-muted-foreground">No records</p>
+                        <p className="text-[11px] text-muted-foreground">{t("No records", "No records")}</p>
                       )}
                     </div>
                     <span className="ml-2 text-[10px] text-muted-foreground">
@@ -186,7 +251,9 @@ function PropagationCheckerInner({ zoneName, checkDnsPropagation }: PropagationC
           </Card>
 
           <p className="text-[10px] text-muted-foreground">
-            Checked at {new Date(result.timestamp).toLocaleString()}
+            {t("Checked at {{time}}", { time: new Date(result.timestamp).toLocaleString(), defaultValue: "Checked at {{time}}" })}
+            {checkCount > 1 && ` (${t("check #{{count}}", { count: checkCount, defaultValue: "check #{{count}}" })})`}
+            {watching && " — " + t("watching…", "watching…")}
           </p>
         </div>
       )}

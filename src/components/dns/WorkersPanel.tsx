@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import { useI18n } from "@/hooks/use-i18n";
 
 interface WorkerRoute {
   id: string;
@@ -33,6 +34,7 @@ function WorkersPanelInner({
   createWorkerRoute,
   deleteWorkerRoute,
 }: WorkersPanelProps) {
+  const { t } = useI18n();
   const [routes, setRoutes] = useState<WorkerRoute[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +50,7 @@ function WorkersPanelInner({
         if (!signal?.aborted) setRoutes(result);
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : "Failed to load worker routes");
+          setError(err instanceof Error ? err.message : t("Failed to load worker routes", "Failed to load worker routes"));
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -71,7 +73,7 @@ function WorkersPanelInner({
       setNewScript("");
       fetchRoutes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create route");
+      setError(err instanceof Error ? err.message : t("Failed to create route", "Failed to create route"));
     }
   };
 
@@ -80,16 +82,16 @@ function WorkersPanelInner({
       await deleteWorkerRoute(zoneId, routeId);
       setRoutes((prev) => prev.filter((r) => r.id !== routeId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete route");
+      setError(err instanceof Error ? err.message : t("Failed to delete route", "Failed to delete route"));
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Worker Routes</h3>
+        <h3 className="text-lg font-semibold">{t("Worker Routes", "Worker Routes")}</h3>
         <Button size="sm" variant="outline" onClick={() => fetchRoutes()} disabled={loading}>
-          {loading ? "Loading…" : "Refresh"}
+          {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
         </Button>
       </div>
 
@@ -97,25 +99,25 @@ function WorkersPanelInner({
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">New Route</CardTitle>
+          <CardTitle className="text-sm">{t("New Route", "New Route")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="flex gap-2">
             <div className="flex-1">
-              <Label className="text-xs">Pattern</Label>
+              <Label className="text-xs">{t("Pattern", "Pattern")}</Label>
               <Input
                 value={newPattern}
                 onChange={(e) => setNewPattern(e.target.value)}
-                placeholder="example.com/api/*"
+                placeholder={t("example.com/api/*", "example.com/api/*")}
                 className="h-8 text-xs font-mono"
               />
             </div>
             <div className="flex-1">
-              <Label className="text-xs">Script Name</Label>
+              <Label className="text-xs">{t("Script Name", "Script Name")}</Label>
               <Input
                 value={newScript}
                 onChange={(e) => setNewScript(e.target.value)}
-                placeholder="my-worker"
+                placeholder={t("my-worker", "my-worker")}
                 className="h-8 text-xs"
               />
             </div>
@@ -125,7 +127,7 @@ function WorkersPanelInner({
             onClick={handleCreate}
             disabled={!newPattern.trim() || !newScript.trim()}
           >
-            Create Route
+            {t("Create Route", "Create Route")}
           </Button>
         </CardContent>
       </Card>
@@ -147,7 +149,7 @@ function WorkersPanelInner({
                 className="text-destructive hover:text-destructive"
                 onClick={() => handleDelete(route.id)}
               >
-                Delete
+                {t("Delete", "Delete")}
               </Button>
             </div>
           ))}
@@ -155,14 +157,14 @@ function WorkersPanelInner({
       ) : (
         !loading && (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            No worker routes configured
+            {t("No worker routes configured", "No worker routes configured")}
           </p>
         )
       )}
 
       {loading && routes.length === 0 && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading worker routes…</p>
+          <p className="text-sm text-muted-foreground">{t("Loading worker routes…", "Loading worker routes…")}</p>
         </div>
       )}
     </div>

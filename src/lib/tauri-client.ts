@@ -1,0 +1,1159 @@
+/**
+ * Tauri API client wrapper
+ * 
+ * This file provides a unified interface for calling Tauri backend commands.
+ * It replaces the HTTP-based ServerClient for desktop app usage.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+
+export interface TauriZone {
+  id: string;
+  name: string;
+  status: string;
+  paused: boolean;
+  type: string;
+  development_mode: number;
+}
+
+export interface TauriDNSRecord {
+  id?: string;
+  type: string;
+  name: string;
+  content: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+  zone_id: string;
+  zone_name: string;
+  created_on: string;
+  modified_on: string;
+}
+
+export type TauriDNSRecordInput = Partial<TauriDNSRecord>;
+
+export interface TopologyHostnameResolution {
+  name: string;
+  chain: string[];
+  terminal: string;
+  ipv4: string[];
+  ipv6: string[];
+  reverse_hostnames?: Array<{ ip: string; hostnames: string[] }>;
+  geo_by_ip?: Array<{ ip: string; country: string; country_code?: string }>;
+  error?: string | null;
+}
+
+export interface TopologyServiceProbeResult {
+  host: string;
+  https_up: boolean;
+  http_up: boolean;
+}
+
+export interface TopologyTcpServiceProbeResult {
+  host: string;
+  port: number;
+  up: boolean;
+}
+
+export interface TopologyBatchResult {
+  resolutions: TopologyHostnameResolution[];
+  probes: TopologyServiceProbeResult[];
+  tcp_probes?: TopologyTcpServiceProbeResult[];
+}
+
+export interface McpToolDescriptor {
+  name: string;
+  title: string;
+  description: string;
+  inputSchema?: unknown;
+  input_schema?: unknown;
+  enabled: boolean;
+}
+
+export interface McpServerStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  url: string;
+  enabledTools?: string[];
+  enabled_tools?: string[];
+  tools: McpToolDescriptor[];
+  lastError?: string | null;
+  last_error?: string | null;
+}
+
+export class TauriClient {
+  // Check if running in Tauri environment
+  static isTauri(): boolean {
+    return typeof window !== 'undefined' && '__TAURI__' in window;
+  }
+
+  static async restartApp(): Promise<void> {
+    return invoke("restart_app");
+  }
+
+  static async openPathInFileManager(path: string): Promise<void> {
+    return invoke("open_path_in_file_manager", { path });
+  }
+
+  // Authentication & Key Management
+  static async verifyToken(apiKey: string, email?: string): Promise<boolean> {
+    return invoke("verify_token", { apiKey, email });
+  }
+
+  static async getApiKeys(): Promise<unknown[]> {
+    return invoke("get_api_keys");
+  }
+
+  static async addApiKey(
+    label: string,
+    apiKey: string,
+    email: string | undefined,
+    password: string
+  ): Promise<string> {
+    return invoke("add_api_key", { label, apiKey, email, password });
+  }
+
+  static async updateApiKey(
+    id: string,
+    label?: string,
+    email?: string,
+    currentPassword?: string,
+    newPassword?: string
+  ): Promise<void> {
+    return invoke("update_api_key", {
+      id,
+      label,
+      email,
+      currentPassword,
+      newPassword,
+    });
+  }
+
+  static async deleteApiKey(id: string): Promise<void> {
+    return invoke("delete_api_key", { id });
+  }
+
+  static async decryptApiKey(id: string, password: string): Promise<string> {
+    return invoke("decrypt_api_key", { id, password });
+  }
+
+  // DNS Operations
+  static async getZones(apiKey: string, email?: string): Promise<TauriZone[]> {
+    return invoke("get_zones", { apiKey, email });
+  }
+
+  static async getDNSRecords(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    _page?: number,
+    _perPage?: number
+  ): Promise<TauriDNSRecord[]> {
+    return invoke("get_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      page: _page,
+      per_page: _perPage,
+    });
+  }
+
+  static async createDNSRecord(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    record: TauriDNSRecordInput
+  ): Promise<TauriDNSRecord> {
+    return invoke("create_dns_record", { apiKey, email, zoneId, record });
+  }
+
+  static async updateDNSRecord(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    recordId: string,
+    record: TauriDNSRecordInput
+  ): Promise<TauriDNSRecord> {
+    return invoke("update_dns_record", {
+      apiKey,
+      email,
+      zoneId,
+      recordId,
+      record,
+    });
+  }
+
+  static async deleteDNSRecord(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    recordId: string
+  ): Promise<void> {
+    return invoke("delete_dns_record", { apiKey, email, zoneId, recordId });
+  }
+
+  static async createBulkDNSRecords(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    records: TauriDNSRecordInput[],
+    _dryrun?: boolean
+  ): Promise<{ created: TauriDNSRecord[]; skipped: unknown[] }> {
+    return invoke("create_bulk_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      records,
+      dryrun: _dryrun,
+    });
+  }
+
+  static async exportDNSRecords(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    format: string,
+    page?: number,
+    perPage?: number
+  ): Promise<string> {
+    return invoke("export_dns_records", {
+      apiKey,
+      email,
+      zoneId,
+      format,
+      page,
+      per_page: perPage,
+    });
+  }
+
+  static async purgeCache(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    purgeEverything: boolean,
+    files?: string[],
+  ): Promise<unknown> {
+    return invoke("purge_cache", {
+      apiKey,
+      email,
+      zoneId,
+      purgeEverything,
+      files,
+    });
+  }
+
+  static async getZoneSetting(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+  ): Promise<unknown> {
+    return invoke("get_zone_setting", { apiKey, email, zoneId, settingId });
+  }
+
+  static async updateZoneSetting(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    settingId: string,
+    value: unknown,
+  ): Promise<unknown> {
+    return invoke("update_zone_setting", {
+      apiKey,
+      email,
+      zoneId,
+      settingId,
+      value,
+    });
+  }
+
+  static async getDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+  ): Promise<unknown> {
+    return invoke("get_dnssec", { apiKey, email, zoneId });
+  }
+
+  static async updateDnssec(
+    apiKey: string,
+    email: string | undefined,
+    zoneId: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    return invoke("update_dnssec", { apiKey, email, zoneId, payload });
+  }
+
+  // Vault Operations
+  static async storeVaultSecret(id: string, secret: string): Promise<void> {
+    return invoke("store_vault_secret", { id, secret });
+  }
+
+  static async getVaultSecret(id: string, token?: string): Promise<string> {
+    return invoke("get_vault_secret", { id, token });
+  }
+
+  static async deleteVaultSecret(id: string): Promise<void> {
+    return invoke("delete_vault_secret", { id });
+  }
+
+  // Passkey Operations
+  static async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
+    return invoke("get_passkey_registration_options", { id });
+  }
+
+  static async registerPasskey(
+    id: string,
+    attestation: unknown
+  ): Promise<void> {
+    return invoke("register_passkey", { id, attestation });
+  }
+
+  static async getPasskeyAuthOptions(id: string): Promise<unknown> {
+    return invoke("get_passkey_auth_options", { id });
+  }
+
+  static async authenticatePasskey(
+    id: string,
+    assertion: unknown
+  ): Promise<unknown> {
+    return invoke("authenticate_passkey", { id, assertion });
+  }
+
+  static async listPasskeys(id: string): Promise<unknown[]> {
+    return invoke("list_passkeys", { id });
+  }
+
+  static async deletePasskey(id: string, credentialId: string): Promise<void> {
+    return invoke("delete_passkey", { id, credentialId });
+  }
+
+  // Encryption Settings
+  static async getEncryptionSettings(): Promise<{
+    iterations: number;
+    keyLength: number;
+    algorithm: string;
+  }> {
+    const raw = await invoke("get_encryption_settings");
+    const fallback = {
+      iterations: 100000,
+      keyLength: 256,
+      algorithm: "AES-GCM",
+    };
+    if (!raw || typeof raw !== "object") {
+      return fallback;
+    }
+    const obj = raw as {
+      iterations?: number;
+      keyLength?: number;
+      key_length?: number;
+      algorithm?: string;
+    };
+    const rawKeyLength =
+      typeof obj.keyLength === "number"
+        ? obj.keyLength
+        : typeof obj.key_length === "number"
+          ? obj.key_length
+          : undefined;
+    const normalizedKeyLength =
+      typeof rawKeyLength === "number"
+        ? rawKeyLength <= 64
+          ? rawKeyLength * 8
+          : rawKeyLength
+        : fallback.keyLength;
+    return {
+      iterations:
+        typeof obj.iterations === "number" ? obj.iterations : fallback.iterations,
+      keyLength: normalizedKeyLength,
+      algorithm:
+        typeof obj.algorithm === "string" ? obj.algorithm : fallback.algorithm,
+    };
+  }
+
+  static async updateEncryptionSettings(config: {
+    iterations: number;
+    keyLength: number;
+    algorithm: string;
+  }): Promise<void> {
+    const keyLengthBytes =
+      config.keyLength > 64 ? Math.floor(config.keyLength / 8) : config.keyLength;
+    return invoke("update_encryption_settings", {
+      config: {
+        iterations: config.iterations,
+        key_length: keyLengthBytes,
+        algorithm: config.algorithm,
+      },
+    });
+  }
+
+  static async benchmarkEncryption(iterations: number): Promise<number> {
+    return invoke("benchmark_encryption", { iterations });
+  }
+
+  // Audit
+  static async getAuditEntries(): Promise<unknown[]> {
+    return invoke("get_audit_entries");
+  }
+
+  static async exportAuditEntries(
+    format: "json" | "csv" = "json"
+  ): Promise<string> {
+    return invoke("export_audit_entries", { format });
+  }
+
+  static async saveAuditEntries(
+    format: "json" | "csv" = "json",
+    folderPreset = "documents",
+    customPath = "",
+    skipDestinationConfirm = true,
+  ): Promise<string> {
+    return invoke("save_audit_entries", {
+      format,
+      folderPreset,
+      customPath,
+      skipDestinationConfirm,
+    });
+  }
+
+  static async clearAuditEntries(): Promise<void> {
+    return invoke("clear_audit_entries");
+  }
+
+  // SPF
+  static async simulateSPF(
+    domain: string,
+    ip: string
+  ): Promise<{ result: string; reasons: string[]; lookups: number }> {
+    return invoke("simulate_spf", { domain, ip });
+  }
+
+  static async getSPFGraph(domain: string): Promise<unknown> {
+    return invoke("spf_graph", { domain });
+  }
+
+  static async resolveTopologyBatch(
+    hostnames: string[],
+    maxHops = 15,
+    serviceHosts?: string[],
+    dohProvider: "google" | "cloudflare" | "quad9" | "custom" = "cloudflare",
+    dohCustomUrl = "",
+    resolverMode: "dns" | "doh" = "dns",
+    dnsServer = "1.1.1.1",
+    customDnsServer = "",
+    lookupTimeoutMs = 1200,
+    disablePtrLookups = false,
+    tcpServicePorts?: number[],
+    disableGeoLookups = false,
+    geoProvider: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" = "auto",
+    scanResolutionChain = true,
+  ): Promise<TopologyBatchResult> {
+    return invoke("resolve_topology_batch", {
+      hostnames,
+      max_hops: maxHops,
+      service_hosts: serviceHosts,
+      doh_provider: dohProvider,
+      doh_custom_url: dohCustomUrl,
+      resolver_mode: resolverMode,
+      dns_server: dnsServer,
+      custom_dns_server: customDnsServer,
+      lookup_timeout_ms: lookupTimeoutMs,
+      disable_ptr_lookups: disablePtrLookups,
+      tcp_service_ports: tcpServicePorts,
+      disable_geo_lookups: disableGeoLookups,
+      geo_provider: geoProvider,
+      scan_resolution_chain: scanResolutionChain,
+    });
+  }
+
+  static async saveTopologyAsset(
+    format: "mmd" | "svg" | "png",
+    fileName: string,
+    payload: string,
+    isBase64 = false,
+    folderPreset = "documents",
+    customPath = "",
+    confirmPath = true,
+  ): Promise<string> {
+    return invoke("save_topology_asset", {
+      format,
+      fileName,
+      payload,
+      isBase64,
+      folderPreset,
+      customPath,
+      confirmPath,
+    });
+  }
+
+  // Preferences
+  static async getPreferences(): Promise<unknown> {
+    return invoke("get_preferences");
+  }
+
+  static async updatePreferences(prefs: unknown): Promise<void> {
+    return invoke("update_preferences", { prefs });
+  }
+
+  static async updatePreferenceFields(fields: Record<string, unknown>): Promise<void> {
+    const current = await this.getPreferences();
+    return this.updatePreferences({ ...(current as Record<string, unknown>), ...fields });
+  }
+
+  // MCP Server
+  static async getMcpServerStatus(): Promise<McpServerStatus> {
+    return invoke("mcp_get_server_status");
+  }
+
+  static async startMcpServer(
+    host?: string,
+    port?: number,
+    enabledTools?: string[],
+  ): Promise<McpServerStatus> {
+    return invoke("mcp_start_server", {
+      host,
+      port,
+      enabled_tools: enabledTools,
+    });
+  }
+
+  static async stopMcpServer(): Promise<McpServerStatus> {
+    return invoke("mcp_stop_server");
+  }
+
+  static async setMcpEnabledTools(enabledTools: string[]): Promise<McpServerStatus> {
+    return invoke("mcp_set_enabled_tools", { enabled_tools: enabledTools });
+  }
+
+  // ─── Registrar Monitoring ────────────────────────────────────────────
+
+  static async addRegistrarCredential(
+    provider: string,
+    label: string,
+    apiKey: string,
+    apiSecret?: string,
+    username?: string,
+    email?: string,
+    extra?: Record<string, string>,
+  ): Promise<string> {
+    return invoke("add_registrar_credential", {
+      provider,
+      label,
+      apiKey,
+      apiSecret,
+      username,
+      email,
+      extra,
+    });
+  }
+
+  static async listRegistrarCredentials(): Promise<unknown[]> {
+    return invoke("list_registrar_credentials");
+  }
+
+  static async deleteRegistrarCredential(credentialId: string): Promise<void> {
+    return invoke("delete_registrar_credential", { credentialId });
+  }
+
+  static async verifyRegistrarCredential(credentialId: string): Promise<boolean> {
+    return invoke("verify_registrar_credential", { credentialId });
+  }
+
+  static async registrarListDomains(credentialId: string): Promise<unknown[]> {
+    return invoke("registrar_list_domains", { credentialId });
+  }
+
+  static async registrarGetDomain(credentialId: string, domain: string): Promise<unknown> {
+    return invoke("registrar_get_domain", { credentialId, domain });
+  }
+
+  static async registrarListAllDomains(): Promise<unknown[]> {
+    return invoke("registrar_list_all_domains");
+  }
+
+  static async registrarHealthCheck(credentialId: string, domain: string): Promise<unknown> {
+    return invoke("registrar_health_check", { credentialId, domain });
+  }
+
+  static async registrarHealthCheckAll(): Promise<unknown[]> {
+    return invoke("registrar_health_check_all");
+  }
+
+  // ── DNS Tools ───────────────────────────────────────────────────────────
+
+  static async parseCsvRecords(text: string): Promise<PartialDNSRecord[]> {
+    return invoke("parse_csv_records", { text });
+  }
+
+  static async parseBindZone(text: string): Promise<PartialDNSRecord[]> {
+    return invoke("parse_bind_zone", { text });
+  }
+
+  static async validateDnsRecord(input: DNSRecordValidationInput): Promise<ValidationResult> {
+    return invoke("validate_dns_record", { input });
+  }
+
+  static async parseSrv(content: string): Promise<SRVFields> {
+    return invoke("parse_srv", { content });
+  }
+
+  static async composeSrv(priority?: number, weight?: number, port?: number, target?: string): Promise<string> {
+    return invoke("compose_srv", { priority, weight, port, target: target ?? "" });
+  }
+
+  static async parseTlsa(content: string): Promise<TLSAFields> {
+    return invoke("parse_tlsa", { content });
+  }
+
+  static async composeTlsa(usage?: number, selector?: number, matchingType?: number, data?: string): Promise<string> {
+    return invoke("compose_tlsa", { usage, selector, matchingType, data: data ?? "" });
+  }
+
+  static async parseSshfp(content: string): Promise<SSHFPFields> {
+    return invoke("parse_sshfp", { content });
+  }
+
+  static async composeSshfp(algorithm?: number, fptype?: number, fingerprint?: string): Promise<string> {
+    return invoke("compose_sshfp", { algorithm, fptype, fingerprint: fingerprint ?? "" });
+  }
+
+  static async parseNaptr(content: string): Promise<NAPTRFields> {
+    return invoke("parse_naptr", { content });
+  }
+
+  static async composeNaptr(
+    order?: number,
+    preference?: number,
+    flags?: string,
+    service?: string,
+    regexp?: string,
+    replacement?: string,
+  ): Promise<string> {
+    return invoke("compose_naptr", {
+      order,
+      preference,
+      flags: flags ?? "",
+      service: service ?? "",
+      regexp: regexp ?? "",
+      replacement: replacement ?? "",
+    });
+  }
+
+  static async recordsToCsv(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_csv", { records });
+  }
+
+  static async recordsToBind(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_bind", { records });
+  }
+
+  static async recordsToJson(records: TauriDNSRecord[]): Promise<string> {
+    return invoke("records_to_json", { records });
+  }
+
+  static async parseSpf(content: string): Promise<SPFRecord | null> {
+    return invoke("parse_spf", { content });
+  }
+
+  // ── Domain Audit ────────────────────────────────────────────────────────
+
+  static async runDomainAudit(
+    zoneName: string,
+    records: TauriDNSRecord[],
+    options: DomainAuditOptions,
+  ): Promise<DomainAuditItem[]> {
+    return invoke("run_domain_audit", { zoneName, records, options });
+  }
+
+  // ── Biometric Authentication ──────────────────────────────────────────────
+
+  static async biometricStatus(): Promise<BiometricStatus> {
+    return invoke("biometric_status");
+  }
+
+  static async biometricAuthenticate(reason: string): Promise<void> {
+    return invoke("biometric_authenticate", { reason });
+  }
+
+  static async biometricStoreSecret(key: string, secret: string): Promise<void> {
+    return invoke("biometric_store_secret", { key, secret });
+  }
+
+  static async biometricGetSecret(key: string, reason: string): Promise<string> {
+    return invoke("biometric_get_secret", { key, reason });
+  }
+
+  static async biometricDeleteSecret(key: string): Promise<void> {
+    return invoke("biometric_delete_secret", { key });
+  }
+
+  static async biometricHasSecret(key: string): Promise<boolean> {
+    return invoke("biometric_has_secret", { key });
+  }
+
+  // ── Analytics ─────────────────────────────────────────────────────────────
+
+  static async getZoneAnalytics(
+    apiKey: string,
+    zoneId: string,
+    since?: string,
+    until?: string,
+    email?: string,
+  ): Promise<ZoneAnalytics> {
+    return invoke("get_zone_analytics", { apiKey, zoneId, since, until, email });
+  }
+
+  static async getDnsAnalytics(
+    apiKey: string,
+    zoneId: string,
+    since?: string,
+    until?: string,
+    email?: string,
+  ): Promise<DnsAnalyticsResponse> {
+    return invoke("get_dns_analytics", { apiKey, zoneId, since, until, email });
+  }
+
+  // ── Firewall / WAF ───────────────────────────────────────────────────────
+
+  static async getFirewallRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<FirewallRuleResponse[]> {
+    return invoke("get_firewall_rules", { apiKey, zoneId, email });
+  }
+
+  static async createFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    rule: FirewallRuleInput,
+    email?: string,
+  ): Promise<FirewallRuleResponse[]> {
+    return invoke("create_firewall_rule", { apiKey, zoneId, rule, email });
+  }
+
+  static async updateFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    rule: FirewallRuleInput,
+    email?: string,
+  ): Promise<FirewallRuleResponse> {
+    return invoke("update_firewall_rule", { apiKey, zoneId, ruleId, rule, email });
+  }
+
+  static async deleteFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_firewall_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  static async getIpAccessRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<IpAccessRuleResponse[]> {
+    return invoke("get_ip_access_rules", { apiKey, zoneId, email });
+  }
+
+  static async createIpAccessRule(
+    apiKey: string,
+    zoneId: string,
+    mode: string,
+    ip: string,
+    notes?: string,
+    email?: string,
+  ): Promise<IpAccessRuleResponse> {
+    return invoke("create_ip_access_rule", { apiKey, zoneId, mode, ip, notes, email });
+  }
+
+  static async deleteIpAccessRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_ip_access_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  static async getWafRulesets(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<WafRulesetResponse[]> {
+    return invoke("get_waf_rulesets", { apiKey, zoneId, email });
+  }
+
+  // ── Workers ───────────────────────────────────────────────────────────────
+
+  static async getWorkerRoutes(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<WorkerRouteResponse[]> {
+    return invoke("get_worker_routes", { apiKey, zoneId, email });
+  }
+
+  static async createWorkerRoute(
+    apiKey: string,
+    zoneId: string,
+    pattern: string,
+    script: string,
+    email?: string,
+  ): Promise<WorkerRouteResponse> {
+    return invoke("create_worker_route", { apiKey, zoneId, pattern, script, email });
+  }
+
+  static async deleteWorkerRoute(
+    apiKey: string,
+    zoneId: string,
+    routeId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_worker_route", { apiKey, zoneId, routeId, email });
+  }
+
+  // ── Email Routing ─────────────────────────────────────────────────────────
+
+  static async getEmailRoutingSettings(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<EmailRoutingSettingsResponse> {
+    return invoke("get_email_routing_settings", { apiKey, zoneId, email });
+  }
+
+  static async getEmailRoutingRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<EmailRoutingRuleResponse[]> {
+    return invoke("get_email_routing_rules", { apiKey, zoneId, email });
+  }
+
+  static async createEmailRoutingRule(
+    apiKey: string,
+    zoneId: string,
+    rule: EmailRoutingRuleInput,
+    email?: string,
+  ): Promise<EmailRoutingRuleResponse> {
+    return invoke("create_email_routing_rule", { apiKey, zoneId, rule, email });
+  }
+
+  static async deleteEmailRoutingRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_email_routing_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  // ── Page Rules ────────────────────────────────────────────────────────────
+
+  static async getPageRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<PageRuleResponse[]> {
+    return invoke("get_page_rules", { apiKey, zoneId, email });
+  }
+
+  // ── Bulk Operations ───────────────────────────────────────────────────────
+
+  static async deleteBulkDnsRecords(
+    apiKey: string,
+    zoneId: string,
+    recordIds: string[],
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_bulk_dns_records", { apiKey, zoneId, recordIds, email });
+  }
+
+  // ── DNS Propagation ───────────────────────────────────────────────────────
+
+  static async checkDnsPropagation(
+    domain: string,
+    recordType: string,
+    extraResolvers?: string[],
+  ): Promise<PropagationResult> {
+    return invoke("check_dns_propagation", { domain, recordType, extraResolvers });
+  }
+}
+
+// ── Analytics types ───────────────────────────────────────────────────────────
+
+export interface AnalyticsDataPoint {
+  requests: number;
+  bandwidth: number;
+  threats: number;
+  pageviews: number;
+  uniques?: number;
+}
+
+export interface AnalyticsTimeseries extends AnalyticsDataPoint {
+  since: string;
+  until: string;
+}
+
+export interface ZoneAnalytics {
+  totals: AnalyticsDataPoint;
+  timeseries: AnalyticsTimeseries[];
+}
+
+export interface DnsAnalyticsRow {
+  dimensions: string[];
+  metrics: number[];
+}
+
+export interface DnsAnalyticsResponse {
+  rows: DnsAnalyticsRow[];
+  totals: Record<string, number>;
+  min: Record<string, number>;
+  max: Record<string, number>;
+}
+
+// ── Firewall / WAF types ──────────────────────────────────────────────────────
+
+export interface FirewallFilterResponse {
+  id: string;
+  expression: string;
+  paused?: boolean;
+  description?: string;
+}
+
+export interface FirewallRuleResponse {
+  id: string;
+  paused: boolean;
+  action: string;
+  priority?: number;
+  description?: string;
+  filter: FirewallFilterResponse;
+}
+
+export interface FirewallRuleInput {
+  action: string;
+  description?: string;
+  paused?: boolean;
+  priority?: number;
+  filter: { expression: string; paused?: boolean };
+}
+
+export interface IpAccessRuleResponse {
+  id: string;
+  mode: string;
+  notes?: string;
+  configuration: { target: string; value: string };
+  allowed_modes: string[];
+}
+
+export interface WafRulesetResponse {
+  id: string;
+  name: string;
+  description?: string;
+  kind: string;
+  phase: string;
+}
+
+// ── Worker types ──────────────────────────────────────────────────────────────
+
+export interface WorkerRouteResponse {
+  id: string;
+  pattern: string;
+  script: string;
+}
+
+// ── Email Routing types ───────────────────────────────────────────────────────
+
+export interface EmailRoutingMatcherResponse {
+  type: string;
+  field?: string;
+  value?: string;
+}
+
+export interface EmailRoutingActionResponse {
+  type: string;
+  value?: string[];
+}
+
+export interface EmailRoutingRuleResponse {
+  id?: string;
+  tag?: string;
+  name?: string;
+  enabled: boolean;
+  matchers: EmailRoutingMatcherResponse[];
+  actions: EmailRoutingActionResponse[];
+  priority?: number;
+}
+
+export interface EmailRoutingRuleInput {
+  name?: string;
+  enabled?: boolean;
+  matchers: EmailRoutingMatcherResponse[];
+  actions: EmailRoutingActionResponse[];
+  priority?: number;
+}
+
+export interface EmailRoutingSettingsResponse {
+  enabled: boolean;
+  name?: string;
+  tag?: string;
+  created?: string;
+  modified?: string;
+  skip_wizard?: boolean;
+  status?: string;
+}
+
+// ── Page Rules types ──────────────────────────────────────────────────────────
+
+export interface PageRuleTarget {
+  target: string;
+  constraint: { operator: string; value: string };
+}
+
+export interface PageRuleAction {
+  id: string;
+  value?: unknown;
+}
+
+export interface PageRuleResponse {
+  id: string;
+  targets: PageRuleTarget[];
+  actions: PageRuleAction[];
+  priority?: number;
+  status: string;
+  created_on?: string;
+  modified_on?: string;
+}
+
+// ── DNS Propagation types ─────────────────────────────────────────────────────
+
+export interface PropagationResolverResult {
+  resolver: string;
+  label: string;
+  records: string[];
+  rcode: string;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface PropagationResult {
+  domain: string;
+  record_type: string;
+  resolvers: PropagationResolverResult[];
+  consistent: boolean;
+  timestamp: string;
+}
+
+// ── DNS Tools types ───────────────────────────────────────────────────────────
+
+export interface PartialDNSRecord {
+  type?: string;
+  name?: string;
+  content?: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+}
+
+export interface DNSRecordValidationInput {
+  type: string;
+  name: string;
+  content: string;
+  ttl?: number;
+  priority?: number;
+  proxied?: boolean;
+}
+
+export interface ValidationResult {
+  ok: boolean;
+  issues: string[];
+}
+
+export interface SRVFields {
+  priority?: number;
+  weight?: number;
+  port?: number;
+  target: string;
+}
+
+export interface TLSAFields {
+  usage?: number;
+  selector?: number;
+  matching_type?: number;
+  data: string;
+}
+
+export interface SSHFPFields {
+  algorithm?: number;
+  fptype?: number;
+  fingerprint: string;
+}
+
+export interface NAPTRFields {
+  order?: number;
+  preference?: number;
+  flags: string;
+  service: string;
+  regexp: string;
+  replacement: string;
+}
+
+export interface SPFMechanism {
+  qualifier?: string;
+  mechanism: string;
+  value?: string;
+}
+
+export interface SPFModifier {
+  key: string;
+  value: string;
+}
+
+export interface SPFRecord {
+  version: string;
+  mechanisms: SPFMechanism[];
+  modifiers: SPFModifier[];
+}
+
+// ── Domain Audit types ────────────────────────────────────────────────────────
+
+export type DomainAuditSeverity = "pass" | "info" | "warn" | "fail";
+export type DomainAuditCategory = "email" | "security" | "hygiene";
+
+export interface DomainAuditSuggestion {
+  recordType: string;
+  name: string;
+  content: string;
+}
+
+export interface DomainAuditItem {
+  id: string;
+  category: DomainAuditCategory;
+  severity: DomainAuditSeverity;
+  title: string;
+  details: string;
+  suggestion?: DomainAuditSuggestion;
+}
+
+export interface DomainAuditOptions {
+  includeCategories: {
+    email: boolean;
+    security: boolean;
+    hygiene: boolean;
+  };
+  domainExpiresAt?: string | null;
+}
+
+// ── Biometric types ────────────────────────────────────────────────────────
+
+export type BiometricType = "touchId" | "faceId" | "windowsHello" | "fingerprint" | "none";
+
+export interface BiometricStatus {
+  available: boolean;
+  biometricType: BiometricType;
+  reason?: string;
+}

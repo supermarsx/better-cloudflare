@@ -2,6 +2,7 @@
  * Zone Comparison panel — side-by-side diff of DNS records between two zones.
  */
 import { useCallback, useState } from "react";
+import { useI18n } from "@/hooks/use-i18n";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -66,9 +67,11 @@ interface ZoneCompareProps {
   zones: Zone[];
   currentZoneId: string;
   getDNSRecords: (zoneId: string, page?: number, perPage?: number, signal?: AbortSignal) => Promise<DNSRecord[]>;
+  onCopyRecords?: (records: DNSRecord[]) => void;
 }
 
-function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneCompareProps) {
+function ZoneCompareInner({ zones, currentZoneId, getDNSRecords, onCopyRecords }: ZoneCompareProps) {
+  const { t } = useI18n();
   const [compareZoneId, setCompareZoneId] = useState("");
   const [diff, setDiff] = useState<DiffEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -90,7 +93,7 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
       ]);
       setDiff(computeDiff(leftRecords, rightRecords));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Comparison failed");
+      setError(err instanceof Error ? err.message : t("Comparison failed", "Comparison failed"));
     } finally {
       setLoading(false);
     }
@@ -114,10 +117,10 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
       "only-right": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
     };
     const labels: Record<DiffKind, string> = {
-      same: "Same",
-      different: "Different",
-      "only-left": `Only in ${currentZone?.name ?? "left"}`,
-      "only-right": `Only in ${compareZone?.name ?? "right"}`,
+      same: t("Same", "Same"),
+      different: t("Different", "Different"),
+      "only-left": t("Only in {{name}}", { name: currentZone?.name ?? t("left", "left"), defaultValue: "Only in {{name}}" }),
+      "only-right": t("Only in {{name}}", { name: compareZone?.name ?? t("right", "right"), defaultValue: "Only in {{name}}" }),
     };
     return (
       <span
@@ -131,7 +134,7 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Zone Compare</h3>
+        <h3 className="text-lg font-semibold">{t("Zone Compare", "Zone Compare")}</h3>
       </div>
 
       <Card>
@@ -139,14 +142,14 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
           <div className="flex items-end gap-2">
             <div className="flex-1">
               <Label className="text-xs">
-                Current: <span className="font-mono">{currentZone?.name ?? currentZoneId}</span>
+                {t("Current:", "Current:")} <span className="font-mono">{currentZone?.name ?? currentZoneId}</span>
               </Label>
             </div>
             <div className="flex-1">
-              <Label className="text-xs">Compare With</Label>
+              <Label className="text-xs">{t("Compare With", "Compare With")}</Label>
               <Select value={compareZoneId} onValueChange={setCompareZoneId}>
                 <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="Select zone…" />
+                  <SelectValue placeholder={t("Select zone…", "Select zone…")} />
                 </SelectTrigger>
                 <SelectContent>
                   {otherZones.map((z) => (
@@ -158,7 +161,7 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
               </Select>
             </div>
             <Button size="sm" onClick={runComparison} disabled={loading || !compareZoneId}>
-              {loading ? "Comparing…" : "Compare"}
+              {loading ? t("Comparing…", "Comparing…") : t("Compare", "Compare")}
             </Button>
           </div>
         </CardContent>
@@ -169,24 +172,36 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
       {stats && (
         <div className="flex flex-wrap gap-2 text-xs">
           <span className="rounded bg-green-100 px-2 py-1 dark:bg-green-900/30">
-            {stats.same} identical
+            {t("{{count}} identical", { count: stats.same, defaultValue: "{{count}} identical" })}
           </span>
           <span className="rounded bg-yellow-100 px-2 py-1 dark:bg-yellow-900/30">
-            {stats.different} different
+            {t("{{count}} different", { count: stats.different, defaultValue: "{{count}} different" })}
           </span>
           <span className="rounded bg-blue-100 px-2 py-1 dark:bg-blue-900/30">
-            {stats.onlyLeft} only in {currentZone?.name ?? "current"}
+            {t("{{count}} only in {{name}}", { count: stats.onlyLeft, name: currentZone?.name ?? t("current", "current"), defaultValue: "{{count}} only in {{name}}" })}
           </span>
           <span className="rounded bg-purple-100 px-2 py-1 dark:bg-purple-900/30">
-            {stats.onlyRight} only in {compareZone?.name ?? "compare"}
+            {t("{{count}} only in {{name}}", { count: stats.onlyRight, name: compareZone?.name ?? t("compare", "compare"), defaultValue: "{{count}} only in {{name}}" })}
           </span>
           <button
             type="button"
             className="ml-auto text-xs text-primary underline"
             onClick={() => setShowSame(!showSame)}
           >
-            {showSame ? "Hide identical" : "Show identical"}
+            {showSame ? t("Hide identical", "Hide identical") : t("Show identical", "Show identical")}
           </button>
+          {onCopyRecords && stats.onlyRight > 0 && (
+            <button
+              type="button"
+              className="text-xs text-primary underline"
+              onClick={() => {
+                const missing = diff?.filter((e) => e.kind === "only-right" && e.right).map((e) => e.right!) ?? [];
+                onCopyRecords(missing);
+              }}
+            >
+              {t("Copy {{count}} missing → current", { count: stats.onlyRight, defaultValue: "Copy {{count}} missing → current" })}
+            </button>
+          )}
         </div>
       )}
 
@@ -234,7 +249,7 @@ function ZoneCompareInner({ zones, currentZoneId, getDNSRecords }: ZoneComparePr
 
       {diff && filteredDiff.length === 0 && (
         <p className="py-6 text-center text-sm text-muted-foreground">
-          {showSame ? "No records found" : "All records are identical!"}
+          {showSame ? t("No records found", "No records found") : t("All records are identical!", "All records are identical!")}
         </p>
       )}
     </div>

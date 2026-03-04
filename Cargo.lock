@@ -519,12 +519,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-error"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bc-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
  "bc-cloudflare-api",
+ "bc-dns-tools",
+ "bc-domain-audit",
  "bc-spf",
+ "bc-topology",
  "serde",
  "serde_json",
  "tokio",
@@ -551,6 +563,18 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "bc-session"
+version = "0.1.0"
+dependencies = [
+ "bc-cloudflare-api",
+ "bc-error",
+ "chrono",
+ "reqwest",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -597,9 +621,11 @@ dependencies = [
  "bc-crypto",
  "bc-dns-tools",
  "bc-domain-audit",
+ "bc-error",
  "bc-mcp",
  "bc-passkey",
  "bc-registrar",
+ "bc-session",
  "bc-spf",
  "bc-storage",
  "bc-topology",

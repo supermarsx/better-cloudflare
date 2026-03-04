@@ -10,4 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
+bc-dns-tools = { path = "../bc-dns-tools" }
+bc-domain-audit = { path = "../bc-domain-audit" }
 bc-spf = { path = "../bc-spf" }
+bc-topology = { path = "../bc-topology" }

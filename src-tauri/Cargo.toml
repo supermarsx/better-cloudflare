@@ -22,7 +22,9 @@ sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optiona
 
 # Workspace crates
 bc-crypto = { path = "crates/bc-crypto" }
+bc-error = { path = "crates/bc-error" }
 bc-storage = { path = "crates/bc-storage" }
+bc-session = { path = "crates/bc-session" }
 bc-cloudflare-api = { path = "crates/bc-cloudflare-api" }
 bc-spf = { path = "crates/bc-spf" }
 bc-passkey = { path = "crates/bc-passkey" }
