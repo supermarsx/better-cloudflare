@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Globe } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 
 const languageNames: Record<string, string> = {
   "en-US": "English",

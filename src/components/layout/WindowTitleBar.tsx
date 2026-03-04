@@ -17,8 +17,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { storageManager } from "@/lib/storage";
-import { TauriClient } from "@/lib/tauri-client";
+import { storageManager } from "@/lib/storage/storage";
+import { TauriClient } from "@/lib/api/tauri-client";
 import { useI18n } from "@/hooks/use-i18n";
 
 const TITLEBAR_HEIGHT_PX = 36;

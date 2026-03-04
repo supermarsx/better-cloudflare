@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 import { useI18n } from "@/hooks/use-i18n";
 
 type ThemeId = "sunset" | "oled" | "light";
