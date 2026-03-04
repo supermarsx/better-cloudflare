@@ -17,7 +17,7 @@ import type {
   RecordUpdateParams,
 } from "cloudflare/resources/dns/records";
 import type { DNSRecord, Zone } from "@/types/dns";
-import { getEnv, getEnvBool } from "./env";
+import { getEnv, getEnvBool } from "../env";
 
 const DEFAULT_CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const DEBUG = getEnvBool("DEBUG_CF_API", "VITE_DEBUG_CF_API");

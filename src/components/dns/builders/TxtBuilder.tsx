@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { SPFGraph } from "@/lib/spf";
+import type { SPFGraph } from "@/lib/dns/spf";
 
 import { DkimBuilder } from "./DkimBuilder";
 import { DmarcBuilder } from "./DmarcBuilder";

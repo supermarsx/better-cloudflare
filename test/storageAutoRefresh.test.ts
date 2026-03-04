@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { StorageManager } from "../src/lib/storage";
-import type { StorageLike } from "../src/lib/storage-util";
+import { StorageManager } from "../src/lib/storage/storage";
+import type { StorageLike } from "../src/lib/storage/storage-util";
 
 function createStorage(): StorageLike & { data: Record<string, string> } {
   const data: Record<string, string> = {};

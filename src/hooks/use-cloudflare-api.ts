@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
-import { ServerClient } from "../lib/server-client";
-import type { EmailRoutingRuleInput } from "../lib/tauri-client";
-import type { SPFGraph } from "@/lib/spf";
+import { ServerClient } from "../lib/api/server-client";
+import type { EmailRoutingRuleInput } from "../lib/api/tauri-client";
+import type { SPFGraph } from "@/lib/dns/spf";
 import type { DNSRecord, Zone, ZoneSetting } from "../types/dns";
 
 /**

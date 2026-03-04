@@ -33,9 +33,9 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
-import type { SPFGraph } from "@/lib/spf";
-import { parseSPF, composeSPF, validateSPF } from "@/lib/spf";
-import { storageManager } from "@/lib/storage";
+import type { SPFGraph } from "@/lib/dns/spf";
+import { parseSPF, composeSPF, validateSPF } from "@/lib/dns/spf";
+import { storageManager } from "@/lib/storage/storage";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   parseSRV,
@@ -46,7 +46,7 @@ import {
   composeSSHFP,
   parseNAPTR,
   composeNAPTR,
-} from "@/lib/dns-parsers";
+} from "@/lib/dns/dns-parsers";
 import { RECORD_TYPES, getTTLPresets, getRecordTypeLabel } from "@/types/dns";
 import type { BuilderWarnings } from "@/components/dns/builders/types";
 import { DsBuilder } from "@/components/dns/builders/DsBuilder";

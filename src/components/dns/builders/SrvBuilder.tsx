@@ -11,8 +11,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { KNOWN_TLDS } from "@/lib/tlds";
-import { composeSRV, parseSRV } from "@/lib/dns-parsers";
+import { KNOWN_TLDS } from "@/lib/dns/tlds";
+import { composeSRV, parseSRV } from "@/lib/dns/dns-parsers";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 

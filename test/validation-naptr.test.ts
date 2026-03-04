@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 
 test('NAPTR content validated as "order preference flags service regexp replacement"', () => {
   const bad = dnsRecordSchema.safeParse({

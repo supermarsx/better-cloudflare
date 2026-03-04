@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { composeSSHFP, parseSSHFP } from "@/lib/dns-parsers";
+import { composeSSHFP, parseSSHFP } from "@/lib/dns/dns-parsers";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 

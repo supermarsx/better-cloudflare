@@ -14,7 +14,7 @@ export type AuditEntry = {
 const entries: AuditEntry[] = [];
 import createCredentialStore, {
   SqliteCredentialStore,
-} from "./credential-store";
+} from "../auth/credential-store";
 const store = createCredentialStore();
 
 export function logAudit(entry: AuditEntry) {

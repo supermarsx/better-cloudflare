@@ -1,7 +1,7 @@
 import { z } from "zod";
 import net from "net";
 import { validateSPF } from "./spf";
-import { RECORD_TYPES } from "../types/dns";
+import { RECORD_TYPES } from "../../types/dns";
 
 /**
  * Zod schema describing a DNS record input the application accepts for

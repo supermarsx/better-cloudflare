@@ -29,7 +29,7 @@ import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
-import { storageManager, type SessionSettingsProfile } from "@/lib/storage";
+import { storageManager, type SessionSettingsProfile } from "@/lib/storage/storage";
 import {
   ArrowUpDown,
   ClipboardPaste,
@@ -51,12 +51,12 @@ import {
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient, type McpServerStatus } from "@/lib/tauri-client";
+import { TauriClient, type McpServerStatus } from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
-import { filterRecords } from "@/lib/dns-utils";
-import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
+import { filterRecords } from "@/lib/dns/dns-utils";
+import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -64,7 +64,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "./RegistryMonitor";
 import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
-import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/domain-audit";
+import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/audit/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
 import { AnalyticsPanel } from "./AnalyticsPanel";
 import { FirewallPanel } from "./FirewallPanel";
@@ -1078,7 +1078,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       domainExpiresAt: registrarExpiry ?? rdapExpiryEvent,
     };
     if (isDesktop()) {
-      const records = activeTab.records as unknown as import("@/lib/tauri-client").TauriDNSRecord[];
+      const records = activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
       TauriClient.runDomainAudit(activeTab.zoneName, records, opts)
         .then(setDomainAuditItems)
         .catch(() => {
@@ -3114,7 +3114,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     let mimeType = "";
 
     if (isDesktop()) {
-      const records = activeTab.records as unknown as import("@/lib/tauri-client").TauriDNSRecord[];
+      const records = activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
       try {
         switch (format) {
           case "json":

@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import { act, create } from "react-test-renderer";
 
 import { AuditLogDialog } from "../src/components/audit/AuditLogDialog";
-import { TauriClient } from "../src/lib/tauri-client";
+import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 const originalExport = TauriClient.exportAuditEntries;

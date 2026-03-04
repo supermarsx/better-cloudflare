@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ServerClient } from "../src/lib/server-client";
+import { ServerClient } from "../src/lib/api/server-client";
 
 test("ServerClient simulateSPF and getSPFGraph", async () => {
   const sc = new ServerClient("", "http://localhost:8787/api", undefined, 5000);

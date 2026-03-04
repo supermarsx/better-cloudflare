@@ -7,14 +7,14 @@ import {
   SPFRecord,
   setDnsResolverForTest,
   ipMatchesCIDR,
-} from "../src/lib/spf";
+} from "../src/lib/dns/spf";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   buildSPFGraphFromContent,
   validateSPFContentAsync,
   simulateSPF,
   expandSPFMacro,
-} from "../src/lib/spf";
+} from "../src/lib/dns/spf";
 
 test("parseSPF should parse mechanisms", () => {
   const input = "v=spf1 ip4:1.2.3.0/24 include:example.com -all";

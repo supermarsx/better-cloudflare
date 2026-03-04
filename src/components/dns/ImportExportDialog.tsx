@@ -24,9 +24,9 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Upload, Download } from "lucide-react";
-import { parseCSVRecords, parseBINDZone } from "@/lib/dns-parsers";
+import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 import { ImportPreviewDialog } from "./ImportPreviewDialog";
 import type { DNSRecord } from "@/types/dns";
 

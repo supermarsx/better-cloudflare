@@ -1,4 +1,4 @@
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 import { RECORD_TYPES } from "../src/types/dns";
 import { test } from "node:test";
 

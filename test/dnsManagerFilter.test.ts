@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // lightweight unit test — no DOM or React required
-import { filterRecords } from "../src/lib/dns-utils";
+import { filterRecords } from "../src/lib/dns/dns-utils";
 import type { DNSRecord } from "../src/types/dns";
 
 // tests exercise the filterRecords helper only

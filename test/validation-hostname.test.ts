@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 
 test("hostname-like record validation rejects invalid content", () => {
   const bad = dnsRecordSchema.safeParse({

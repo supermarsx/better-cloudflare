@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, afterEach } from "node:test";
 
-import { TauriClient } from "../src/lib/tauri-client";
+import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 

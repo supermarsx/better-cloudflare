@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   benchmark,
   MAX_BENCHMARK_ITERATIONS,
-} from "../src/lib/crypto-benchmark.ts";
+} from "../src/lib/auth/crypto-benchmark.ts";
 
 const TOLERANCE_MS = 50;
 

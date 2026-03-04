@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import createCredentialStore from "../src/lib/credential-store.ts";
+import createCredentialStore from "../src/lib/auth/credential-store.ts";
 import { unlinkSync } from "fs";
 import path from "path";
 

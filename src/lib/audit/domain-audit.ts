@@ -1,6 +1,6 @@
 import type { DNSRecord } from "@/types/dns";
-import { ipMatchesCIDR, parseSPF } from "@/lib/spf";
-import { parseSRV } from "@/lib/dns-parsers";
+import { ipMatchesCIDR, parseSPF } from "@/lib/dns/spf";
+import { parseSRV } from "@/lib/dns/dns-parsers";
 
 export type DomainAuditSeverity = "pass" | "info" | "warn" | "fail";
 export type DomainAuditCategory = "email" | "security" | "hygiene";

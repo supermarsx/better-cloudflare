@@ -8,7 +8,7 @@ import {
   toCredentialRequestOptions,
   serializeAuthenticationCredential,
   serializeRegistrationCredential,
-} from "../src/lib/webauthn";
+} from "../src/lib/auth/webauthn";
 
 const originalAtob = globalThis.atob;
 const originalBtoa = globalThis.btoa;

@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { KNOWN_TLDS } from "@/lib/tlds";
+import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 

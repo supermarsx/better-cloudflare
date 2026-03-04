@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RECORD_TYPES } from "../src/types/dns";
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 
 test("dnsRecordSchema accepts all known record types", () => {
   for (const t of RECORD_TYPES) {

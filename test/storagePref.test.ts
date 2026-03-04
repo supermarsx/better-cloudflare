@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { storageManager } from "../src/lib/storage.ts";
+import { storageManager } from "../src/lib/storage/storage.ts";
 
 test("auto refresh preference persisted", async () => {
   storageManager.setAutoRefreshInterval(60000);

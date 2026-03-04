@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { composeTLSA, parseTLSA } from "@/lib/dns-parsers";
+import { composeTLSA, parseTLSA } from "@/lib/dns/dns-parsers";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 

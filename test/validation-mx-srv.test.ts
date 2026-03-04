@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 
 test("MX records require integer priority", () => {
   const missing = dnsRecordSchema.safeParse({

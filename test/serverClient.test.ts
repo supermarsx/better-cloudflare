@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ServerClient } from "../src/lib/server-client.ts";
+import { ServerClient } from "../src/lib/api/server-client.ts";
 
 // Ensure web fetch shims are loaded if needed
 import "cloudflare/shims/web";

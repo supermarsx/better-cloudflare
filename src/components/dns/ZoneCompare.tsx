@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
 import type { DNSRecord, Zone } from "@/types/dns";
 
 type DiffKind = "only-left" | "only-right" | "different" | "same";

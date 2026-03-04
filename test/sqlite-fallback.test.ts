@@ -13,7 +13,7 @@ interface FakeDBState {
   lastID: number;
   tables?: DBTables;
 }
-import { openSqlite } from "../src/lib/sqlite-driver.ts";
+import { openSqlite } from "../src/lib/storage/sqlite-driver.ts";
 import { createRequire } from "module";
 const requireCJS = createRequire(import.meta.url);
 const fakeSqlite3 = {
@@ -188,7 +188,7 @@ const fakeSqlite3 = {
   verbose: () => unknown;
   Database: new (file?: string) => Record<string, unknown>;
 };
-import { SqliteCredentialStore } from "../src/lib/credential-store.ts";
+import { SqliteCredentialStore } from "../src/lib/auth/credential-store.ts";
 
 test("openSqlite falls back to sqlite3 when better-sqlite3 is not available", async () => {
   const tmp = path.resolve(process.cwd(), "data", "test-fallback.db");

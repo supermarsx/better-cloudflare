@@ -4,7 +4,7 @@ import { test, afterEach } from "node:test";
 import { act, create } from "react-test-renderer";
 
 import PasskeyManagerDialog from "../src/components/auth/PasskeyManagerDialog";
-import { ServerClient } from "../src/lib/server-client";
+import { ServerClient } from "../src/lib/api/server-client";
 
 const originalList = ServerClient.prototype.listPasskeys;
 const originalDelete = ServerClient.prototype.deletePasskey;

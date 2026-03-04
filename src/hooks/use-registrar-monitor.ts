@@ -7,7 +7,7 @@
  * HTTP requests. The hook only manages UI state.
  */
 import { useCallback, useMemo, useState } from "react";
-import { ServerClient } from "@/lib/server-client";
+import { ServerClient } from "@/lib/api/server-client";
 import type {
   DomainInfo,
   DomainHealthCheck,

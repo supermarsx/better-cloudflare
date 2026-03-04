@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { ServerClient } from "@/lib/server-client";
+import { ServerClient } from "@/lib/api/server-client";
 import { Fingerprint, Smartphone, Monitor, Shield, Trash2, Edit2, Check, X } from "lucide-react";
 
 interface PasskeyManagerDialogProps {

@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
-import type { EmailRoutingRuleInput } from "@/lib/tauri-client";
+import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import type { EmailRoutingRuleInput } from "@/lib/api/tauri-client";
 
 interface EmailRoutingSettings {
   enabled: boolean;

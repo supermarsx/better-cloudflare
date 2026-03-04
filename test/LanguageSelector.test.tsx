@@ -3,7 +3,7 @@ import React from "react";
 import { create } from "react-test-renderer";
 import { test } from "node:test";
 
-import { LanguageSelector } from "../src/components/ui/LanguageSelector";
+import { LanguageSelector } from "../src/components/layout/LanguageSelector";
 
 test("LanguageSelector renders select with aria-label", () => {
   const r = create(React.createElement(LanguageSelector));

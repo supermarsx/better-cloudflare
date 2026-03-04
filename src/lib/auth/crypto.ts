@@ -7,9 +7,9 @@ import {
   ENCRYPTION_ALGORITHMS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
-} from "../types/dns";
+} from "../../types/dns";
 
-import { getStorage, type StorageLike } from "./storage-util";
+import { getStorage, type StorageLike } from "../storage/storage-util";
 
 const CONFIG_STORAGE_KEY = "encryption-settings";
 

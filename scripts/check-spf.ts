@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { promises as dnsPromises } from "node:dns";
-import { parseSPF, SPFRecord } from "../src/lib/spf";
+import { parseSPF, SPFRecord } from "../src/lib/dns/spf";
 
 async function getSPF(domain: string): Promise<string | null> {
   try {

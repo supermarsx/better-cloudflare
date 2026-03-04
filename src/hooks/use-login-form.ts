@@ -1,19 +1,19 @@
 import { useState, useEffect } from "react";
 import { toast } from "@/hooks/use-toast";
-import { storageManager } from "@/lib/storage";
-import { storageBackend } from "@/lib/storage-util";
+import { storageManager } from "@/lib/storage/storage";
+import { storageBackend } from "@/lib/storage/storage-util";
 import i18next from "i18next";
-import { cryptoManager } from "@/lib/crypto";
-import { ServerClient } from "@/lib/server-client";
+import { cryptoManager } from "@/lib/auth/crypto";
+import { ServerClient } from "@/lib/api/server-client";
 import type { ApiKey } from "@/types/dns";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 import {
   serializeAuthenticationCredential,
   serializeRegistrationCredential,
   toCredentialCreationOptions,
   toCredentialRequestOptions,
-} from "@/lib/webauthn";
+} from "@/lib/auth/webauthn";
 
 export function useLoginForm(
   onLogin: (apiKey: string, email?: string) => void | Promise<void>,
@@ -664,7 +664,7 @@ export function useLoginForm(
     try {
       const result = desktop
         ? await TauriClient.benchmarkEncryption(encryptionSettings.iterations)
-        : await (await import("@/lib/crypto-benchmark")).benchmark(
+        : await (await import("@/lib/auth/crypto-benchmark")).benchmark(
             encryptionSettings.iterations,
           );
       setBenchmarkResult(result);

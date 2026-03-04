@@ -7,7 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 
 type AuditEntry = {

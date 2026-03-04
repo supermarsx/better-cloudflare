@@ -5,7 +5,7 @@ import { act, create } from "react-test-renderer";
 
 import { DNSManager } from "../src/components/dns/DNSManager";
 import { useCloudflareAPI } from "../src/hooks/use-cloudflare-api";
-import { TauriClient } from "../src/lib/tauri-client";
+import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 const originalUseCloudflare = useCloudflareAPI;

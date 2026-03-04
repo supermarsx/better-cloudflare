@@ -1,10 +1,10 @@
 import { promises as fs, mkdirSync } from "fs";
 import path from "path";
 import { vaultManager } from "./vault-manager";
-import { getEnv } from "./env";
-import openSqlite from "./sqlite-driver";
-import type { SqliteWrapper } from "./sqlite-driver";
-import type { AuditEntry } from "./audit";
+import { getEnv } from "../env";
+import openSqlite from "../storage/sqlite-driver";
+import type { SqliteWrapper } from "../storage/sqlite-driver";
+import type { AuditEntry } from "../audit/audit";
 
 export type PasskeyCredential = {
   credentialID: string;

@@ -28,7 +28,7 @@ import {
 import type { DNSRecord } from "@/types/dns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { TauriClient } from "@/lib/tauri-client";
+import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 
 type Annotation = {

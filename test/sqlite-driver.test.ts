@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import openSqlite from "../src/lib/sqlite-driver.ts";
+import openSqlite from "../src/lib/storage/sqlite-driver.ts";
 import path from "path";
 import fs from "fs";
 

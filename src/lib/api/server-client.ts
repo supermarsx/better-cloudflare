@@ -6,8 +6,8 @@
  * JSON parsing with reasonable defaults.
  */
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
-import { getEnv } from "./env";
-import { isDesktop } from "./environment";
+import { getEnv } from "../env";
+import { isDesktop } from "../environment";
 import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
 import type { TauriDNSRecordInput } from "./tauri-client";
 

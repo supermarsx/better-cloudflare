@@ -1,8 +1,8 @@
 // Debug helper script — keep types narrow where feasible
-import createCredentialStore from "../src/lib/credential-store";
-import type { CredentialStore } from "../src/lib/credential-store";
+import createCredentialStore from "../src/lib/auth/credential-store";
+import type { CredentialStore } from "../src/lib/auth/credential-store";
 import { ServerAPI } from "../src/lib/server-api";
-import { getAuditEntries } from "../src/lib/audit";
+import { getAuditEntries } from "../src/lib/audit/audit";
 import { isAdmin } from "../src/lib/rbac";
 
 process.env.CREDENTIAL_STORE = "sqlite";

@@ -7,10 +7,10 @@ import {
   ENCRYPTION_ALGORITHMS,
   type ApiKey,
   type EncryptionAlgorithm,
-} from "../types/dns";
-import { CryptoManager } from "./crypto";
+} from "../../types/dns";
+import { CryptoManager } from "../auth/crypto";
 import { getStorage, type StorageLike } from "./storage-util";
-import { generateUUID } from "./utils";
+import { generateUUID } from "../utils";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
 const DEFAULT_MCP_TOOLS = [

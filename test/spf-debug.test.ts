@@ -1,4 +1,4 @@
-import { dnsRecordSchema } from "../src/lib/validation";
+import { dnsRecordSchema } from "../src/lib/dns/validation";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

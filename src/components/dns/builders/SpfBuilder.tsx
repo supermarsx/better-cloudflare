@@ -11,9 +11,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { SPFGraph, SPFMechanism } from "@/lib/spf";
-import { composeSPF, parseSPF, validateSPF } from "@/lib/spf";
-import { KNOWN_TLDS } from "@/lib/tlds";
+import type { SPFGraph, SPFMechanism } from "@/lib/dns/spf";
+import { composeSPF, parseSPF, validateSPF } from "@/lib/dns/spf";
+import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 

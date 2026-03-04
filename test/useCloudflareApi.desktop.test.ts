@@ -4,7 +4,7 @@ import React from "react";
 import { act, create } from "react-test-renderer";
 
 import { useCloudflareAPI } from "../src/hooks/use-cloudflare-api";
-import { TauriClient } from "../src/lib/tauri-client";
+import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 const originalGetZones = TauriClient.getZones;

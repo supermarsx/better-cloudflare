@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CryptoManager } from "../src/lib/crypto.ts";
-import { benchmark } from "../src/lib/crypto-benchmark.ts";
+import { CryptoManager } from "../src/lib/auth/crypto.ts";
+import { benchmark } from "../src/lib/auth/crypto-benchmark.ts";
 
 class LocalStorageMock {
   private store: Record<string, string> = {};
