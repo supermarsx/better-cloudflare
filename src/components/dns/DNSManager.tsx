@@ -66,6 +66,13 @@ import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
 import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
+import { AnalyticsPanel } from "./AnalyticsPanel";
+import { FirewallPanel } from "./FirewallPanel";
+import { WorkersPanel } from "./WorkersPanel";
+import { EmailRoutingPanel } from "./EmailRoutingPanel";
+import { PropagationChecker } from "./PropagationChecker";
+import { BulkEditBar } from "./BulkEditBar";
+import { ZoneCompare } from "./ZoneCompare";
 
 
 type ActionTab =
@@ -76,7 +83,13 @@ type ActionTab =
   | "ssl-tls"
   | "domain-audit"
   | "domain-registry"
-  | "topology";
+  | "topology"
+  | "analytics"
+  | "firewall"
+  | "workers"
+  | "email-routing"
+  | "propagation"
+  | "zone-compare";
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -232,6 +245,36 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "topology",
     label: "Topology",
     hint: "Visualize DNS relationships, CNAME chains, and shared services",
+  },
+  {
+    id: "analytics",
+    label: "Analytics",
+    hint: "Traffic, bandwidth, and threat statistics",
+  },
+  {
+    id: "firewall",
+    label: "Firewall",
+    hint: "Firewall rules, IP access rules, and WAF rulesets",
+  },
+  {
+    id: "workers",
+    label: "Workers",
+    hint: "Manage Cloudflare Worker routes for this zone",
+  },
+  {
+    id: "email-routing",
+    label: "Email",
+    hint: "Configure email routing rules and forwarding",
+  },
+  {
+    id: "propagation",
+    label: "Propagation",
+    hint: "Check DNS propagation across global resolvers",
+  },
+  {
+    id: "zone-compare",
+    label: "Compare",
+    hint: "Compare DNS records between zones",
   },
 ];
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
@@ -691,6 +734,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     registrarHealthCheckAll,
     simulateSPF,
     getSPFGraph,
+    // New API methods
+    getZoneAnalytics,
+    getFirewallRules,
+    createFirewallRule,
+    deleteFirewallRule,
+    getIpAccessRules,
+    createIpAccessRule,
+    deleteIpAccessRule,
+    getWafRulesets,
+    getWorkerRoutes,
+    createWorkerRoute,
+    deleteWorkerRoute,
+    getEmailRoutingSettings,
+    getEmailRoutingRules,
+    createEmailRoutingRule,
+    deleteEmailRoutingRule,
+    deleteBulkDnsRecords,
+    checkDnsPropagation,
   } = useCloudflareAPI(apiKey, email);
 
   useEffect(() => {
@@ -4027,6 +4088,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             )}
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
+                <>
                 <div className="space-y-4 fade-in">
                   <div className="rounded-xl border border-border/60 bg-card/60 p-3">
                     <div className="mb-2 text-[11px] uppercase tracking-widest text-muted-foreground">
@@ -4366,6 +4428,43 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                   )}
                 </div>
+                <BulkEditBar
+                  selectedCount={activeTab.selectedIds.length}
+                  onBulkDelete={async () => {
+                    if (!activeTab.selectedIds.length) return;
+                    try {
+                      await deleteBulkDnsRecords(activeTab.zoneId, activeTab.selectedIds);
+                      toast({
+                        title: t("Deleted", "Deleted"),
+                        description: t("{{count}} records deleted", {
+                          count: activeTab.selectedIds.length,
+                          defaultValue: `${activeTab.selectedIds.length} records deleted`,
+                        }),
+                      });
+                      updateTab(activeTab.id, (prev) => ({
+                        ...prev,
+                        selectedIds: [],
+                        records: prev.records.filter(
+                          (r) => !activeTab.selectedIds.includes(r.id),
+                        ),
+                      }));
+                    } catch (err) {
+                      toast({
+                        title: t("Error", "Error"),
+                        description:
+                          err instanceof Error ? err.message : "Bulk delete failed",
+                        variant: "destructive",
+                      });
+                    }
+                  }}
+                  onDeselectAll={() =>
+                    updateTab(activeTab.id, (prev) => ({
+                      ...prev,
+                      selectedIds: [],
+                    }))
+                  }
+                />
+                </>
               )}
               {activeTab.kind === "zone" && actionTab === "import" && (
                 <div className="grid gap-4 md:grid-cols-2">
@@ -5607,6 +5706,63 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   }}
                 />
               )}
+
+              {/* ── New Panels ───────────────────────────────────── */}
+
+              {activeTab.kind === "zone" && actionTab === "analytics" && (
+                <AnalyticsPanel
+                  zoneId={activeTab.zoneId}
+                  getZoneAnalytics={getZoneAnalytics}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "firewall" && (
+                <FirewallPanel
+                  zoneId={activeTab.zoneId}
+                  getFirewallRules={getFirewallRules}
+                  createFirewallRule={createFirewallRule}
+                  deleteFirewallRule={deleteFirewallRule}
+                  getIpAccessRules={getIpAccessRules}
+                  createIpAccessRule={createIpAccessRule}
+                  deleteIpAccessRule={deleteIpAccessRule}
+                  getWafRulesets={getWafRulesets}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "workers" && (
+                <WorkersPanel
+                  zoneId={activeTab.zoneId}
+                  getWorkerRoutes={getWorkerRoutes}
+                  createWorkerRoute={createWorkerRoute}
+                  deleteWorkerRoute={deleteWorkerRoute}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "email-routing" && (
+                <EmailRoutingPanel
+                  zoneId={activeTab.zoneId}
+                  getEmailRoutingSettings={getEmailRoutingSettings}
+                  getEmailRoutingRules={getEmailRoutingRules}
+                  createEmailRoutingRule={createEmailRoutingRule}
+                  deleteEmailRoutingRule={deleteEmailRoutingRule}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "propagation" && (
+                <PropagationChecker
+                  zoneName={activeTab.zoneName}
+                  checkDnsPropagation={checkDnsPropagation}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "zone-compare" && (
+                <ZoneCompare
+                  zones={zones}
+                  currentZoneId={activeTab.zoneId}
+                  getDNSRecords={getDNSRecords}
+                />
+              )}
+
               {activeTab.kind === "audit" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
