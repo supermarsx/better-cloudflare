@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::State as AxumState;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -58,12 +59,15 @@ struct JsonRpcRequest {
 #[derive(Debug, Clone)]
 struct HttpRuntimeState {
     enabled_tools: Arc<RwLock<HashSet<String>>>,
+    auth_token: Arc<RwLock<Option<String>>>,
 }
 
 struct RunningMcpServer {
     host: String,
     port: u16,
     enabled_tools: Arc<RwLock<HashSet<String>>>,
+    #[allow(dead_code)]
+    auth_token: Arc<RwLock<Option<String>>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task_handle: JoinHandle<()>,
 }
@@ -75,6 +79,7 @@ pub struct McpServerManager {
     config_host: RwLock<String>,
     config_port: RwLock<u16>,
     config_enabled_tools: RwLock<HashSet<String>>,
+    config_auth_token: RwLock<Option<String>>,
     last_error: Arc<RwLock<Option<String>>>,
 }
 
@@ -85,6 +90,7 @@ impl Default for McpServerManager {
             config_host: RwLock::new(DEFAULT_MCP_HOST.to_string()),
             config_port: RwLock::new(DEFAULT_MCP_PORT),
             config_enabled_tools: RwLock::new(default_enabled_tool_set()),
+            config_auth_token: RwLock::new(None),
             last_error: Arc::new(RwLock::new(None)),
         }
     }
@@ -236,6 +242,7 @@ impl McpServerManager {
         host: Option<String>,
         port: Option<u16>,
         enabled_tools: Option<Vec<String>>,
+        auth_token: Option<String>,
     ) -> Result<McpServerStatus, String> {
         self.stop_internal().await?;
 
@@ -247,6 +254,7 @@ impl McpServerManager {
             self.config_enabled_tools.read().await.clone()
         };
         let enabled_ref = Arc::new(RwLock::new(desired_enabled.clone()));
+        let token_ref = Arc::new(RwLock::new(auth_token.clone()));
 
         let bind_addr = format!("{}:{}", normalized_host, normalized_port);
         let listener = TcpListener::bind(&bind_addr)
@@ -259,10 +267,15 @@ impl McpServerManager {
 
         let state = HttpRuntimeState {
             enabled_tools: Arc::clone(&enabled_ref),
+            auth_token: Arc::clone(&token_ref),
         };
         let app = Router::new()
             .route("/mcp", post(handle_mcp_rpc))
             .route("/health", get(handle_health))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                bearer_auth_middleware,
+            ))
             .with_state(state);
 
         *self.last_error.write().await = None;
@@ -280,16 +293,50 @@ impl McpServerManager {
         *self.config_host.write().await = normalized_host.clone();
         *self.config_port.write().await = actual_port;
         *self.config_enabled_tools.write().await = desired_enabled;
+        *self.config_auth_token.write().await = auth_token;
         *self.runtime.write().await = Some(RunningMcpServer {
             host: normalized_host,
             port: actual_port,
             enabled_tools: enabled_ref,
+            auth_token: token_ref,
             shutdown_tx: Some(shutdown_tx),
             task_handle,
         });
 
         Ok(self.get_status().await)
     }
+}
+
+// ─── Auth middleware ────────────────────────────────────────────────────────
+
+/// Bearer token auth middleware for the MCP server.
+/// If `auth_token` is `None`, all requests are allowed.
+/// If set, the request must include `Authorization: Bearer <token>`.
+async fn bearer_auth_middleware(
+    AxumState(state): AxumState<HttpRuntimeState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let token = state.auth_token.read().await;
+    if let Some(expected) = token.as_deref() {
+        let auth_header = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let provided = auth_header.strip_prefix("Bearer ").unwrap_or("");
+        if provided != expected {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32000, "message": "Unauthorized: invalid or missing bearer token" }
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 // ─── JSON-RPC helpers ──────────────────────────────────────────────────────

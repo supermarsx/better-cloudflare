@@ -16,8 +16,9 @@ pub async fn mcp_start_server(
     host: Option<String>,
     port: Option<u16>,
     enabled_tools: Option<Vec<String>>,
+    auth_token: Option<String>,
 ) -> Result<McpServerStatus, String> {
-    manager.start(host, port, enabled_tools).await
+    manager.start(host, port, enabled_tools, auth_token).await
 }
 
 #[tauri::command]
