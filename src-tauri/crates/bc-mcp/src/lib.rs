@@ -1,7 +1,19 @@
-//! Model Context Protocol (MCP) JSON-RPC server.
+//! Model Context Protocol (MCP) JSON-RPC server — 2024-11-05 specification.
 //!
-//! Exposes Cloudflare DNS and SPF tools via a local HTTP JSON-RPC endpoint.
-//! The server manages its own lifecycle (start/stop) and tool enable/disable.
+//! Provides a full MCP server over HTTP with:
+//! - **Tools** (50+): Cloudflare API, DNS utilities, SPF, domain audit
+//! - **Resources** (8): DNS record types, TTL presets, SPF syntax, zone settings, etc.
+//! - **Prompts** (8): DNS troubleshoot, SPF debug, security audit, migration, etc.
+//! - **Protocol**: JSON-RPC 2.0 with capability negotiation
+//!
+//! The server manages its own lifecycle (start/stop), tool enable/disable,
+//! bearer-token auth, and graceful shutdown.
+
+pub mod protocol;
+pub mod prompts;
+pub mod resources;
+pub mod schemas;
+pub mod tools;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -18,22 +30,21 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
-use bc_cloudflare_api::{CloudflareClient, DNSRecordInput, FirewallRuleInput, EmailRoutingRule};
+use protocol::{
+    error_response, error_response_with_data, initialize_response, success_response, tool_disabled,
+    tool_error, tool_success, JsonRpcRequest, RpcErrorCode,
+};
 
 const DEFAULT_MCP_HOST: &str = "127.0.0.1";
 const DEFAULT_MCP_PORT: u16 = 8787;
 
-// ─── Public types ──────────────────────────────────────────────────────────
+// ─── Re-exports ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpToolDescriptor {
-    pub name: String,
-    pub title: String,
-    pub description: String,
-    pub input_schema: Value,
-    pub enabled: bool,
-}
+pub use prompts::{McpPrompt, PromptArgument, PromptMessage};
+pub use resources::{McpResource, McpResourceTemplate};
+pub use tools::McpToolDescriptor;
+
+// ─── Public types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,18 +54,14 @@ pub struct McpServerStatus {
     pub port: u16,
     pub url: String,
     pub enabled_tools: Vec<String>,
+    pub tool_count: usize,
+    pub resource_count: usize,
+    pub prompt_count: usize,
     pub tools: Vec<McpToolDescriptor>,
     pub last_error: Option<String>,
 }
 
 // ─── Internal types ────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    id: Option<Value>,
-    method: String,
-    params: Option<Value>,
-}
 
 #[derive(Debug, Clone)]
 struct HttpRuntimeState {
@@ -96,69 +103,15 @@ impl Default for McpServerManager {
     }
 }
 
+// ─── Tool / Config Helpers (delegate to tools module) ──────────────────────
+
+/// All tool definitions with full schemas.
 pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
-    vec![
-        // DNS core
-        ("cf_verify_token", "Verify Cloudflare token", "Validate a Cloudflare API token or key/email pair."),
-        ("cf_list_zones", "List zones", "List Cloudflare zones for an account."),
-        ("cf_list_dns_records", "List DNS records", "Fetch DNS records for a specific zone."),
-        ("cf_create_dns_record", "Create DNS record", "Create a DNS record in a zone."),
-        ("cf_update_dns_record", "Update DNS record", "Update an existing DNS record by record ID."),
-        ("cf_delete_dns_record", "Delete DNS record", "Delete a DNS record by record ID."),
-        ("cf_bulk_create_dns_records", "Bulk create DNS records", "Create many DNS records in one operation."),
-        ("cf_bulk_delete_dns_records", "Bulk delete DNS records", "Delete many DNS records by ID in one operation."),
-        ("cf_export_dns_records", "Export DNS records", "Export DNS records in JSON, CSV, or BIND format."),
-        ("cf_purge_cache", "Purge cache", "Purge all or selected files from Cloudflare cache."),
-        ("cf_get_zone_setting", "Get zone setting", "Read a single Cloudflare zone setting by ID."),
-        ("cf_update_zone_setting", "Update zone setting", "Update a single Cloudflare zone setting by ID."),
-        ("cf_get_dnssec", "Get DNSSEC", "Fetch DNSSEC configuration for a zone."),
-        ("cf_update_dnssec", "Update DNSSEC", "Update DNSSEC configuration for a zone."),
-        // Analytics
-        ("cf_get_zone_analytics", "Get zone analytics", "Fetch zone-level analytics (requests, bandwidth, threats)."),
-        ("cf_get_dns_analytics", "Get DNS analytics", "Fetch DNS query analytics for a zone."),
-        // Firewall / WAF
-        ("cf_list_firewall_rules", "List firewall rules", "List all custom firewall rules for a zone."),
-        ("cf_create_firewall_rule", "Create firewall rule", "Create a custom firewall rule in a zone."),
-        ("cf_update_firewall_rule", "Update firewall rule", "Update a custom firewall rule by ID."),
-        ("cf_delete_firewall_rule", "Delete firewall rule", "Delete a custom firewall rule by ID."),
-        ("cf_list_ip_access_rules", "List IP access rules", "List IP-based access rules (allow/block/challenge)."),
-        ("cf_create_ip_access_rule", "Create IP access rule", "Create an IP-based access rule."),
-        ("cf_delete_ip_access_rule", "Delete IP access rule", "Delete an IP-based access rule by ID."),
-        ("cf_list_waf_rulesets", "List WAF rulesets", "List managed WAF rulesets for a zone."),
-        // Workers
-        ("cf_list_worker_routes", "List worker routes", "List Worker routes for a zone."),
-        ("cf_create_worker_route", "Create worker route", "Create a Worker route pattern."),
-        ("cf_delete_worker_route", "Delete worker route", "Delete a Worker route by ID."),
-        // Email Routing
-        ("cf_get_email_routing_settings", "Get email routing settings", "Fetch email routing status and settings."),
-        ("cf_list_email_routing_rules", "List email routing rules", "List email routing rules for a zone."),
-        ("cf_create_email_routing_rule", "Create email routing rule", "Create an email routing rule."),
-        ("cf_delete_email_routing_rule", "Delete email routing rule", "Delete an email routing rule by ID."),
-        // Page Rules
-        ("cf_list_page_rules", "List page rules", "List page rules for a zone."),
-        // SPF
-        ("spf_simulate", "Simulate SPF", "Run SPF evaluation for a domain/IP combination."),
-        ("spf_graph", "Build SPF graph", "Build SPF include/redirect graph for a domain."),
-        // DNS tools
-        ("dns_validate_record", "Validate DNS record", "Validate a DNS record for correctness."),
-        ("dns_check_propagation", "Check DNS propagation", "Check DNS record propagation across global resolvers."),
-    ]
-    .into_iter()
-    .map(|(name, title, description)| McpToolDescriptor {
-        name: name.to_string(),
-        title: title.to_string(),
-        description: description.to_string(),
-        input_schema: json!({ "type": "object" }),
-        enabled: true,
-    })
-    .collect()
+    tools::available_tool_definitions()
 }
 
 pub fn default_enabled_tool_set() -> HashSet<String> {
-    available_tool_definitions()
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect()
+    tools::all_tool_names().into_iter().collect()
 }
 
 pub fn sanitize_enabled_tools(list: &[String]) -> HashSet<String> {
@@ -193,7 +146,9 @@ pub fn build_status(
 ) -> McpServerStatus {
     let mut enabled = enabled_tools.iter().cloned().collect::<Vec<_>>();
     enabled.sort();
-    let tools = available_tool_definitions()
+    let all_tools = tools::available_tool_definitions();
+    let tool_count = all_tools.len();
+    let tools_list = all_tools
         .into_iter()
         .map(|mut tool| {
             tool.enabled = enabled_tools.contains(&tool.name);
@@ -206,7 +161,10 @@ pub fn build_status(
         port,
         url: format!("http://{}:{}/mcp", host, port),
         enabled_tools: enabled,
-        tools,
+        tool_count,
+        resource_count: resources::list_resources().len(),
+        prompt_count: prompts::list_prompts().len(),
+        tools: tools_list,
         last_error,
     }
 }
@@ -338,9 +296,6 @@ impl McpServerManager {
 
 // ─── Auth middleware ────────────────────────────────────────────────────────
 
-/// Bearer token auth middleware for the MCP server.
-/// If `auth_token` is `None`, all requests are allowed.
-/// If set, the request must include `Authorization: Bearer <token>`.
 async fn bearer_auth_middleware(
     AxumState(state): AxumState<HttpRuntimeState>,
     headers: HeaderMap,
@@ -357,10 +312,11 @@ async fn bearer_auth_middleware(
         if provided != expected {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "error": { "code": -32000, "message": "Unauthorized: invalid or missing bearer token" }
-                })),
+                Json(error_response(
+                    None,
+                    RpcErrorCode::Unauthorized.code(),
+                    "Unauthorized: invalid or missing bearer token".to_string(),
+                )),
             )
                 .into_response();
         }
@@ -368,425 +324,32 @@ async fn bearer_auth_middleware(
     next.run(request).await
 }
 
-// ─── JSON-RPC helpers ──────────────────────────────────────────────────────
-
-fn get_required_string(args: &Value, key: &str) -> Result<String, String> {
-    let value = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("Missing required argument '{}'", key))?;
-    Ok(value.to_string())
-}
-
-fn get_optional_string(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
-fn success_response(id: Value, result: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result
-    })
-}
-
-fn error_response(id: Option<Value>, code: i64, message: String) -> Value {
-    let response_id = id.unwrap_or(Value::Null);
-    json!({
-        "jsonrpc": "2.0",
-        "id": response_id,
-        "error": {
-            "code": code,
-            "message": message
-        }
-    })
-}
-
-// ─── Tool execution ────────────────────────────────────────────────────────
-
-async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
-    match name {
-        "cf_verify_token" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let ok = client.verify_token().await.map_err(|e| e.to_string())?;
-            Ok(json!({ "valid": ok }))
-        }
-        "cf_list_zones" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let zones = client.get_zones().await.map_err(|e| e.to_string())?;
-            serde_json::to_value(zones).map_err(|e| e.to_string())
-        }
-        "cf_list_dns_records" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let page = args.get("page").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let per_page = args.get("per_page").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let records = client.get_dns_records(&zone_id, page, per_page).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(records).map_err(|e| e.to_string())
-        }
-        "cf_create_dns_record" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let record_value = args.get("record").cloned()
-                .ok_or_else(|| "Missing required argument 'record'".to_string())?;
-            let record: DNSRecordInput = serde_json::from_value(record_value)
-                .map_err(|e| format!("Invalid record payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let created = client.create_dns_record(&zone_id, record).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(created).map_err(|e| e.to_string())
-        }
-        "cf_update_dns_record" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let record_id = get_required_string(args, "record_id")?;
-            let record_value = args.get("record").cloned()
-                .ok_or_else(|| "Missing required argument 'record'".to_string())?;
-            let record: DNSRecordInput = serde_json::from_value(record_value)
-                .map_err(|e| format!("Invalid record payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let updated = client.update_dns_record(&zone_id, &record_id, record).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(updated).map_err(|e| e.to_string())
-        }
-        "cf_delete_dns_record" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let record_id = get_required_string(args, "record_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.delete_dns_record(&zone_id, &record_id).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "deleted": true, "record_id": record_id }))
-        }
-        "cf_bulk_create_dns_records" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let dryrun = args.get("dryrun").and_then(|v| v.as_bool()).unwrap_or(false);
-            let records_value = args.get("records").cloned()
-                .ok_or_else(|| "Missing required argument 'records'".to_string())?;
-            let records: Vec<DNSRecordInput> = serde_json::from_value(records_value)
-                .map_err(|e| format!("Invalid records payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.create_bulk_dns_records(&zone_id, records, dryrun).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "cf_export_dns_records" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let format = get_optional_string(args, "format").unwrap_or_else(|| "json".to_string());
-            let page = args.get("page").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let per_page = args.get("per_page").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let data = client.export_dns_records(&zone_id, &format, page, per_page).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "format": format, "data": data }))
-        }
-        "cf_purge_cache" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let purge_everything = args.get("purge_everything").and_then(|v| v.as_bool()).unwrap_or(false);
-            let files = args.get("files").and_then(|v| {
-                v.as_array().map(|items| {
-                    items.iter().filter_map(|item| item.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
-                })
-            });
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.purge_cache(&zone_id, purge_everything, files).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "cf_get_zone_setting" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let setting_id = get_required_string(args, "setting_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.get_zone_setting(&zone_id, &setting_id).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "cf_update_zone_setting" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let setting_id = get_required_string(args, "setting_id")?;
-            let value = args.get("value").cloned()
-                .ok_or_else(|| "Missing required argument 'value'".to_string())?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.update_zone_setting(&zone_id, &setting_id, value).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "cf_get_dnssec" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.get_dnssec(&zone_id).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "cf_update_dnssec" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let payload = args.get("payload").cloned()
-                .ok_or_else(|| "Missing required argument 'payload'".to_string())?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.update_dnssec(&zone_id, payload).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        "spf_simulate" => {
-            let domain = get_required_string(args, "domain")?;
-            let ip = get_required_string(args, "ip")?;
-            let simulation = bc_spf::simulate_spf(&domain, &ip).await?;
-            serde_json::to_value(simulation).map_err(|e| e.to_string())
-        }
-        "spf_graph" => {
-            let domain = get_required_string(args, "domain")?;
-            let graph = bc_spf::build_spf_graph(&domain).await?;
-            serde_json::to_value(graph).map_err(|e| e.to_string())
-        }
-        // ── Bulk delete ─────────────────────────────────────────────────
-        "cf_bulk_delete_dns_records" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let ids_value = args.get("record_ids").cloned()
-                .ok_or_else(|| "Missing required argument 'record_ids'".to_string())?;
-            let record_ids: Vec<String> = serde_json::from_value(ids_value)
-                .map_err(|e| format!("Invalid record_ids: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let result = client.delete_bulk_dns_records(&zone_id, &record_ids).await.map_err(|e| e.to_string())?;
-            Ok(result)
-        }
-        // ── Analytics ───────────────────────────────────────────────────
-        "cf_get_zone_analytics" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let since = get_required_string(args, "since")?;
-            let until = get_required_string(args, "until")?;
-            let continuous = args.get("continuous").and_then(|v| v.as_bool());
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.get_zone_analytics(&zone_id, &since, &until, continuous).await.map_err(|e| e.to_string())
-        }
-        "cf_get_dns_analytics" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let since = get_required_string(args, "since")?;
-            let until = get_required_string(args, "until")?;
-            let dimensions = args.get("dimensions").and_then(|v| v.as_array()).map(|arr|
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
-            );
-            let metrics = args.get("metrics").and_then(|v| v.as_array()).map(|arr|
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
-            );
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.get_dns_analytics(&zone_id, &since, &until, dimensions, metrics).await.map_err(|e| e.to_string())
-        }
-        // ── Firewall / WAF ─────────────────────────────────────────────
-        "cf_list_firewall_rules" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let rules = client.get_firewall_rules(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(rules).map_err(|e| e.to_string())
-        }
-        "cf_create_firewall_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_value = args.get("rule").cloned()
-                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
-            let rule: FirewallRuleInput = serde_json::from_value(rule_value)
-                .map_err(|e| format!("Invalid rule payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let created = client.create_firewall_rule(&zone_id, rule).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(created).map_err(|e| e.to_string())
-        }
-        "cf_update_firewall_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_id = get_required_string(args, "rule_id")?;
-            let rule_value = args.get("rule").cloned()
-                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
-            let rule: FirewallRuleInput = serde_json::from_value(rule_value)
-                .map_err(|e| format!("Invalid rule payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let updated = client.update_firewall_rule(&zone_id, &rule_id, rule).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(updated).map_err(|e| e.to_string())
-        }
-        "cf_delete_firewall_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_id = get_required_string(args, "rule_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.delete_firewall_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "deleted": true, "rule_id": rule_id }))
-        }
-        "cf_list_ip_access_rules" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let rules = client.get_ip_access_rules(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(rules).map_err(|e| e.to_string())
-        }
-        "cf_create_ip_access_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let mode = get_required_string(args, "mode")?;
-            let value = get_required_string(args, "value")?;
-            let notes = get_optional_string(args, "notes").unwrap_or_default();
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let created = client.create_ip_access_rule(&zone_id, &mode, &value, &notes).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(created).map_err(|e| e.to_string())
-        }
-        "cf_delete_ip_access_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_id = get_required_string(args, "rule_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.delete_ip_access_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "deleted": true, "rule_id": rule_id }))
-        }
-        "cf_list_waf_rulesets" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let rulesets = client.get_waf_rulesets(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(rulesets).map_err(|e| e.to_string())
-        }
-        // ── Workers ─────────────────────────────────────────────────────
-        "cf_list_worker_routes" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let routes = client.get_worker_routes(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(routes).map_err(|e| e.to_string())
-        }
-        "cf_create_worker_route" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let pattern = get_required_string(args, "pattern")?;
-            let script = get_required_string(args, "script")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let created = client.create_worker_route(&zone_id, &pattern, &script).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(created).map_err(|e| e.to_string())
-        }
-        "cf_delete_worker_route" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let route_id = get_required_string(args, "route_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.delete_worker_route(&zone_id, &route_id).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "deleted": true, "route_id": route_id }))
-        }
-        // ── Email Routing ───────────────────────────────────────────────
-        "cf_get_email_routing_settings" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let settings = client.get_email_routing_settings(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(settings).map_err(|e| e.to_string())
-        }
-        "cf_list_email_routing_rules" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let rules = client.get_email_routing_rules(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(rules).map_err(|e| e.to_string())
-        }
-        "cf_create_email_routing_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_value = args.get("rule").cloned()
-                .ok_or_else(|| "Missing required argument 'rule'".to_string())?;
-            let rule: EmailRoutingRule = serde_json::from_value(rule_value)
-                .map_err(|e| format!("Invalid rule payload: {}", e))?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let created = client.create_email_routing_rule(&zone_id, &rule).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(created).map_err(|e| e.to_string())
-        }
-        "cf_delete_email_routing_rule" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let rule_id = get_required_string(args, "rule_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            client.delete_email_routing_rule(&zone_id, &rule_id).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "deleted": true, "rule_id": rule_id }))
-        }
-        // ── Page Rules ──────────────────────────────────────────────────
-        "cf_list_page_rules" => {
-            let api_key = get_required_string(args, "api_key")?;
-            let email = get_optional_string(args, "email");
-            let zone_id = get_required_string(args, "zone_id")?;
-            let client = CloudflareClient::new(&api_key, email.as_deref());
-            let rules = client.get_page_rules(&zone_id).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(rules).map_err(|e| e.to_string())
-        }
-        // ── DNS tools ───────────────────────────────────────────────────
-        "dns_validate_record" => {
-            let input_value = args.get("record").cloned()
-                .ok_or_else(|| "Missing required argument 'record'".to_string())?;
-            let input: bc_dns_tools::DNSRecordValidationInput = serde_json::from_value(input_value)
-                .map_err(|e| format!("Invalid record: {}", e))?;
-            let result = bc_dns_tools::validate_dns_record(&input);
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "dns_check_propagation" => {
-            let domain = get_required_string(args, "domain")?;
-            let record_type = get_required_string(args, "record_type")?;
-            let extra = args.get("extra_resolvers").and_then(|v| v.as_array()).map(|arr|
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
-            );
-            let result = bc_topology::check_propagation(domain, record_type, extra).await.map_err(|e| e.to_string())?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        _ => Err(format!("Unknown tool '{}'", name)),
-    }
-}
-
 // ─── HTTP handlers ─────────────────────────────────────────────────────────
 
 async fn handle_health() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
+    Json(json!({
+        "status": "ok",
+        "server": protocol::SERVER_NAME,
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": protocol::MCP_PROTOCOL_VERSION,
+        "tools": tools::tool_count(),
+        "resources": resources::list_resources().len(),
+        "prompts": prompts::list_prompts().len(),
+    }))
 }
 
+/// Full MCP JSON-RPC 2.0 handler with all spec methods.
 async fn handle_mcp_rpc(
     AxumState(state): AxumState<HttpRuntimeState>,
     Json(payload): Json<Value>,
 ) -> Response {
+    // ── Parse incoming request ──────────────────────────────────────────
     let request = match serde_json::from_value::<JsonRpcRequest>(payload) {
         Ok(req) => req,
         Err(err) => {
             let body = Json(error_response(
                 None,
-                -32700,
+                RpcErrorCode::ParseError.code(),
                 format!("Invalid JSON-RPC payload: {}", err),
             ));
             return (StatusCode::BAD_REQUEST, body).into_response();
@@ -795,20 +358,25 @@ async fn handle_mcp_rpc(
 
     let id = request.id.clone();
     let params = request.params.unwrap_or_else(|| json!({}));
-    let result = match request.method.as_str() {
-        "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": {
-                "name": "better-cloudflare-mcp",
-                "version": env!("CARGO_PKG_VERSION")
+
+    let result: Result<Value, Value> = match request.method.as_str() {
+        // ── Lifecycle ───────────────────────────────────────────────────
+        "initialize" => Ok(initialize_response()),
+        "notifications/initialized" | "initialized" => {
+            // No-op notification acknowledgment
+            if id.is_none() {
+                return StatusCode::NO_CONTENT.into_response();
             }
-        })),
-        "notifications/initialized" => Ok(json!({})),
+            Ok(json!({}))
+        }
         "ping" => Ok(json!({})),
+
+        // ── Tools ───────────────────────────────────────────────────────
         "tools/list" => {
             let enabled = state.enabled_tools.read().await.clone();
-            let tools = available_tool_definitions()
+            let cursor = params.get("cursor").and_then(|v| v.as_str());
+            let all_tools = tools::available_tool_definitions();
+            let filtered: Vec<Value> = all_tools
                 .into_iter()
                 .filter(|tool| enabled.contains(&tool.name))
                 .map(|tool| {
@@ -819,52 +387,182 @@ async fn handle_mcp_rpc(
                         "inputSchema": tool.input_schema
                     })
                 })
-                .collect::<Vec<_>>();
-            Ok(json!({ "tools": tools }))
+                .collect();
+            // No pagination needed (small catalogue) — nextCursor is null
+            let _ = cursor;
+            Ok(json!({ "tools": filtered }))
         }
+
         "tools/call" => {
             let tool_name = params
                 .get("name")
                 .and_then(|v| v.as_str())
                 .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| "Missing tools/call param 'name'".to_string());
+                .filter(|v| !v.is_empty());
 
             match tool_name {
-                Ok(name) => {
+                Some(name) => {
                     let enabled = state.enabled_tools.read().await;
                     if !enabled.contains(&name) {
-                        Ok(json!({
-                            "content": [{ "type": "text", "text": format!("Tool '{}' is disabled.", name) }],
-                            "isError": true
-                        }))
+                        Ok(tool_disabled(&name))
                     } else {
                         drop(enabled);
                         let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                        match execute_tool(&name, &args).await {
-                            Ok(value) => Ok(json!({
-                                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string()) }],
-                                "structuredContent": value
-                            })),
-                            Err(err) => Ok(json!({
-                                "content": [{ "type": "text", "text": err }],
-                                "isError": true
-                            })),
+                        match tools::execute_tool(&name, &args).await {
+                            Ok(value) => Ok(tool_success(&value)),
+                            Err(err) => Ok(tool_error(&err)),
                         }
                     }
                 }
-                Err(err) => Err(err),
+                None => Err(error_response(
+                    id.clone(),
+                    RpcErrorCode::InvalidParams.code(),
+                    "Missing tools/call param 'name'".to_string(),
+                )),
             }
         }
-        _ => Err(format!("Method '{}' not found", request.method)),
+
+        // ── Resources ───────────────────────────────────────────────────
+        "resources/list" => {
+            let res_list: Vec<Value> = resources::list_resources()
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "uri": r.uri,
+                        "name": r.name,
+                        "description": r.description,
+                        "mimeType": r.mime_type
+                    })
+                })
+                .collect();
+            Ok(json!({ "resources": res_list }))
+        }
+
+        "resources/templates/list" => {
+            let templates: Vec<Value> = resources::list_resource_templates()
+                .into_iter()
+                .map(|t| {
+                    json!({
+                        "uriTemplate": t.uri_template,
+                        "name": t.name,
+                        "description": t.description,
+                        "mimeType": t.mime_type
+                    })
+                })
+                .collect();
+            Ok(json!({ "resourceTemplates": templates }))
+        }
+
+        "resources/read" => {
+            let uri = params
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match resources::read_resource(uri) {
+                Ok(content) => {
+                    let text = serde_json::to_string_pretty(&content).unwrap_or_default();
+                    Ok(json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    }))
+                }
+                Err(err) => Err(error_response_with_data(
+                    id.clone(),
+                    RpcErrorCode::ResourceNotFound.code(),
+                    err,
+                    json!({ "uri": uri }),
+                )),
+            }
+        }
+
+        // ── Prompts ─────────────────────────────────────────────────────
+        "prompts/list" => {
+            let prompt_list: Vec<Value> = prompts::list_prompts()
+                .into_iter()
+                .map(|p| {
+                    let mut obj = json!({
+                        "name": p.name,
+                        "description": p.description
+                    });
+                    if let Some(args) = p.arguments {
+                        let args_json: Vec<Value> = args
+                            .into_iter()
+                            .map(|a| {
+                                json!({
+                                    "name": a.name,
+                                    "description": a.description,
+                                    "required": a.required
+                                })
+                            })
+                            .collect();
+                        obj["arguments"] = json!(args_json);
+                    }
+                    obj
+                })
+                .collect();
+            Ok(json!({ "prompts": prompt_list }))
+        }
+
+        "prompts/get" => {
+            let prompt_name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            match prompts::get_prompt(prompt_name, &args) {
+                Ok(messages) => {
+                    let msgs: Vec<Value> = messages
+                        .into_iter()
+                        .map(|m| {
+                            json!({
+                                "role": m.role,
+                                "content": {
+                                    "type": m.content.content_type,
+                                    "text": m.content.text
+                                }
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "description": format!("Prompt: {}", prompt_name),
+                        "messages": msgs
+                    }))
+                }
+                Err(err) => Err(error_response_with_data(
+                    id.clone(),
+                    RpcErrorCode::PromptNotFound.code(),
+                    err,
+                    json!({ "name": prompt_name }),
+                )),
+            }
+        }
+
+        // ── Logging ─────────────────────────────────────────────────────
+        "logging/setLevel" => {
+            // Acknowledge but no-op for now
+            Ok(json!({}))
+        }
+
+        // ── Unknown method ──────────────────────────────────────────────
+        _ => Err(error_response(
+            id.clone(),
+            RpcErrorCode::MethodNotFound.code(),
+            format!("Method '{}' not found", request.method),
+        )),
     };
 
+    // ── Build response ──────────────────────────────────────────────────
+    // Notifications (no id) get NO_CONTENT
     if id.is_none() {
         return StatusCode::NO_CONTENT.into_response();
     }
-    let response = match result {
-        Ok(result) => success_response(id.unwrap_or(Value::Null), result),
-        Err(err) => error_response(id, -32601, err),
+
+    let response_body = match result {
+        Ok(result_val) => success_response(id.unwrap_or(Value::Null), result_val),
+        Err(err_val) => err_val, // already a full JSON-RPC error response
     };
-    (StatusCode::OK, Json(response)).into_response()
+    (StatusCode::OK, Json(response_body)).into_response()
 }
