@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { ServerClient } from "../lib/server-client";
+import type { EmailRoutingRuleInput } from "../lib/tauri-client";
 import type { SPFGraph } from "@/lib/spf";
 import type { DNSRecord, Zone, ZoneSetting } from "../types/dns";
 
@@ -284,6 +285,180 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  // ── Analytics ─────────────────────────────────────────────────────────────
+
+  const getZoneAnalytics = useCallback(
+    (zoneId: string, since?: string, until?: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getZoneAnalytics(zoneId, since, until, signal);
+    },
+    [api],
+  );
+
+  const getDnsAnalytics = useCallback(
+    (zoneId: string, since?: string, until?: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getDnsAnalytics(zoneId, since, until, signal);
+    },
+    [api],
+  );
+
+  // ── Firewall / WAF ───────────────────────────────────────────────────────
+
+  const getFirewallRules = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getFirewallRules(zoneId, signal);
+    },
+    [api],
+  );
+
+  const createFirewallRule = useCallback(
+    (zoneId: string, rule: { action: string; description?: string; filter: { expression: string } }, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.createFirewallRule(zoneId, rule, signal);
+    },
+    [api],
+  );
+
+  const updateFirewallRule = useCallback(
+    (zoneId: string, ruleId: string, rule: { action: string; description?: string; filter: { expression: string } }, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.updateFirewallRule(zoneId, ruleId, rule, signal);
+    },
+    [api],
+  );
+
+  const deleteFirewallRule = useCallback(
+    (zoneId: string, ruleId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteFirewallRule(zoneId, ruleId, signal);
+    },
+    [api],
+  );
+
+  const getIpAccessRules = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getIpAccessRules(zoneId, signal);
+    },
+    [api],
+  );
+
+  const createIpAccessRule = useCallback(
+    (zoneId: string, mode: string, ip: string, notes?: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.createIpAccessRule(zoneId, mode, ip, notes, signal);
+    },
+    [api],
+  );
+
+  const deleteIpAccessRule = useCallback(
+    (zoneId: string, ruleId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteIpAccessRule(zoneId, ruleId, signal);
+    },
+    [api],
+  );
+
+  const getWafRulesets = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getWafRulesets(zoneId, signal);
+    },
+    [api],
+  );
+
+  // ── Workers ───────────────────────────────────────────────────────────────
+
+  const getWorkerRoutes = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getWorkerRoutes(zoneId, signal);
+    },
+    [api],
+  );
+
+  const createWorkerRoute = useCallback(
+    (zoneId: string, pattern: string, script: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.createWorkerRoute(zoneId, pattern, script, signal);
+    },
+    [api],
+  );
+
+  const deleteWorkerRoute = useCallback(
+    (zoneId: string, routeId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteWorkerRoute(zoneId, routeId, signal);
+    },
+    [api],
+  );
+
+  // ── Email Routing ─────────────────────────────────────────────────────────
+
+  const getEmailRoutingSettings = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getEmailRoutingSettings(zoneId, signal);
+    },
+    [api],
+  );
+
+  const getEmailRoutingRules = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getEmailRoutingRules(zoneId, signal);
+    },
+    [api],
+  );
+
+  const createEmailRoutingRule = useCallback(
+    (zoneId: string, rule: EmailRoutingRuleInput, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.createEmailRoutingRule(zoneId, rule, signal);
+    },
+    [api],
+  );
+
+  const deleteEmailRoutingRule = useCallback(
+    (zoneId: string, ruleId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteEmailRoutingRule(zoneId, ruleId, signal);
+    },
+    [api],
+  );
+
+  // ── Page Rules ────────────────────────────────────────────────────────────
+
+  const getPageRules = useCallback(
+    (zoneId: string, signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.getPageRules(zoneId, signal);
+    },
+    [api],
+  );
+
+  // ── Bulk Operations ───────────────────────────────────────────────────────
+
+  const deleteBulkDnsRecords = useCallback(
+    (zoneId: string, recordIds: string[], signal?: AbortSignal) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.deleteBulkDnsRecords(zoneId, recordIds, signal);
+    },
+    [api],
+  );
+
+  // ── DNS Propagation ───────────────────────────────────────────────────────
+
+  const checkDnsPropagation = useCallback(
+    (domain: string, recordType: string, extraResolvers?: string[]) => {
+      if (!api) return Promise.reject(new Error("API key not provided"));
+      return api.checkDnsPropagation(domain, recordType, extraResolvers);
+    },
+    [api],
+  );
+
   return {
     simulateSPF,
     getSPFGraph,
@@ -311,5 +486,32 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     updateZoneSetting,
     getDnssec,
     updateDnssec,
+    // Analytics
+    getZoneAnalytics,
+    getDnsAnalytics,
+    // Firewall / WAF
+    getFirewallRules,
+    createFirewallRule,
+    updateFirewallRule,
+    deleteFirewallRule,
+    getIpAccessRules,
+    createIpAccessRule,
+    deleteIpAccessRule,
+    getWafRulesets,
+    // Workers
+    getWorkerRoutes,
+    createWorkerRoute,
+    deleteWorkerRoute,
+    // Email Routing
+    getEmailRoutingSettings,
+    getEmailRoutingRules,
+    createEmailRoutingRule,
+    deleteEmailRoutingRule,
+    // Page Rules
+    getPageRules,
+    // Bulk
+    deleteBulkDnsRecords,
+    // Propagation
+    checkDnsPropagation,
   };
 }

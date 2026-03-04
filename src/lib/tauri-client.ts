@@ -690,6 +690,362 @@ export class TauriClient {
   static async biometricHasSecret(key: string): Promise<boolean> {
     return invoke("biometric_has_secret", { key });
   }
+
+  // ── Analytics ─────────────────────────────────────────────────────────────
+
+  static async getZoneAnalytics(
+    apiKey: string,
+    zoneId: string,
+    since?: string,
+    until?: string,
+    email?: string,
+  ): Promise<ZoneAnalytics> {
+    return invoke("get_zone_analytics", { apiKey, zoneId, since, until, email });
+  }
+
+  static async getDnsAnalytics(
+    apiKey: string,
+    zoneId: string,
+    since?: string,
+    until?: string,
+    email?: string,
+  ): Promise<DnsAnalyticsResponse> {
+    return invoke("get_dns_analytics", { apiKey, zoneId, since, until, email });
+  }
+
+  // ── Firewall / WAF ───────────────────────────────────────────────────────
+
+  static async getFirewallRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<FirewallRuleResponse[]> {
+    return invoke("get_firewall_rules", { apiKey, zoneId, email });
+  }
+
+  static async createFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    rule: FirewallRuleInput,
+    email?: string,
+  ): Promise<FirewallRuleResponse[]> {
+    return invoke("create_firewall_rule", { apiKey, zoneId, rule, email });
+  }
+
+  static async updateFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    rule: FirewallRuleInput,
+    email?: string,
+  ): Promise<FirewallRuleResponse> {
+    return invoke("update_firewall_rule", { apiKey, zoneId, ruleId, rule, email });
+  }
+
+  static async deleteFirewallRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_firewall_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  static async getIpAccessRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<IpAccessRuleResponse[]> {
+    return invoke("get_ip_access_rules", { apiKey, zoneId, email });
+  }
+
+  static async createIpAccessRule(
+    apiKey: string,
+    zoneId: string,
+    mode: string,
+    ip: string,
+    notes?: string,
+    email?: string,
+  ): Promise<IpAccessRuleResponse> {
+    return invoke("create_ip_access_rule", { apiKey, zoneId, mode, ip, notes, email });
+  }
+
+  static async deleteIpAccessRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_ip_access_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  static async getWafRulesets(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<WafRulesetResponse[]> {
+    return invoke("get_waf_rulesets", { apiKey, zoneId, email });
+  }
+
+  // ── Workers ───────────────────────────────────────────────────────────────
+
+  static async getWorkerRoutes(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<WorkerRouteResponse[]> {
+    return invoke("get_worker_routes", { apiKey, zoneId, email });
+  }
+
+  static async createWorkerRoute(
+    apiKey: string,
+    zoneId: string,
+    pattern: string,
+    script: string,
+    email?: string,
+  ): Promise<WorkerRouteResponse> {
+    return invoke("create_worker_route", { apiKey, zoneId, pattern, script, email });
+  }
+
+  static async deleteWorkerRoute(
+    apiKey: string,
+    zoneId: string,
+    routeId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_worker_route", { apiKey, zoneId, routeId, email });
+  }
+
+  // ── Email Routing ─────────────────────────────────────────────────────────
+
+  static async getEmailRoutingSettings(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<EmailRoutingSettingsResponse> {
+    return invoke("get_email_routing_settings", { apiKey, zoneId, email });
+  }
+
+  static async getEmailRoutingRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<EmailRoutingRuleResponse[]> {
+    return invoke("get_email_routing_rules", { apiKey, zoneId, email });
+  }
+
+  static async createEmailRoutingRule(
+    apiKey: string,
+    zoneId: string,
+    rule: EmailRoutingRuleInput,
+    email?: string,
+  ): Promise<EmailRoutingRuleResponse> {
+    return invoke("create_email_routing_rule", { apiKey, zoneId, rule, email });
+  }
+
+  static async deleteEmailRoutingRule(
+    apiKey: string,
+    zoneId: string,
+    ruleId: string,
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_email_routing_rule", { apiKey, zoneId, ruleId, email });
+  }
+
+  // ── Page Rules ────────────────────────────────────────────────────────────
+
+  static async getPageRules(
+    apiKey: string,
+    zoneId: string,
+    email?: string,
+  ): Promise<PageRuleResponse[]> {
+    return invoke("get_page_rules", { apiKey, zoneId, email });
+  }
+
+  // ── Bulk Operations ───────────────────────────────────────────────────────
+
+  static async deleteBulkDnsRecords(
+    apiKey: string,
+    zoneId: string,
+    recordIds: string[],
+    email?: string,
+  ): Promise<void> {
+    return invoke("delete_bulk_dns_records", { apiKey, zoneId, recordIds, email });
+  }
+
+  // ── DNS Propagation ───────────────────────────────────────────────────────
+
+  static async checkDnsPropagation(
+    domain: string,
+    recordType: string,
+    extraResolvers?: string[],
+  ): Promise<PropagationResult> {
+    return invoke("check_dns_propagation", { domain, recordType, extraResolvers });
+  }
+}
+
+// ── Analytics types ───────────────────────────────────────────────────────────
+
+export interface AnalyticsDataPoint {
+  requests: number;
+  bandwidth: number;
+  threats: number;
+  pageviews: number;
+  uniques?: number;
+}
+
+export interface AnalyticsTimeseries extends AnalyticsDataPoint {
+  since: string;
+  until: string;
+}
+
+export interface ZoneAnalytics {
+  totals: AnalyticsDataPoint;
+  timeseries: AnalyticsTimeseries[];
+}
+
+export interface DnsAnalyticsRow {
+  dimensions: string[];
+  metrics: number[];
+}
+
+export interface DnsAnalyticsResponse {
+  rows: DnsAnalyticsRow[];
+  totals: Record<string, number>;
+  min: Record<string, number>;
+  max: Record<string, number>;
+}
+
+// ── Firewall / WAF types ──────────────────────────────────────────────────────
+
+export interface FirewallFilterResponse {
+  id: string;
+  expression: string;
+  paused?: boolean;
+  description?: string;
+}
+
+export interface FirewallRuleResponse {
+  id: string;
+  paused: boolean;
+  action: string;
+  priority?: number;
+  description?: string;
+  filter: FirewallFilterResponse;
+}
+
+export interface FirewallRuleInput {
+  action: string;
+  description?: string;
+  paused?: boolean;
+  priority?: number;
+  filter: { expression: string; paused?: boolean };
+}
+
+export interface IpAccessRuleResponse {
+  id: string;
+  mode: string;
+  notes?: string;
+  configuration: { target: string; value: string };
+  allowed_modes: string[];
+}
+
+export interface WafRulesetResponse {
+  id: string;
+  name: string;
+  description?: string;
+  kind: string;
+  phase: string;
+}
+
+// ── Worker types ──────────────────────────────────────────────────────────────
+
+export interface WorkerRouteResponse {
+  id: string;
+  pattern: string;
+  script: string;
+}
+
+// ── Email Routing types ───────────────────────────────────────────────────────
+
+export interface EmailRoutingMatcherResponse {
+  type: string;
+  field?: string;
+  value?: string;
+}
+
+export interface EmailRoutingActionResponse {
+  type: string;
+  value?: string[];
+}
+
+export interface EmailRoutingRuleResponse {
+  id?: string;
+  tag?: string;
+  name?: string;
+  enabled: boolean;
+  matchers: EmailRoutingMatcherResponse[];
+  actions: EmailRoutingActionResponse[];
+  priority?: number;
+}
+
+export interface EmailRoutingRuleInput {
+  name?: string;
+  enabled?: boolean;
+  matchers: EmailRoutingMatcherResponse[];
+  actions: EmailRoutingActionResponse[];
+  priority?: number;
+}
+
+export interface EmailRoutingSettingsResponse {
+  enabled: boolean;
+  name?: string;
+  tag?: string;
+  created?: string;
+  modified?: string;
+  skip_wizard?: boolean;
+  status?: string;
+}
+
+// ── Page Rules types ──────────────────────────────────────────────────────────
+
+export interface PageRuleTarget {
+  target: string;
+  constraint: { operator: string; value: string };
+}
+
+export interface PageRuleAction {
+  id: string;
+  value?: unknown;
+}
+
+export interface PageRuleResponse {
+  id: string;
+  targets: PageRuleTarget[];
+  actions: PageRuleAction[];
+  priority?: number;
+  status: string;
+  created_on?: string;
+  modified_on?: string;
+}
+
+// ── DNS Propagation types ─────────────────────────────────────────────────────
+
+export interface PropagationResolverResult {
+  resolver: string;
+  label: string;
+  records: string[];
+  rcode: string;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface PropagationResult {
+  domain: string;
+  record_type: string;
+  resolvers: PropagationResolverResult[];
+  consistent: boolean;
+  timestamp: string;
 }
 
 // ── DNS Tools types ───────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 import { getEnv } from "./env";
 import { isDesktop } from "./environment";
-import { TauriClient } from "./tauri-client";
+import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
 import type { TauriDNSRecordInput } from "./tauri-client";
 
 const DEFAULT_BASE = getEnv(
@@ -752,5 +752,251 @@ export class ServerClient {
       return TauriClient.biometricHasSecret(key);
     }
     return false;
+  }
+
+  // ── Analytics ─────────────────────────────────────────────────────────────
+
+  async getZoneAnalytics(
+    zoneId: string,
+    since?: string,
+    until?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.getZoneAnalytics(this.apiKey, zoneId, since, until, this.email);
+    }
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+    const qs = params.toString();
+    return this.request(`/zones/${zoneId}/analytics/dashboard${qs ? `?${qs}` : ""}`, { signal });
+  }
+
+  async getDnsAnalytics(
+    zoneId: string,
+    since?: string,
+    until?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.getDnsAnalytics(this.apiKey, zoneId, since, until, this.email);
+    }
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+    const qs = params.toString();
+    return this.request(`/zones/${zoneId}/dns_analytics/report${qs ? `?${qs}` : ""}`, { signal });
+  }
+
+  // ── Firewall / WAF ───────────────────────────────────────────────────────
+
+  async getFirewallRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getFirewallRules(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/firewall/rules`, { signal });
+  }
+
+  async createFirewallRule(
+    zoneId: string,
+    rule: { action: string; description?: string; filter: { expression: string } },
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.createFirewallRule(this.apiKey, zoneId, rule, this.email);
+    }
+    return this.request(`/zones/${zoneId}/firewall/rules`, {
+      method: "POST",
+      body: [rule],
+      signal,
+    });
+  }
+
+  async updateFirewallRule(
+    zoneId: string,
+    ruleId: string,
+    rule: { action: string; description?: string; filter: { expression: string } },
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.updateFirewallRule(this.apiKey, zoneId, ruleId, rule, this.email);
+    }
+    return this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
+      method: "PUT",
+      body: rule,
+      signal,
+    });
+  }
+
+  async deleteFirewallRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteFirewallRule(this.apiKey, zoneId, ruleId, this.email);
+    }
+    await this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
+      method: "DELETE",
+      signal,
+    });
+  }
+
+  async getIpAccessRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getIpAccessRules(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, { signal });
+  }
+
+  async createIpAccessRule(
+    zoneId: string,
+    mode: string,
+    ip: string,
+    notes?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.createIpAccessRule(this.apiKey, zoneId, mode, ip, notes, this.email);
+    }
+    return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, {
+      method: "POST",
+      body: { mode, configuration: { target: "ip", value: ip }, notes },
+      signal,
+    });
+  }
+
+  async deleteIpAccessRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteIpAccessRule(this.apiKey, zoneId, ruleId, this.email);
+    }
+    await this.request(`/zones/${zoneId}/firewall/access_rules/rules/${ruleId}`, {
+      method: "DELETE",
+      signal,
+    });
+  }
+
+  async getWafRulesets(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getWafRulesets(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/rulesets`, { signal });
+  }
+
+  // ── Workers ───────────────────────────────────────────────────────────────
+
+  async getWorkerRoutes(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getWorkerRoutes(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/workers/routes`, { signal });
+  }
+
+  async createWorkerRoute(
+    zoneId: string,
+    pattern: string,
+    script: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.createWorkerRoute(this.apiKey, zoneId, pattern, script, this.email);
+    }
+    return this.request(`/zones/${zoneId}/workers/routes`, {
+      method: "POST",
+      body: { pattern, script },
+      signal,
+    });
+  }
+
+  async deleteWorkerRoute(zoneId: string, routeId: string, signal?: AbortSignal): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteWorkerRoute(this.apiKey, zoneId, routeId, this.email);
+    }
+    await this.request(`/zones/${zoneId}/workers/routes/${routeId}`, {
+      method: "DELETE",
+      signal,
+    });
+  }
+
+  // ── Email Routing ─────────────────────────────────────────────────────────
+
+  async getEmailRoutingSettings(zoneId: string, signal?: AbortSignal): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.getEmailRoutingSettings(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/email/routing`, { signal });
+  }
+
+  async getEmailRoutingRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getEmailRoutingRules(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/email/routing/rules`, { signal });
+  }
+
+  async createEmailRoutingRule(
+    zoneId: string,
+    rule: EmailRoutingRuleInput,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.createEmailRoutingRule(this.apiKey, zoneId, rule, this.email);
+    }
+    return this.request(`/zones/${zoneId}/email/routing/rules`, {
+      method: "POST",
+      body: rule,
+      signal,
+    });
+  }
+
+  async deleteEmailRoutingRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteEmailRoutingRule(this.apiKey, zoneId, ruleId, this.email);
+    }
+    await this.request(`/zones/${zoneId}/email/routing/rules/${ruleId}`, {
+      method: "DELETE",
+      signal,
+    });
+  }
+
+  // ── Page Rules ────────────────────────────────────────────────────────────
+
+  async getPageRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+    if (isDesktop()) {
+      return TauriClient.getPageRules(this.apiKey, zoneId, this.email);
+    }
+    return this.request(`/zones/${zoneId}/pagerules`, { signal });
+  }
+
+  // ── Bulk Operations ───────────────────────────────────────────────────────
+
+  async deleteBulkDnsRecords(
+    zoneId: string,
+    recordIds: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (isDesktop()) {
+      return TauriClient.deleteBulkDnsRecords(this.apiKey, zoneId, recordIds, this.email);
+    }
+    // Web mode: delete one-by-one
+    for (const id of recordIds) {
+      await this.request(`/zones/${zoneId}/dns_records/${id}`, {
+        method: "DELETE",
+        signal,
+      });
+    }
+  }
+
+  // ── DNS Propagation ───────────────────────────────────────────────────────
+
+  async checkDnsPropagation(
+    domain: string,
+    recordType: string,
+    extraResolvers?: string[],
+  ): Promise<unknown> {
+    if (isDesktop()) {
+      return TauriClient.checkDnsPropagation(domain, recordType, extraResolvers);
+    }
+    // Web mode: hit our server API
+    return this.request("/dns/propagation", {
+      method: "POST",
+      body: { domain, record_type: recordType, extra_resolvers: extraResolvers },
+    });
   }
 }
