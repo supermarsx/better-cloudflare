@@ -116,6 +116,33 @@ fn main() {
             commands::biometric_get_secret,
             commands::biometric_delete_secret,
             commands::biometric_has_secret,
+            // Analytics
+            commands::get_zone_analytics,
+            commands::get_dns_analytics,
+            // Firewall / WAF
+            commands::get_firewall_rules,
+            commands::create_firewall_rule,
+            commands::update_firewall_rule,
+            commands::delete_firewall_rule,
+            commands::get_ip_access_rules,
+            commands::create_ip_access_rule,
+            commands::delete_ip_access_rule,
+            commands::get_waf_rulesets,
+            // Workers
+            commands::get_worker_routes,
+            commands::create_worker_route,
+            commands::delete_worker_route,
+            // Email Routing
+            commands::get_email_routing_settings,
+            commands::get_email_routing_rules,
+            commands::create_email_routing_rule,
+            commands::delete_email_routing_rule,
+            // Page Rules
+            commands::get_page_rules,
+            // Bulk Operations
+            commands::delete_bulk_dns_records,
+            // DNS Propagation
+            commands::check_dns_propagation,
         ])
         .setup(|app| {
             // Initialize storage
