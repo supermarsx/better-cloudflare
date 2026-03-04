@@ -1083,6 +1083,286 @@ pub async fn resolve_topology_batch(
     })
 }
 
+// ── DNS Propagation Checker ────────────────────────────────────────────────
+
+/// Result of a propagation check against one resolver.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropagationResolverResult {
+    pub resolver: String,
+    pub resolver_label: String,
+    pub answers: Vec<String>,
+    pub rcode: String,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Full propagation check result for a single query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PropagationResult {
+    pub domain: String,
+    pub record_type: String,
+    pub results: Vec<PropagationResolverResult>,
+    pub consistent: bool,
+}
+
+/// Well-known public resolvers to check propagation against.
+const PROPAGATION_RESOLVERS: &[(&str, &str)] = &[
+    ("1.1.1.1", "Cloudflare"),
+    ("8.8.8.8", "Google"),
+    ("9.9.9.9", "Quad9"),
+    ("208.67.222.222", "OpenDNS"),
+    ("185.228.168.9", "CleanBrowsing"),
+    ("76.76.19.19", "Alternate DNS"),
+    ("94.140.14.14", "AdGuard"),
+    ("8.26.56.26", "Comodo"),
+];
+
+/// Check DNS propagation across multiple global resolvers.
+///
+/// Queries the given domain for `record_type` against each well-known
+/// public DNS resolver and reports whether results are consistent.
+pub async fn check_propagation(
+    domain: String,
+    record_type: String,
+    extra_resolvers: Option<Vec<String>>,
+) -> Result<PropagationResult, String> {
+    let domain = normalize_domain(&domain);
+    let mut resolver_list: Vec<(String, String)> = PROPAGATION_RESOLVERS
+        .iter()
+        .map(|(ip, label)| (ip.to_string(), label.to_string()))
+        .collect();
+
+    if let Some(extras) = extra_resolvers {
+        for ip in extras {
+            let ip = ip.trim().to_string();
+            if !ip.is_empty() && !resolver_list.iter().any(|(r, _)| r == &ip) {
+                let label = format!("Custom ({})", ip);
+                resolver_list.push((ip, label));
+            }
+        }
+    }
+
+    let mut handles = Vec::new();
+    for (ip, label) in &resolver_list {
+        let ip = ip.clone();
+        let label = label.clone();
+        let domain = domain.clone();
+        let record_type = record_type.clone();
+        handles.push(tokio::spawn(async move {
+            query_single_resolver(&ip, &label, &domain, &record_type).await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(PropagationResolverResult {
+                resolver: "unknown".to_string(),
+                resolver_label: "unknown".to_string(),
+                answers: vec![],
+                rcode: "SERVFAIL".to_string(),
+                latency_ms: 0,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    // Check consistency: all non-error resolvers should have same sorted answers
+    let good_answers: Vec<Vec<String>> = results
+        .iter()
+        .filter(|r| r.error.is_none() && r.rcode == "NOERROR")
+        .map(|r| {
+            let mut a = r.answers.clone();
+            a.sort();
+            a
+        })
+        .collect();
+
+    let consistent = if good_answers.is_empty() {
+        false
+    } else {
+        good_answers.windows(2).all(|w| w[0] == w[1])
+    };
+
+    Ok(PropagationResult {
+        domain,
+        record_type,
+        results,
+        consistent,
+    })
+}
+
+async fn query_single_resolver(
+    ip: &str,
+    label: &str,
+    domain: &str,
+    record_type: &str,
+) -> PropagationResolverResult {
+    let start = std::time::Instant::now();
+    let parsed_ip: IpAddr = match ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return PropagationResolverResult {
+                resolver: ip.to_string(),
+                resolver_label: label.to_string(),
+                answers: vec![],
+                rcode: "SERVFAIL".to_string(),
+                latency_ms: 0,
+                error: Some(format!("Invalid IP: {}", e)),
+            };
+        }
+    };
+
+    let mut opts = ResolverOpts::default();
+    opts.timeout = Duration::from_secs(3);
+    opts.attempts = 1;
+    let group = NameServerConfigGroup::from_ips_clear(&[parsed_ip], 53, true);
+    let resolver = TokioAsyncResolver::tokio(
+        ResolverConfig::from_parts(None, vec![], group),
+        opts,
+    );
+
+    let timeout_result = tokio::time::timeout(Duration::from_secs(5), async {
+        match record_type.to_uppercase().as_str() {
+            "A" => {
+                let lookup = resolver.ipv4_lookup(domain).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            "AAAA" => {
+                let lookup = resolver.ipv6_lookup(domain).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            "MX" => {
+                let lookup = resolver.mx_lookup(domain).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l
+                            .iter()
+                            .map(|mx| {
+                                format!(
+                                    "{} {}",
+                                    mx.preference(),
+                                    normalize_domain(&mx.exchange().to_string())
+                                )
+                            })
+                            .collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            "TXT" => {
+                let lookup = resolver.txt_lookup(domain).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l
+                            .iter()
+                            .map(|txt| txt.to_string())
+                            .collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            "NS" => {
+                let lookup = resolver.ns_lookup(domain).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l
+                            .iter()
+                            .map(|ns| normalize_domain(&ns.to_string()))
+                            .collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            "CNAME" => {
+                let lookup = resolver.lookup(
+                    domain,
+                    trust_dns_resolver::proto::rr::RecordType::CNAME,
+                ).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l
+                            .record_iter()
+                            .filter_map(|r| r.data().map(|d| d.to_string()))
+                            .map(|s| normalize_domain(&s))
+                            .collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+            _ => {
+                // Generic lookup
+                let lookup = resolver.lookup(
+                    domain,
+                    trust_dns_resolver::proto::rr::RecordType::Unknown(0),
+                ).await;
+                match lookup {
+                    Ok(l) => {
+                        let answers: Vec<String> = l
+                            .record_iter()
+                            .filter_map(|r| r.data().map(|d| d.to_string()))
+                            .collect();
+                        (answers, "NOERROR".to_string(), None)
+                    }
+                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                }
+            }
+        }
+    })
+    .await;
+
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    match timeout_result {
+        Ok((answers, rcode, error)) => PropagationResolverResult {
+            resolver: ip.to_string(),
+            resolver_label: label.to_string(),
+            answers,
+            rcode,
+            latency_ms: elapsed,
+            error,
+        },
+        Err(_) => PropagationResolverResult {
+            resolver: ip.to_string(),
+            resolver_label: label.to_string(),
+            answers: vec![],
+            rcode: "TIMEOUT".to_string(),
+            latency_ms: elapsed,
+            error: Some("Query timed out".to_string()),
+        },
+    }
+}
+
+fn error_to_rcode(err: &trust_dns_resolver::error::ResolveError) -> String {
+    let s = err.to_string().to_lowercase();
+    if s.contains("nxdomain") || s.contains("no records") || s.contains("no connections") {
+        "NXDOMAIN".to_string()
+    } else if s.contains("refused") {
+        "REFUSED".to_string()
+    } else if s.contains("timeout") || s.contains("timed out") {
+        "TIMEOUT".to_string()
+    } else {
+        "SERVFAIL".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
