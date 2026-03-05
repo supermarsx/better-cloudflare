@@ -31,12 +31,22 @@ test("encrypt followed by decrypt returns original data", async () => {
 test("updateConfig persists changes across instances", () => {
   const storage = new LocalStorageMock();
   const cryptoMgr = new CryptoManager({}, storage);
-  cryptoMgr.updateConfig({ algorithm: "AES-CBC", iterations: 1 });
+  cryptoMgr.updateConfig({ algorithm: "AES-CBC", iterations: 200000 });
   // Simulate reload by creating a new manager that reads from storage
   const reloaded = new CryptoManager({}, storage);
   const config = reloaded.getConfig();
   assert.equal(config.algorithm, "AES-CBC");
-  assert.equal(config.iterations, 1);
+  assert.equal(config.iterations, 200000);
+});
+
+test("minimum iterations are enforced against tampering", () => {
+  const storage = new LocalStorageMock();
+  // Simulate localStorage tampering: set iterations to 1
+  storage.setItem("encryption-settings", JSON.stringify({ iterations: 1 }));
+  const cryptoMgr = new CryptoManager({}, storage);
+  const config = cryptoMgr.getConfig();
+  // Should be clamped to the minimum (100000), not 1
+  assert.ok(config.iterations >= 100000, `Expected >= 100000 but got ${config.iterations}`);
 });
 
 test("benchmark returns numeric duration", async () => {

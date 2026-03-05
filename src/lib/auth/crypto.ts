@@ -13,8 +13,14 @@ import { getStorage, type StorageLike } from "../storage/storage-util";
 
 const CONFIG_STORAGE_KEY = "encryption-settings";
 
+/**
+ * Minimum allowed PBKDF2 iterations. Prevents stored config tampering
+ * from weakening key derivation below a safe threshold.
+ */
+const MIN_ITERATIONS = 100_000;
+
 const DEFAULT_CONFIG: EncryptionConfig = {
-  iterations: 100000,
+  iterations: 100_000,
   keyLength: 256,
   algorithm: "AES-GCM",
 };
@@ -51,6 +57,9 @@ export class CryptoManager {
     this.storage = getStorage(storage);
     const stored = this.loadFromStorage();
     this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
+    // Enforce minimum iterations to prevent localStorage tampering from
+    // weakening key derivation (e.g. setting iterations to 1)
+    this.config.iterations = Math.max(this.config.iterations, MIN_ITERATIONS);
     if (!isValidAlgorithm(this.config.algorithm)) {
       this.config.algorithm = DEFAULT_CONFIG.algorithm;
     }
@@ -104,16 +113,14 @@ export class CryptoManager {
   // Node.js. If neither is available, throw a helpful error when crypto is
   // actually needed.
   private getWebCrypto(): typeof globalThis.crypto | undefined {
-    // use the global if present (browser / Node 25+)
+    // Use the global Web Crypto API when available (browser / modern Node.js)
     if ((globalThis as any).crypto) return (globalThis as any).crypto;
 
-    // otherwise attempt to synchronously require Node's crypto and use webcrypto
+    // Attempt to load Node.js built-in crypto.webcrypto without eval
     try {
-      // Use runtime require if available to load Node's crypto in CommonJS environments.
-      // In ESM environments (no require) this will not run and will safely fall through.
       const maybeRequire = (typeof (globalThis as any).require === "function")
         ? (globalThis as any).require
-        : eval("typeof require === 'function' ? require : undefined");
+        : undefined;
       if (maybeRequire) {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const nodeCrypto = maybeRequire("crypto");
