@@ -1,0 +1,14 @@
+[package]
+name = "bc-ai-provider"
+version = "0.1.0"
+edition = "2021"
+description = "Unified LLM provider abstraction for Better Cloudflare AI assistant"
+
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "macros"] }
