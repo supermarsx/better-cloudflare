@@ -9,12 +9,15 @@ mod passkey;
 mod registrar_commands;
 mod mcp_server;
 mod session;
+mod ai_commands;
 
 use tauri::Manager;
 use crate::storage::Storage;
 use crate::passkey::PasskeyManager;
 use crate::mcp_server::McpServerManager;
 use crate::session::SessionManager;
+
+use bc_ai_agent::AgentManager;
 
 fn main() {
     tauri::Builder::default()
@@ -23,6 +26,7 @@ fn main() {
         .manage(PasskeyManager::default())
         .manage(McpServerManager::default())
         .manage(SessionManager::default())
+        .manage(AgentManager::default())
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
             commands::restart_app,
@@ -152,6 +156,24 @@ fn main() {
             commands::session_status,
             commands::session_touch,
             commands::session_set_idle_timeout,
+            // AI Assistant
+            ai_commands::ai_list_providers,
+            ai_commands::ai_configure_provider,
+            ai_commands::ai_test_provider,
+            ai_commands::ai_list_models,
+            ai_commands::ai_get_config,
+            ai_commands::ai_set_config,
+            ai_commands::ai_create_conversation,
+            ai_commands::ai_list_conversations,
+            ai_commands::ai_get_conversation,
+            ai_commands::ai_delete_conversation,
+            ai_commands::ai_set_conversation_title,
+            ai_commands::ai_send_message,
+            ai_commands::ai_approve_tool_call,
+            ai_commands::ai_cancel_generation,
+            ai_commands::ai_list_presets,
+            ai_commands::ai_get_preset,
+            ai_commands::ai_export_conversation,
         ])
         .setup(|app| {
             // Initialize storage

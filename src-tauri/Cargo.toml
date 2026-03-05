@@ -18,6 +18,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 rfd = "0.15"
 dirs = "5"
+tokio = { version = "1", features = ["sync", "macros", "rt"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
 
 # Workspace crates
@@ -34,6 +35,10 @@ bc-mcp = { path = "crates/bc-mcp" }
 bc-dns-tools = { path = "crates/bc-dns-tools" }
 bc-domain-audit = { path = "crates/bc-domain-audit" }
 bc-biometrics = { path = "crates/bc-biometrics" }
+bc-ai-provider = { path = "crates/bc-ai-provider" }
+bc-ai-chat = { path = "crates/bc-ai-chat" }
+bc-ai-tools = { path = "crates/bc-ai-tools" }
+bc-ai-agent = { path = "crates/bc-ai-agent" }
 
 [features]
 default = ["custom-protocol"]

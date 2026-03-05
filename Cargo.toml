@@ -12,6 +12,10 @@ members = [
     "src-tauri/crates/bc-dns-tools",
     "src-tauri/crates/bc-domain-audit",
     "src-tauri/crates/bc-biometrics",
+    "src-tauri/crates/bc-ai-provider",
+    "src-tauri/crates/bc-ai-chat",
+    "src-tauri/crates/bc-ai-tools",
+    "src-tauri/crates/bc-ai-agent",
 ]
 resolver = "2"
 

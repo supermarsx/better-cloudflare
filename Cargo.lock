@@ -462,6 +462,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bc-ai-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bc-ai-chat",
+ "bc-ai-provider",
+ "bc-ai-tools",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "bc-ai-chat"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bc-ai-provider",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "bc-ai-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "bc-ai-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bc-ai-provider",
+ "bc-mcp",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "bc-biometrics"
 version = "0.1.0"
 dependencies = [
@@ -617,6 +673,10 @@ name = "better-cloudflare"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "bc-ai-agent",
+ "bc-ai-chat",
+ "bc-ai-provider",
+ "bc-ai-tools",
  "bc-biometrics",
  "bc-cloudflare-api",
  "bc-crypto",
@@ -639,6 +699,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
+ "tokio",
  "uuid",
 ]
 
@@ -1624,6 +1685,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1724,6 +1800,7 @@ version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
