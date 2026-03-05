@@ -1,0 +1,16 @@
+[package]
+name = "bc-ai-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bc-ai-provider = { path = "../bc-ai-provider" }
+bc-ai-chat = { path = "../bc-ai-chat" }
+bc-ai-tools = { path = "../bc-ai-tools" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
