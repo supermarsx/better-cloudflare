@@ -433,6 +433,32 @@ pub async fn benchmark_encryption(iterations: u32) -> Result<f64, String> {
 
 // ─── Biometric Authentication ───────────────────────────────────────────────
 
+/// Namespace prefix for all biometric keychain entries to prevent
+/// arbitrary keychain access via crafted key names from the frontend.
+const BIOMETRIC_KEY_PREFIX: &str = "com.bettercloudflare.";
+
+/// Validate and namespace a biometric key. Rejects empty keys and keys
+/// containing path separators or other dangerous characters.
+fn sanitize_biometric_key(key: &str) -> Result<String, String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("Biometric key must not be empty".to_string());
+    }
+    // Only allow alphanumeric, dash, underscore, and dot
+    if !trimmed
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err("Biometric key contains invalid characters".to_string());
+    }
+    // Prevent keys that already have the prefix (double-prefixing)
+    if trimmed.starts_with(BIOMETRIC_KEY_PREFIX) {
+        Ok(trimmed.to_string())
+    } else {
+        Ok(format!("{}{}", BIOMETRIC_KEY_PREFIX, trimmed))
+    }
+}
+
 #[tauri::command]
 pub fn biometric_status() -> Result<serde_json::Value, String> {
     serde_json::to_value(bc_biometrics::BiometricAuth::status()).map_err(|e| e.to_string())
@@ -445,9 +471,10 @@ pub fn biometric_authenticate(reason: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn biometric_store_secret(key: String, secret: String) -> Result<(), String> {
+    let safe_key = sanitize_biometric_key(&key)?;
     bc_biometrics::BiometricAuth::store_protected_secret(
         bc_biometrics::DEFAULT_SERVICE,
-        &key,
+        &safe_key,
         secret.as_bytes(),
     )
     .map_err(|e| e.to_string())
@@ -455,9 +482,10 @@ pub fn biometric_store_secret(key: String, secret: String) -> Result<(), String>
 
 #[tauri::command]
 pub fn biometric_get_secret(key: String, reason: String) -> Result<String, String> {
+    let safe_key = sanitize_biometric_key(&key)?;
     let data = bc_biometrics::BiometricAuth::get_protected_secret(
         bc_biometrics::DEFAULT_SERVICE,
-        &key,
+        &safe_key,
         &reason,
     )
     .map_err(|e| e.to_string())?;
@@ -466,13 +494,15 @@ pub fn biometric_get_secret(key: String, reason: String) -> Result<String, Strin
 
 #[tauri::command]
 pub fn biometric_delete_secret(key: String) -> Result<(), String> {
-    bc_biometrics::BiometricAuth::delete_protected_secret(bc_biometrics::DEFAULT_SERVICE, &key)
+    let safe_key = sanitize_biometric_key(&key)?;
+    bc_biometrics::BiometricAuth::delete_protected_secret(bc_biometrics::DEFAULT_SERVICE, &safe_key)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn biometric_has_secret(key: String) -> Result<bool, String> {
-    bc_biometrics::BiometricAuth::has_protected_secret(bc_biometrics::DEFAULT_SERVICE, &key)
+    let safe_key = sanitize_biometric_key(&key)?;
+    bc_biometrics::BiometricAuth::has_protected_secret(bc_biometrics::DEFAULT_SERVICE, &safe_key)
         .map_err(|e| e.to_string())
 }
 
