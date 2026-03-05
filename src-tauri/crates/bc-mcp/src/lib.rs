@@ -344,15 +344,8 @@ async fn bearer_auth_middleware(
 // ─── HTTP handlers ─────────────────────────────────────────────────────────
 
 async fn handle_health() -> impl IntoResponse {
-    Json(json!({
-        "status": "ok",
-        "server": protocol::SERVER_NAME,
-        "version": env!("CARGO_PKG_VERSION"),
-        "protocol": protocol::MCP_PROTOCOL_VERSION,
-        "tools": tools::tool_count(),
-        "resources": resources::list_resources().len(),
-        "prompts": prompts::list_prompts().len(),
-    }))
+    // Minimal health check — do not leak server metadata to unauthenticated callers
+    Json(json!({ "status": "ok" }))
 }
 
 /// Full MCP JSON-RPC 2.0 handler with all spec methods.
@@ -363,11 +356,12 @@ async fn handle_mcp_rpc(
     // ── Parse incoming request ──────────────────────────────────────────
     let request = match serde_json::from_value::<JsonRpcRequest>(payload) {
         Ok(req) => req,
-        Err(err) => {
+        Err(_err) => {
             let body = Json(error_response(
                 None,
                 RpcErrorCode::ParseError.code(),
-                format!("Invalid JSON-RPC payload: {}", err),
+                // Redact internal parse error details to avoid information leakage
+                "Invalid JSON-RPC payload".to_string(),
             ));
             return (StatusCode::BAD_REQUEST, body).into_response();
         }
