@@ -228,19 +228,19 @@ pub fn get_optional_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
 }
 
-/// Extract an optional u32 argument (from u64).
+/// Extract an optional u32 argument (from u64). Returns `None` if value overflows.
 pub fn get_optional_u32(args: &Value, key: &str) -> Option<u32> {
-    get_optional_u64(args, key).map(|v| v as u32)
+    get_optional_u64(args, key).and_then(|v| u32::try_from(v).ok())
 }
 
-/// Extract an optional u16 argument.
+/// Extract an optional u16 argument. Returns `None` if value overflows.
 pub fn get_optional_u16(args: &Value, key: &str) -> Option<u16> {
-    get_optional_u64(args, key).map(|v| v as u16)
+    get_optional_u64(args, key).and_then(|v| u16::try_from(v).ok())
 }
 
-/// Extract an optional u8 argument.
+/// Extract an optional u8 argument. Returns `None` if value overflows.
 pub fn get_optional_u8(args: &Value, key: &str) -> Option<u8> {
-    get_optional_u64(args, key).map(|v| v as u8)
+    get_optional_u64(args, key).and_then(|v| u8::try_from(v).ok())
 }
 
 /// Extract an optional bool argument.
