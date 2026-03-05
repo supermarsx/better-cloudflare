@@ -133,7 +133,7 @@ fn sanitize_deduplicates() {
 #[test]
 fn status_shows_url() {
     let enabled = default_enabled_tool_set();
-    let status = build_status(false, "127.0.0.1".to_string(), 8787, &enabled, None);
+    let status = build_status(false, "127.0.0.1".to_string(), 8787, &enabled, None, None);
     assert_eq!(status.url, "http://127.0.0.1:8787/mcp");
     assert!(!status.running);
 }
@@ -141,18 +141,18 @@ fn status_shows_url() {
 #[test]
 fn status_running_flag() {
     let enabled = default_enabled_tool_set();
-    let running = build_status(true, "0.0.0.0".to_string(), 9090, &enabled, None);
+    let running = build_status(true, "0.0.0.0".to_string(), 9090, &enabled, None, None);
     assert!(running.running);
     assert_eq!(running.url, "http://0.0.0.0:9090/mcp");
 
-    let stopped = build_status(false, "0.0.0.0".to_string(), 9090, &enabled, None);
+    let stopped = build_status(false, "0.0.0.0".to_string(), 9090, &enabled, None, None);
     assert!(!stopped.running);
 }
 
 #[test]
 fn status_includes_tool_count() {
     let enabled = default_enabled_tool_set();
-    let status = build_status(true, "localhost".to_string(), 8787, &enabled, None);
+    let status = build_status(true, "localhost".to_string(), 8787, &enabled, None, None);
     assert_eq!(status.enabled_tools.len(), enabled.len());
     assert!(status.tool_count >= 50);
 }
@@ -160,7 +160,7 @@ fn status_includes_tool_count() {
 #[test]
 fn status_includes_resource_and_prompt_counts() {
     let enabled = default_enabled_tool_set();
-    let status = build_status(true, "localhost".to_string(), 8787, &enabled, None);
+    let status = build_status(true, "localhost".to_string(), 8787, &enabled, None, None);
     assert!(status.resource_count >= 8, "Expected >= 8 resources, got {}", status.resource_count);
     assert!(status.prompt_count >= 8, "Expected >= 8 prompts, got {}", status.prompt_count);
 }
@@ -174,6 +174,7 @@ fn status_with_error() {
         8787,
         &enabled,
         Some("bind failed".to_string()),
+        None,
     );
     assert!(!status.running);
     assert_eq!(status.last_error.as_deref(), Some("bind failed"));

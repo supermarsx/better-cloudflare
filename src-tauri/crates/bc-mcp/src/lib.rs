@@ -24,6 +24,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -59,6 +60,9 @@ pub struct McpServerStatus {
     pub prompt_count: usize,
     pub tools: Vec<McpToolDescriptor>,
     pub last_error: Option<String>,
+    /// The bearer token protecting the MCP server (auto-generated if not set).
+    /// Returned once on start so the frontend can pass it to MCP clients.
+    pub auth_token: Option<String>,
 }
 
 // ─── Internal types ────────────────────────────────────────────────────────
@@ -137,12 +141,20 @@ fn normalize_port(port: Option<u16>) -> u16 {
     if next == 0 { DEFAULT_MCP_PORT } else { next }
 }
 
+/// Generate a cryptographically random 64-character hex bearer token.
+fn generate_auth_token() -> String {
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 32] = rng.gen();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 pub fn build_status(
     running: bool,
     host: String,
     port: u16,
     enabled_tools: &HashSet<String>,
     last_error: Option<String>,
+    auth_token: Option<String>,
 ) -> McpServerStatus {
     let mut enabled = enabled_tools.iter().cloned().collect::<Vec<_>>();
     enabled.sort();
@@ -166,6 +178,7 @@ pub fn build_status(
         prompt_count: prompts::list_prompts().len(),
         tools: tools_list,
         last_error,
+        auth_token,
     }
 }
 
@@ -175,13 +188,15 @@ impl McpServerManager {
         let runtime_ref = self.runtime.read().await;
         if let Some(runtime) = runtime_ref.as_ref() {
             let enabled = runtime.enabled_tools.read().await.clone();
-            return build_status(true, runtime.host.clone(), runtime.port, &enabled, last_error);
+            let token = runtime.auth_token.read().await.clone();
+            return build_status(true, runtime.host.clone(), runtime.port, &enabled, last_error, token);
         }
         drop(runtime_ref);
         let host = self.config_host.read().await.clone();
         let port = *self.config_port.read().await;
         let enabled = self.config_enabled_tools.read().await.clone();
-        build_status(false, host, port, &enabled, last_error)
+        let token = self.config_auth_token.read().await.clone();
+        build_status(false, host, port, &enabled, last_error, token)
     }
 
     async fn stop_internal(&self) -> Result<(), String> {
@@ -241,7 +256,9 @@ impl McpServerManager {
             self.config_enabled_tools.read().await.clone()
         };
         let enabled_ref = Arc::new(RwLock::new(desired_enabled.clone()));
-        let token_ref = Arc::new(RwLock::new(auth_token.clone()));
+        // Auto-generate a cryptographically random bearer token if none provided
+        let effective_token = Some(auth_token.unwrap_or_else(generate_auth_token));
+        let token_ref = Arc::new(RwLock::new(effective_token.clone()));
 
         let bind_addr = format!("{}:{}", normalized_host, normalized_port);
         let listener = TcpListener::bind(&bind_addr)
@@ -280,7 +297,7 @@ impl McpServerManager {
         *self.config_host.write().await = normalized_host.clone();
         *self.config_port.write().await = actual_port;
         *self.config_enabled_tools.write().await = desired_enabled;
-        *self.config_auth_token.write().await = auth_token;
+        *self.config_auth_token.write().await = effective_token;
         *self.runtime.write().await = Some(RunningMcpServer {
             host: normalized_host,
             port: actual_port,
