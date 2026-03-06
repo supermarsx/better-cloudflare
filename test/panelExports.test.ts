@@ -11,22 +11,22 @@ import { test } from "node:test";
 
 // Verify all panel components export correctly
 test("AnalyticsPanel exports a named component", async () => {
-  const mod = await import("../src/components/dns/AnalyticsPanel");
+  const mod = await import("../src/components/analytics/AnalyticsPanel");
   assert.equal(typeof mod.AnalyticsPanel, "function");
 });
 
 test("FirewallPanel exports a named component", async () => {
-  const mod = await import("../src/components/dns/FirewallPanel");
+  const mod = await import("../src/components/firewall/FirewallPanel");
   assert.equal(typeof mod.FirewallPanel, "function");
 });
 
 test("WorkersPanel exports a named component", async () => {
-  const mod = await import("../src/components/dns/WorkersPanel");
+  const mod = await import("../src/components/workers/WorkersPanel");
   assert.equal(typeof mod.WorkersPanel, "function");
 });
 
 test("EmailRoutingPanel exports a named component", async () => {
-  const mod = await import("../src/components/dns/EmailRoutingPanel");
+  const mod = await import("../src/components/email/EmailRoutingPanel");
   assert.equal(typeof mod.EmailRoutingPanel, "function");
 });
 
@@ -46,13 +46,13 @@ test("BulkEditBar exports a named component", async () => {
 });
 
 test("HotkeyHelpDialog exports a named component", async () => {
-  const mod = await import("../src/components/dns/HotkeyHelpDialog");
+  const mod = await import("../src/components/layout/HotkeyHelpDialog");
   assert.equal(typeof mod.HotkeyHelpDialog, "function");
 });
 
 // Verify useUndoRedo hook export
 test("useUndoRedo hook exports correctly", async () => {
-  const mod = await import("../src/hooks/use-undo-redo");
+  const mod = await import("../src/hooks/dns/use-undo-redo");
   assert.equal(typeof mod.useUndoRedo, "function");
 });
 

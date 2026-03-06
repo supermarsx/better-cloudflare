@@ -13,7 +13,7 @@ import { Tag } from "@/components/ui/tag";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useI18n } from "@/hooks/use-i18n";
 import { useToast } from "@/hooks/use-toast";
-import type { UseRegistrarMonitorResult } from "@/hooks/use-registrar-monitor";
+import type { UseRegistrarMonitorResult } from "@/hooks/registrar/use-registrar-monitor";
 import { REGISTRAR_LABELS } from "@/types/registrar";
 import type {
   DomainInfo,

@@ -61,19 +61,19 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
-import { RegistryMonitor } from "./RegistryMonitor";
+import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
 import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
 import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/audit/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
-import { AnalyticsPanel } from "./AnalyticsPanel";
-import { FirewallPanel } from "./FirewallPanel";
-import { WorkersPanel } from "./WorkersPanel";
-import { EmailRoutingPanel } from "./EmailRoutingPanel";
+import { AnalyticsPanel } from "@/components/analytics/AnalyticsPanel";
+import { FirewallPanel } from "@/components/firewall/FirewallPanel";
+import { WorkersPanel } from "@/components/workers/WorkersPanel";
+import { EmailRoutingPanel } from "@/components/email/EmailRoutingPanel";
 import { PropagationChecker } from "./PropagationChecker";
 import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
-import { HotkeyHelpDialog } from "./HotkeyHelpDialog";
+import { HotkeyHelpDialog } from "@/components/layout/HotkeyHelpDialog";
 import { useUndoRedo } from "@/hooks/use-undo-redo";
 import { cacheZoneRecords, getCachedZoneRecords } from "@/lib/storage/offline-cache";
 
