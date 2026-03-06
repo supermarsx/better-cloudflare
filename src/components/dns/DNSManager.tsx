@@ -24,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { Tag } from "@/components/ui/tag";
-import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
+import { useCloudflareAPI } from "@/hooks/dns/use-cloudflare-api";
 import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
@@ -63,7 +63,7 @@ import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
 import { ZoneTopologyTab } from "./ZoneTopologyTab";
-import { useRegistrarMonitor } from "@/hooks/use-registrar-monitor";
+import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
 import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/audit/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
 import { AnalyticsPanel } from "@/components/analytics/AnalyticsPanel";
@@ -74,7 +74,7 @@ import { PropagationChecker } from "./PropagationChecker";
 import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
 import { HotkeyHelpDialog } from "@/components/layout/HotkeyHelpDialog";
-import { useUndoRedo } from "@/hooks/use-undo-redo";
+import { useUndoRedo } from "@/hooks/dns/use-undo-redo";
 import { cacheZoneRecords, getCachedZoneRecords } from "@/lib/storage/offline-cache";
 
 

@@ -13,7 +13,7 @@ import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { useLoginForm } from "@/hooks/use-login-form";
+import { useLoginForm } from "@/hooks/auth/use-login-form";
 
 /**
  * Props for the login form used on the main page to select and decrypt

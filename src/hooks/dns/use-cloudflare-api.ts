@@ -1,8 +1,8 @@
 import { useCallback, useMemo } from "react";
-import { ServerClient } from "../lib/api/server-client";
-import type { EmailRoutingRuleInput } from "../lib/api/tauri-client";
+import { ServerClient } from "@/lib/api/server-client";
+import type { EmailRoutingRuleInput } from "@/lib/api/tauri-client";
 import type { SPFGraph } from "@/lib/dns/spf";
-import type { DNSRecord, Zone, ZoneSetting } from "../types/dns";
+import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 
 /**
  * React hook exposing a higher-level API for interacting with the

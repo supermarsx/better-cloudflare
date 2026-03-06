@@ -12,7 +12,7 @@ import type {
   ProviderConfig,
   ProviderKind,
   ProviderStatus,
-} from "../types/ai";
+} from "@/types/ai";
 
 // ─── Provider hooks ────────────────────────────────────────────────────────
 

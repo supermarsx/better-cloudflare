@@ -3,7 +3,7 @@ import { test } from "node:test";
 import React from "react";
 import { act, create } from "react-test-renderer";
 
-import { useCloudflareAPI } from "../src/hooks/use-cloudflare-api.ts";
+import { useCloudflareAPI } from "../src/hooks/dns/use-cloudflare-api.ts";
 
 interface FetchCallOptions {
   method?: string;

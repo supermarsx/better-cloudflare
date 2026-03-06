@@ -4,7 +4,7 @@ import { test, afterEach } from "node:test";
 import { act, create } from "react-test-renderer";
 
 import { DNSManager } from "../src/components/dns/DNSManager";
-import { useCloudflareAPI } from "../src/hooks/use-cloudflare-api";
+import { useCloudflareAPI } from "../src/hooks/dns/use-cloudflare-api";
 import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;

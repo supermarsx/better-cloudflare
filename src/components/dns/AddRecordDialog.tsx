@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
-import { useCloudflareAPI } from "@/hooks/use-cloudflare-api";
+import { useCloudflareAPI } from "@/hooks/dns/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   CLOUDFLARE_SUPPORTED_RECORD_TYPES,
