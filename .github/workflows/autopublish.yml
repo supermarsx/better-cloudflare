@@ -74,13 +74,14 @@ jobs:
       - name: Create GitHub release
         id: create_release
         uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: "autopublish-${{ env.SHORT_SHA }}"
           release_name: "Autopublish - ${{ env.SHORT_SHA }}"
           body: "Automated release for commit ${{ env.SHORT_SHA }}"
           draft: false
           prerelease: false
-          token: ${{ github.token }}
       - name: Upload package to release
         uses: actions/upload-release-asset@v1
         with:
