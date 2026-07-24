@@ -13,6 +13,8 @@ on:
 
 jobs:
   publish:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Bail if upstream workflow didn't succeed
@@ -57,6 +59,16 @@ jobs:
         run: npm run build
       - name: Create package
         run: npm pack
+      - name: Resolve artifact path
+        id: artifact
+        run: |
+          pkg_file="$(ls *.tgz | head -n1)"
+          if [ -z "$pkg_file" ]; then
+            echo "No package artifact found."
+            exit 1
+          fi
+          echo "path=$pkg_file" >> "$GITHUB_OUTPUT"
+          echo "name=$pkg_file" >> "$GITHUB_OUTPUT"
       - name: Get short SHA
         run: echo "SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
       - name: Create GitHub release
@@ -69,9 +81,9 @@ jobs:
           draft: false
           prerelease: false
       - name: Upload package to release
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: "$(ls *.tgz | head -n1)"
-          asset_name: "app-${{ env.SHORT_SHA }}.tgz"
+          asset_path: ${{ steps.artifact.outputs.path }}
+          asset_name: ${{ steps.artifact.outputs.name }}
           asset_content_type: application/gzip

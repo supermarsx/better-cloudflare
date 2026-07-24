@@ -48,12 +48,15 @@ jobs:
             echo "GitHub Pages site is not configured for this repository. Skipping deployment."
           fi
       - name: Build export
+        if: steps.check-pages.outputs.enabled == 'true'
         run: npm run build
       - name: Setup Pages
+        if: steps.check-pages.outputs.enabled == 'true'
         uses: actions/configure-pages@v5
         with:
-          enablement: true
+          enablement: false
       - name: Upload artifact
+        if: steps.check-pages.outputs.enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./out
