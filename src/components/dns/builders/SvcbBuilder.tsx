@@ -88,7 +88,8 @@ function normalizeIPv6(value: string) {
   const hasDouble = input.includes("::");
   const parts = input.split("::");
   const left = parts[0] ? parts[0].split(":").filter(Boolean) : [];
-  const right = hasDouble && parts[1] ? parts[1].split(":").filter(Boolean) : [];
+  const right =
+    hasDouble && parts[1] ? parts[1].split(":").filter(Boolean) : [];
   const leftNums = left.map((g) => Number.parseInt(g, 16));
   const rightNums = right.map((g) => Number.parseInt(g, 16));
   if (
@@ -111,7 +112,7 @@ function ipv6InPrefix(value: string, base: string, prefix: number) {
   for (let i = 0; i < 8; i++) {
     if (bits <= 0) return true;
     const take = Math.min(16, bits);
-    const mask = take === 16 ? 0xffff : ((0xffff << (16 - take)) & 0xffff);
+    const mask = take === 16 ? 0xffff : (0xffff << (16 - take)) & 0xffff;
     if ((v[i] & mask) !== (b[i] & mask)) return false;
     bits -= take;
   }
@@ -123,11 +124,12 @@ function ipv4ToInt(value: string) {
   const parts = value.split(".").map((p) => Number(p));
   if (parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
   return (
-    ((parts[0] << 24) >>> 0) |
-    ((parts[1] << 16) >>> 0) |
-    ((parts[2] << 8) >>> 0) |
-    (parts[3] >>> 0)
-  ) >>> 0;
+    (((parts[0] << 24) >>> 0) |
+      ((parts[1] << 16) >>> 0) |
+      ((parts[2] << 8) >>> 0) |
+      (parts[3] >>> 0)) >>>
+    0
+  );
 }
 
 function ipv4InCidr(value: string, base: string, prefix: number) {
@@ -135,7 +137,7 @@ function ipv4InCidr(value: string, base: string, prefix: number) {
   const b = ipv4ToInt(base);
   if (v === null || b === null) return false;
   const mask = prefix === 0 ? 0 : (~((1 << (32 - prefix)) - 1) >>> 0) >>> 0;
-  return ((v & mask) >>> 0) === ((b & mask) >>> 0);
+  return (v & mask) >>> 0 === (b & mask) >>> 0;
 }
 
 function quoteIfNeeded(value: string) {
@@ -191,9 +193,10 @@ function parseSvcbContent(content?: string) {
   const tokens = splitTokens(raw);
   const priorityStr = tokens[0];
   const target = tokens[1] ?? "";
-  const priority = priorityStr && /^\d+$/.test(priorityStr)
-    ? Number.parseInt(priorityStr, 10)
-    : undefined;
+  const priority =
+    priorityStr && /^\d+$/.test(priorityStr)
+      ? Number.parseInt(priorityStr, 10)
+      : undefined;
 
   const params: SvcParam[] = [];
   const extras: string[] = [];
@@ -278,7 +281,11 @@ export function SvcbBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "SVCB" && record.type !== "HTTPS") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -289,14 +296,25 @@ export function SvcbBuilder({
     const p = priority;
     const t = (target ?? "").trim();
     if (p === undefined) push(issues, `${kind}: priority is required.`);
-    else if (p < 0 || p > 65535) push(issues, `${kind}: priority must be 0–65535.`);
+    else if (p < 0 || p > 65535)
+      push(issues, `${kind}: priority must be 0–65535.`);
 
-    if (!t) push(issues, `${kind}: target name is required (use "." for alias mode).`);
+    if (!t)
+      push(
+        issues,
+        `${kind}: target name is required (use "." for alias mode).`,
+      );
     if (t && t !== "." && !looksLikeHostname(t))
-      push(issues, `${kind}: target name does not look like a hostname (or ".").`);
+      push(
+        issues,
+        `${kind}: target name does not look like a hostname (or ".").`,
+      );
 
     if (p === 0 && params.length > 0)
-      push(issues, `${kind}: priority 0 is alias mode; svcparams are usually not allowed.`);
+      push(
+        issues,
+        `${kind}: priority 0 is alias mode; svcparams are usually not allowed.`,
+      );
 
     // Validate known parameters
     const keyCounts = new Map<string, number>();
@@ -310,7 +328,9 @@ export function SvcbBuilder({
         push(issues, `${kind}: parameter "${k}" appears multiple times.`);
     }
 
-    const mandatory = params.find((x) => x.key === "mandatory" && x.mode === "keyValue");
+    const mandatory = params.find(
+      (x) => x.key === "mandatory" && x.mode === "keyValue",
+    );
     if (mandatory) {
       const raw = (mandatory.value ?? "").trim();
       const keys = raw
@@ -319,14 +339,20 @@ export function SvcbBuilder({
         .filter(Boolean);
       for (const k of keys) {
         if (!keyCounts.has(k))
-          push(issues, `${kind}: mandatory includes "${k}" but that parameter is missing.`);
+          push(
+            issues,
+            `${kind}: mandatory includes "${k}" but that parameter is missing.`,
+          );
       }
       if (keys.length === 0) push(issues, `${kind}: mandatory value is empty.`);
     }
 
     const alpn = params.find((x) => x.key === "alpn" && x.mode === "keyValue");
-    const noDefault = params.some((x) => x.key === "no-default-alpn" && x.mode === "flag");
-    if (noDefault && !alpn) push(issues, `${kind}: no-default-alpn is set but alpn is missing.`);
+    const noDefault = params.some(
+      (x) => x.key === "no-default-alpn" && x.mode === "flag",
+    );
+    if (noDefault && !alpn)
+      push(issues, `${kind}: no-default-alpn is set but alpn is missing.`);
     if (alpn) {
       const tokens = alpn.value
         .split(",")
@@ -338,12 +364,15 @@ export function SvcbBuilder({
     const port = params.find((x) => x.key === "port" && x.mode === "keyValue");
     if (port) {
       const n = Number.parseInt(port.value.trim(), 10);
-      if (port.value.trim() === "") push(issues, `${kind}: port value is empty.`);
+      if (port.value.trim() === "")
+        push(issues, `${kind}: port value is empty.`);
       else if (Number.isNaN(n) || n < 1 || n > 65535)
         push(issues, `${kind}: port should be 1–65535.`);
     }
 
-    const ipv4hint = params.filter((x) => x.key === "ipv4hint" && x.mode === "keyValue");
+    const ipv4hint = params.filter(
+      (x) => x.key === "ipv4hint" && x.mode === "keyValue",
+    );
     for (const h of ipv4hint) {
       const ips = h.value
         .split(",")
@@ -351,23 +380,41 @@ export function SvcbBuilder({
         .filter(Boolean);
       if (ips.length === 0) push(issues, `${kind}: ipv4hint is empty.`);
       for (const ip of ips) {
-        if (!isValidIPv4(ip)) push(issues, `${kind}: ipv4hint contains invalid IPv4 "${ip}".`);
+        if (!isValidIPv4(ip))
+          push(issues, `${kind}: ipv4hint contains invalid IPv4 "${ip}".`);
         else {
           if (ipv4InCidr(ip, "10.0.0.0", 8))
-            push(issues, `${kind}: ipv4hint includes private IPv4 (10.0.0.0/8).`);
+            push(
+              issues,
+              `${kind}: ipv4hint includes private IPv4 (10.0.0.0/8).`,
+            );
           else if (ipv4InCidr(ip, "172.16.0.0", 12))
-            push(issues, `${kind}: ipv4hint includes private IPv4 (172.16.0.0/12).`);
+            push(
+              issues,
+              `${kind}: ipv4hint includes private IPv4 (172.16.0.0/12).`,
+            );
           else if (ipv4InCidr(ip, "192.168.0.0", 16))
-            push(issues, `${kind}: ipv4hint includes private IPv4 (192.168.0.0/16).`);
+            push(
+              issues,
+              `${kind}: ipv4hint includes private IPv4 (192.168.0.0/16).`,
+            );
           else if (ipv4InCidr(ip, "127.0.0.0", 8))
-            push(issues, `${kind}: ipv4hint includes loopback IPv4 (127.0.0.0/8).`);
+            push(
+              issues,
+              `${kind}: ipv4hint includes loopback IPv4 (127.0.0.0/8).`,
+            );
           else if (ipv4InCidr(ip, "169.254.0.0", 16))
-            push(issues, `${kind}: ipv4hint includes link-local IPv4 (169.254.0.0/16).`);
+            push(
+              issues,
+              `${kind}: ipv4hint includes link-local IPv4 (169.254.0.0/16).`,
+            );
         }
       }
     }
 
-    const ipv6hint = params.filter((x) => x.key === "ipv6hint" && x.mode === "keyValue");
+    const ipv6hint = params.filter(
+      (x) => x.key === "ipv6hint" && x.mode === "keyValue",
+    );
     for (const h of ipv6hint) {
       const ips = h.value
         .split(",")
@@ -375,17 +422,29 @@ export function SvcbBuilder({
         .filter(Boolean);
       if (ips.length === 0) push(issues, `${kind}: ipv6hint is empty.`);
       for (const ip of ips) {
-        if (!isValidIPv6(ip)) push(issues, `${kind}: ipv6hint contains invalid IPv6 "${ip}".`);
+        if (!isValidIPv6(ip))
+          push(issues, `${kind}: ipv6hint contains invalid IPv6 "${ip}".`);
         else {
           const c = ip.toLowerCase();
-          if (c === "::") push(issues, `${kind}: ipv6hint includes unspecified IPv6 (::).`);
-          else if (c === "::1") push(issues, `${kind}: ipv6hint includes loopback IPv6 (::1).`);
+          if (c === "::")
+            push(issues, `${kind}: ipv6hint includes unspecified IPv6 (::).`);
+          else if (c === "::1")
+            push(issues, `${kind}: ipv6hint includes loopback IPv6 (::1).`);
           else if (ipv6InPrefix(c, "fc00::", 7))
-            push(issues, `${kind}: ipv6hint includes unique local IPv6 (fc00::/7).`);
+            push(
+              issues,
+              `${kind}: ipv6hint includes unique local IPv6 (fc00::/7).`,
+            );
           else if (ipv6InPrefix(c, "fe80::", 10))
-            push(issues, `${kind}: ipv6hint includes link-local IPv6 (fe80::/10).`);
+            push(
+              issues,
+              `${kind}: ipv6hint includes link-local IPv6 (fe80::/10).`,
+            );
           else if (ipv6InPrefix(c, "2001:db8::", 32))
-            push(issues, `${kind}: ipv6hint includes documentation IPv6 (2001:db8::/32).`);
+            push(
+              issues,
+              `${kind}: ipv6hint includes documentation IPv6 (2001:db8::/32).`,
+            );
         }
       }
     }
@@ -394,16 +453,23 @@ export function SvcbBuilder({
     if (ech) {
       const b64 = ech.value.trim();
       if (!b64) push(issues, `${kind}: ech value is empty.`);
-      else if (!isBase64Like(b64)) push(issues, `${kind}: ech does not look like base64.`);
-      else if (b64.length % 4 !== 0) push(issues, `${kind}: ech base64 length is unusual.`);
+      else if (!isBase64Like(b64))
+        push(issues, `${kind}: ech does not look like base64.`);
+      else if (b64.length % 4 !== 0)
+        push(issues, `${kind}: ech base64 length is unusual.`);
     }
 
-    const dohpath = params.find((x) => x.key === "dohpath" && x.mode === "keyValue");
+    const dohpath = params.find(
+      (x) => x.key === "dohpath" && x.mode === "keyValue",
+    );
     if (dohpath) {
       const v = dohpath.value.trim();
       if (!v) push(issues, `${kind}: dohpath is empty.`);
       if (v && !v.startsWith("/"))
-        push(issues, `${kind}: dohpath usually starts with "/" (e.g., "/dns-query{?dns}").`);
+        push(
+          issues,
+          `${kind}: dohpath usually starts with "/" (e.g., "/dns-query{?dns}").`,
+        );
       if (v && /\s/.test(v)) push(issues, `${kind}: dohpath contains spaces.`);
     }
 
@@ -412,7 +478,10 @@ export function SvcbBuilder({
       const key = (param.key ?? "").trim();
       if (!key) push(issues, `${kind}: parameter key is empty.`);
       if (key && !/^[a-z0-9-]+$/.test(key))
-        push(issues, `${kind}: parameter key "${key}" contains unusual characters.`);
+        push(
+          issues,
+          `${kind}: parameter key "${key}" contains unusual characters.`,
+        );
       if (param.mode === "keyValue") {
         const v = (param.value ?? "").trim();
         if (key && v === "" && key !== "mandatory")
@@ -423,14 +492,28 @@ export function SvcbBuilder({
     const canonical = composeSvcb(priority, target, params);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical)
-      push(issues, `${kind}: content differs from builder settings (Apply canonical to normalize).`);
+      push(
+        issues,
+        `${kind}: content differs from builder settings (Apply canonical to normalize).`,
+      );
 
     const name = (record.name ?? "").trim();
     if (!name)
-      push(nameIssues, `${kind}: name is typically @ (apex) or a service label.`);
+      push(
+        nameIssues,
+        `${kind}: name is typically @ (apex) or a service label.`,
+      );
 
     return { canonical, issues, nameIssues };
-  }, [kind, params, priority, record.content, record.name, record.type, target]);
+  }, [
+    kind,
+    params,
+    priority,
+    record.content,
+    record.name,
+    record.type,
+    target,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -462,7 +545,7 @@ export function SvcbBuilder({
       Object.prototype.hasOwnProperty.call(next, k);
     const pr = has("priority") ? next.priority : priority;
     const tg = has("target") ? next.target : target;
-    const ps = has("params") ? next.params ?? [] : params;
+    const ps = has("params") ? (next.params ?? []) : params;
     onRecordChange({
       ...record,
       content: composeSvcb(pr, tg, ps),
@@ -470,10 +553,7 @@ export function SvcbBuilder({
   };
 
   const addParam = (key: string, mode: SvcParam["mode"]) => {
-    const next: SvcParam[] = [
-      ...params,
-      { id: newId(), key, value: "", mode },
-    ];
+    const next: SvcParam[] = [...params, { id: newId(), key, value: "", mode }];
     setParams(next);
     apply({ params: next });
   };
@@ -559,8 +639,9 @@ export function SvcbBuilder({
 
           {params.length === 0 && (
             <div className="mt-2 text-[11px] text-muted-foreground">
-              No parameters. Add common params like <code>alpn</code>, <code>port</code>,{" "}
-              <code>ipv4hint</code>, <code>ipv6hint</code>, <code>ech</code>.
+              No parameters. Add common params like <code>alpn</code>,{" "}
+              <code>port</code>, <code>ipv4hint</code>, <code>ipv6hint</code>,{" "}
+              <code>ech</code>.
             </div>
           )}
 
@@ -678,7 +759,9 @@ export function SvcbBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -702,15 +785,18 @@ export function SvcbBuilder({
               Use <code>alpn=h2,h3</code> to advertise HTTP/2 and HTTP/3.
             </li>
             <li>
-              Use <code>port=443</code> if the service is not on the default port.
+              Use <code>port=443</code> if the service is not on the default
+              port.
             </li>
             <li>
-              Use <code>ipv4hint</code>/<code>ipv6hint</code> to speed up connection setup.
+              Use <code>ipv4hint</code>/<code>ipv6hint</code> to speed up
+              connection setup.
             </li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">{kind} warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -729,4 +815,3 @@ export function SvcbBuilder({
     </div>
   );
 }
-

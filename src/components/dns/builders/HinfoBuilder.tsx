@@ -19,19 +19,28 @@ const HINFO_CPU_PRESETS: Array<{ value: string; label: string; desc: string }> =
     { value: "x86_64", label: "x86_64", desc: "64-bit x86 (AMD64/Intel 64)." },
     { value: "arm64", label: "arm64", desc: "64-bit ARM (AArch64)." },
     { value: "i686", label: "i686", desc: "32-bit x86 (common legacy Linux)." },
-    { value: "ppc64le", label: "ppc64le", desc: "PowerPC 64-bit little-endian." },
+    {
+      value: "ppc64le",
+      label: "ppc64le",
+      desc: "PowerPC 64-bit little-endian.",
+    },
     { value: "riscv64", label: "riscv64", desc: "64-bit RISC-V." },
   ];
 
-const HINFO_OS_PRESETS: Array<{ value: string; label: string; desc: string }> = [
-  { value: "Linux", label: "Linux", desc: "GNU/Linux." },
-  { value: "Windows", label: "Windows", desc: "Microsoft Windows." },
-  { value: "macOS", label: "macOS", desc: "Apple macOS." },
-  { value: "FreeBSD", label: "FreeBSD", desc: "FreeBSD." },
-  { value: "OpenBSD", label: "OpenBSD", desc: "OpenBSD." },
-  { value: "NetBSD", label: "NetBSD", desc: "NetBSD." },
-  { value: "Solaris", label: "Solaris", desc: "Oracle Solaris / illumos family." },
-];
+const HINFO_OS_PRESETS: Array<{ value: string; label: string; desc: string }> =
+  [
+    { value: "Linux", label: "Linux", desc: "GNU/Linux." },
+    { value: "Windows", label: "Windows", desc: "Microsoft Windows." },
+    { value: "macOS", label: "macOS", desc: "Apple macOS." },
+    { value: "FreeBSD", label: "FreeBSD", desc: "FreeBSD." },
+    { value: "OpenBSD", label: "OpenBSD", desc: "OpenBSD." },
+    { value: "NetBSD", label: "NetBSD", desc: "NetBSD." },
+    {
+      value: "Solaris",
+      label: "Solaris",
+      desc: "Oracle Solaris / illumos family.",
+    },
+  ];
 
 function parseHinfoContent(value?: string) {
   const raw = (value ?? "").trim();
@@ -69,7 +78,8 @@ function parseHinfoContent(value?: string) {
 function quoteIfNeeded(value: string) {
   const v = value ?? "";
   if (!v) return '""';
-  if (/\s/.test(v) || /"/.test(v)) return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  if (/\s/.test(v) || /"/.test(v))
+    return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   return v;
 }
 
@@ -91,8 +101,9 @@ export function HinfoBuilder({
     return HINFO_CPU_PRESETS.some(
       (p) => p.value.toLowerCase() === v.toLowerCase(),
     )
-      ? HINFO_CPU_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
-          ?.value ?? "custom"
+      ? (HINFO_CPU_PRESETS.find(
+          (p) => p.value.toLowerCase() === v.toLowerCase(),
+        )?.value ?? "custom")
       : "custom";
   }, [cpu]);
 
@@ -102,8 +113,8 @@ export function HinfoBuilder({
     return HINFO_OS_PRESETS.some(
       (p) => p.value.toLowerCase() === v.toLowerCase(),
     )
-      ? HINFO_OS_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
-          ?.value ?? "custom"
+      ? (HINFO_OS_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
+          ?.value ?? "custom")
       : "custom";
   }, [os]);
 
@@ -135,7 +146,11 @@ export function HinfoBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "HINFO") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -163,16 +178,26 @@ export function HinfoBuilder({
 
     // DNS <character-string> is up to 255 octets; warn if clearly beyond.
     if (cpuTrim && cpuTrim.length > 255)
-      push(issues, "HINFO: CPU is longer than 255 characters (may exceed DNS character-string limit).");
+      push(
+        issues,
+        "HINFO: CPU is longer than 255 characters (may exceed DNS character-string limit).",
+      );
     if (osTrim && osTrim.length > 255)
-      push(issues, "HINFO: OS is longer than 255 characters (may exceed DNS character-string limit).");
+      push(
+        issues,
+        "HINFO: OS is longer than 255 characters (may exceed DNS character-string limit).",
+      );
 
-    if (parsed.extra) push(issues, "HINFO: extra trailing tokens found in content.");
+    if (parsed.extra)
+      push(issues, "HINFO: extra trailing tokens found in content.");
 
     const canonical = `${quoteIfNeeded(cpuTrim)} ${quoteIfNeeded(osTrim)}`;
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "HINFO: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "HINFO: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -257,7 +282,8 @@ export function HinfoBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              {cpuDescriptor ?? "A short description of the host CPU (character-string)."}
+              {cpuDescriptor ??
+                "A short description of the host CPU (character-string)."}
             </div>
           </div>
 
@@ -343,11 +369,14 @@ export function HinfoBuilder({
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>Keep values short; HINFO is rarely used today.</li>
             <li>Use quotes if values contain spaces.</li>
-            <li>Consider privacy implications of publishing detailed host info.</li>
+            <li>
+              Consider privacy implications of publishing detailed host info.
+            </li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">HINFO warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">

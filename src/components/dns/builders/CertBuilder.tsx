@@ -37,10 +37,7 @@ const CERT_ALG_PRESETS = [
 ] as const;
 
 function parseCertContent(value?: string) {
-  const raw = (value ?? "")
-    .replace(/[()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
     return {
       certType: undefined as number | undefined,
@@ -124,13 +121,17 @@ export function CertBuilder({
     setCert(parsed.cert ?? "");
     setCertTypeMode(
       parsed.certType !== undefined &&
-        CERT_TYPE_PRESETS.some((p) => Number(p.value) === Number(parsed.certType))
+        CERT_TYPE_PRESETS.some(
+          (p) => Number(p.value) === Number(parsed.certType),
+        )
         ? "preset"
         : "custom",
     );
     setAlgMode(
       parsed.algorithm !== undefined &&
-        CERT_ALG_PRESETS.some((p) => Number(p.value) === Number(parsed.algorithm))
+        CERT_ALG_PRESETS.some(
+          (p) => Number(p.value) === Number(parsed.algorithm),
+        )
         ? "preset"
         : "custom",
     );
@@ -139,7 +140,11 @@ export function CertBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "CERT") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -164,28 +169,51 @@ export function CertBuilder({
     const certNoWs = certTrim.replace(/\s+/g, "");
     if (!certTrim) push(issues, "CERT: certificate data is required (base64).");
     if (certTrim && /\s/.test(certTrim))
-      push(issues, "CERT: certificate data contains whitespace (usually base64 without spaces).");
+      push(
+        issues,
+        "CERT: certificate data contains whitespace (usually base64 without spaces).",
+      );
     if (certNoWs) {
       if (!isBase64Like(certNoWs))
         push(issues, "CERT: certificate data does not look like base64.");
       if (isBase64Like(certNoWs) && certNoWs.length % 4 !== 0)
-        push(issues, "CERT: base64 length is not a multiple of 4 (may still work, but is unusual).");
+        push(
+          issues,
+          "CERT: base64 length is not a multiple of 4 (may still work, but is unusual).",
+        );
       if (certNoWs.length > 20000)
-        push(issues, "CERT: certificate data is very large for a single DNS record.");
+        push(
+          issues,
+          "CERT: certificate data is very large for a single DNS record.",
+        );
     }
 
     const canonical = composeCert(certType, keyTag, algorithm, certNoWs);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "CERT: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "CERT: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
     if (!name)
-      push(nameIssues, "CERT: name is typically a host label (e.g., host or @).");
+      push(
+        nameIssues,
+        "CERT: name is typically a host label (e.g., host or @).",
+      );
 
     return { canonical, issues, nameIssues };
-  }, [algorithm, cert, certType, keyTag, record.content, record.name, record.type]);
+  }, [
+    algorithm,
+    cert,
+    certType,
+    keyTag,
+    record.content,
+    record.name,
+    record.type,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -270,8 +298,8 @@ export function CertBuilder({
               />
             )}
             <div className="text-[11px] text-muted-foreground">
-              {CERT_TYPE_PRESETS.find((p) => Number(p.value) === certType)?.desc ??
-                "Certificate type as per RFC 4398."}
+              {CERT_TYPE_PRESETS.find((p) => Number(p.value) === certType)
+                ?.desc ?? "Certificate type as per RFC 4398."}
             </div>
           </div>
 
@@ -389,7 +417,9 @@ export function CertBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -409,13 +439,16 @@ export function CertBuilder({
             Recommendations
           </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
-            <li>CERT is uncommon; consider modern alternatives where possible.</li>
+            <li>
+              CERT is uncommon; consider modern alternatives where possible.
+            </li>
             <li>Keep base64 compact; large RDATA may hit provider limits.</li>
             <li>Ensure the algorithm/type match what your client expects.</li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">CERT warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -434,4 +467,3 @@ export function CertBuilder({
     </div>
   );
 }
-

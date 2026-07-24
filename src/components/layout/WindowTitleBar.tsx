@@ -261,7 +261,12 @@ export function WindowTitleBar() {
             }}
           />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="w-56">
+        <DropdownMenuContent
+          align="start"
+          side="bottom"
+          sideOffset={6}
+          className="w-56"
+        >
           <DropdownMenuItem
             onSelect={() => {
               setWindowMenuOpen(false);
@@ -359,7 +364,9 @@ export function WindowTitleBar() {
             variant="outline"
             size="sm"
             className={`h-7 w-9 px-0 text-[10px] ${
-              isTopmost ? "bg-muted/60 text-foreground" : "text-muted-foreground/80"
+              isTopmost
+                ? "bg-muted/60 text-foreground"
+                : "text-muted-foreground/80"
             }`}
             onClick={() => void handleToggleTopmost()}
             aria-label={
@@ -411,7 +418,9 @@ export function WindowTitleBar() {
       <Dialog open={confirmCloseOpen} onOpenChange={setConfirmCloseOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("Close Better Cloudflare?", "Close Better Cloudflare?")}</DialogTitle>
+            <DialogTitle>
+              {t("Close Better Cloudflare?", "Close Better Cloudflare?")}
+            </DialogTitle>
             <DialogDescription>
               {t(
                 "Unsaved edits may be lost. Are you sure you want to close the window?",
@@ -455,7 +464,9 @@ export function WindowTitleBar() {
       <Dialog open={confirmRestartOpen} onOpenChange={setConfirmRestartOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("Restart Application?", "Restart Application?")}</DialogTitle>
+            <DialogTitle>
+              {t("Restart Application?", "Restart Application?")}
+            </DialogTitle>
             <DialogDescription>
               {t(
                 "The application will close and attempt to restart. Any unsaved changes may be lost.",

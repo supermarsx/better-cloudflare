@@ -51,7 +51,11 @@ export function AnameBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "ANAME" && record.type !== "ALIAS") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -70,7 +74,10 @@ export function AnameBuilder({
       const tld = norm.split(".").pop() ?? "";
       if (tld && norm.includes(".") && /^[a-z0-9-]{2,63}$/.test(tld)) {
         if (!KNOWN_TLDS.has(tld))
-          push(issues, `${record.type}: target has unknown/invalid TLD “.${tld}”.`);
+          push(
+            issues,
+            `${record.type}: target has unknown/invalid TLD “.${tld}”.`,
+          );
       }
     }
 
@@ -125,7 +132,9 @@ export function AnameBuilder({
     <div className="space-y-2">
       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-muted-foreground">{title}</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            {title}
+          </div>
           <div className="text-[11px] text-muted-foreground">
             Format: <code>target</code>
           </div>
@@ -146,7 +155,8 @@ export function AnameBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              Hostname target (no scheme/path). Typically used for apex aliasing.
+              Hostname target (no scheme/path). Typically used for apex
+              aliasing.
             </div>
           </div>
         </div>
@@ -161,7 +171,9 @@ export function AnameBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -176,7 +188,8 @@ export function AnameBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">{record.type} warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -195,4 +208,3 @@ export function AnameBuilder({
     </div>
   );
 }
-

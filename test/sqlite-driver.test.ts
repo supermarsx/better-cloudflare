@@ -48,8 +48,9 @@ test("SqliteCredentialStore can add/get/delete credentials", async () => {
     /* ignore cleanup errors */
   }
   process.env.CREDENTIAL_STORE = "sqlite";
-  const createCredentialStore = (await import("../src/lib/credential-store.ts"))
-    .default as unknown as () => unknown;
+  const createCredentialStore = (
+    await import("../src/lib/auth/credential-store.ts")
+  ).default as unknown as () => unknown;
   const store = createCredentialStore() as unknown as {
     initPromise?: Promise<unknown>;
     addCredential: (id: string, cred: unknown) => Promise<void>;

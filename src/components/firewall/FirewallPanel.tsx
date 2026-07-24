@@ -22,7 +22,12 @@ interface FirewallRule {
   action: string;
   priority?: number;
   description?: string;
-  filter: { id: string; expression: string; paused?: boolean; description?: string };
+  filter: {
+    id: string;
+    expression: string;
+    paused?: boolean;
+    description?: string;
+  };
 }
 
 interface IpAccessRule {
@@ -44,20 +49,38 @@ type FirewallSubtab = "rules" | "ip-access" | "waf";
 
 interface FirewallPanelProps {
   zoneId: string;
-  getFirewallRules: (zoneId: string, signal?: AbortSignal) => Promise<unknown[]>;
+  getFirewallRules: (
+    zoneId: string,
+    signal?: AbortSignal,
+  ) => Promise<unknown[]>;
   createFirewallRule: (
     zoneId: string,
-    rule: { action: string; description?: string; filter: { expression: string } },
+    rule: {
+      action: string;
+      description?: string;
+      filter: { expression: string };
+    },
     signal?: AbortSignal,
   ) => Promise<unknown>;
   updateFirewallRule?: (
     zoneId: string,
     ruleId: string,
-    rule: { action: string; description?: string; filter: { expression: string } },
+    rule: {
+      action: string;
+      description?: string;
+      filter: { expression: string };
+    },
     signal?: AbortSignal,
   ) => Promise<unknown>;
-  deleteFirewallRule: (zoneId: string, ruleId: string, signal?: AbortSignal) => Promise<void>;
-  getIpAccessRules: (zoneId: string, signal?: AbortSignal) => Promise<unknown[]>;
+  deleteFirewallRule: (
+    zoneId: string,
+    ruleId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  getIpAccessRules: (
+    zoneId: string,
+    signal?: AbortSignal,
+  ) => Promise<unknown[]>;
   createIpAccessRule: (
     zoneId: string,
     mode: string,
@@ -65,7 +88,11 @@ interface FirewallPanelProps {
     notes?: string,
     signal?: AbortSignal,
   ) => Promise<unknown>;
-  deleteIpAccessRule: (zoneId: string, ruleId: string, signal?: AbortSignal) => Promise<void>;
+  deleteIpAccessRule: (
+    zoneId: string,
+    ruleId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   getWafRulesets: (zoneId: string, signal?: AbortSignal) => Promise<unknown[]>;
 }
 
@@ -139,7 +166,14 @@ function FirewallPanelInner({
         }
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : t("Failed to load firewall data", "Failed to load firewall data"));
+          setError(
+            err instanceof Error
+              ? err.message
+              : t(
+                  "Failed to load firewall data",
+                  "Failed to load firewall data",
+                ),
+          );
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -166,7 +200,11 @@ function FirewallPanelInner({
       setNewDescription("");
       fetchRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to create rule", "Failed to create rule"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to create rule", "Failed to create rule"),
+      );
     }
   };
 
@@ -175,7 +213,11 @@ function FirewallPanelInner({
       await deleteFirewallRule(zoneId, ruleId);
       setRules((prev) => prev.filter((r) => r.id !== ruleId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to delete rule", "Failed to delete rule"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to delete rule", "Failed to delete rule"),
+      );
     }
   };
 
@@ -197,19 +239,32 @@ function FirewallPanelInner({
       setEditingRuleId(null);
       fetchRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to update rule", "Failed to update rule"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to update rule", "Failed to update rule"),
+      );
     }
   };
 
   const handleCreateIpRule = async () => {
     if (!newIp.trim()) return;
     try {
-      await createIpAccessRule(zoneId, newIpMode, newIp, newIpNotes || undefined);
+      await createIpAccessRule(
+        zoneId,
+        newIpMode,
+        newIp,
+        newIpNotes || undefined,
+      );
       setNewIp("");
       setNewIpNotes("");
       fetchRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to create IP rule", "Failed to create IP rule"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to create IP rule", "Failed to create IP rule"),
+      );
     }
   };
 
@@ -218,15 +273,26 @@ function FirewallPanelInner({
       await deleteIpAccessRule(zoneId, ruleId);
       setIpRules((prev) => prev.filter((r) => r.id !== ruleId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to delete IP rule", "Failed to delete IP rule"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to delete IP rule", "Failed to delete IP rule"),
+      );
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">{t("Firewall & WAF", "Firewall & WAF")}</h3>
-        <Button size="sm" variant="outline" onClick={() => fetchRules()} disabled={loading}>
+        <h3 className="text-lg font-semibold">
+          {t("Firewall & WAF", "Firewall & WAF")}
+        </h3>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => fetchRules()}
+          disabled={loading}
+        >
           {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
         </Button>
       </div>
@@ -237,9 +303,27 @@ function FirewallPanelInner({
       <div className="flex gap-1 rounded-lg border p-0.5">
         {(
           [
-            { id: "rules", label: t("Rules ({{count}})", { count: rules.length, defaultValue: "Rules ({{count}})" }) },
-            { id: "ip-access", label: t("IP Access ({{count}})", { count: ipRules.length, defaultValue: "IP Access ({{count}})" }) },
-            { id: "waf", label: t("WAF ({{count}})", { count: wafRulesets.length, defaultValue: "WAF ({{count}})" }) },
+            {
+              id: "rules",
+              label: t("Rules ({{count}})", {
+                count: rules.length,
+                defaultValue: "Rules ({{count}})",
+              }),
+            },
+            {
+              id: "ip-access",
+              label: t("IP Access ({{count}})", {
+                count: ipRules.length,
+                defaultValue: "IP Access ({{count}})",
+              }),
+            },
+            {
+              id: "waf",
+              label: t("WAF ({{count}})", {
+                count: wafRulesets.length,
+                defaultValue: "WAF ({{count}})",
+              }),
+            },
           ] as { id: FirewallSubtab; label: string }[]
         ).map((tab) => (
           <button
@@ -262,15 +346,19 @@ function FirewallPanelInner({
         <div className="space-y-3">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">{t("Add Firewall Rule", "Add Firewall Rule")}</CardTitle>
+              <CardTitle className="text-sm">
+                {t("Add Firewall Rule", "Add Firewall Rule")}
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div>
-                <Label className="text-xs">{t("Filter Expression", "Filter Expression")}</Label>
+                <Label className="text-xs">
+                  {t("Filter Expression", "Filter Expression")}
+                </Label>
                 <Input
                   value={newExpression}
                   onChange={(e) => setNewExpression(e.target.value)}
-                  placeholder='(ip.src eq 1.2.3.4) or (ip.src in {10.0.0.0/8})'
+                  placeholder="(ip.src eq 1.2.3.4) or (ip.src in {10.0.0.0/8})"
                   className="font-mono text-xs"
                 />
               </div>
@@ -284,23 +372,32 @@ function FirewallPanelInner({
                     <SelectContent>
                       {FIREWALL_ACTIONS.map((a) => (
                         <SelectItem key={a.value} value={a.value}>
-                        {t(a.label, a.label)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                          {t(a.label, a.label)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex-1">
-                  <Label className="text-xs">{t("Description", "Description")}</Label>
+                  <Label className="text-xs">
+                    {t("Description", "Description")}
+                  </Label>
                   <Input
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder={t("Optional description", "Optional description")}
+                    placeholder={t(
+                      "Optional description",
+                      "Optional description",
+                    )}
                     className="h-8 text-xs"
                   />
                 </div>
               </div>
-              <Button size="sm" onClick={handleCreateRule} disabled={!newExpression.trim()}>
+              <Button
+                size="sm"
+                onClick={handleCreateRule}
+                disabled={!newExpression.trim()}
+              >
                 {t("Create Rule", "Create Rule")}
               </Button>
             </CardContent>
@@ -309,10 +406,7 @@ function FirewallPanelInner({
           {rules.length > 0 && (
             <div className="space-y-1">
               {rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className="rounded-md border px-3 py-2"
-                >
+                <div key={rule.id} className="rounded-md border px-3 py-2">
                   {editingRuleId === rule.id ? (
                     <div className="space-y-2">
                       <Input
@@ -321,7 +415,10 @@ function FirewallPanelInner({
                         className="font-mono text-xs"
                       />
                       <div className="flex gap-2">
-                        <Select value={editAction} onValueChange={setEditAction}>
+                        <Select
+                          value={editAction}
+                          onValueChange={setEditAction}
+                        >
                           <SelectTrigger className="h-8 w-40 text-xs">
                             <SelectValue />
                           </SelectTrigger>
@@ -341,10 +438,18 @@ function FirewallPanelInner({
                         />
                       </div>
                       <div className="flex gap-1">
-                        <Button size="sm" onClick={handleSaveEdit} disabled={!editExpression.trim()}>
+                        <Button
+                          size="sm"
+                          onClick={handleSaveEdit}
+                          disabled={!editExpression.trim()}
+                        >
                           {t("Save", "Save")}
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditingRuleId(null)}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setEditingRuleId(null)}
+                        >
                           {t("Cancel", "Cancel")}
                         </Button>
                       </div>
@@ -365,10 +470,14 @@ function FirewallPanelInner({
                             {rule.action}
                           </span>
                           {rule.description && (
-                            <span className="text-xs text-muted-foreground">{rule.description}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {rule.description}
+                            </span>
                           )}
                           {rule.paused && (
-                            <span className="text-[10px] text-muted-foreground italic">{t("paused", "paused")}</span>
+                            <span className="text-[10px] text-muted-foreground italic">
+                              {t("paused", "paused")}
+                            </span>
                           )}
                         </div>
                         <p className="truncate font-mono text-[11px] text-muted-foreground">
@@ -408,12 +517,16 @@ function FirewallPanelInner({
         <div className="space-y-3">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">{t("Add IP Access Rule", "Add IP Access Rule")}</CardTitle>
+              <CardTitle className="text-sm">
+                {t("Add IP Access Rule", "Add IP Access Rule")}
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <Label className="text-xs">{t("IP Address / Range", "IP Address / Range")}</Label>
+                  <Label className="text-xs">
+                    {t("IP Address / Range", "IP Address / Range")}
+                  </Label>
                   <Input
                     value={newIp}
                     onChange={(e) => setNewIp(e.target.value)}
@@ -446,7 +559,11 @@ function FirewallPanelInner({
                   className="h-8 text-xs"
                 />
               </div>
-              <Button size="sm" onClick={handleCreateIpRule} disabled={!newIp.trim()}>
+              <Button
+                size="sm"
+                onClick={handleCreateIpRule}
+                disabled={!newIp.trim()}
+              >
                 {t("Add Rule", "Add Rule")}
               </Button>
             </CardContent>
@@ -461,13 +578,17 @@ function FirewallPanelInner({
                 >
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs">{rule.configuration.value}</span>
+                      <span className="font-mono text-xs">
+                        {rule.configuration.value}
+                      </span>
                       <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase">
                         {rule.mode}
                       </span>
                     </div>
                     {rule.notes && (
-                      <p className="text-[11px] text-muted-foreground">{rule.notes}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {rule.notes}
+                      </p>
                     )}
                   </div>
                   <Button
@@ -484,7 +605,9 @@ function FirewallPanelInner({
           )}
 
           {ipRules.length === 0 && !loading && (
-            <p className="py-6 text-center text-sm text-muted-foreground">{t("No IP access rules", "No IP access rules")}</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              {t("No IP access rules", "No IP access rules")}
+            </p>
           )}
         </div>
       )}
@@ -500,22 +623,30 @@ function FirewallPanelInner({
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
                     {rs.kind}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">{rs.phase}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {rs.phase}
+                  </span>
                 </div>
                 {rs.description && (
-                  <p className="mt-0.5 text-xs text-muted-foreground">{rs.description}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {rs.description}
+                  </p>
                 )}
               </div>
             ))
           ) : (
-            <p className="py-6 text-center text-sm text-muted-foreground">{t("No WAF rulesets", "No WAF rulesets")}</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              {t("No WAF rulesets", "No WAF rulesets")}
+            </p>
           )}
         </div>
       )}
 
       {loading && !rules.length && !ipRules.length && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">{t("Loading firewall data…", "Loading firewall data…")}</p>
+          <p className="text-sm text-muted-foreground">
+            {t("Loading firewall data…", "Loading firewall data…")}
+          </p>
         </div>
       )}
     </div>

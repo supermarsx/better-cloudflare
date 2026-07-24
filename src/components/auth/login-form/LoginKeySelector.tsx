@@ -41,11 +41,17 @@ export function LoginKeySelector({
       <div className="space-y-2">
         <Label
           htmlFor="api-key"
-          className={hasKeys ? "text-foreground/80" : "text-muted-foreground/60"}
+          className={
+            hasKeys ? "text-foreground/80" : "text-muted-foreground/60"
+          }
         >
-          {t("API Key")}
+          {t("API Key", "API Key")}
         </Label>
-        <Select value={selectedKeyId} onValueChange={onSelectKey} disabled={!hasKeys}>
+        <Select
+          value={selectedKeyId}
+          onValueChange={onSelectKey}
+          disabled={!hasKeys}
+        >
           <SelectTrigger className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/70 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
             <SelectValue placeholder={t("Select an API key")} />
           </SelectTrigger>
@@ -68,9 +74,11 @@ export function LoginKeySelector({
       <div className="space-y-2">
         <Label
           htmlFor="password"
-          className={hasKeys ? "text-foreground/80" : "text-muted-foreground/60"}
+          className={
+            hasKeys ? "text-foreground/80" : "text-muted-foreground/60"
+          }
         >
-          {t("Password")}
+          {t("Password", "Password")}
         </Label>
         <div className="relative">
           <Input
@@ -78,7 +86,11 @@ export function LoginKeySelector({
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
-            placeholder={hasKeys ? t("Enter your password") : t("Add an API key first")}
+            placeholder={
+              hasKeys
+                ? t("Enter your password", "Enter your password")
+                : t("Add an API key first", "Add an API key first")
+            }
             onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
             disabled={!hasKeys}
             className="bg-card/70 border-border text-foreground h-11 pr-10 placeholder:text-muted-foreground/70 transition-colors hover:border-primary/30 focus:border-primary/50 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -87,10 +99,18 @@ export function LoginKeySelector({
             type="button"
             onClick={() => setShowPassword((prev) => !prev)}
             className="ui-icon-button absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground/80 hover:text-foreground"
-            aria-label={showPassword ? t("Hide password") : t("Show password")}
+            aria-label={
+              showPassword
+                ? t("Hide password", "Hide password")
+                : t("Show password", "Show password")
+            }
             disabled={!hasKeys}
           >
-            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {showPassword ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4" />
+            )}
           </button>
         </div>
       </div>
@@ -100,7 +120,7 @@ export function LoginKeySelector({
         className="w-full h-12 text-lg font-semibold"
         disabled={isLoading || !selectedKeyId || !password}
       >
-        {isLoading ? t("Logging in...") : t("Login")}
+        {isLoading ? t("Logging in...", "Logging in...") : t("Login", "Login")}
       </Button>
     </>
   );

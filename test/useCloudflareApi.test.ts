@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import React from "react";
-import { act, create } from "react-test-renderer";
+import { act, create } from "./testRenderer";
 
 import { useCloudflareAPI } from "../src/hooks/dns/use-cloudflare-api.ts";
 

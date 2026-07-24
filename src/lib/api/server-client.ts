@@ -626,7 +626,13 @@ export class ServerClient {
   ): Promise<string> {
     if (isDesktop()) {
       return TauriClient.addRegistrarCredential(
-        provider, label, apiKey, apiSecret, username, email, extra,
+        provider,
+        label,
+        apiKey,
+        apiSecret,
+        username,
+        email,
+        extra,
       );
     }
     return this.request("/registrar/credentials", {
@@ -646,21 +652,30 @@ export class ServerClient {
     if (isDesktop()) {
       return TauriClient.deleteRegistrarCredential(credentialId);
     }
-    await this.request(`/registrar/credentials/${credentialId}`, { method: "DELETE" });
+    await this.request(`/registrar/credentials/${credentialId}`, {
+      method: "DELETE",
+    });
   }
 
   async verifyRegistrarCredential(credentialId: string): Promise<boolean> {
     if (isDesktop()) {
       return TauriClient.verifyRegistrarCredential(credentialId);
     }
-    return this.request(`/registrar/credentials/${credentialId}/verify`, { method: "POST" });
+    return this.request(`/registrar/credentials/${credentialId}/verify`, {
+      method: "POST",
+    });
   }
 
-  async registrarListDomains(credentialId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async registrarListDomains(
+    credentialId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.registrarListDomains(credentialId);
     }
-    return this.request(`/registrar/credentials/${credentialId}/domains`, { signal });
+    return this.request(`/registrar/credentials/${credentialId}/domains`, {
+      signal,
+    });
   }
 
   async registrarGetDomain(
@@ -729,13 +744,19 @@ export class ServerClient {
   }
 
   /** Store an API key protected by biometrics in the OS keychain. */
-  static async biometricStoreSecret(key: string, secret: string): Promise<void> {
+  static async biometricStoreSecret(
+    key: string,
+    secret: string,
+  ): Promise<void> {
     if (!isDesktop()) throw new Error("Biometrics only available on desktop");
     return TauriClient.biometricStoreSecret(key, secret);
   }
 
   /** Retrieve a biometric-protected API key (triggers Touch ID). */
-  static async biometricGetSecret(key: string, reason: string): Promise<string> {
+  static async biometricGetSecret(
+    key: string,
+    reason: string,
+  ): Promise<string> {
     if (!isDesktop()) throw new Error("Biometrics only available on desktop");
     return TauriClient.biometricGetSecret(key, reason);
   }
@@ -763,13 +784,22 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.getZoneAnalytics(this.apiKey, zoneId, since, until, this.email);
+      return TauriClient.getZoneAnalytics(
+        this.apiKey,
+        zoneId,
+        since,
+        until,
+        this.email,
+      );
     }
     const params = new URLSearchParams();
     if (since) params.set("since", since);
     if (until) params.set("until", until);
     const qs = params.toString();
-    return this.request(`/zones/${zoneId}/analytics/dashboard${qs ? `?${qs}` : ""}`, { signal });
+    return this.request(
+      `/zones/${zoneId}/analytics/dashboard${qs ? `?${qs}` : ""}`,
+      { signal },
+    );
   }
 
   async getDnsAnalytics(
@@ -779,18 +809,30 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.getDnsAnalytics(this.apiKey, zoneId, since, until, this.email);
+      return TauriClient.getDnsAnalytics(
+        this.apiKey,
+        zoneId,
+        since,
+        until,
+        this.email,
+      );
     }
     const params = new URLSearchParams();
     if (since) params.set("since", since);
     if (until) params.set("until", until);
     const qs = params.toString();
-    return this.request(`/zones/${zoneId}/dns_analytics/report${qs ? `?${qs}` : ""}`, { signal });
+    return this.request(
+      `/zones/${zoneId}/dns_analytics/report${qs ? `?${qs}` : ""}`,
+      { signal },
+    );
   }
 
   // ── Firewall / WAF ───────────────────────────────────────────────────────
 
-  async getFirewallRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async getFirewallRules(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.getFirewallRules(this.apiKey, zoneId, this.email);
     }
@@ -799,11 +841,20 @@ export class ServerClient {
 
   async createFirewallRule(
     zoneId: string,
-    rule: { action: string; description?: string; filter: { expression: string } },
+    rule: {
+      action: string;
+      description?: string;
+      filter: { expression: string };
+    },
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.createFirewallRule(this.apiKey, zoneId, rule, this.email);
+      return TauriClient.createFirewallRule(
+        this.apiKey,
+        zoneId,
+        rule,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/firewall/rules`, {
       method: "POST",
@@ -815,11 +866,21 @@ export class ServerClient {
   async updateFirewallRule(
     zoneId: string,
     ruleId: string,
-    rule: { action: string; description?: string; filter: { expression: string } },
+    rule: {
+      action: string;
+      description?: string;
+      filter: { expression: string };
+    },
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.updateFirewallRule(this.apiKey, zoneId, ruleId, rule, this.email);
+      return TauriClient.updateFirewallRule(
+        this.apiKey,
+        zoneId,
+        ruleId,
+        rule,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
       method: "PUT",
@@ -828,9 +889,18 @@ export class ServerClient {
     });
   }
 
-  async deleteFirewallRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+  async deleteFirewallRule(
+    zoneId: string,
+    ruleId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (isDesktop()) {
-      return TauriClient.deleteFirewallRule(this.apiKey, zoneId, ruleId, this.email);
+      return TauriClient.deleteFirewallRule(
+        this.apiKey,
+        zoneId,
+        ruleId,
+        this.email,
+      );
     }
     await this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
       method: "DELETE",
@@ -838,11 +908,16 @@ export class ServerClient {
     });
   }
 
-  async getIpAccessRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async getIpAccessRules(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.getIpAccessRules(this.apiKey, zoneId, this.email);
     }
-    return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, { signal });
+    return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, {
+      signal,
+    });
   }
 
   async createIpAccessRule(
@@ -853,7 +928,14 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.createIpAccessRule(this.apiKey, zoneId, mode, ip, notes, this.email);
+      return TauriClient.createIpAccessRule(
+        this.apiKey,
+        zoneId,
+        mode,
+        ip,
+        notes,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, {
       method: "POST",
@@ -862,17 +944,32 @@ export class ServerClient {
     });
   }
 
-  async deleteIpAccessRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+  async deleteIpAccessRule(
+    zoneId: string,
+    ruleId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (isDesktop()) {
-      return TauriClient.deleteIpAccessRule(this.apiKey, zoneId, ruleId, this.email);
+      return TauriClient.deleteIpAccessRule(
+        this.apiKey,
+        zoneId,
+        ruleId,
+        this.email,
+      );
     }
-    await this.request(`/zones/${zoneId}/firewall/access_rules/rules/${ruleId}`, {
-      method: "DELETE",
-      signal,
-    });
+    await this.request(
+      `/zones/${zoneId}/firewall/access_rules/rules/${ruleId}`,
+      {
+        method: "DELETE",
+        signal,
+      },
+    );
   }
 
-  async getWafRulesets(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async getWafRulesets(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.getWafRulesets(this.apiKey, zoneId, this.email);
     }
@@ -881,7 +978,10 @@ export class ServerClient {
 
   // ── Workers ───────────────────────────────────────────────────────────────
 
-  async getWorkerRoutes(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async getWorkerRoutes(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.getWorkerRoutes(this.apiKey, zoneId, this.email);
     }
@@ -895,7 +995,13 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.createWorkerRoute(this.apiKey, zoneId, pattern, script, this.email);
+      return TauriClient.createWorkerRoute(
+        this.apiKey,
+        zoneId,
+        pattern,
+        script,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/workers/routes`, {
       method: "POST",
@@ -904,9 +1010,18 @@ export class ServerClient {
     });
   }
 
-  async deleteWorkerRoute(zoneId: string, routeId: string, signal?: AbortSignal): Promise<void> {
+  async deleteWorkerRoute(
+    zoneId: string,
+    routeId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (isDesktop()) {
-      return TauriClient.deleteWorkerRoute(this.apiKey, zoneId, routeId, this.email);
+      return TauriClient.deleteWorkerRoute(
+        this.apiKey,
+        zoneId,
+        routeId,
+        this.email,
+      );
     }
     await this.request(`/zones/${zoneId}/workers/routes/${routeId}`, {
       method: "DELETE",
@@ -916,14 +1031,24 @@ export class ServerClient {
 
   // ── Email Routing ─────────────────────────────────────────────────────────
 
-  async getEmailRoutingSettings(zoneId: string, signal?: AbortSignal): Promise<unknown> {
+  async getEmailRoutingSettings(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.getEmailRoutingSettings(this.apiKey, zoneId, this.email);
+      return TauriClient.getEmailRoutingSettings(
+        this.apiKey,
+        zoneId,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/email/routing`, { signal });
   }
 
-  async getEmailRoutingRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
+  async getEmailRoutingRules(
+    zoneId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
     if (isDesktop()) {
       return TauriClient.getEmailRoutingRules(this.apiKey, zoneId, this.email);
     }
@@ -936,7 +1061,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.createEmailRoutingRule(this.apiKey, zoneId, rule, this.email);
+      return TauriClient.createEmailRoutingRule(
+        this.apiKey,
+        zoneId,
+        rule,
+        this.email,
+      );
     }
     return this.request(`/zones/${zoneId}/email/routing/rules`, {
       method: "POST",
@@ -945,9 +1075,18 @@ export class ServerClient {
     });
   }
 
-  async deleteEmailRoutingRule(zoneId: string, ruleId: string, signal?: AbortSignal): Promise<void> {
+  async deleteEmailRoutingRule(
+    zoneId: string,
+    ruleId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (isDesktop()) {
-      return TauriClient.deleteEmailRoutingRule(this.apiKey, zoneId, ruleId, this.email);
+      return TauriClient.deleteEmailRoutingRule(
+        this.apiKey,
+        zoneId,
+        ruleId,
+        this.email,
+      );
     }
     await this.request(`/zones/${zoneId}/email/routing/rules/${ruleId}`, {
       method: "DELETE",
@@ -972,7 +1111,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<void> {
     if (isDesktop()) {
-      return TauriClient.deleteBulkDnsRecords(this.apiKey, zoneId, recordIds, this.email);
+      return TauriClient.deleteBulkDnsRecords(
+        this.apiKey,
+        zoneId,
+        recordIds,
+        this.email,
+      );
     }
     // Web mode: delete one-by-one
     for (const id of recordIds) {
@@ -991,12 +1135,20 @@ export class ServerClient {
     extraResolvers?: string[],
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.checkDnsPropagation(domain, recordType, extraResolvers);
+      return TauriClient.checkDnsPropagation(
+        domain,
+        recordType,
+        extraResolvers,
+      );
     }
     // Web mode: hit our server API
     return this.request("/dns/propagation", {
       method: "POST",
-      body: { domain, record_type: recordType, extra_resolvers: extraResolvers },
+      body: {
+        domain,
+        record_type: recordType,
+        extra_resolvers: extraResolvers,
+      },
     });
   }
 }

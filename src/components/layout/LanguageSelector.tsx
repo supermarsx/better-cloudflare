@@ -57,8 +57,10 @@ export function LanguageSelector({ compact = false }: LanguageSelectorProps) {
         <Button
           variant="ghost"
           size="icon"
-          className={compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"}
-          aria-label={t("Select language")}
+          className={
+            compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"
+          }
+          aria-label={t("Select language", "Select language")}
         >
           <Globe className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
         </Button>

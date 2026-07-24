@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   build:
+    outputs:
+      pages_enabled: ${{ steps.check-pages.outputs.enabled }}
     runs-on: ubuntu-latest
     environment: github-pages
     steps:
@@ -30,6 +32,21 @@ jobs:
         run: |
           repo_name="${GITHUB_REPOSITORY#*/}"
           echo "GITHUB_PAGES_BASE_PATH=$repo_name" >> "$GITHUB_ENV"
+      - name: Check GitHub Pages site exists
+        id: check-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          status_code=$(curl -s -o /tmp/pages.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")
+          if [ "$status_code" -eq 200 ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub Pages site is available."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "GitHub Pages site is not configured for this repository. Skipping deployment."
+          fi
       - name: Build export
         run: npm run build
       - name: Setup Pages
@@ -43,6 +60,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: github-pages
+    if: needs.build.outputs.pages_enabled == 'true'
     steps:
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4

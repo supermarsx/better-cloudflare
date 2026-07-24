@@ -1,7 +1,8 @@
 // runtime access to Node DNS and net modules without static imports to avoid Vite externalization
 function getRuntimeRequire(): ((name: string) => any) | undefined {
   try {
-    if (typeof (globalThis as any).require === "function") return (globalThis as any).require;
+    if (typeof (globalThis as any).require === "function")
+      return (globalThis as any).require;
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const r = eval("typeof require === 'function' ? require : undefined");
     return typeof r === "function" ? r : undefined;
@@ -11,7 +12,8 @@ function getRuntimeRequire(): ((name: string) => any) | undefined {
 }
 
 function getDnsPromisesModule(): any | undefined {
-  if ((globalThis as any).__dnsPromises) return (globalThis as any).__dnsPromises;
+  if ((globalThis as any).__dnsPromises)
+    return (globalThis as any).__dnsPromises;
   const req = getRuntimeRequire();
   if (!req) return undefined;
   try {
@@ -45,7 +47,6 @@ function getNetIsIP(addr: string): number {
   if (addr.includes(":")) return 6;
   return 0;
 }
-
 
 export type SPFMechanism = {
   qualifier?: string; // + - ~ ?
@@ -122,30 +123,39 @@ const defaultDnsResolver: DNSResolver = {
   resolveTxt: (d: string) => {
     const p = getDnsPromisesModule();
     if (p && typeof p.resolveTxt === "function") return p.resolveTxt(d);
-    return Promise.reject(new Error("DNS resolver not available in this environment"));
+    return Promise.reject(
+      new Error("DNS resolver not available in this environment"),
+    );
   },
   resolve4: (d: string) => {
     const p = getDnsPromisesModule();
     if (p && typeof p.resolve4 === "function") return p.resolve4(d);
-    return Promise.reject(new Error("DNS resolver not available in this environment"));
+    return Promise.reject(
+      new Error("DNS resolver not available in this environment"),
+    );
   },
   resolve6: (d: string) => {
     const p = getDnsPromisesModule();
     if (p && typeof p.resolve6 === "function") return p.resolve6(d);
-    return Promise.reject(new Error("DNS resolver not available in this environment"));
+    return Promise.reject(
+      new Error("DNS resolver not available in this environment"),
+    );
   },
   resolveMx: (d: string) => {
     const p = getDnsPromisesModule();
     if (p && typeof p.resolveMx === "function") return p.resolveMx(d);
-    return Promise.reject(new Error("DNS resolver not available in this environment"));
+    return Promise.reject(
+      new Error("DNS resolver not available in this environment"),
+    );
   },
   reverse: (d: string) => {
     const p = getDnsPromisesModule();
     if (p && typeof p.reverse === "function") return p.reverse(d);
-    return Promise.reject(new Error("DNS resolver not available in this environment"));
+    return Promise.reject(
+      new Error("DNS resolver not available in this environment"),
+    );
   },
 };
-
 
 let dnsResolver: DNSResolver = defaultDnsResolver;
 export function setDnsResolverForTest(resolver: DNSResolver | undefined) {
@@ -492,7 +502,10 @@ export function ipMatchesCIDR(ip: string, cidr: string) {
         // convert dotted IPv4 at the end into two hextets
         const ipv4 = last;
         const octets = ipv4.split(".").map(Number);
-        if (octets.length === 4 && octets.every((o: number) => !Number.isNaN(o))) {
+        if (
+          octets.length === 4 &&
+          octets.every((o: number) => !Number.isNaN(o))
+        ) {
           const hex1 = ((octets[0] << 8) | octets[1])
             .toString(16)
             .padStart(4, "0");

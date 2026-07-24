@@ -25,7 +25,11 @@ interface WorkersPanelProps {
     script: string,
     signal?: AbortSignal,
   ) => Promise<unknown>;
-  deleteWorkerRoute: (zoneId: string, routeId: string, signal?: AbortSignal) => Promise<void>;
+  deleteWorkerRoute: (
+    zoneId: string,
+    routeId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
 }
 
 function WorkersPanelInner({
@@ -50,7 +54,14 @@ function WorkersPanelInner({
         if (!signal?.aborted) setRoutes(result);
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : t("Failed to load worker routes", "Failed to load worker routes"));
+          setError(
+            err instanceof Error
+              ? err.message
+              : t(
+                  "Failed to load worker routes",
+                  "Failed to load worker routes",
+                ),
+          );
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -73,7 +84,11 @@ function WorkersPanelInner({
       setNewScript("");
       fetchRoutes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to create route", "Failed to create route"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to create route", "Failed to create route"),
+      );
     }
   };
 
@@ -82,15 +97,26 @@ function WorkersPanelInner({
       await deleteWorkerRoute(zoneId, routeId);
       setRoutes((prev) => prev.filter((r) => r.id !== routeId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Failed to delete route", "Failed to delete route"));
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("Failed to delete route", "Failed to delete route"),
+      );
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">{t("Worker Routes", "Worker Routes")}</h3>
-        <Button size="sm" variant="outline" onClick={() => fetchRoutes()} disabled={loading}>
+        <h3 className="text-lg font-semibold">
+          {t("Worker Routes", "Worker Routes")}
+        </h3>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => fetchRoutes()}
+          disabled={loading}
+        >
           {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
         </Button>
       </div>
@@ -99,7 +125,9 @@ function WorkersPanelInner({
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">{t("New Route", "New Route")}</CardTitle>
+          <CardTitle className="text-sm">
+            {t("New Route", "New Route")}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="flex gap-2">
@@ -113,7 +141,9 @@ function WorkersPanelInner({
               />
             </div>
             <div className="flex-1">
-              <Label className="text-xs">{t("Script Name", "Script Name")}</Label>
+              <Label className="text-xs">
+                {t("Script Name", "Script Name")}
+              </Label>
               <Input
                 value={newScript}
                 onChange={(e) => setNewScript(e.target.value)}
@@ -141,7 +171,9 @@ function WorkersPanelInner({
             >
               <div className="space-y-0.5">
                 <p className="font-mono text-xs">{route.pattern}</p>
-                <p className="text-[11px] text-muted-foreground">→ {route.script}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  → {route.script}
+                </p>
               </div>
               <Button
                 size="sm"
@@ -164,7 +196,9 @@ function WorkersPanelInner({
 
       {loading && routes.length === 0 && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">{t("Loading worker routes…", "Loading worker routes…")}</p>
+          <p className="text-sm text-muted-foreground">
+            {t("Loading worker routes…", "Loading worker routes…")}
+          </p>
         </div>
       )}
     </div>

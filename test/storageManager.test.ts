@@ -96,6 +96,22 @@ test("load resets state and clears invalid stored data", () => {
 });
 
 test("falls back to in-memory storage when localStorage is unavailable", async () => {
+  const globalAsRecord = globalThis as unknown as {
+    localStorage?: Storage;
+  };
+  const originalDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  if (originalDescriptor) {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => undefined,
+    });
+  } else {
+    delete globalAsRecord.localStorage;
+  }
+
   const crypto = new CryptoManager({ iterations: 1 });
   const mgr = new StorageManager(undefined, crypto);
   const id = await mgr.addApiKey("label", "secret", "pw");
@@ -103,6 +119,12 @@ test("falls back to in-memory storage when localStorage is unavailable", async (
   assert.equal(mgr.getApiKeys().length, 1);
   const mgr2 = new StorageManager(undefined, crypto);
   assert.equal(mgr2.getApiKeys().length, 0);
+
+  if (originalDescriptor) {
+    Object.defineProperty(globalThis, "localStorage", originalDescriptor);
+  } else {
+    globalAsRecord.localStorage = undefined;
+  }
 });
 
 test("stores and clears last selected zone", () => {

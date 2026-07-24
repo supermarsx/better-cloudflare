@@ -129,15 +129,21 @@ export function ImportExportDialog({
                     }
                     case "csv":
                       items = isDesktop()
-                        ? (await TauriClient.parseCsvRecords(importData)) as unknown as Partial<Record<string, unknown>>[]
+                        ? ((await TauriClient.parseCsvRecords(
+                            importData,
+                          )) as unknown as Partial<Record<string, unknown>>[])
                         : parseCSVRecords
                           ? parseCSVRecords(importData)
                           : null;
                       break;
                     case "bind":
                       items = isDesktop()
-                        ? (await TauriClient.parseBindZone(importData)) as unknown as Partial<Record<string, unknown>>[]
-                        : parseBINDZone ? parseBINDZone(importData) : null;
+                        ? ((await TauriClient.parseBindZone(
+                            importData,
+                          )) as unknown as Partial<Record<string, unknown>>[])
+                        : parseBINDZone
+                          ? parseBINDZone(importData)
+                          : null;
                       break;
                   }
                 } catch {

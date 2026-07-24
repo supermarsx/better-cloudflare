@@ -24,10 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useI18n } from "@/hooks/use-i18n";
-import {
-  REGISTRAR_LABELS,
-  type RegistrarProvider,
-} from "@/types/registrar";
+import { REGISTRAR_LABELS, type RegistrarProvider } from "@/types/registrar";
 
 interface AddRegistrarDialogProps {
   open: boolean;
@@ -48,11 +45,23 @@ const PROVIDER_FIELDS: Record<
   RegistrarProvider,
   { needsSecret: boolean; needsUsername: boolean; extraFields: string[] }
 > = {
-  cloudflare: { needsSecret: false, needsUsername: false, extraFields: ["account_id"] },
+  cloudflare: {
+    needsSecret: false,
+    needsUsername: false,
+    extraFields: ["account_id"],
+  },
   porkbun: { needsSecret: true, needsUsername: false, extraFields: [] },
-  namecheap: { needsSecret: false, needsUsername: true, extraFields: ["client_ip"] },
+  namecheap: {
+    needsSecret: false,
+    needsUsername: true,
+    extraFields: ["client_ip"],
+  },
   godaddy: { needsSecret: true, needsUsername: false, extraFields: [] },
-  google: { needsSecret: false, needsUsername: false, extraFields: ["project", "location"] },
+  google: {
+    needsSecret: false,
+    needsUsername: false,
+    extraFields: ["project", "location"],
+  },
   namecom: { needsSecret: false, needsUsername: true, extraFields: [] },
 };
 
@@ -87,8 +96,12 @@ export function AddRegistrarDialog({
         provider,
         label: label.trim(),
         apiKey: apiKey.trim(),
-        apiSecret: fields.needsSecret ? apiSecret.trim() || undefined : undefined,
-        username: fields.needsUsername ? username.trim() || undefined : undefined,
+        apiSecret: fields.needsSecret
+          ? apiSecret.trim() || undefined
+          : undefined,
+        username: fields.needsUsername
+          ? username.trim() || undefined
+          : undefined,
         email: email.trim() || undefined,
         extra: Object.keys(extra).length > 0 ? extra : undefined,
       });
@@ -111,9 +124,7 @@ export function AddRegistrarDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>
-            {t("Add Registrar", "Add Registrar")}
-          </DialogTitle>
+          <DialogTitle>{t("Add Registrar", "Add Registrar")}</DialogTitle>
           <DialogDescription>
             {t(
               "Connect a domain registrar to monitor your domains",
@@ -173,9 +184,7 @@ export function AddRegistrarDialog({
           {/* API Secret (Porkbun, GoDaddy) */}
           {fields.needsSecret && (
             <div className="space-y-2">
-              <Label>
-                {t("API Secret", "API Secret")}
-              </Label>
+              <Label>{t("API Secret", "API Secret")}</Label>
               <Input
                 value={apiSecret}
                 onChange={(e) => setApiSecret(e.target.value)}
@@ -189,9 +198,7 @@ export function AddRegistrarDialog({
           {/* Username (Namecheap, Name.com) */}
           {fields.needsUsername && (
             <div className="space-y-2">
-              <Label>
-                {t("Username", "Username")}
-              </Label>
+              <Label>{t("Username", "Username")}</Label>
               <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -221,9 +228,7 @@ export function AddRegistrarDialog({
           {/* Extra fields */}
           {fields.extraFields.map((field) => (
             <div key={field} className="space-y-2">
-              <Label className="capitalize">
-                {field.replace(/_/g, " ")}
-              </Label>
+              <Label className="capitalize">{field.replace(/_/g, " ")}</Label>
               <Input
                 value={extra[field] ?? ""}
                 onChange={(e) =>
@@ -235,9 +240,7 @@ export function AddRegistrarDialog({
             </div>
           ))}
 
-          {error && (
-            <p className="text-sm text-destructive">{error}</p>
-          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-2">
             <Button

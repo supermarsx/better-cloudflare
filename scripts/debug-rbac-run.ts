@@ -57,7 +57,9 @@ process.env.ADMIN_TOKEN = "adm-token";
 
     // Inspect raw DB rows in store
     try {
-      const raw = await (store as any).db?.all?.("SELECT id, email, roles FROM users");
+      const raw = await (store as any).db?.all?.(
+        "SELECT id, email, roles FROM users",
+      );
       console.log("Raw users in ServerAPI store db:", raw);
     } catch (e) {
       console.log(
@@ -114,7 +116,9 @@ process.env.ADMIN_TOKEN = "adm-token";
     // Also inspect the DB used by a newly created store in isAdmin
     const newStore = createCredentialStore() as unknown as CredentialStore;
     try {
-      const raw2 = await (newStore as any).db?.all?.("SELECT id, email, roles FROM users");
+      const raw2 = await (newStore as any).db?.all?.(
+        "SELECT id, email, roles FROM users",
+      );
       console.log("Raw users in new store db:", raw2);
     } catch (e) {
       console.log(

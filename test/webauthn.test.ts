@@ -43,8 +43,13 @@ test("toCredentialCreationOptions normalizes binary fields", () => {
     pubKeyCredParams: [{ type: "public-key", alg: -7 }],
     excludeCredentials: [{ id: "Y3JlZA", type: "public-key" }],
   });
-  assert.ok(opts.challenge instanceof ArrayBuffer || opts.challenge instanceof Uint8Array);
-  assert.ok(opts.user.id instanceof ArrayBuffer || opts.user.id instanceof Uint8Array);
+  assert.ok(
+    opts.challenge instanceof ArrayBuffer ||
+      opts.challenge instanceof Uint8Array,
+  );
+  assert.ok(
+    opts.user.id instanceof ArrayBuffer || opts.user.id instanceof Uint8Array,
+  );
   assert.ok(
     opts.excludeCredentials?.[0].id instanceof ArrayBuffer ||
       opts.excludeCredentials?.[0].id instanceof Uint8Array,
@@ -56,7 +61,10 @@ test("toCredentialRequestOptions normalizes allowCredentials", () => {
     challenge: "Y2hhbGxlbmdl",
     allowCredentials: [{ id: "Y3JlZA", type: "public-key" }],
   });
-  assert.ok(opts.challenge instanceof ArrayBuffer || opts.challenge instanceof Uint8Array);
+  assert.ok(
+    opts.challenge instanceof ArrayBuffer ||
+      opts.challenge instanceof Uint8Array,
+  );
   assert.ok(
     opts.allowCredentials?.[0].id instanceof ArrayBuffer ||
       opts.allowCredentials?.[0].id instanceof Uint8Array,

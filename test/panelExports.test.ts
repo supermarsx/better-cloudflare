@@ -56,7 +56,7 @@ test("useUndoRedo hook exports correctly", async () => {
   assert.equal(typeof mod.useUndoRedo, "function");
 });
 
-// Verify offline-cache exports  
+// Verify offline-cache exports
 test("offline-cache module exports all functions", async () => {
   const mod = await import("../src/lib/storage/offline-cache");
   assert.equal(typeof mod.cacheZoneRecords, "function");

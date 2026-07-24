@@ -12,10 +12,7 @@ function normalizeDnsName(value: string) {
 }
 
 function parseSOAContent(value: string | undefined) {
-  const raw = (value ?? "")
-    .replace(/[()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
   const parts = raw ? raw.split(" ").filter(Boolean) : [];
   const [mname, rname, serial, refresh, retry, expire, minimum] = parts;
   const toNum = (v: string | undefined) => {
@@ -89,15 +86,17 @@ export function SoaBuilder({
 
   const didAutoDefaults = useRef(false);
 
-  const apply = (next?: Partial<{
-    mname: string;
-    admin: string;
-    serial: number | undefined;
-    refresh: number | undefined;
-    retry: number | undefined;
-    expire: number | undefined;
-    minimum: number | undefined;
-  }>) => {
+  const apply = (
+    next?: Partial<{
+      mname: string;
+      admin: string;
+      serial: number | undefined;
+      refresh: number | undefined;
+      retry: number | undefined;
+      expire: number | undefined;
+      minimum: number | undefined;
+    }>,
+  ) => {
     const nextMname = next?.mname ?? mname;
     const nextAdmin = next?.admin ?? admin;
     const nextSerial = next?.serial ?? serial;
@@ -170,7 +169,14 @@ export function SoaBuilder({
         minimum: 3600,
       }),
     });
-  }, [onRecordChange, record, record.content, record.name, record.type, zoneName]);
+  }, [
+    onRecordChange,
+    record,
+    record.content,
+    record.name,
+    record.type,
+    zoneName,
+  ]);
 
   const validation = useMemo(() => {
     const issues: string[] = [];
@@ -246,7 +252,10 @@ export function SoaBuilder({
     } else {
       const r = normalizeDnsName(parsed.rname);
       if (r.includes("@")) {
-        pushUnique(fieldIssues.rname, "rname must not contain @ (use DNS-name form).");
+        pushUnique(
+          fieldIssues.rname,
+          "rname must not contain @ (use DNS-name form).",
+        );
       }
       if (!isValidHostname(r)) {
         pushUnique(
@@ -267,7 +276,10 @@ export function SoaBuilder({
       label: keyof typeof fieldIssues,
     ) => {
       if (n === undefined) {
-        pushUnique(fieldIssues[label], `${label} is required and must be a number.`);
+        pushUnique(
+          fieldIssues[label],
+          `${label} is required and must be a number.`,
+        );
         return;
       }
       if (!Number.isFinite(n)) {
@@ -288,7 +300,10 @@ export function SoaBuilder({
     if (parsed.serial !== undefined) {
       const serialStr = String(parsed.serial);
       if (!/^\d{10}$/.test(serialStr)) {
-        pushUnique(fieldIssues.serial, "Serial should commonly be YYYYMMDDnn (10 digits).");
+        pushUnique(
+          fieldIssues.serial,
+          "Serial should commonly be YYYYMMDDnn (10 digits).",
+        );
       }
     }
 
@@ -331,7 +346,10 @@ export function SoaBuilder({
       parsed.refresh > 0 &&
       parsed.expire <= parsed.refresh
     ) {
-      pushUnique(fieldIssues.expire, "expire is usually much greater than refresh.");
+      pushUnique(
+        fieldIssues.expire,
+        "expire is usually much greater than refresh.",
+      );
     }
 
     for (const msgs of Object.values(fieldIssues)) {
@@ -373,7 +391,13 @@ export function SoaBuilder({
       nameIssues: validation.nameIssues,
       canonical: validation.canonical,
     });
-  }, [onWarningsChange, record.type, validation.canonical, validation.issues, validation.nameIssues]);
+  }, [
+    onWarningsChange,
+    record.type,
+    validation.canonical,
+    validation.issues,
+    validation.nameIssues,
+  ]);
 
   if (record.type !== "SOA") return null;
 
@@ -410,8 +434,8 @@ export function SoaBuilder({
             }}
           />
           <div className="text-xs text-muted-foreground">
-            You can paste an email; it will be converted to DNS-name form (replace{" "}
-            <code>@</code> with a dot).
+            You can paste an email; it will be converted to DNS-name form
+            (replace <code>@</code> with a dot).
           </div>
           {validation.fieldIssues.rname.length > 0 && (
             <div className="text-xs text-red-600">
@@ -561,7 +585,9 @@ export function SoaBuilder({
         <div className="text-xs font-semibold text-muted-foreground">
           Preview (content)
         </div>
-        <pre className="mt-1 whitespace-pre-wrap text-xs">{validation.canonical}</pre>
+        <pre className="mt-1 whitespace-pre-wrap text-xs">
+          {validation.canonical}
+        </pre>
         <div className="mt-2 flex flex-wrap justify-end gap-2">
           <Button
             size="sm"
@@ -605,4 +631,3 @@ export function SoaBuilder({
     </div>
   );
 }
-

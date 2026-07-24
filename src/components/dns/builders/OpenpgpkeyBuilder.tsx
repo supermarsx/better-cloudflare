@@ -35,7 +35,11 @@ export function OpenpgpkeyBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "OPENPGPKEY") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -47,22 +51,34 @@ export function OpenpgpkeyBuilder({
     const b64 = canonicalizeBase64(keyData);
     if (!b64) push(issues, "OPENPGPKEY: key data is required (base64).");
     if (keyData.trim() && /\s/.test(keyData.trim()))
-      push(issues, "OPENPGPKEY: key data contains whitespace (canonical removes it).");
+      push(
+        issues,
+        "OPENPGPKEY: key data contains whitespace (canonical removes it).",
+      );
     if (b64) {
       if (!isBase64Like(b64))
         push(issues, "OPENPGPKEY: key data does not look like base64.");
       if (isBase64Like(b64) && b64.length % 4 !== 0)
-        push(issues, "OPENPGPKEY: base64 length is not a multiple of 4 (unusual).");
+        push(
+          issues,
+          "OPENPGPKEY: base64 length is not a multiple of 4 (unusual).",
+        );
       if (b64.length < 100)
         push(issues, "OPENPGPKEY: key data looks very short for a public key.");
       if (b64.length > 20000)
-        push(issues, "OPENPGPKEY: key data is very large for a single DNS record.");
+        push(
+          issues,
+          "OPENPGPKEY: key data is very large for a single DNS record.",
+        );
     }
 
     const canonical = b64;
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "OPENPGPKEY: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "OPENPGPKEY: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -138,7 +154,9 @@ export function OpenpgpkeyBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -153,7 +171,8 @@ export function OpenpgpkeyBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">OPENPGPKEY warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -172,4 +191,3 @@ export function OpenpgpkeyBuilder({
     </div>
   );
 }
-

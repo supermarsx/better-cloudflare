@@ -43,7 +43,12 @@ export type Role = "system" | "user" | "assistant" | "tool";
 export type MessageContent =
   | { type: "text"; text: string }
   | { type: "toolUse"; toolCalls: ToolCall[] }
-  | { type: "toolResult"; toolCallId: string; content: string; isError: boolean };
+  | {
+      type: "toolResult";
+      toolCallId: string;
+      content: string;
+      isError: boolean;
+    };
 
 /** A single message in a conversation. */
 export interface Message {

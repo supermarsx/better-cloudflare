@@ -20,9 +20,12 @@ function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
 }
 
-function parseSrvName(
-  value: string | undefined,
-): { service: string; proto: "tcp" | "udp" | "tls" | "other"; protoOther: string; host: string } {
+function parseSrvName(value: string | undefined): {
+  service: string;
+  proto: "tcp" | "udp" | "tls" | "other";
+  protoOther: string;
+  host: string;
+} {
   const raw = (value ?? "").trim();
   if (!raw) {
     return { service: "", proto: "tcp", protoOther: "", host: "" };
@@ -32,7 +35,9 @@ function parseSrvName(
   const first = parts[0] ?? "";
   const second = parts[1] ?? "";
   const service = first.startsWith("_") ? first.slice(1) : "";
-  const protoLabel = second.startsWith("_") ? second.slice(1).toLowerCase() : "";
+  const protoLabel = second.startsWith("_")
+    ? second.slice(1).toLowerCase()
+    : "";
   const host = parts.slice(2).join(".");
   if (protoLabel === "tcp" || protoLabel === "udp" || protoLabel === "tls") {
     return { service, proto: protoLabel, protoOther: "", host };
@@ -75,7 +80,9 @@ export function SrvBuilder({
   const [srvTarget, setSrvTarget] = useState<string>("");
 
   const [srvService, setSrvService] = useState<string>("");
-  const [srvProto, setSrvProto] = useState<"tcp" | "udp" | "tls" | "other">("tcp");
+  const [srvProto, setSrvProto] = useState<"tcp" | "udp" | "tls" | "other">(
+    "tcp",
+  );
   const [srvProtoOther, setSrvProtoOther] = useState<string>("");
   const [srvHost, setSrvHost] = useState<string>("");
 
@@ -101,7 +108,11 @@ export function SrvBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "SRV") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -115,18 +126,24 @@ export function SrvBuilder({
     const target = (srvTarget ?? "").trim();
 
     if (pr === undefined) push(issues, "SRV: priority is missing.");
-    else if (pr < 0 || pr > 65535) push(issues, "SRV: priority should be 0–65535.");
+    else if (pr < 0 || pr > 65535)
+      push(issues, "SRV: priority should be 0–65535.");
     if (wt === undefined) push(issues, "SRV: weight is missing.");
-    else if (wt < 0 || wt > 65535) push(issues, "SRV: weight should be 0–65535.");
+    else if (wt < 0 || wt > 65535)
+      push(issues, "SRV: weight should be 0–65535.");
     if (port === undefined) push(issues, "SRV: port is missing.");
-    else if (port < 0 || port > 65535) push(issues, "SRV: port should be 0–65535.");
+    else if (port < 0 || port > 65535)
+      push(issues, "SRV: port should be 0–65535.");
     if (!target) push(issues, "SRV: target is missing.");
     if (target) {
       if (/\s/.test(target)) push(issues, "SRV: target contains whitespace.");
       if (target.includes("://"))
         push(issues, "SRV: target looks like a URL; it should be a hostname.");
       if (target.includes("/"))
-        push(issues, "SRV: target contains '/', which is unusual for hostnames.");
+        push(
+          issues,
+          "SRV: target contains '/', which is unusual for hostnames.",
+        );
       const normalized = normalizeDnsName(target);
       const tld = normalized.split(".").pop()?.toLowerCase();
       if (tld && normalized.includes(".") && /^[a-z0-9-]{2,63}$/.test(tld)) {
@@ -180,13 +197,21 @@ export function SrvBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange, record.type]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+    record.type,
+  ]);
 
   return (
     <div className="space-y-2">
       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-muted-foreground">SRV builder</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            SRV builder
+          </div>
           <div className="text-[11px] text-muted-foreground">
             Format: <code>priority weight port target</code>
           </div>
@@ -209,7 +234,9 @@ export function SrvBuilder({
                 });
               }}
             />
-            <div className="text-[11px] text-muted-foreground">Lower is preferred.</div>
+            <div className="text-[11px] text-muted-foreground">
+              Lower is preferred.
+            </div>
           </div>
           <div className="space-y-1 sm:col-span-1">
             <Label className="text-xs">Weight</Label>
@@ -227,7 +254,9 @@ export function SrvBuilder({
                 });
               }}
             />
-            <div className="text-[11px] text-muted-foreground">Load-balancing.</div>
+            <div className="text-[11px] text-muted-foreground">
+              Load-balancing.
+            </div>
           </div>
           <div className="space-y-1 sm:col-span-1">
             <Label className="text-xs">Port</Label>
@@ -245,7 +274,9 @@ export function SrvBuilder({
                 });
               }}
             />
-            <div className="text-[11px] text-muted-foreground">Service port.</div>
+            <div className="text-[11px] text-muted-foreground">
+              Service port.
+            </div>
           </div>
           <div className="space-y-1 sm:col-span-3">
             <Label className="text-xs">Target</Label>
@@ -256,7 +287,12 @@ export function SrvBuilder({
                 setSrvTarget(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: composeSRV(srvPriority, srvWeight, srvPort, e.target.value),
+                  content: composeSRV(
+                    srvPriority,
+                    srvWeight,
+                    srvPort,
+                    e.target.value,
+                  ),
                 });
               }}
             />
@@ -271,7 +307,9 @@ export function SrvBuilder({
             <Label className="text-xs">Service</Label>
             <Input
               value={srvService}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSrvService(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setSrvService(e.target.value)
+              }
               placeholder="e.g., sip"
             />
             <div className="text-[11px] text-muted-foreground">
@@ -282,7 +320,9 @@ export function SrvBuilder({
             <Label className="text-xs">Protocol</Label>
             <Select
               value={srvProto}
-              onValueChange={(value: string) => setSrvProto(value as typeof srvProto)}
+              onValueChange={(value: string) =>
+                setSrvProto(value as typeof srvProto)
+              }
             >
               <SelectTrigger className="h-9">
                 <SelectValue />
@@ -309,10 +349,14 @@ export function SrvBuilder({
             <Label className="text-xs">Host (optional)</Label>
             <Input
               value={srvHost}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSrvHost(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setSrvHost(e.target.value)
+              }
               placeholder="@ or subdomain"
             />
-            <div className="text-[11px] text-muted-foreground">Leave empty for zone apex.</div>
+            <div className="text-[11px] text-muted-foreground">
+              Leave empty for zone apex.
+            </div>
           </div>
         </div>
 
@@ -371,24 +415,33 @@ export function SrvBuilder({
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Preview (canonical)
+          </div>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {diagnostics.canonical}
+          </pre>
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Recommendations</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Recommendations
+          </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
-              Keep the name as <code>_service._proto</code> (and add a host suffix only
-              if needed).
+              Keep the name as <code>_service._proto</code> (and add a host
+              suffix only if needed).
             </li>
             <li>Target should be a hostname (not an IP and not a URL).</li>
-            <li>Use weight to distribute traffic among same-priority targets.</li>
+            <li>
+              Use weight to distribute traffic among same-priority targets.
+            </li>
             <li>Prefer explicit ports; avoid 0.</li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">SRV warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -407,4 +460,3 @@ export function SrvBuilder({
     </div>
   );
 }
-

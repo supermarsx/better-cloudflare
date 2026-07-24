@@ -11,7 +11,16 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { ServerClient } from "@/lib/api/server-client";
-import { Fingerprint, Smartphone, Monitor, Shield, Trash2, Edit2, Check, X } from "lucide-react";
+import {
+  Fingerprint,
+  Smartphone,
+  Monitor,
+  Shield,
+  Trash2,
+  Edit2,
+  Check,
+  X,
+} from "lucide-react";
 
 interface PasskeyManagerDialogProps {
   open: boolean;
@@ -72,10 +81,18 @@ export function PasskeyManagerDialog({
     if (lowerLabel.includes("phone") || lowerLabel.includes("mobile")) {
       return <Smartphone className="h-4 w-4" />;
     }
-    if (lowerLabel.includes("computer") || lowerLabel.includes("desktop") || lowerLabel.includes("laptop")) {
+    if (
+      lowerLabel.includes("computer") ||
+      lowerLabel.includes("desktop") ||
+      lowerLabel.includes("laptop")
+    ) {
       return <Monitor className="h-4 w-4" />;
     }
-    if (lowerLabel.includes("key") || lowerLabel.includes("yubikey") || lowerLabel.includes("security")) {
+    if (
+      lowerLabel.includes("key") ||
+      lowerLabel.includes("yubikey") ||
+      lowerLabel.includes("security")
+    ) {
       return <Shield className="h-4 w-4" />;
     }
     return <Fingerprint className="h-4 w-4" />;
@@ -88,7 +105,9 @@ export function PasskeyManagerDialog({
 
   const handleSaveLabel = (itemId: string) => {
     // For now, store in local state. In a full implementation, this would save to server
-    setItems(items.map(it => it.id === itemId ? { ...it, label: editLabel } : it));
+    setItems(
+      items.map((it) => (it.id === itemId ? { ...it, label: editLabel } : it)),
+    );
     setEditingId(null);
     setEditLabel("");
     toast({ title: "Success", description: "Device name updated" });
@@ -104,11 +123,12 @@ export function PasskeyManagerDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-        <Shield className="h-5 w-5 text-primary" />
+            <Shield className="h-5 w-5 text-primary" />
             Manage Passkeys
           </DialogTitle>
           <DialogDescription>
-            View and manage registered passkey devices for this API key. Each passkey provides secure, passwordless authentication.
+            View and manage registered passkey devices for this API key. Each
+            passkey provides secure, passwordless authentication.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -119,7 +139,9 @@ export function PasskeyManagerDialog({
                 <div className="text-center py-8 text-muted-foreground border-2 border-dashed rounded-lg">
                   <Fingerprint className="h-12 w-12 mx-auto mb-2 opacity-50" />
                   <p className="text-sm font-medium">No passkeys registered</p>
-                  <p className="text-xs mt-1">Register a passkey to enable passwordless login</p>
+                  <p className="text-xs mt-1">
+                    Register a passkey to enable passwordless login
+                  </p>
                 </div>
               ) : (
                 items.map((it) => (
@@ -177,7 +199,8 @@ export function PasskeyManagerDialog({
                               ID: {it.id.substring(0, 32)}...
                             </div>
                             <div className="text-xs text-muted-foreground mt-1">
-                              Used {it.counter ?? 0} time{it.counter !== 1 ? 's' : ''}
+                              Used {it.counter ?? 0} time
+                              {it.counter !== 1 ? "s" : ""}
                             </div>
                           </>
                         )}
@@ -201,8 +224,9 @@ export function PasskeyManagerDialog({
             <div className="pt-3 border-t">
               <p className="text-xs text-muted-foreground">
                 <Shield className="h-3 w-3 inline mr-1" />
-                Passkeys use biometric or security key authentication for enhanced security.
-                Revoking a passkey will prevent it from being used for login.
+                Passkeys use biometric or security key authentication for
+                enhanced security. Revoking a passkey will prevent it from being
+                used for login.
               </p>
             </div>
           )}

@@ -153,11 +153,7 @@
     content: "";
     position: absolute;
     inset: 0;
-    background: linear-gradient(
-      90deg,
-      hsl(var(--primary) / 0.06),
-      transparent
-    );
+    background: linear-gradient(90deg, hsl(var(--primary) / 0.06), transparent);
     opacity: 0.12;
     transform: rotate(12deg);
     mix-blend-mode: screen;
@@ -702,7 +698,8 @@
   .ui-table-head {
     display: grid;
     grid-template-columns:
-      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr) 92px 78px 92px;
+      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr)
+      92px 78px 92px;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
     font-size: 0.7rem;
@@ -716,7 +713,8 @@
   .ui-table-row {
     display: grid;
     grid-template-columns:
-      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr) 92px 78px 92px;
+      24px 56px minmax(140px, 1.4fr) minmax(180px, 2fr)
+      92px 78px 92px;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
     align-items: center;
@@ -755,7 +753,8 @@
   }
 
   .titlebar {
-    background: linear-gradient(
+    background:
+      linear-gradient(
         120deg,
         rgba(255, 120, 64, 0.14),
         rgba(255, 70, 40, 0.06)
@@ -777,7 +776,8 @@
   }
 
   [data-theme="light"] .titlebar {
-    background: linear-gradient(
+    background:
+      linear-gradient(
         120deg,
         rgba(255, 170, 120, 0.07),
         rgba(255, 210, 180, 0.16)
@@ -794,7 +794,8 @@
   }
 
   [data-theme="oled"] .titlebar {
-    background: linear-gradient(
+    background:
+      linear-gradient(
         120deg,
         rgba(255, 120, 64, 0.06),
         rgba(255, 60, 30, 0.03)
@@ -817,7 +818,6 @@
   [data-theme="oled"] .switch-toggle-thumb {
     border-color: hsl(0 0% 90% / 0.8);
   }
-
 
   .scrollbar-themed {
     scrollbar-width: thin;

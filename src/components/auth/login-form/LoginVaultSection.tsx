@@ -5,7 +5,9 @@ interface LoginVaultSectionProps {
   onRemoveVaultSecret: () => void;
 }
 
-export function LoginVaultSection({ onRemoveVaultSecret }: LoginVaultSectionProps) {
+export function LoginVaultSection({
+  onRemoveVaultSecret,
+}: LoginVaultSectionProps) {
   const { t } = useI18n();
 
   return (

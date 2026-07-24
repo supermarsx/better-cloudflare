@@ -31,7 +31,9 @@ function parseDate(value: string | null | undefined): Date | null {
 }
 
 function normalizeName(name: string, zoneName: string): string {
-  const trimmed = String(name ?? "").trim().toLowerCase();
+  const trimmed = String(name ?? "")
+    .trim()
+    .toLowerCase();
   if (!trimmed) return "";
   if (trimmed === "@") return zoneName.trim().toLowerCase();
   return trimmed.endsWith(".") ? trimmed.slice(0, -1) : trimmed;
@@ -53,10 +55,17 @@ function normalizeTargetDomain(value: string, zoneName: string): string {
 }
 
 function getTxtContentsByName(records: DNSRecord[], name: string): string[] {
-  const needle = String(name ?? "").trim().toLowerCase();
+  const needle = String(name ?? "")
+    .trim()
+    .toLowerCase();
   return records
     .filter((r) => r.type === "TXT")
-    .filter((r) => String(r.name ?? "").trim().toLowerCase() === needle)
+    .filter(
+      (r) =>
+        String(r.name ?? "")
+          .trim()
+          .toLowerCase() === needle,
+    )
     .map((r) => String(r.content ?? "").trim())
     .filter(Boolean);
 }
@@ -172,7 +181,10 @@ function estimateSpfLookupCount(spf: string): number | null {
   return lookups;
 }
 
-function buildCnameMap(zoneName: string, records: DNSRecord[]): Map<string, string> {
+function buildCnameMap(
+  zoneName: string,
+  records: DNSRecord[],
+): Map<string, string> {
   const map = new Map<string, string>();
   for (const r of records) {
     if (r.type !== "CNAME") continue;
@@ -205,8 +217,14 @@ function computeCnameChain(
   return { hops, cyclic: false, chain };
 }
 
-function parseCaa(content: string): { flag?: number; tag?: string; value?: string } {
-  const parts = String(content ?? "").trim().split(/\s+/);
+function parseCaa(content: string): {
+  flag?: number;
+  tag?: string;
+  value?: string;
+} {
+  const parts = String(content ?? "")
+    .trim()
+    .split(/\s+/);
   if (parts.length < 3) return {};
   const flag = Number(parts[0]);
   const tag = parts[1]?.toLowerCase();
@@ -237,7 +255,10 @@ function parseMx(
   }
 
   const target = normalizeTargetDomain(targetRaw, zoneName);
-  return { priority: Number.isFinite(priority!) ? priority : undefined, target: target || undefined };
+  return {
+    priority: Number.isFinite(priority!) ? priority : undefined,
+    target: target || undefined,
+  };
 }
 
 export function runDomainAudit(
@@ -265,13 +286,17 @@ export function runDomainAudit(
   const spfTypeRecords = records.filter((r) => r.type === "SPF");
 
   const dmarcName = `_dmarc.${normalizedZone}`;
-  const dmarcTxt = getTxtContentsByName(records, dmarcName).filter(isDmarcRecord);
+  const dmarcTxt = getTxtContentsByName(records, dmarcName).filter(
+    isDmarcRecord,
+  );
 
   const hasAnyDkim = records
     .filter((r) => r.type === "TXT")
     .some((r) => {
       const name = normalizeName(r.name, normalizedZone);
-      return name.includes("._domainkey.") && isDkimRecord(String(r.content ?? ""));
+      return (
+        name.includes("._domainkey.") && isDkimRecord(String(r.content ?? ""))
+      );
     });
 
   const soaRecords = records.filter((r) => r.type === "SOA");
@@ -354,8 +379,12 @@ export function runDomainAudit(
       const ttl = getTtlSeconds(r.ttl);
       if (ttl === null) continue;
       if (ttl <= 0) ttlCritical.push(`${r.type} ${r.name}: invalid TTL ${ttl}`);
-      else if (ttl < 30) ttlCritical.push(`${r.type} ${r.name}: TTL ${ttl}s is dangerously low (<30s should only be temporary)`);
-      else if (ttl < 60) ttlIssues.push(`${r.type} ${r.name}: TTL ${ttl}s is very low`);
+      else if (ttl < 30)
+        ttlCritical.push(
+          `${r.type} ${r.name}: TTL ${ttl}s is dangerously low (<30s should only be temporary)`,
+        );
+      else if (ttl < 60)
+        ttlIssues.push(`${r.type} ${r.name}: TTL ${ttl}s is very low`);
       else if (r.type === "SOA" && ttl < 3600)
         ttlIssues.push(`SOA ${r.name}: TTL ${ttl}s is low (often 3600+).`);
       else if (["NS", "MX"].includes(r.type) && ttl < 300)
@@ -371,7 +400,9 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "fail",
         title: "TTL dangerously low",
-        details: ttlCritical.slice(0, 8).join("\n") + "\n\nTTL <30s should only be used temporarily before DNS changes.",
+        details:
+          ttlCritical.slice(0, 8).join("\n") +
+          "\n\nTTL <30s should only be used temporarily before DNS changes.",
       });
     }
     items.push({
@@ -379,7 +410,9 @@ export function runDomainAudit(
       category: "hygiene",
       severity: ttlIssues.length ? "info" : "pass",
       title: "TTL review",
-      details: ttlIssues.length ? ttlIssues.slice(0, 12).join("\n") : "No obvious TTL outliers detected.",
+      details: ttlIssues.length
+        ? ttlIssues.slice(0, 12).join("\n")
+        : "No obvious TTL outliers detected.",
     });
 
     const cnameConflicts: string[] = [];
@@ -393,10 +426,12 @@ export function runDomainAudit(
         const isApex = name === normalizedZone;
         if (isApex) {
           cnameAtApexWarnings.push(
-            `${name}: CNAME at apex with ${types}. Cloudflare flattens this to ANAME/ALIAS, which works but may not be portable.`
+            `${name}: CNAME at apex with ${types}. Cloudflare flattens this to ANAME/ALIAS, which works but may not be portable.`,
           );
         } else {
-          cnameConflicts.push(`${name}: CNAME coexists with ${types} at the same name (RFC violation)`);
+          cnameConflicts.push(
+            `${name}: CNAME coexists with ${types} at the same name (RFC violation)`,
+          );
         }
       }
     }
@@ -439,9 +474,18 @@ export function runDomainAudit(
       const from = normalizeName(r.name, normalizedZone);
       if (!from) continue;
       const { hops, cyclic, chain } = computeCnameChain(from, cnameMap, 20);
-      if (cyclic) cnameChainIssues.push(`${r.name}: CNAME cycle detected (${chain.join(" → ")})`);
-      else if (hops >= 5) cnameChainIssues.push(`${r.name}: CNAME chain is ${hops} hops (${chain.join(" → ")})`);
-      else if (hops >= 3) cnameChainWarnings.push(`${r.name}: CNAME chain is ${hops} hops (best practice ≤2)`);
+      if (cyclic)
+        cnameChainIssues.push(
+          `${r.name}: CNAME cycle detected (${chain.join(" → ")})`,
+        );
+      else if (hops >= 5)
+        cnameChainIssues.push(
+          `${r.name}: CNAME chain is ${hops} hops (${chain.join(" → ")})`,
+        );
+      else if (hops >= 3)
+        cnameChainWarnings.push(
+          `${r.name}: CNAME chain is ${hops} hops (best practice ≤2)`,
+        );
     }
     if (cnameChainIssues.length > 0) {
       items.push({
@@ -477,7 +521,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "warn",
         title: "SPF record type present",
-        details: "The SPF RR type is deprecated. Publish SPF as a TXT record instead.",
+        details:
+          "The SPF RR type is deprecated. Publish SPF as a TXT record instead.",
       });
     } else {
       items.push({
@@ -501,7 +546,10 @@ export function runDomainAudit(
       severity: badA.length ? "warn" : "pass",
       title: "A records (special/private/bogon IPs)",
       details: badA.length
-        ? badA.slice(0, 8).map((x) => `${x.name}: ${x.ip} (${x.issue})`).join("\n")
+        ? badA
+            .slice(0, 8)
+            .map((x) => `${x.name}: ${x.ip} (${x.issue})`)
+            .join("\n")
         : "No obvious special-use/bogon IPv4 addresses detected in A records.",
     });
 
@@ -517,7 +565,10 @@ export function runDomainAudit(
       severity: badAAAA.length ? "warn" : "pass",
       title: "AAAA records (special/private/bogon IPs)",
       details: badAAAA.length
-        ? badAAAA.slice(0, 8).map((x) => `${x.name}: ${x.ip} (${x.issue})`).join("\n")
+        ? badAAAA
+            .slice(0, 8)
+            .map((x) => `${x.name}: ${x.ip} (${x.issue})`)
+            .join("\n")
         : "No obvious special-use/bogon IPv6 addresses detected in AAAA records.",
     });
 
@@ -530,7 +581,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "info",
         title: "NS records at apex",
-        details: "No NS records visible at apex (Cloudflare manages these automatically).",
+        details:
+          "No NS records visible at apex (Cloudflare manages these automatically).",
       });
     } else if (nsAtApex.length === 1) {
       items.push({
@@ -538,7 +590,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "fail",
         title: "Single NS record at apex",
-        details: "Best practice requires ≥2 authoritative name servers for redundancy.",
+        details:
+          "Best practice requires ≥2 authoritative name servers for redundancy.",
       });
     } else {
       items.push({
@@ -562,7 +615,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "warn",
         title: "Single A record at apex",
-        details: "Apex has only one A record. Consider adding redundancy for critical services.",
+        details:
+          "Apex has only one A record. Consider adding redundancy for critical services.",
       });
     }
     if (apexAAAA.length === 1 && apexA.length === 0) {
@@ -571,7 +625,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "warn",
         title: "Single AAAA record at apex",
-        details: "Apex has only one AAAA record. Consider adding redundancy for critical services.",
+        details:
+          "Apex has only one AAAA record. Consider adding redundancy for critical services.",
       });
     }
 
@@ -581,7 +636,8 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "info",
         title: "SOA record",
-        details: "No SOA record found (Cloudflare may manage SOA automatically).",
+        details:
+          "No SOA record found (Cloudflare may manage SOA automatically).",
       });
     } else if (soaRecords.length > 1) {
       items.push({
@@ -593,30 +649,50 @@ export function runDomainAudit(
       });
     } else {
       const soa = soaRecords[0];
-      const parts = String(soa.content ?? "").trim().split(/\s+/);
+      const parts = String(soa.content ?? "")
+        .trim()
+        .split(/\s+/);
       const issues: string[] = [];
-      if (!recordNameIsApex(soa.name, normalizedZone)) issues.push('SOA name is usually "@".');
+      if (!recordNameIsApex(soa.name, normalizedZone))
+        issues.push('SOA name is usually "@".');
       if (parts.length < 7) {
-        issues.push("SOA content should have 7 fields: mname rname serial refresh retry expire minimum.");
+        issues.push(
+          "SOA content should have 7 fields: mname rname serial refresh retry expire minimum.",
+        );
       } else {
         const [mname, rname, serial, refresh, retry, expire, minimum] = parts;
-        if (!mname.includes(".")) issues.push("SOA mname does not look like a hostname.");
-        if (!rname.includes(".")) issues.push("SOA rname should look like an email with '.' instead of '@'.");
-        if (!/^\d{6,}$/.test(serial)) issues.push("SOA serial should be numeric (often YYYYMMDDnn).");
-        if (/^\d{10}$/.test(serial) && !/^20\d{2}(0[1-9]|1[0-2])([0-2]\d|3[01])\d{2}$/.test(serial)) {
-          issues.push("SOA serial looks like YYYYMMDDnn but the date part is unusual.");
+        if (!mname.includes("."))
+          issues.push("SOA mname does not look like a hostname.");
+        if (!rname.includes("."))
+          issues.push(
+            "SOA rname should look like an email with '.' instead of '@'.",
+          );
+        if (!/^\d{6,}$/.test(serial))
+          issues.push("SOA serial should be numeric (often YYYYMMDDnn).");
+        if (
+          /^\d{10}$/.test(serial) &&
+          !/^20\d{2}(0[1-9]|1[0-2])([0-2]\d|3[01])\d{2}$/.test(serial)
+        ) {
+          issues.push(
+            "SOA serial looks like YYYYMMDDnn but the date part is unusual.",
+          );
         }
         const nums = [refresh, retry, expire, minimum].map((x) => Number(x));
-        if (nums.some((n) => !Number.isFinite(n))) issues.push("SOA timers must be numeric.");
+        if (nums.some((n) => !Number.isFinite(n)))
+          issues.push("SOA timers must be numeric.");
         const [refreshN, retryN, expireN, minimumN] = nums as number[];
         if (Number.isFinite(refreshN) && refreshN < 3600)
-          issues.push("SOA refresh <3600s violates best practice (should be ≥3600).");
+          issues.push(
+            "SOA refresh <3600s violates best practice (should be ≥3600).",
+          );
         if (Number.isFinite(refreshN) && refreshN > 86400)
           issues.push("SOA refresh is very high (>86400).");
         if (Number.isFinite(retryN) && (retryN < 600 || retryN > 900))
           issues.push("SOA retry outside recommended range 600-900s.");
         if (Number.isFinite(expireN) && expireN < 604800)
-          issues.push("SOA expire <7 days violates best practice (should be ≥604800).");
+          issues.push(
+            "SOA expire <7 days violates best practice (should be ≥604800).",
+          );
         if (Number.isFinite(expireN) && expireN > 2419200)
           issues.push("SOA expire is very high (>28 days).");
         if (Number.isFinite(minimumN) && (minimumN < 60 || minimumN > 86400))
@@ -645,7 +721,9 @@ export function runDomainAudit(
         category: "hygiene",
         severity: issues.length ? "info" : "pass",
         title: "SOA best-practice review",
-        details: issues.length ? issues.join("\n") : "SOA record looks structurally valid.",
+        details: issues.length
+          ? issues.join("\n")
+          : "SOA record looks structurally valid.",
       });
     }
 
@@ -675,18 +753,29 @@ export function runDomainAudit(
       for (const r of srvRecords.slice(0, 50)) {
         const name = String(r.name ?? "").trim();
         if (!/^_/.test(name) || !/\._(tcp|udp)/i.test(name)) {
-          issues.push(`SRV ${name}: name should be like _service._tcp (or _udp).`);
+          issues.push(
+            `SRV ${name}: name should be like _service._tcp (or _udp).`,
+          );
         }
         const parsed = parseSRV(r.content);
-        if (parsed.priority === undefined || parsed.weight === undefined || parsed.port === undefined) {
-          issues.push(`SRV ${name}: content should be "priority weight port target".`);
+        if (
+          parsed.priority === undefined ||
+          parsed.weight === undefined ||
+          parsed.port === undefined
+        ) {
+          issues.push(
+            `SRV ${name}: content should be "priority weight port target".`,
+          );
           continue;
         }
-        if (parsed.port < 0 || parsed.port > 65535) issues.push(`SRV ${name}: port out of range.`);
+        if (parsed.port < 0 || parsed.port > 65535)
+          issues.push(`SRV ${name}: port out of range.`);
         const tgt = String(parsed.target ?? "").trim();
         if (!tgt) issues.push(`SRV ${name}: target missing.`);
         if (tgt === "." && parsed.port !== 0) {
-          issues.push(`SRV ${name}: target '.' indicates service not available; port should be 0.`);
+          issues.push(
+            `SRV ${name}: target '.' indicates service not available; port should be 0.`,
+          );
         }
       }
       items.push({
@@ -694,7 +783,9 @@ export function runDomainAudit(
         category: "hygiene",
         severity: issues.length ? "info" : "pass",
         title: "SRV best-practice review",
-        details: issues.length ? issues.slice(0, 12).join("\n") : "No obvious SRV issues detected.",
+        details: issues.length
+          ? issues.slice(0, 12).join("\n")
+          : "No obvious SRV issues detected.",
       });
     }
   }
@@ -705,21 +796,34 @@ export function runDomainAudit(
       const parsed = caaRecords.map((r) => ({ r, p: parseCaa(r.content) }));
       const hasIodef = parsed.some((x) => x.p.tag === "iodef" && x.p.value);
       const issues: string[] = [];
-      if (!hasIodef) issues.push("No iodef CAA tag detected (consider adding an incident contact URL/email).");
+      if (!hasIodef)
+        issues.push(
+          "No iodef CAA tag detected (consider adding an incident contact URL/email).",
+        );
       const issueValues = parsed
         .filter((x) => x.p.tag === "issue" || x.p.tag === "issuewild")
         .map((x) => (x.p.value ?? "").trim())
         .filter(Boolean);
       const distinct = Array.from(new Set(issueValues));
-      if (distinct.length > 3) issues.push(`CAA allows many issuers (${distinct.length}). Consider tightening to fewer CAs.`);
-      const hasDenyAll = parsed.some((x) => x.p.tag === "issue" && (x.p.value ?? "").trim() === ";");
-      if (!hasDenyAll && distinct.length === 0) issues.push("CAA exists but contains no issue/issuewild tags (may be ineffective).");
+      if (distinct.length > 3)
+        issues.push(
+          `CAA allows many issuers (${distinct.length}). Consider tightening to fewer CAs.`,
+        );
+      const hasDenyAll = parsed.some(
+        (x) => x.p.tag === "issue" && (x.p.value ?? "").trim() === ";",
+      );
+      if (!hasDenyAll && distinct.length === 0)
+        issues.push(
+          "CAA exists but contains no issue/issuewild tags (may be ineffective).",
+        );
       items.push({
         id: "caa-analysis",
         category: "security",
         severity: issues.length ? "warn" : "pass",
         title: "CAA policy review",
-        details: issues.length ? issues.join("\n") : "CAA present and looks reasonable.",
+        details: issues.length
+          ? issues.join("\n")
+          : "CAA present and looks reasonable.",
       });
     } else {
       items.push({
@@ -747,7 +851,10 @@ export function runDomainAudit(
         category: "email",
         severity: mx.length > 0 ? "info" : "pass",
         title: "MX records",
-        details: mx.length > 0 ? `Found ${mx.length} MX record(s) (not at apex).` : "No MX records detected.",
+        details:
+          mx.length > 0
+            ? `Found ${mx.length} MX record(s) (not at apex).`
+            : "No MX records detected.",
       });
     }
 
@@ -757,7 +864,8 @@ export function runDomainAudit(
         category: "email",
         severity: "warn",
         title: "Single MX record at apex",
-        details: "Having only one MX can be a single point of failure. Consider adding a secondary MX (or ensuring provider HA).",
+        details:
+          "Having only one MX can be a single point of failure. Consider adding a secondary MX (or ensuring provider HA).",
       });
     } else if (mxAtApex.length > 10) {
       items.push({
@@ -811,7 +919,8 @@ export function runDomainAudit(
           category: "email",
           severity: "warn",
           title: "MX records have duplicate priorities",
-          details: "Multiple MX records share the same priority. Ensure this is intentional for round-robin.",
+          details:
+            "Multiple MX records share the same priority. Ensure this is intentional for round-robin.",
         });
       }
       const mxTargetsWithoutResolution: string[] = [];
@@ -842,7 +951,10 @@ export function runDomainAudit(
         category: "email",
         severity: mxAtApex.length > 0 ? "fail" : "warn",
         title: "SPF missing at apex",
-        details: mxAtApex.length > 0 ? "MX exists at the zone apex but no SPF TXT record was found at @." : "No SPF TXT record was found at @.",
+        details:
+          mxAtApex.length > 0
+            ? "MX exists at the zone apex but no SPF TXT record was found at @."
+            : "No SPF TXT record was found at @.",
         suggestion: { recordType: "TXT", name: "@", content: "v=spf1 -all" },
       });
     } else if (spfTxtAtApex.length > 1) {
@@ -851,7 +963,8 @@ export function runDomainAudit(
         category: "email",
         severity: "fail",
         title: "Multiple SPF TXT records at apex",
-        details: "Multiple SPF records can cause permerror. Combine mechanisms into a single SPF TXT record.",
+        details:
+          "Multiple SPF records can cause permerror. Combine mechanisms into a single SPF TXT record.",
       });
     } else {
       const spf = spfTxtAtApex[0];
@@ -872,7 +985,8 @@ export function runDomainAudit(
           category: "email",
           severity: "fail",
           title: "SPF is too permissive (+all)",
-          details: "SPF with +all authorizes any sender and is usually a serious misconfiguration.",
+          details:
+            "SPF with +all authorizes any sender and is usually a serious misconfiguration.",
         });
       } else if (qualifier === "?") {
         items.push({
@@ -880,7 +994,8 @@ export function runDomainAudit(
           category: "email",
           severity: "warn",
           title: "SPF ends with ?all (neutral)",
-          details: "Neutral SPF provides weak protection. Prefer -all or ~all once confident.",
+          details:
+            "Neutral SPF provides weak protection. Prefer -all or ~all once confident.",
         });
       } else if (qualifier === "~") {
         items.push({
@@ -888,7 +1003,8 @@ export function runDomainAudit(
           category: "email",
           severity: mxAtApex.length > 0 ? "warn" : "info",
           title: "SPF ends with ~all (softfail)",
-          details: "Softfail is common during rollout. Consider moving to -all once aligned.",
+          details:
+            "Softfail is common during rollout. Consider moving to -all once aligned.",
         });
       } else {
         items.push({
@@ -907,7 +1023,8 @@ export function runDomainAudit(
           category: "email",
           severity: "warn",
           title: "SPF uses ptr mechanism",
-          details: "The ptr mechanism is discouraged; it is slow and unreliable.",
+          details:
+            "The ptr mechanism is discouraged; it is slow and unreliable.",
         });
       }
 
@@ -937,7 +1054,11 @@ export function runDomainAudit(
         severity: mxAtApex.length > 0 ? "fail" : "warn",
         title: "DMARC record missing",
         details: `No DMARC TXT record found at ${dmarcName}.`,
-        suggestion: { recordType: "TXT", name: "_dmarc", content: `v=DMARC1; p=none; rua=mailto:postmaster@${apex}; fo=1` },
+        suggestion: {
+          recordType: "TXT",
+          name: "_dmarc",
+          content: `v=DMARC1; p=none; rua=mailto:postmaster@${apex}; fo=1`,
+        },
       });
     } else if (dmarcTxt.length > 1) {
       items.push({
@@ -965,7 +1086,8 @@ export function runDomainAudit(
           category: "email",
           severity: "warn",
           title: "DMARC policy is p=none",
-          details: "p=none is monitoring-only. Consider moving to quarantine/reject once aligned.",
+          details:
+            "p=none is monitoring-only. Consider moving to quarantine/reject once aligned.",
         });
       } else {
         items.push({
@@ -984,7 +1106,8 @@ export function runDomainAudit(
         category: "email",
         severity: "warn",
         title: "No DKIM records detected",
-        details: "No DKIM TXT records (v=DKIM1) detected under selector._domainkey.*. DKIM selectors are provider-specific.",
+        details:
+          "No DKIM TXT records (v=DKIM1) detected under selector._domainkey.*. DKIM selectors are provider-specific.",
       });
     } else {
       items.push({
@@ -992,7 +1115,10 @@ export function runDomainAudit(
         category: "email",
         severity: mx.length > 0 ? "pass" : "info",
         title: "DKIM records",
-        details: mx.length > 0 ? "DKIM TXT records detected." : "No MX detected; DKIM may be unnecessary.",
+        details:
+          mx.length > 0
+            ? "DKIM TXT records detected."
+            : "No MX detected; DKIM may be unnecessary.",
       });
     }
   }

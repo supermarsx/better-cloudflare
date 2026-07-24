@@ -16,10 +16,26 @@ import { composeTLSA, parseTLSA } from "@/lib/dns/dns-parsers";
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
 const TLSA_USAGES = [
-  { value: "0", label: "0 (PKIX-TA)", desc: "CA constraint; verified via PKIX + DANE-TA." },
-  { value: "1", label: "1 (PKIX-EE)", desc: "Service cert constraint; verified via PKIX." },
-  { value: "2", label: "2 (DANE-TA)", desc: "Trust anchor constraint; verified via DNSSEC (no PKIX required)." },
-  { value: "3", label: "3 (DANE-EE)", desc: "Service cert constraint; verified via DNSSEC (no PKIX required)." },
+  {
+    value: "0",
+    label: "0 (PKIX-TA)",
+    desc: "CA constraint; verified via PKIX + DANE-TA.",
+  },
+  {
+    value: "1",
+    label: "1 (PKIX-EE)",
+    desc: "Service cert constraint; verified via PKIX.",
+  },
+  {
+    value: "2",
+    label: "2 (DANE-TA)",
+    desc: "Trust anchor constraint; verified via DNSSEC (no PKIX required).",
+  },
+  {
+    value: "3",
+    label: "3 (DANE-EE)",
+    desc: "Service cert constraint; verified via DNSSEC (no PKIX required).",
+  },
 ] as const;
 
 const TLSA_SELECTORS = [
@@ -28,7 +44,11 @@ const TLSA_SELECTORS = [
 ] as const;
 
 const TLSA_MATCHING = [
-  { value: "0", label: "0 (Full)", desc: "No hash; data is the selected bytes (hex)." },
+  {
+    value: "0",
+    label: "0 (Full)",
+    desc: "No hash; data is the selected bytes (hex).",
+  },
   { value: "1", label: "1 (SHA-256)", desc: "32 bytes → 64 hex chars." },
   { value: "2", label: "2 (SHA-512)", desc: "64 bytes → 128 hex chars." },
 ] as const;
@@ -48,17 +68,25 @@ export function TlsaBuilder({
 }) {
   const [usage, setUsage] = useState<number | undefined>(undefined);
   const [selector, setSelector] = useState<number | undefined>(undefined);
-  const [matchingType, setMatchingType] = useState<number | undefined>(undefined);
+  const [matchingType, setMatchingType] = useState<number | undefined>(
+    undefined,
+  );
   const [data, setData] = useState<string>("");
 
   const [usageMode, setUsageMode] = useState<"preset" | "custom">("preset");
-  const [selectorMode, setSelectorMode] = useState<"preset" | "custom">("preset");
-  const [matchingMode, setMatchingMode] = useState<"preset" | "custom">("preset");
+  const [selectorMode, setSelectorMode] = useState<"preset" | "custom">(
+    "preset",
+  );
+  const [matchingMode, setMatchingMode] = useState<"preset" | "custom">(
+    "preset",
+  );
 
   const usageSelectValue = useMemo(() => {
     if (usageMode === "custom") return "custom";
     if (usage === undefined) return "";
-    return ["0", "1", "2", "3"].includes(String(usage)) ? String(usage) : "custom";
+    return ["0", "1", "2", "3"].includes(String(usage))
+      ? String(usage)
+      : "custom";
   }, [usage, usageMode]);
 
   const selectorSelectValue = useMemo(() => {
@@ -83,12 +111,14 @@ export function TlsaBuilder({
     setMatchingType(parsed.matchingType);
     setData(parsed.data ?? "");
     setUsageMode(
-      parsed.usage !== undefined && ["0", "1", "2", "3"].includes(String(parsed.usage))
+      parsed.usage !== undefined &&
+        ["0", "1", "2", "3"].includes(String(parsed.usage))
         ? "preset"
         : "custom",
     );
     setSelectorMode(
-      parsed.selector !== undefined && ["0", "1"].includes(String(parsed.selector))
+      parsed.selector !== undefined &&
+        ["0", "1"].includes(String(parsed.selector))
         ? "preset"
         : "custom",
     );
@@ -103,7 +133,11 @@ export function TlsaBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "TLSA") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -123,8 +157,10 @@ export function TlsaBuilder({
     else if (![0, 1, 2, 3].includes(Number(u)))
       push(issues, "TLSA: usage is usually 0–3.");
 
-    if (s === undefined) push(issues, "TLSA: selector is required (usually 0–1).");
-    else if (![0, 1].includes(Number(s))) push(issues, "TLSA: selector is usually 0–1.");
+    if (s === undefined)
+      push(issues, "TLSA: selector is required (usually 0–1).");
+    else if (![0, 1].includes(Number(s)))
+      push(issues, "TLSA: selector is usually 0–1.");
 
     if (m === undefined)
       push(issues, "TLSA: matching type is required (usually 0–2).");
@@ -133,7 +169,10 @@ export function TlsaBuilder({
 
     if (!dTrim) push(issues, "TLSA: data is required.");
     if (dTrim && /\s/.test(dTrim))
-      push(issues, "TLSA: data contains whitespace (usually written as a single hex string).");
+      push(
+        issues,
+        "TLSA: data contains whitespace (usually written as a single hex string).",
+      );
 
     if (dNoSpaces) {
       if (!isHex(dNoSpaces)) push(issues, "TLSA: data should be hex.");
@@ -152,18 +191,26 @@ export function TlsaBuilder({
     const canonical = composeTLSA(u, s, m, dNoSpaces || dTrim);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "TLSA: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "TLSA: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
     if (!name)
-      push(
-        nameIssues,
-        "TLSA: name is often _port._proto (e.g., _443._tcp).",
-      );
+      push(nameIssues, "TLSA: name is often _port._proto (e.g., _443._tcp).");
 
     return { canonical, issues, nameIssues };
-  }, [data, matchingType, record.content, record.name, record.type, selector, usage]);
+  }, [
+    data,
+    matchingType,
+    record.content,
+    record.name,
+    record.type,
+    selector,
+    usage,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -214,7 +261,12 @@ export function TlsaBuilder({
                 setUsageMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeTLSA(val, selector, matchingType, data.trim().replace(/\s+/g, "")),
+                  content: composeTLSA(
+                    val,
+                    selector,
+                    matchingType,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -242,7 +294,12 @@ export function TlsaBuilder({
                   setUsage(val);
                   onRecordChange({
                     ...record,
-                    content: composeTLSA(val, selector, matchingType, data.trim().replace(/\s+/g, "")),
+                    content: composeTLSA(
+                      val,
+                      selector,
+                      matchingType,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -268,7 +325,12 @@ export function TlsaBuilder({
                 setSelectorMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeTLSA(usage, val, matchingType, data.trim().replace(/\s+/g, "")),
+                  content: composeTLSA(
+                    usage,
+                    val,
+                    matchingType,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -296,7 +358,12 @@ export function TlsaBuilder({
                   setSelector(val);
                   onRecordChange({
                     ...record,
-                    content: composeTLSA(usage, val, matchingType, data.trim().replace(/\s+/g, "")),
+                    content: composeTLSA(
+                      usage,
+                      val,
+                      matchingType,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -322,7 +389,12 @@ export function TlsaBuilder({
                 setMatchingMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeTLSA(usage, selector, val, data.trim().replace(/\s+/g, "")),
+                  content: composeTLSA(
+                    usage,
+                    selector,
+                    val,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -350,14 +422,19 @@ export function TlsaBuilder({
                   setMatchingType(val);
                   onRecordChange({
                     ...record,
-                    content: composeTLSA(usage, selector, val, data.trim().replace(/\s+/g, "")),
+                    content: composeTLSA(
+                      usage,
+                      selector,
+                      val,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
             )}
             <div className="text-[11px] text-muted-foreground">
-              {TLSA_MATCHING.find((m) => Number(m.value) === matchingType)?.desc ??
-                "Common: 1 (SHA-256)."}
+              {TLSA_MATCHING.find((m) => Number(m.value) === matchingType)
+                ?.desc ?? "Common: 1 (SHA-256)."}
             </div>
           </div>
 
@@ -401,7 +478,9 @@ export function TlsaBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -424,12 +503,16 @@ export function TlsaBuilder({
             <li>
               Many deployments use <code>3 1 1</code> (DANE-EE, SPKI, SHA-256).
             </li>
-            <li>Ensure the record name matches the service port/proto (e.g., _443._tcp).</li>
+            <li>
+              Ensure the record name matches the service port/proto (e.g.,
+              _443._tcp).
+            </li>
             <li>TLSA is most meaningful with DNSSEC validation.</li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">TLSA warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -448,4 +531,3 @@ export function TlsaBuilder({
     </div>
   );
 }
-

@@ -264,26 +264,20 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   const getSPFGraph = useCallback(
     (domain: string): Promise<SPFGraph> => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return (api.getSPFGraph(domain) as Promise<SPFGraph>);
+      return api.getSPFGraph(domain) as Promise<SPFGraph>;
     },
     [api],
   );
 
-  const registrarListAllDomains = useCallback(
-    (): Promise<unknown[]> => {
-      if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.registrarListAllDomains();
-    },
-    [api],
-  );
+  const registrarListAllDomains = useCallback((): Promise<unknown[]> => {
+    if (!api) return Promise.reject(new Error("API key not provided"));
+    return api.registrarListAllDomains();
+  }, [api]);
 
-  const registrarHealthCheckAll = useCallback(
-    (): Promise<unknown[]> => {
-      if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.registrarHealthCheckAll();
-    },
-    [api],
-  );
+  const registrarHealthCheckAll = useCallback((): Promise<unknown[]> => {
+    if (!api) return Promise.reject(new Error("API key not provided"));
+    return api.registrarHealthCheckAll();
+  }, [api]);
 
   // ── Analytics ─────────────────────────────────────────────────────────────
 
@@ -314,7 +308,15 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   );
 
   const createFirewallRule = useCallback(
-    (zoneId: string, rule: { action: string; description?: string; filter: { expression: string } }, signal?: AbortSignal) => {
+    (
+      zoneId: string,
+      rule: {
+        action: string;
+        description?: string;
+        filter: { expression: string };
+      },
+      signal?: AbortSignal,
+    ) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
       return api.createFirewallRule(zoneId, rule, signal);
     },
@@ -322,7 +324,16 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   );
 
   const updateFirewallRule = useCallback(
-    (zoneId: string, ruleId: string, rule: { action: string; description?: string; filter: { expression: string } }, signal?: AbortSignal) => {
+    (
+      zoneId: string,
+      ruleId: string,
+      rule: {
+        action: string;
+        description?: string;
+        filter: { expression: string };
+      },
+      signal?: AbortSignal,
+    ) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
       return api.updateFirewallRule(zoneId, ruleId, rule, signal);
     },
@@ -346,7 +357,13 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   );
 
   const createIpAccessRule = useCallback(
-    (zoneId: string, mode: string, ip: string, notes?: string, signal?: AbortSignal) => {
+    (
+      zoneId: string,
+      mode: string,
+      ip: string,
+      notes?: string,
+      signal?: AbortSignal,
+    ) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
       return api.createIpAccessRule(zoneId, mode, ip, notes, signal);
     },

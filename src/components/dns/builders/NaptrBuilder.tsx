@@ -40,41 +40,67 @@ function looksLikeHostname(value: string) {
   return labels.every(isValidDnsLabel);
 }
 
-const NAPTR_FLAG_PRESETS: Array<{ value: string; label: string; description: string }> =
-  [
-    {
-      value: "U",
-      label: "U — URI",
-      description: "Terminal rule; the regexp replacement produces a URI.",
-    },
-    {
-      value: "S",
-      label: "S — SRV",
-      description: "Terminal rule; the replacement points to an SRV record.",
-    },
-    {
-      value: "A",
-      label: "A — A/AAAA",
-      description: "Terminal rule; the replacement points to A/AAAA.",
-    },
-    {
-      value: "P",
-      label: "P — Protocol-specific",
-      description: "Terminal rule; protocol-specific processing.",
-    },
-  ];
+const NAPTR_FLAG_PRESETS: Array<{
+  value: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "U",
+    label: "U — URI",
+    description: "Terminal rule; the regexp replacement produces a URI.",
+  },
+  {
+    value: "S",
+    label: "S — SRV",
+    description: "Terminal rule; the replacement points to an SRV record.",
+  },
+  {
+    value: "A",
+    label: "A — A/AAAA",
+    description: "Terminal rule; the replacement points to A/AAAA.",
+  },
+  {
+    value: "P",
+    label: "P — Protocol-specific",
+    description: "Terminal rule; protocol-specific processing.",
+  },
+];
 
-const NAPTR_SERVICE_PRESETS: Array<{ value: string; label: string; description: string }> =
-  [
-    { value: "E2U+sip", label: "E2U+sip", description: "SIP URI resolution." },
-    { value: "E2U+sips", label: "E2U+sips", description: "Secure SIP URI resolution." },
-    { value: "E2U+email", label: "E2U+email", description: "Email address resolution." },
-    { value: "E2U+sms", label: "E2U+sms", description: "SMS resolution." },
-    { value: "E2U+tel", label: "E2U+tel", description: "Telephone number resolution." },
-    { value: "E2U+fax", label: "E2U+fax", description: "Fax resolution." },
-    { value: "E2U+web:http", label: "E2U+web:http", description: "Web (HTTP) URI resolution." },
-    { value: "E2U+web:https", label: "E2U+web:https", description: "Web (HTTPS) URI resolution." },
-  ];
+const NAPTR_SERVICE_PRESETS: Array<{
+  value: string;
+  label: string;
+  description: string;
+}> = [
+  { value: "E2U+sip", label: "E2U+sip", description: "SIP URI resolution." },
+  {
+    value: "E2U+sips",
+    label: "E2U+sips",
+    description: "Secure SIP URI resolution.",
+  },
+  {
+    value: "E2U+email",
+    label: "E2U+email",
+    description: "Email address resolution.",
+  },
+  { value: "E2U+sms", label: "E2U+sms", description: "SMS resolution." },
+  {
+    value: "E2U+tel",
+    label: "E2U+tel",
+    description: "Telephone number resolution.",
+  },
+  { value: "E2U+fax", label: "E2U+fax", description: "Fax resolution." },
+  {
+    value: "E2U+web:http",
+    label: "E2U+web:http",
+    description: "Web (HTTP) URI resolution.",
+  },
+  {
+    value: "E2U+web:https",
+    label: "E2U+web:https",
+    description: "Web (HTTPS) URI resolution.",
+  },
+];
 
 function splitByUnescapedDelimiter(value: string, delimiter: string) {
   const parts: string[] = [];
@@ -107,14 +133,18 @@ function validateNaptrRegexp(value: string): string[] {
 
   const delimiter = v[0];
   if (/^[A-Za-z0-9]$/.test(delimiter)) {
-    push("NAPTR: regexp should start with a non-alphanumeric delimiter (e.g., !).");
+    push(
+      "NAPTR: regexp should start with a non-alphanumeric delimiter (e.g., !).",
+    );
     return issues;
   }
 
   const rest = v.slice(1);
   const { parts, tail } = splitByUnescapedDelimiter(rest, delimiter);
   if (parts.length < 2) {
-    push("NAPTR: regexp should contain at least 2 delimiters: <delim>pattern<delim>replacement<delim>flags?.");
+    push(
+      "NAPTR: regexp should contain at least 2 delimiters: <delim>pattern<delim>replacement<delim>flags?.",
+    );
     return issues;
   }
 
@@ -129,7 +159,9 @@ function validateNaptrRegexp(value: string): string[] {
     push("NAPTR: regexp has extra trailing text after the last delimiter.");
   }
   if (parts.length > 3) {
-    push("NAPTR: regexp contains more delimiters than expected; ensure delimiters inside the pattern are escaped.");
+    push(
+      "NAPTR: regexp contains more delimiters than expected; ensure delimiters inside the pattern are escaped.",
+    );
   }
 
   if (pattern) {
@@ -139,11 +171,14 @@ function validateNaptrRegexp(value: string): string[] {
       // eslint-disable-next-line no-new
       new RegExp(pattern);
     } catch {
-      push("NAPTR: regexp pattern does not look like a valid regular expression.");
+      push(
+        "NAPTR: regexp pattern does not look like a valid regular expression.",
+      );
     }
   }
 
-  if (flags && /\s/.test(flags)) push("NAPTR: regexp flags contain whitespace.");
+  if (flags && /\s/.test(flags))
+    push("NAPTR: regexp flags contain whitespace.");
   return issues;
 }
 
@@ -194,8 +229,9 @@ export function NaptrBuilder({
     const v = (service ?? "").trim();
     if (!v) return null;
     return (
-      NAPTR_SERVICE_PRESETS.find((p) => p.value.toLowerCase() === v.toLowerCase())
-        ?.description ?? null
+      NAPTR_SERVICE_PRESETS.find(
+        (p) => p.value.toLowerCase() === v.toLowerCase(),
+      )?.description ?? null
     );
   }, [service]);
 
@@ -213,7 +249,11 @@ export function NaptrBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "NAPTR") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -229,9 +269,11 @@ export function NaptrBuilder({
     const rep = (replacement ?? "").trim();
 
     if (o === undefined) push(issues, "NAPTR: order is required.");
-    else if (o < 0 || o > 65535) push(issues, "NAPTR: order should be 0–65535.");
+    else if (o < 0 || o > 65535)
+      push(issues, "NAPTR: order should be 0–65535.");
     if (p === undefined) push(issues, "NAPTR: preference is required.");
-    else if (p < 0 || p > 65535) push(issues, "NAPTR: preference should be 0–65535.");
+    else if (p < 0 || p > 65535)
+      push(issues, "NAPTR: preference should be 0–65535.");
 
     if (!f) push(issues, "NAPTR: flags are empty (often U, S, P, or A).");
     if (f && /\s/.test(f)) push(issues, "NAPTR: flags contain whitespace.");
@@ -240,18 +282,25 @@ export function NaptrBuilder({
     if (!s) push(issues, "NAPTR: service is empty (e.g., E2U+sip).");
     if (s && /\s/.test(s)) push(issues, "NAPTR: service contains whitespace.");
 
-    if (!r) push(issues, "NAPTR: regexp is empty (use \"\" if unused).");
+    if (!r) push(issues, 'NAPTR: regexp is empty (use "" if unused).');
     if (r && r.length > 1024) push(issues, "NAPTR: regexp is very long.");
     if (r) {
       for (const w of validateNaptrRegexp(r)) push(issues, w);
     }
 
-    if (!rep) push(issues, "NAPTR: replacement is empty (use \".\" if unused).");
+    if (!rep) push(issues, 'NAPTR: replacement is empty (use "." if unused).');
     if (rep && rep !== "." && !looksLikeHostname(rep))
-      push(issues, "NAPTR: replacement does not look like a hostname (or \".\").");
+      push(
+        issues,
+        'NAPTR: replacement does not look like a hostname (or ".").',
+      );
     if (rep && rep !== "." && looksLikeHostname(rep)) {
       const tld = normalizeDnsName(rep).split(".").pop()?.toLowerCase() ?? "";
-      if (tld && normalizeDnsName(rep).includes(".") && /^[a-z0-9-]{2,63}$/.test(tld)) {
+      if (
+        tld &&
+        normalizeDnsName(rep).includes(".") &&
+        /^[a-z0-9-]{2,63}$/.test(tld)
+      ) {
         if (!KNOWN_TLDS.has(tld))
           push(issues, `NAPTR: replacement has unknown/invalid TLD “.${tld}”.`);
       }
@@ -260,7 +309,10 @@ export function NaptrBuilder({
     const canonical = composeNAPTR(o, p, f, s, r, rep);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "NAPTR: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "NAPTR: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -271,7 +323,17 @@ export function NaptrBuilder({
       );
 
     return { canonical, issues, nameIssues };
-  }, [flags, order, preference, record.content, record.name, record.type, regexp, replacement, service]);
+  }, [
+    flags,
+    order,
+    preference,
+    record.content,
+    record.name,
+    record.type,
+    regexp,
+    replacement,
+    service,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -284,7 +346,13 @@ export function NaptrBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange, record.type]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+    record.type,
+  ]);
 
   if (record.type !== "NAPTR") return null;
 
@@ -296,7 +364,8 @@ export function NaptrBuilder({
             NAPTR builder
           </div>
           <div className="text-[11px] text-muted-foreground">
-            Format: <code>order preference flags service regexp replacement</code>
+            Format:{" "}
+            <code>order preference flags service regexp replacement</code>
           </div>
         </div>
 
@@ -313,7 +382,14 @@ export function NaptrBuilder({
                 setOrder(val);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(val, preference, flags, service, regexp, replacement),
+                  content: composeNAPTR(
+                    val,
+                    preference,
+                    flags,
+                    service,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             />
@@ -334,7 +410,14 @@ export function NaptrBuilder({
                 setPreference(val);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, val, flags, service, regexp, replacement),
+                  content: composeNAPTR(
+                    order,
+                    val,
+                    flags,
+                    service,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             />
@@ -352,7 +435,14 @@ export function NaptrBuilder({
                 setFlags(value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, value, service, regexp, replacement),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    value,
+                    service,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             >
@@ -370,13 +460,20 @@ export function NaptrBuilder({
             </Select>
             <Input
               className="mt-2"
-              placeholder='e.g., U (or custom flags)'
+              placeholder="e.g., U (or custom flags)"
               value={flags}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
                 setFlags(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, e.target.value, service, regexp, replacement),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    e.target.value,
+                    service,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             />
@@ -394,7 +491,14 @@ export function NaptrBuilder({
                 setService(value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, flags, value, regexp, replacement),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    flags,
+                    value,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             >
@@ -418,7 +522,14 @@ export function NaptrBuilder({
                 setService(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, flags, e.target.value, regexp, replacement),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    flags,
+                    e.target.value,
+                    regexp,
+                    replacement,
+                  ),
                 });
               }}
             />
@@ -440,7 +551,14 @@ export function NaptrBuilder({
                 setRegexp(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, flags, service, e.target.value, replacement),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    flags,
+                    service,
+                    e.target.value,
+                    replacement,
+                  ),
                 });
               }}
             />
@@ -458,7 +576,14 @@ export function NaptrBuilder({
                 setReplacement(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: composeNAPTR(order, preference, flags, service, regexp, e.target.value),
+                  content: composeNAPTR(
+                    order,
+                    preference,
+                    flags,
+                    service,
+                    regexp,
+                    e.target.value,
+                  ),
                 });
               }}
             />
@@ -486,7 +611,9 @@ export function NaptrBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -507,16 +634,21 @@ export function NaptrBuilder({
           </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
-              Prefer explicit and consistent <code>order</code>/<code>preference</code> values.
+              Prefer explicit and consistent <code>order</code>/
+              <code>preference</code> values.
             </li>
             <li>
-              Use <code>.</code> as replacement when you rely on <code>regexp</code>.
+              Use <code>.</code> as replacement when you rely on{" "}
+              <code>regexp</code>.
             </li>
-            <li>NAPTR is complex—double-check your target protocol requirements.</li>
+            <li>
+              NAPTR is complex—double-check your target protocol requirements.
+            </li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">NAPTR warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">

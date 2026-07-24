@@ -33,8 +33,8 @@ const Switch = React.forwardRef<
         size === "xs"
           ? "h-3 w-3 shadow-[0_6px_14px_hsl(0_0%_0%_/_0.34)] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[0.95rem]"
           : size === "sm"
-          ? "h-5 w-5 shadow-[0_8px_18px_hsl(0_0%_0%_/_0.34)] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[1.1rem]"
-          : "h-6 w-6 shadow-[0_10px_22px_hsl(0_0%_0%_/_0.35)] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[1.45rem]",
+            ? "h-5 w-5 shadow-[0_8px_18px_hsl(0_0%_0%_/_0.34)] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[1.1rem]"
+            : "h-6 w-6 shadow-[0_10px_22px_hsl(0_0%_0%_/_0.35)] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[1.45rem]",
       )}
     />
   </SwitchPrimitives.Root>

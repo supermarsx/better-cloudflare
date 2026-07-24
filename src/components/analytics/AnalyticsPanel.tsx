@@ -84,7 +84,10 @@ function Sparkline({
   const range = max - min || 1;
   const step = width / (data.length - 1);
   const points = data
-    .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height * 0.9 - height * 0.05).toFixed(1)}`)
+    .map(
+      (v, i) =>
+        `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height * 0.9 - height * 0.05).toFixed(1)}`,
+    )
     .join(" ");
   const areaPoints = `0,${height} ${points} ${width},${height}`;
   return (
@@ -105,7 +108,10 @@ interface AnalyticsPanelProps {
   ) => Promise<unknown>;
 }
 
-function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) {
+function AnalyticsPanelInner({
+  zoneId,
+  getZoneAnalytics,
+}: AnalyticsPanelProps) {
   const { t } = useI18n();
   const [data, setData] = useState<ZoneAnalyticsData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -118,11 +124,20 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
       setError(null);
       try {
         const since = sinceFromRange(range);
-        const result = (await getZoneAnalytics(zoneId, since, undefined, signal)) as ZoneAnalyticsData;
+        const result = (await getZoneAnalytics(
+          zoneId,
+          since,
+          undefined,
+          signal,
+        )) as ZoneAnalyticsData;
         if (!signal?.aborted) setData(result);
       } catch (err) {
         if (!signal?.aborted) {
-          setError(err instanceof Error ? err.message : t("Failed to load analytics", "Failed to load analytics"));
+          setError(
+            err instanceof Error
+              ? err.message
+              : t("Failed to load analytics", "Failed to load analytics"),
+          );
         }
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -151,7 +166,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">{t("Zone Analytics", "Zone Analytics")}</h3>
+        <h3 className="text-lg font-semibold">
+          {t("Zone Analytics", "Zone Analytics")}
+        </h3>
         <div className="flex items-center gap-2">
           <Select value={range} onValueChange={(v) => setRange(v as TimeRange)}>
             <SelectTrigger className="w-40">
@@ -165,7 +182,12 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" variant="outline" onClick={() => fetchData()} disabled={loading}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => fetchData()}
+            disabled={loading}
+          >
             {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
           </Button>
         </div>
@@ -182,7 +204,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">{formatNumber(data.totals.requests)}</p>
+                <p className="text-2xl font-bold">
+                  {formatNumber(data.totals.requests)}
+                </p>
               </CardContent>
             </Card>
             <Card>
@@ -192,7 +216,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">{formatBytes(data.totals.bandwidth)}</p>
+                <p className="text-2xl font-bold">
+                  {formatBytes(data.totals.bandwidth)}
+                </p>
               </CardContent>
             </Card>
             <Card>
@@ -202,7 +228,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">{formatNumber(data.totals.threats)}</p>
+                <p className="text-2xl font-bold">
+                  {formatNumber(data.totals.threats)}
+                </p>
               </CardContent>
             </Card>
             <Card>
@@ -212,7 +240,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">{formatNumber(data.totals.pageviews)}</p>
+                <p className="text-2xl font-bold">
+                  {formatNumber(data.totals.pageviews)}
+                </p>
               </CardContent>
             </Card>
           </div>
@@ -227,7 +257,10 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Sparkline data={data.timeseries.map((p) => p.requests)} color="var(--color-primary, #3b82f6)" />
+                  <Sparkline
+                    data={data.timeseries.map((p) => p.requests)}
+                    color="var(--color-primary, #3b82f6)"
+                  />
                 </CardContent>
               </Card>
               <Card>
@@ -237,7 +270,10 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Sparkline data={data.timeseries.map((p) => p.bandwidth)} color="var(--color-primary, #10b981)" />
+                  <Sparkline
+                    data={data.timeseries.map((p) => p.bandwidth)}
+                    color="var(--color-primary, #10b981)"
+                  />
                 </CardContent>
               </Card>
             </div>
@@ -247,7 +283,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
           {data.timeseries.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">{t("Timeseries", "Timeseries")}</CardTitle>
+                <CardTitle className="text-sm">
+                  {t("Timeseries", "Timeseries")}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="max-h-64 overflow-auto">
@@ -255,10 +293,18 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">
                         <th className="pb-1 pr-3">{t("Period", "Period")}</th>
-                        <th className="pb-1 pr-3 text-right">{t("Requests", "Requests")}</th>
-                        <th className="pb-1 pr-3 text-right">{t("Bandwidth", "Bandwidth")}</th>
-                        <th className="pb-1 pr-3 text-right">{t("Threats", "Threats")}</th>
-                        <th className="pb-1 text-right">{t("Views", "Views")}</th>
+                        <th className="pb-1 pr-3 text-right">
+                          {t("Requests", "Requests")}
+                        </th>
+                        <th className="pb-1 pr-3 text-right">
+                          {t("Bandwidth", "Bandwidth")}
+                        </th>
+                        <th className="pb-1 pr-3 text-right">
+                          {t("Threats", "Threats")}
+                        </th>
+                        <th className="pb-1 text-right">
+                          {t("Views", "Views")}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -272,10 +318,18 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
                               minute: "2-digit",
                             })}
                           </td>
-                          <td className="py-1 pr-3 text-right">{formatNumber(point.requests)}</td>
-                          <td className="py-1 pr-3 text-right">{formatBytes(point.bandwidth)}</td>
-                          <td className="py-1 pr-3 text-right">{formatNumber(point.threats)}</td>
-                          <td className="py-1 text-right">{formatNumber(point.pageviews)}</td>
+                          <td className="py-1 pr-3 text-right">
+                            {formatNumber(point.requests)}
+                          </td>
+                          <td className="py-1 pr-3 text-right">
+                            {formatBytes(point.bandwidth)}
+                          </td>
+                          <td className="py-1 pr-3 text-right">
+                            {formatNumber(point.threats)}
+                          </td>
+                          <td className="py-1 text-right">
+                            {formatNumber(point.pageviews)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -289,7 +343,9 @@ function AnalyticsPanelInner({ zoneId, getZoneAnalytics }: AnalyticsPanelProps) 
 
       {loading && !data && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">{t("Loading analytics…", "Loading analytics…")}</p>
+          <p className="text-sm text-muted-foreground">
+            {t("Loading analytics…", "Loading analytics…")}
+          </p>
         </div>
       )}
     </div>

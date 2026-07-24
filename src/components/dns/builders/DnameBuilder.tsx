@@ -53,7 +53,11 @@ export function DnameBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "DNAME") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -78,7 +82,10 @@ export function DnameBuilder({
     const canonical = normalizeDnsName(target);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "DNAME: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "DNAME: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -139,7 +146,8 @@ export function DnameBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              DNAME aliases an entire subtree; double-check that CNAME is not what you want.
+              DNAME aliases an entire subtree; double-check that CNAME is not
+              what you want.
             </div>
           </div>
         </div>
@@ -154,7 +162,9 @@ export function DnameBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -169,7 +179,8 @@ export function DnameBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">DNAME warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -188,4 +199,3 @@ export function DnameBuilder({
     </div>
   );
 }
-

@@ -78,9 +78,7 @@ function formatHumanDate(dateStr: string): { label: string; full: string } {
 }
 
 /** Status badge colour for domain status. */
-function statusVariant(
-  status: string,
-): "default" | "primary" {
+function statusVariant(status: string): "default" | "primary" {
   switch (status) {
     case "active":
       return "primary";
@@ -90,7 +88,11 @@ function statusVariant(
 }
 
 /** Health status icon. */
-function HealthIcon({ status }: { status: "healthy" | "warning" | "critical" }) {
+function HealthIcon({
+  status,
+}: {
+  status: "healthy" | "warning" | "critical";
+}) {
   switch (status) {
     case "healthy":
       return <ShieldCheck className="h-4 w-4 text-emerald-400" />;
@@ -132,7 +134,9 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
     } catch {
       toast({
         title: t("Error", "Error"),
-        description: monitor.error ?? t("Failed to refresh domains", "Failed to refresh domains"),
+        description:
+          monitor.error ??
+          t("Failed to refresh domains", "Failed to refresh domains"),
         variant: "destructive",
       });
     }
@@ -148,7 +152,9 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
     } catch {
       toast({
         title: t("Error", "Error"),
-        description: monitor.error ?? t("Failed to remove credential", "Failed to remove credential"),
+        description:
+          monitor.error ??
+          t("Failed to remove credential", "Failed to remove credential"),
         variant: "destructive",
       });
     }
@@ -200,7 +206,10 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Tooltip tip={t("Refresh all domains", "Refresh all domains")} side="bottom">
+              <Tooltip
+                tip={t("Refresh all domains", "Refresh all domains")}
+                side="bottom"
+              >
                 <Button
                   variant="outline"
                   size="icon"
@@ -237,9 +246,7 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
                   <span className="font-medium">
                     {REGISTRAR_LABELS[cred.provider]}
                   </span>
-                  <span className="text-muted-foreground">
-                    {cred.label}
-                  </span>
+                  <span className="text-muted-foreground">{cred.label}</span>
                   <button
                     type="button"
                     onClick={() => handleDeleteCredential(cred)}
@@ -276,10 +283,7 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
                   "No registrars configured. Add one to start monitoring your domains.",
                 )}
               </p>
-              <Button
-                variant="outline"
-                onClick={() => setShowAddDialog(true)}
-              >
+              <Button variant="outline" onClick={() => setShowAddDialog(true)}>
                 <Plus className="h-4 w-4 mr-1" />
                 {t("Add Registrar", "Add Registrar")}
               </Button>
@@ -325,15 +329,27 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
                   <>
                     <span className="flex items-center gap-1">
                       <ShieldCheck className="h-3 w-3 text-emerald-400" />
-                      {monitor.healthChecks.filter((h) => h.status === "healthy").length}
+                      {
+                        monitor.healthChecks.filter(
+                          (h) => h.status === "healthy",
+                        ).length
+                      }
                     </span>
                     <span className="flex items-center gap-1">
                       <ShieldAlert className="h-3 w-3 text-amber-400" />
-                      {monitor.healthChecks.filter((h) => h.status === "warning").length}
+                      {
+                        monitor.healthChecks.filter(
+                          (h) => h.status === "warning",
+                        ).length
+                      }
                     </span>
                     <span className="flex items-center gap-1">
                       <ShieldX className="h-3 w-3 text-red-400" />
-                      {monitor.healthChecks.filter((h) => h.status === "critical").length}
+                      {
+                        monitor.healthChecks.filter(
+                          (h) => h.status === "critical",
+                        ).length
+                      }
                     </span>
                   </>
                 )}
@@ -422,16 +438,23 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
         </div>
 
         {/* Status tag */}
-        <Tag variant={statusVariant(domain.status)} className="text-[10px] shrink-0">
+        <Tag
+          variant={statusVariant(domain.status)}
+          className="text-[10px] shrink-0"
+        >
           {domain.status}
         </Tag>
 
         {/* Expiry */}
-        <div className={`text-xs shrink-0 flex items-center gap-1 ${expiryColor}`}>
+        <div
+          className={`text-xs shrink-0 flex items-center gap-1 ${expiryColor}`}
+        >
           <Clock className="h-3 w-3" />
           {days !== null ? (
             days < 0 ? (
-              <span>{t("Expired", "Expired")} {Math.abs(days)}d</span>
+              <span>
+                {t("Expired", "Expired")} {Math.abs(days)}d
+              </span>
             ) : (
               <span>{days}d</span>
             )
@@ -442,14 +465,28 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
 
         {/* Lock icons */}
         <div className="flex items-center gap-1 shrink-0">
-          <Tooltip tip={domain.locks.transfer_lock ? t("Transfer locked", "Transfer locked") : t("Transfer unlocked", "Transfer unlocked")} side="bottom">
+          <Tooltip
+            tip={
+              domain.locks.transfer_lock
+                ? t("Transfer locked", "Transfer locked")
+                : t("Transfer unlocked", "Transfer unlocked")
+            }
+            side="bottom"
+          >
             {domain.locks.transfer_lock ? (
               <Lock className="h-3.5 w-3.5 text-emerald-400" />
             ) : (
               <Unlock className="h-3.5 w-3.5 text-amber-400" />
             )}
           </Tooltip>
-          <Tooltip tip={domain.locks.auto_renew ? t("Auto-renew on", "Auto-renew on") : t("Auto-renew off", "Auto-renew off")} side="bottom">
+          <Tooltip
+            tip={
+              domain.locks.auto_renew
+                ? t("Auto-renew on", "Auto-renew on")
+                : t("Auto-renew off", "Auto-renew off")
+            }
+            side="bottom"
+          >
             <RefreshCw
               className={`h-3.5 w-3.5 ${domain.locks.auto_renew ? "text-emerald-400" : "text-amber-400"}`}
             />
@@ -530,16 +567,32 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
             </div>
             <div>
               <span className="text-muted-foreground block">DNSSEC</span>
-              <span className={domain.dnssec.enabled ? "text-emerald-400" : "text-muted-foreground"}>
-                {domain.dnssec.enabled ? t("Enabled", "Enabled") : t("Disabled", "Disabled")}
+              <span
+                className={
+                  domain.dnssec.enabled
+                    ? "text-emerald-400"
+                    : "text-muted-foreground"
+                }
+              >
+                {domain.dnssec.enabled
+                  ? t("Enabled", "Enabled")
+                  : t("Disabled", "Disabled")}
               </span>
             </div>
             <div className="md:col-span-1">
               <span className="text-muted-foreground block">
                 {t("Privacy", "Privacy")}
               </span>
-              <span className={domain.privacy.enabled ? "text-emerald-400" : "text-muted-foreground"}>
-                {domain.privacy.enabled ? t("Enabled", "Enabled") : t("Disabled", "Disabled")}
+              <span
+                className={
+                  domain.privacy.enabled
+                    ? "text-emerald-400"
+                    : "text-muted-foreground"
+                }
+              >
+                {domain.privacy.enabled
+                  ? t("Enabled", "Enabled")
+                  : t("Disabled", "Disabled")}
               </span>
             </div>
           </div>

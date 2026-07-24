@@ -84,13 +84,17 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Tooltip
-          tip={t("Theme: {{name}}", { name: t(themeLabels[theme], themeLabels[theme]) })}
+          tip={t("Theme: {{name}}", {
+            name: t(themeLabels[theme], themeLabels[theme]),
+          })}
           side="bottom"
         >
           <Button
             variant="ghost"
             size="icon"
-            className={compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"}
+            className={
+              compact ? "ui-icon-button h-7 w-7" : "ui-icon-button h-8 w-8"
+            }
             aria-label={t("Select theme", "Select theme")}
           >
             {icons[theme]}

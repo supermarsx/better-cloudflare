@@ -41,8 +41,13 @@ export function useLoginForm(
     await client.verifyToken(signal);
   };
   const formatError = (err: unknown) =>
-    err instanceof Error ? err.message : typeof err === "string" ? err : "Unknown error";
-  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : "Unknown error";
+  const delay = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
 
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [password, setPassword] = useState("");
@@ -350,11 +355,12 @@ export function useLoginForm(
     }
 
     setPasskeyRegisterLoading(true);
-    
+
     // Show initial guidance toast
     toast({
       title: "Passkey Registration",
-      description: "Follow the prompts from your device to register a new passkey...",
+      description:
+        "Follow the prompts from your device to register a new passkey...",
     });
 
     try {
@@ -376,17 +382,13 @@ export function useLoginForm(
       }
 
       try {
-        const sc = new ServerClient(
-          decryptedKey,
-          undefined,
-          decryptedEmail,
-        );
+        const sc = new ServerClient(decryptedKey, undefined, decryptedEmail);
         await sc.storeVaultSecret(selectedKeyId, decryptedKey);
       } catch (err) {
         console.warn("Failed to store key to OS vault:", err);
         // Don't show toast for vault failures as it's optional
       }
-      
+
       const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
       const registrationOptionsRaw =
@@ -427,15 +429,17 @@ export function useLoginForm(
     } catch (error) {
       const errorMsg = (error as Error).message;
       let userMessage = errorMsg;
-      
+
       if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
-        userMessage = "Registration was cancelled or not allowed by your device";
+        userMessage =
+          "Registration was cancelled or not allowed by your device";
       } else if (errorMsg.includes("NotSupportedError")) {
         userMessage = "Passkeys are not supported on this device or browser";
       } else if (errorMsg.includes("SecurityError")) {
-        userMessage = "Security error: Please ensure you're using HTTPS or localhost";
+        userMessage =
+          "Security error: Please ensure you're using HTTPS or localhost";
       }
-      
+
       toast({
         title: "Passkey Registration Failed",
         description: userMessage,
@@ -455,15 +459,16 @@ export function useLoginForm(
       });
       return;
     }
-    
+
     setPasskeyAuthLoading(true);
-    
+
     // Show guidance toast
     toast({
       title: "Passkey Authentication",
-      description: "Use your device's biometric or security key to authenticate...",
+      description:
+        "Use your device's biometric or security key to authenticate...",
     });
-    
+
     try {
       const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
@@ -482,7 +487,7 @@ export function useLoginForm(
       );
 
       const assertion = await navigator.credentials.get({ publicKey });
-      
+
       if (assertion) {
         const a = assertion as PublicKeyCredential;
         const serverResp = await scx.authenticatePasskey(
@@ -498,14 +503,15 @@ export function useLoginForm(
             const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
             storageManager.setCurrentSession(selectedKeyId);
             onLogin(secret, selectedKey?.email);
-            toast({ 
-              title: "✓ Login Successful", 
-              description: "Authenticated using passkey" 
+            toast({
+              title: "✓ Login Successful",
+              description: "Authenticated using passkey",
             });
           } else {
             toast({
               title: "Error",
-              description: "No API key found in vault. Please register a passkey first.",
+              description:
+                "No API key found in vault. Please register a passkey first.",
               variant: "destructive",
             });
           }
@@ -526,17 +532,23 @@ export function useLoginForm(
     } catch (error) {
       const errorMsg = (error as Error).message;
       let userMessage = errorMsg;
-      
+
       if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
-        userMessage = "Authentication was cancelled or not allowed by your device";
+        userMessage =
+          "Authentication was cancelled or not allowed by your device";
       } else if (errorMsg.includes("NotSupportedError")) {
         userMessage = "Passkeys are not supported on this device or browser";
-      } else if (errorMsg.includes("No secret") || errorMsg.includes("not found")) {
-        userMessage = "No passkey registered for this API key. Please register one first.";
+      } else if (
+        errorMsg.includes("No secret") ||
+        errorMsg.includes("not found")
+      ) {
+        userMessage =
+          "No passkey registered for this API key. Please register one first.";
       } else if (errorMsg.includes("SecurityError")) {
-        userMessage = "Security error: Please ensure you're using HTTPS or localhost";
+        userMessage =
+          "Security error: Please ensure you're using HTTPS or localhost";
       }
-      
+
       toast({
         title: "Authentication Failed",
         description: userMessage,
@@ -664,9 +676,9 @@ export function useLoginForm(
     try {
       const result = desktop
         ? await TauriClient.benchmarkEncryption(encryptionSettings.iterations)
-        : await (await import("@/lib/auth/crypto-benchmark")).benchmark(
-            encryptionSettings.iterations,
-          );
+        : await (
+            await import("@/lib/auth/crypto-benchmark")
+          ).benchmark(encryptionSettings.iterations);
       setBenchmarkResult(result);
       toast({
         title: "Benchmark Complete",
@@ -719,8 +731,7 @@ export function useLoginForm(
     } catch (err) {
       toast({
         title: "Error",
-        description:
-          "Failed to decrypt key: " + (err as Error).message,
+        description: "Failed to decrypt key: " + (err as Error).message,
         variant: "destructive",
       });
     }
@@ -739,7 +750,11 @@ export function useLoginForm(
         `Unlock ${selectedKey?.label ?? "API key"} with ${biometricLabel}`,
       );
       if (!decryptedKey) {
-        toast({ title: "Error", description: "No key returned from keychain", variant: "destructive" });
+        toast({
+          title: "Error",
+          description: "No key returned from keychain",
+          variant: "destructive",
+        });
         return;
       }
 
@@ -747,20 +762,31 @@ export function useLoginForm(
       try {
         await verifyToken(decryptedKey, selectedKey?.email);
       } catch (err) {
-        toast({ title: "Error", description: formatError(err), variant: "destructive" });
+        toast({
+          title: "Error",
+          description: formatError(err),
+          variant: "destructive",
+        });
         return;
       }
 
       storageManager.setCurrentSession(selectedKeyId);
       onLogin(decryptedKey, selectedKey?.email);
-      toast({ title: "Success", description: `Logged in with ${biometricLabel}` });
+      toast({
+        title: "Success",
+        description: `Logged in with ${biometricLabel}`,
+      });
     } catch (err) {
       const msg = formatError(err);
       if (msg.toLowerCase().includes("cancel")) {
         // User cancelled biometric prompt — no toast needed
         return;
       }
-      toast({ title: "Error", description: `${biometricLabel} login failed: ${msg}`, variant: "destructive" });
+      toast({
+        title: "Error",
+        description: `${biometricLabel} login failed: ${msg}`,
+        variant: "destructive",
+      });
     } finally {
       setBiometricLoading(false);
     }
@@ -769,7 +795,11 @@ export function useLoginForm(
   /** Enrol the currently selected key for biometric unlock. Requires password. */
   const handleBiometricEnroll = async () => {
     if (!selectedKeyId || !password) {
-      toast({ title: "Error", description: "Select a key and enter your password first", variant: "destructive" });
+      toast({
+        title: "Error",
+        description: "Select a key and enter your password first",
+        variant: "destructive",
+      });
       return;
     }
     setBiometricLoading(true);
@@ -777,17 +807,29 @@ export function useLoginForm(
       const decrypted = desktop
         ? await TauriClient.decryptApiKey(selectedKeyId, password)
         : await storageManager.getDecryptedApiKey(selectedKeyId, password);
-      const decryptedKey = typeof decrypted === "string" ? decrypted : decrypted?.key;
+      const decryptedKey =
+        typeof decrypted === "string" ? decrypted : decrypted?.key;
       if (!decryptedKey) {
-        toast({ title: "Error", description: "Invalid password or corrupted key", variant: "destructive" });
+        toast({
+          title: "Error",
+          description: "Invalid password or corrupted key",
+          variant: "destructive",
+        });
         return;
       }
 
       await ServerClient.biometricStoreSecret(selectedKeyId, decryptedKey);
       setBiometricEnrolled(true);
-      toast({ title: "Success", description: `${biometricLabel} unlock enabled` });
+      toast({
+        title: "Success",
+        description: `${biometricLabel} unlock enabled`,
+      });
     } catch (err) {
-      toast({ title: "Error", description: `Failed to enable ${biometricLabel}: ${formatError(err)}`, variant: "destructive" });
+      toast({
+        title: "Error",
+        description: `Failed to enable ${biometricLabel}: ${formatError(err)}`,
+        variant: "destructive",
+      });
     } finally {
       setBiometricLoading(false);
     }
@@ -800,9 +842,16 @@ export function useLoginForm(
     try {
       await ServerClient.biometricDeleteSecret(selectedKeyId);
       setBiometricEnrolled(false);
-      toast({ title: "Success", description: `${biometricLabel} unlock removed` });
+      toast({
+        title: "Success",
+        description: `${biometricLabel} unlock removed`,
+      });
     } catch (err) {
-      toast({ title: "Error", description: `Failed to remove ${biometricLabel}: ${formatError(err)}`, variant: "destructive" });
+      toast({
+        title: "Error",
+        description: `Failed to remove ${biometricLabel}: ${formatError(err)}`,
+        variant: "destructive",
+      });
     } finally {
       setBiometricLoading(false);
     }
@@ -812,9 +861,7 @@ export function useLoginForm(
     if (!selectedKeyId || !password) {
       toast({
         title: t("Error"),
-        description: t(
-          "Select key and enter password to delete vault secret",
-        ),
+        description: t("Select key and enter password to delete vault secret"),
         variant: "destructive",
       });
       return;
@@ -845,8 +892,7 @@ export function useLoginForm(
       toast({
         title: t("Error"),
         description:
-          t("Failed to remove vault secret: ") +
-          (err as Error).message,
+          t("Failed to remove vault secret: ") + (err as Error).message,
         variant: "destructive",
       });
     }
@@ -894,20 +940,20 @@ export function useLoginForm(
     setPasskeyViewEmail,
     vaultEnabled,
     setVaultEnabled: (enabled: boolean) => {
-        setVaultEnabled(enabled);
-        if (desktop) {
-          TauriClient.getPreferences()
-            .then((prefs) => {
-              const current = (prefs as Record<string, unknown>) ?? {};
-              return TauriClient.updatePreferences({
-                ...current,
-                vault_enabled: enabled,
-              });
-            })
-            .catch(() => {});
-        } else {
-          storageManager.setVaultEnabled(enabled);
-        }
+      setVaultEnabled(enabled);
+      if (desktop) {
+        TauriClient.getPreferences()
+          .then((prefs) => {
+            const current = (prefs as Record<string, unknown>) ?? {};
+            return TauriClient.updatePreferences({
+              ...current,
+              vault_enabled: enabled,
+            });
+          })
+          .catch(() => {});
+      } else {
+        storageManager.setVaultEnabled(enabled);
+      }
     },
     handleLogin,
     handleAddKey,

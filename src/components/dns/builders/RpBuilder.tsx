@@ -71,7 +71,11 @@ export function RpBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "RP") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -88,9 +92,9 @@ export function RpBuilder({
     if (!t) push(issues, "RP: text domain-name is required.");
 
     if (m && m !== "." && !looksLikeHostname(m))
-      push(issues, "RP: mailbox does not look like a hostname (or \".\").");
+      push(issues, 'RP: mailbox does not look like a hostname (or ".").');
     if (t && t !== "." && !looksLikeHostname(t))
-      push(issues, "RP: text does not look like a hostname (or \".\").");
+      push(issues, 'RP: text does not look like a hostname (or ".").');
 
     const checkTld = (value: string, label: string) => {
       if (!value || value === ".") return;
@@ -110,12 +114,16 @@ export function RpBuilder({
         "RP: mailbox is usually a DNS name representing an email address (dots replace @).",
       );
 
-    if (parsed.extra) push(issues, "RP: extra trailing tokens found in content.");
+    if (parsed.extra)
+      push(issues, "RP: extra trailing tokens found in content.");
 
     const canonical = composeRp(mailbox, text);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "RP: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "RP: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -176,8 +184,8 @@ export function RpBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              A DNS name representing an email address (dots replace <code>@</code>).
-              Use <code>.</code> for “none”.
+              A DNS name representing an email address (dots replace{" "}
+              <code>@</code>). Use <code>.</code> for “none”.
             </div>
           </div>
 
@@ -195,8 +203,8 @@ export function RpBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              A DNS name pointing to a TXT record with more info. Use <code>.</code>{" "}
-              for “none”.
+              A DNS name pointing to a TXT record with more info. Use{" "}
+              <code>.</code> for “none”.
             </div>
           </div>
         </div>
@@ -215,7 +223,9 @@ export function RpBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -230,7 +240,8 @@ export function RpBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">RP warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -249,4 +260,3 @@ export function RpBuilder({
     </div>
   );
 }
-

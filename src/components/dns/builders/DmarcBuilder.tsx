@@ -50,12 +50,15 @@ function validateDMARC(value: string) {
     }
     const at = a.indexOf("@");
     if (at <= 0 || at !== a.lastIndexOf("@") || at === a.length - 1) {
-      problems.push(`${label}= invalid email address (expected local@domain): ${a}`);
+      problems.push(
+        `${label}= invalid email address (expected local@domain): ${a}`,
+      );
       return;
     }
     const local = a.slice(0, at);
     const domainRaw = a.slice(at + 1);
-    if (local.length > 64) problems.push(`${label}= local-part is >64 chars: ${a}`);
+    if (local.length > 64)
+      problems.push(`${label}= local-part is >64 chars: ${a}`);
     if (local.startsWith(".") || local.endsWith(".") || local.includes(".."))
       problems.push(`${label}= local-part has invalid dots: ${a}`);
     if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local))
@@ -72,7 +75,9 @@ function validateDMARC(value: string) {
     }
     const labels = domain.split(".");
     if (labels.some((l) => !isValidDnsLabel(l))) {
-      problems.push(`${label}= email domain does not look like a hostname: ${a}`);
+      problems.push(
+        `${label}= email domain does not look like a hostname: ${a}`,
+      );
       return;
     }
     if (labels.length < 2) {
@@ -81,7 +86,9 @@ function validateDMARC(value: string) {
     }
     const tld = labels[labels.length - 1]?.toLowerCase() ?? "";
     if (tld && !KNOWN_TLDS.has(tld)) {
-      problems.push(`${label}= email domain uses an unknown/invalid TLD “.${tld}”: ${a}`);
+      problems.push(
+        `${label}= email domain uses an unknown/invalid TLD “.${tld}”: ${a}`,
+      );
     }
   };
 
@@ -134,11 +141,15 @@ function validateDMARC(value: string) {
   const pct = map.get("pct");
   if (pct) {
     const n = Number.parseInt(pct, 10);
-    if (Number.isNaN(n) || n < 0 || n > 100) problems.push("pct= should be 0–100.");
+    if (Number.isNaN(n) || n < 0 || n > 100)
+      problems.push("pct= should be 0–100.");
   }
   const rua = map.get("rua");
   if (rua) {
-    const parts = rua.split(",").map((s) => s.trim()).filter(Boolean);
+    const parts = rua
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     for (const part of parts) {
       if (!part.toLowerCase().startsWith("mailto:"))
         problems.push(`rua= should use mailto: (got ${part}).`);
@@ -147,7 +158,10 @@ function validateDMARC(value: string) {
   }
   const ruf = map.get("ruf");
   if (ruf) {
-    const parts = ruf.split(",").map((s) => s.trim()).filter(Boolean);
+    const parts = ruf
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     for (const part of parts) {
       if (!part.toLowerCase().startsWith("mailto:"))
         problems.push(`ruf= should use mailto: (got ${part}).`);
@@ -157,19 +171,28 @@ function validateDMARC(value: string) {
   const fo = map.get("fo");
   if (fo) {
     const allowed = new Set(["0", "1", "d", "s"]);
-    const parts = fo.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
-    for (const p of parts) if (!allowed.has(p)) problems.push(`Unknown fo= value: ${p}`);
+    const parts = fo
+      .split(":")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    for (const p of parts)
+      if (!allowed.has(p)) problems.push(`Unknown fo= value: ${p}`);
   }
   const rf = map.get("rf");
   if (rf) {
     const allowed = new Set(["afrf", "iodef"]);
-    const parts = rf.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-    for (const p of parts) if (!allowed.has(p)) problems.push(`Unknown rf= value: ${p}`);
+    const parts = rf
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    for (const p of parts)
+      if (!allowed.has(p)) problems.push(`Unknown rf= value: ${p}`);
   }
   const ri = map.get("ri");
   if (ri) {
     const n = Number.parseInt(ri, 10);
-    if (Number.isNaN(n) || n < 60) problems.push("ri= should be a number of seconds (>= 60).");
+    if (Number.isNaN(n) || n < 60)
+      problems.push("ri= should be a number of seconds (>= 60).");
   }
   return { ok: problems.length === 0, problems };
 }
@@ -203,16 +226,13 @@ function parseDMARC(value: string | undefined) {
     map.set(k, v);
   }
   const policyRaw = (map.get("p") ?? "none").toLowerCase();
-  const policy = (["none", "quarantine", "reject"].includes(policyRaw) ? policyRaw : "none") as
-    | "none"
-    | "quarantine"
-    | "reject";
+  const policy = (
+    ["none", "quarantine", "reject"].includes(policyRaw) ? policyRaw : "none"
+  ) as "none" | "quarantine" | "reject";
   const spRaw = (map.get("sp") ?? "").toLowerCase();
-  const subdomainPolicy = (["none", "quarantine", "reject"].includes(spRaw) ? spRaw : "") as
-    | ""
-    | "none"
-    | "quarantine"
-    | "reject";
+  const subdomainPolicy = (
+    ["none", "quarantine", "reject"].includes(spRaw) ? spRaw : ""
+  ) as "" | "none" | "quarantine" | "reject";
   const adkimRaw = (map.get("adkim") ?? "r").toLowerCase();
   const adkim = (adkimRaw === "s" ? "s" : "r") as "r" | "s";
   const aspfRaw = (map.get("aspf") ?? "r").toLowerCase();
@@ -276,7 +296,9 @@ export function DmarcBuilder({
   zoneName?: string;
   onWarningsChange?: BuilderWarningsChange;
 }) {
-  const [policy, setPolicy] = useState<"none" | "quarantine" | "reject">("none");
+  const [policy, setPolicy] = useState<"none" | "quarantine" | "reject">(
+    "none",
+  );
   const [rua, setRua] = useState<string>("");
   const [ruf, setRuf] = useState<string>("");
   const [pct, setPct] = useState<number | undefined>(undefined);
@@ -323,7 +345,8 @@ export function DmarcBuilder({
     });
 
     const name = (record.name ?? "").trim();
-    if (!name || name !== "_dmarc") uniquePush(nameIssues, 'DMARC: name is usually "_dmarc".');
+    if (!name || name !== "_dmarc")
+      uniquePush(nameIssues, 'DMARC: name is usually "_dmarc".');
 
     const content = (record.content ?? "").trim();
     if (!content) {
@@ -332,7 +355,10 @@ export function DmarcBuilder({
       const v = validateDMARC(content);
       for (const p of v.problems) uniquePush(issues, `DMARC: ${p}`);
       if (!content.endsWith(";"))
-        uniquePush(issues, "DMARC: consider ending tags with ';' for readability.");
+        uniquePush(
+          issues,
+          "DMARC: consider ending tags with ';' for readability.",
+        );
     }
 
     if (content && content !== canonical)
@@ -341,13 +367,29 @@ export function DmarcBuilder({
         "DMARC: content differs from the builder settings (use Build DMARC TXT to normalize).",
       );
     if (!rua.trim())
-      uniquePush(issues, "DMARC: rua= is missing (recommended to receive aggregate reports).");
+      uniquePush(
+        issues,
+        "DMARC: rua= is missing (recommended to receive aggregate reports).",
+      );
 
     const vCanon = validateDMARC(canonical);
     for (const p of vCanon.problems) uniquePush(issues, `DMARC: ${p}`);
 
     return { canonical, issues, nameIssues };
-  }, [adkim, aspf, fo, pct, policy, record.content, record.name, rf, ri, rua, ruf, subdomainPolicy]);
+  }, [
+    adkim,
+    aspf,
+    fo,
+    pct,
+    policy,
+    record.content,
+    record.name,
+    rf,
+    ri,
+    rua,
+    ruf,
+    subdomainPolicy,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -356,16 +398,26 @@ export function DmarcBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+  ]);
 
   return (
     <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
-      <div className="text-xs font-semibold text-muted-foreground">DMARC builder</div>
+      <div className="text-xs font-semibold text-muted-foreground">
+        DMARC builder
+      </div>
 
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">p= (policy)</Label>
-          <Select value={policy} onValueChange={(value: string) => setPolicy(value as any)}>
+          <Select
+            value={policy}
+            onValueChange={(value: string) => setPolicy(value as any)}
+          >
             <SelectTrigger className="h-9">
               <SelectValue />
             </SelectTrigger>
@@ -381,19 +433,30 @@ export function DmarcBuilder({
           <Label className="text-xs">rua= (aggregate reports)</Label>
           <Input
             value={rua}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setRua(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setRua(e.target.value)
+            }
             placeholder={`mailto:dmarc@${zoneName ?? "example.com"}`}
           />
         </div>
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">ruf= (forensic reports)</Label>
-          <Input value={ruf} onChange={(e: ChangeEvent<HTMLInputElement>) => setRuf(e.target.value)} placeholder="optional" />
+          <Input
+            value={ruf}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setRuf(e.target.value)
+            }
+            placeholder="optional"
+          />
         </div>
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">adkim=</Label>
-          <Select value={adkim} onValueChange={(value: string) => setAdkim(value as any)}>
+          <Select
+            value={adkim}
+            onValueChange={(value: string) => setAdkim(value as any)}
+          >
             <SelectTrigger className="h-9">
               <SelectValue />
             </SelectTrigger>
@@ -406,7 +469,10 @@ export function DmarcBuilder({
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">aspf=</Label>
-          <Select value={aspf} onValueChange={(value: string) => setAspf(value as any)}>
+          <Select
+            value={aspf}
+            onValueChange={(value: string) => setAspf(value as any)}
+          >
             <SelectTrigger className="h-9">
               <SelectValue />
             </SelectTrigger>
@@ -452,7 +518,13 @@ export function DmarcBuilder({
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">fo= (optional)</Label>
-          <Input value={fo} onChange={(e: ChangeEvent<HTMLInputElement>) => setFo(e.target.value)} placeholder="optional" />
+          <Input
+            value={fo}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setFo(e.target.value)
+            }
+            placeholder="optional"
+          />
         </div>
 
         <div className="space-y-1 sm:col-span-1">
@@ -470,7 +542,12 @@ export function DmarcBuilder({
 
         <div className="space-y-1 sm:col-span-1">
           <Label className="text-xs">rf= (optional)</Label>
-          <Select value={rf.trim().toLowerCase() || "__omit__"} onValueChange={(value: string) => setRf(value === "__omit__" ? "" : value)}>
+          <Select
+            value={rf.trim().toLowerCase() || "__omit__"}
+            onValueChange={(value: string) =>
+              setRf(value === "__omit__" ? "" : value)
+            }
+          >
             <SelectTrigger className="h-9">
               <SelectValue />
             </SelectTrigger>
@@ -484,7 +561,11 @@ export function DmarcBuilder({
       </div>
 
       <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <Button size="sm" variant="outline" onClick={() => onRecordChange({ ...record, name: "_dmarc" })}>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onRecordChange({ ...record, name: "_dmarc" })}
+        >
           Use _dmarc name
         </Button>
         <Button
@@ -506,28 +587,41 @@ export function DmarcBuilder({
         >
           Load from content
         </Button>
-        <Button size="sm" onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}>
+        <Button
+          size="sm"
+          onClick={() =>
+            onRecordChange({ ...record, content: diagnostics.canonical })
+          }
+        >
           Build DMARC TXT
         </Button>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Preview (canonical)
+        </div>
+        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+          {diagnostics.canonical}
+        </pre>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Recommendations</div>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Recommendations
+        </div>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
           <li>
-            Start with <code>p=none</code> while monitoring reports, then move to{" "}
-            <code>quarantine</code>/<code>reject</code>.
+            Start with <code>p=none</code> while monitoring reports, then move
+            to <code>quarantine</code>/<code>reject</code>.
           </li>
           <li>
-            Add <code>rua=mailto:</code> so you actually receive aggregate reports.
+            Add <code>rua=mailto:</code> so you actually receive aggregate
+            reports.
           </li>
           <li>
-            Use strict alignment (<code>adkim=s</code>, <code>aspf=s</code>) only when you’re sure all senders are aligned.
+            Use strict alignment (<code>adkim=s</code>, <code>aspf=s</code>)
+            only when you’re sure all senders are aligned.
           </li>
         </ul>
       </div>
@@ -550,4 +644,3 @@ export function DmarcBuilder({
     </div>
   );
 }
-

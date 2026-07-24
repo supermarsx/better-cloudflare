@@ -21,11 +21,11 @@ function normalizeDnsName(value: string) {
 }
 
 function unescapeDnsQuotedString(value: string) {
-  return value.replace(/\\\\/g, "\\").replace(/\\"/g, "\"");
+  return value.replace(/\\\\/g, "\\").replace(/\\"/g, '"');
 }
 
 function escapeDnsQuotedString(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function parseCAAContent(value: string | undefined) {
@@ -42,13 +42,21 @@ function parseCAAContent(value: string | undefined) {
   const rest = (m[3] ?? "").trim();
   const flagsNum = Number.parseInt(flagsRaw, 10);
   let v = rest;
-  if (v.startsWith("\"") && v.endsWith("\"") && v.length >= 2) {
+  if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
     v = unescapeDnsQuotedString(v.slice(1, -1));
   }
-  return { flags: Number.isNaN(flagsNum) ? undefined : flagsNum, tag, value: v };
+  return {
+    flags: Number.isNaN(flagsNum) ? undefined : flagsNum,
+    tag,
+    value: v,
+  };
 }
 
-function composeCAA(fields: { flags: number | undefined; tag: string; value: string }) {
+function composeCAA(fields: {
+  flags: number | undefined;
+  tag: string;
+  value: string;
+}) {
   const flags = fields.flags ?? 0;
   const tag = (fields.tag ?? "").trim().toLowerCase();
   const v = `"${escapeDnsQuotedString((fields.value ?? "").trim())}"`;
@@ -67,9 +75,9 @@ export function CaaBuilder({
   onWarningsChange?: BuilderWarningsChange;
 }) {
   const [caaFlags, setCaaFlags] = useState<number | undefined>(undefined);
-  const [caaTag, setCaaTag] = useState<"issue" | "issuewild" | "iodef" | "custom">(
-    "issue",
-  );
+  const [caaTag, setCaaTag] = useState<
+    "issue" | "issuewild" | "iodef" | "custom"
+  >("issue");
   const [caaTagCustom, setCaaTagCustom] = useState<string>("");
   const [caaValue, setCaaValue] = useState<string>("");
 
@@ -93,7 +101,11 @@ export function CaaBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "CAA") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -126,7 +138,8 @@ export function CaaBuilder({
       if (at <= 0 || at !== a.lastIndexOf("@") || at === a.length - 1)
         return "invalid email (expected local@domain).";
       const domain = normalizeDnsName(a.slice(at + 1));
-      if (!isValidHostname(domain)) return "email domain does not look like a hostname.";
+      if (!isValidHostname(domain))
+        return "email domain does not look like a hostname.";
       const labels = domain.split(".");
       if (labels.length < 2) return "email domain should be a FQDN.";
       const tld = labels[labels.length - 1]?.toLowerCase() ?? "";
@@ -136,13 +149,16 @@ export function CaaBuilder({
     };
 
     const effectiveTag =
-      caaTag === "custom" ? caaTagCustom.trim().toLowerCase() : (caaTag as string);
+      caaTag === "custom"
+        ? caaTagCustom.trim().toLowerCase()
+        : (caaTag as string);
     const flags = caaFlags ?? 0;
     const critical = (flags & 128) !== 0;
     const value = (caaValue ?? "").trim();
 
     if (caaFlags !== undefined) {
-      if (caaFlags < 0 || caaFlags > 255) push(issues, "CAA: flags must be 0–255.");
+      if (caaFlags < 0 || caaFlags > 255)
+        push(issues, "CAA: flags must be 0–255.");
       if (critical) {
         push(
           issues,
@@ -164,7 +180,10 @@ export function CaaBuilder({
       if (!known.has(effectiveTag) && !caaTagCustom.trim())
         push(issues, "CAA: custom tag is empty.");
       if (!known.has(effectiveTag) && critical)
-        push(issues, "CAA: critical + unknown tag may break issuance for some clients.");
+        push(
+          issues,
+          "CAA: critical + unknown tag may break issuance for some clients.",
+        );
     }
 
     if (!value) {
@@ -178,13 +197,23 @@ export function CaaBuilder({
         );
       } else {
         if (!isValidHostname(beforeParams))
-          push(issues, `CAA: ${effectiveTag} CA domain does not look like a hostname.`);
-        const tld = normalizeDnsName(beforeParams).split(".").pop()?.toLowerCase() ?? "";
+          push(
+            issues,
+            `CAA: ${effectiveTag} CA domain does not look like a hostname.`,
+          );
+        const tld =
+          normalizeDnsName(beforeParams).split(".").pop()?.toLowerCase() ?? "";
         if (tld && beforeParams.includes(".") && !KNOWN_TLDS.has(tld))
-          push(issues, `CAA: ${effectiveTag} CA domain has unknown/invalid TLD “.${tld}”.`);
+          push(
+            issues,
+            `CAA: ${effectiveTag} CA domain has unknown/invalid TLD “.${tld}”.`,
+          );
       }
       if (value.includes("://"))
-        push(issues, `CAA: ${effectiveTag} value looks like a URL; expected CA domain.`);
+        push(
+          issues,
+          `CAA: ${effectiveTag} value looks like a URL; expected CA domain.`,
+        );
     } else if (effectiveTag === "iodef") {
       const v = value;
       if (v.toLowerCase().startsWith("mailto:")) {
@@ -198,7 +227,10 @@ export function CaaBuilder({
           if (u.protocol !== "http:" && u.protocol !== "https:")
             push(issues, "CAA: iodef should be mailto:, http:, or https:.");
         } catch {
-          push(issues, "CAA: iodef value does not parse as a valid URL or mailto:.");
+          push(
+            issues,
+            "CAA: iodef value does not parse as a valid URL or mailto:.",
+          );
         }
       }
     }
@@ -224,7 +256,15 @@ export function CaaBuilder({
       );
 
     return { canonical, issues, nameIssues };
-  }, [record.type, record.content, record.name, caaFlags, caaTag, caaTagCustom, caaValue]);
+  }, [
+    record.type,
+    record.content,
+    record.name,
+    caaFlags,
+    caaTag,
+    caaTagCustom,
+    caaValue,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -237,10 +277,18 @@ export function CaaBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange, record.type]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+    record.type,
+  ]);
 
   const effectiveTag =
-    caaTag === "custom" ? caaTagCustom.trim().toLowerCase() : (caaTag as string);
+    caaTag === "custom"
+      ? caaTagCustom.trim().toLowerCase()
+      : (caaTag as string);
   const critical = ((caaFlags ?? 0) & 128) !== 0;
   const valuePlaceholder =
     effectiveTag === "iodef"
@@ -253,7 +301,9 @@ export function CaaBuilder({
     <div className="space-y-2">
       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-muted-foreground">CAA builder</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            CAA builder
+          </div>
           <div className="text-[11px] text-muted-foreground">
             Format: <code>flags tag "value"</code>
           </div>
@@ -280,7 +330,9 @@ export function CaaBuilder({
               <Input
                 className="mt-2"
                 value={caaTagCustom}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setCaaTagCustom(e.target.value)}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setCaaTagCustom(e.target.value)
+                }
                 placeholder="e.g., issue"
               />
             )}
@@ -325,7 +377,9 @@ export function CaaBuilder({
           <Label className="text-xs">Value</Label>
           <Input
             value={caaValue}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setCaaValue(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setCaaValue(e.target.value)
+            }
             placeholder={valuePlaceholder}
           />
           <div className="text-[11px] text-muted-foreground">
@@ -336,7 +390,11 @@ export function CaaBuilder({
         </div>
 
         <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={() => onRecordChange({ ...record, name: "@" })}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onRecordChange({ ...record, name: "@" })}
+          >
             Set name to @
           </Button>
           <Button
@@ -369,22 +427,30 @@ export function CaaBuilder({
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Preview (canonical)
+          </div>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {diagnostics.canonical}
+          </pre>
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Recommendations</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Recommendations
+          </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
-              Add one <code>issue</code> record per allowed CA (multiple CAA records are
-              normal).
+              Add one <code>issue</code> record per allowed CA (multiple CAA
+              records are normal).
             </li>
             <li>
-              Use <code>issuewild</code> only if you plan to issue wildcard certificates.
+              Use <code>issuewild</code> only if you plan to issue wildcard
+              certificates.
             </li>
             <li>
-              Keep flags at <code>0</code> unless you know you need critical behavior.
+              Keep flags at <code>0</code> unless you know you need critical
+              behavior.
             </li>
           </ul>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -424,7 +490,8 @@ export function CaaBuilder({
           </div>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">CAA warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -443,4 +510,3 @@ export function CaaBuilder({
     </div>
   );
 }
-

@@ -27,6 +27,7 @@
 All UI styling should be expressed via semantic tokens (HSL triplets) and Tailwind’s mapped colors.
 
 **Core tokens (existing and required)**
+
 - `--background`, `--foreground`
 - `--card`, `--card-foreground`
 - `--popover`, `--popover-foreground`
@@ -39,6 +40,7 @@ All UI styling should be expressed via semantic tokens (HSL triplets) and Tailwi
 - `--radius`
 
 **Alpha usage convention (how “glass” is applied)**
+
 - Use alpha at the usage site, not in tokens:
   - Surfaces: `bg-card/70..90`, `bg-popover/85..95`
   - Borders: `border-border/50..70`
@@ -78,15 +80,18 @@ Intent: bright but not sterile; warm paper/ivory background; sunset primary rema
 Use these recipes consistently across components (Card, Menus, Dialogs, Panels).
 
 **Framework note**
+
 - The repo currently uses Tailwind + shadcn-style primitives. This doc is intentionally written so you can **keep Tailwind** while building a **fully personalized CSS framework layer** (custom utilities + components) on top.
 - If you decide to **remove Tailwind**, do it as a staged migration: introduce stable custom classes first (this repo now has `glass-surface`, `ui-entry`, `ui-tag`, etc.), then replace Tailwind usage incrementally.
 
 **Surface levels**
+
 - `surface-1` (resting panels): `bg-card/80 backdrop-blur-md border border-border/60 shadow-[...]`
 - `surface-2` (menus/popovers): `bg-popover/90..95 backdrop-blur-xl border border-border/60 shadow-[...]`
 - `surface-3` (modal content): `bg-popover/90 backdrop-blur-xl border border-border/60 shadow-[0_18px_40px_rgba(0,0,0,0.2)]`
 
 **Personalized utilities (implemented)**
+
 - `glass-surface`: consistent glass background + blur + highlight + border
 - `glass-surface-hover`: hover lift + border glow
 - `glass-fade`: masked fade at the top edge (softens large containers)
@@ -95,31 +100,38 @@ Use these recipes consistently across components (Card, Menus, Dialogs, Panels).
 - `ui-icon-button`: glassy icon button styling
 
 **Borders**
+
 - Default: `border-border/60`
 - Focus/active: `ring-2 ring-ring ring-offset-2 ring-offset-background`
 
 **Highlights**
+
 - Use subtle inner highlights: `shadow` + `inset` lines rather than bright gradients on every surface.
 
 ## 6) Typography
 
 **Font**
+
 - Primary: Space Grotesk (500–600) as set in `src/index.css`.
 - Fallbacks: `"Segoe UI", sans-serif`.
 
 **Scale (Tailwind defaults recommended)**
+
 - Body: `text-sm` and `text-base`
 - Headings: `text-lg`, `text-xl`, `text-2xl`
 
 **Letter spacing**
+
 - Use tracking sparingly; reserve wide tracking for chrome (e.g., titlebar) and small caps-like labels.
 
 ## 7) Layout, Spacing, Radius
 
 **Spacing**
+
 - Use Tailwind spacing scale; favor `p-6` for panel interiors, `gap-4` for primary stacks, `gap-2` for controls.
 
 **Radius**
+
 - Global radius: `--radius` (currently `0.5rem`); use:
   - Cards/Dialogs: `rounded-xl`
   - Inputs/Buttons: `rounded-md`
@@ -135,33 +147,40 @@ Use these recipes consistently across components (Card, Menus, Dialogs, Panels).
 ## 9) Components (Behavior + Visual Spec)
 
 ### Button
+
 - Default: primary fill, subtle border, elevated shadow; hover increases brightness + shadow.
 - Secondary: glass card surface (`bg-card/70`), border, inner shadow.
 - Ghost: hover-only background using `accent`.
 - Focus: always show ring with `--ring`.
 
 ### Card
+
 - Always use `surface-1` recipe.
 - Avoid placing high-saturation gradients inside card backgrounds; keep imagery as overlays behind glass.
 
 ### Input
+
 - Use `bg-background` + `border-input`.
 - Placeholder: `text-muted-foreground`.
 - Focus: ring with `--ring`.
 
 ### Dropdown / Select / Popover
+
 - Use `surface-2` recipe.
 - Item hover/focus uses `accent/70` (not `primary`).
 
 ### Dialog
+
 - Overlay: `bg-background/80 backdrop-blur-sm`.
 - Content: `surface-3` recipe.
 
 ### Switch
+
 - Track: `border-border` and a muted fill.
 - Thumb: clear contrast; keep it neutral and let “on” state be expressed via `primary`.
 
 ### Toast
+
 - Surface: `surface-2` with reduced shadow.
 - Severity: destructive uses `--destructive`, others keep neutral with optional icon color.
 

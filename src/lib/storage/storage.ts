@@ -215,7 +215,10 @@ export function isStorageData(value: unknown): value is StorageData {
   if (obj.lastZone !== undefined && typeof obj.lastZone !== "string") {
     return false;
   }
-  if (obj.confirmLogout !== undefined && typeof obj.confirmLogout !== "boolean") {
+  if (
+    obj.confirmLogout !== undefined &&
+    typeof obj.confirmLogout !== "boolean"
+  ) {
     return false;
   }
   if (
@@ -286,7 +289,9 @@ export class StorageManager {
           this.data = {
             ...obj,
             recordTags: parseRecordTags(obj.recordTags),
-            tagCatalog: parseTagCatalog((obj as { tagCatalog?: unknown }).tagCatalog),
+            tagCatalog: parseTagCatalog(
+              (obj as { tagCatalog?: unknown }).tagCatalog,
+            ),
           };
         } else {
           this.data = { apiKeys: [] };
@@ -321,7 +326,9 @@ export class StorageManager {
 
   private dispatchPreferencesChanged(fields: Record<string, unknown>): void {
     if (typeof window === "undefined") return;
-    window.dispatchEvent(new CustomEvent("preferences-changed", { detail: fields }));
+    window.dispatchEvent(
+      new CustomEvent("preferences-changed", { detail: fields }),
+    );
   }
 
   private ensureTagInCatalog(zoneId: string, tag: string): void {
@@ -329,7 +336,9 @@ export class StorageManager {
     const zoneTags = (catalog[zoneId] ??= []);
     if (zoneTags.includes(tag)) return;
     zoneTags.push(tag);
-    zoneTags.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    zoneTags.sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
     catalog[zoneId] = zoneTags.slice(0, 256);
   }
 
@@ -356,7 +365,10 @@ export class StorageManager {
     const zone = this.data.recordTags?.[zoneId];
     if (!zone || typeof zone !== "object") return {};
     return Object.fromEntries(
-      Object.entries(zone).map(([recordId, tags]) => [recordId, [...(tags ?? [])]]),
+      Object.entries(zone).map(([recordId, tags]) => [
+        recordId,
+        [...(tags ?? [])],
+      ]),
     );
   }
 
@@ -388,7 +400,11 @@ export class StorageManager {
     this.setRecordTags(zoneId, recordId, []);
   }
 
-  moveRecordTags(zoneId: string, fromRecordId: string, toRecordId: string): void {
+  moveRecordTags(
+    zoneId: string,
+    fromRecordId: string,
+    toRecordId: string,
+  ): void {
     const fromId = fromRecordId.trim();
     const toId = toRecordId.trim();
     if (!fromId || !toId || fromId === toId) return;
@@ -431,7 +447,9 @@ export class StorageManager {
         [zoneId]: Array.from(
           new Set(catalog.map((t) => (t === prev ? next : t)).filter(Boolean)),
         )
-          .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+          .sort((a, b) =>
+            a.localeCompare(b, undefined, { sensitivity: "base" }),
+          )
           .slice(0, 256),
       };
     } else {
@@ -717,7 +735,10 @@ export class StorageManager {
     return this.data.showUnsupportedRecordTypes === true;
   }
 
-  setZoneShowUnsupportedRecordTypes(zoneId: string, enabled: boolean | null): void {
+  setZoneShowUnsupportedRecordTypes(
+    zoneId: string,
+    enabled: boolean | null,
+  ): void {
     if (!this.data.zoneShowUnsupportedRecordTypes) {
       this.data.zoneShowUnsupportedRecordTypes = {};
     }
@@ -786,7 +807,9 @@ export class StorageManager {
   }
 
   getIdleLogoutMs(): number | null {
-    return typeof this.data.idleLogoutMs === "number" ? this.data.idleLogoutMs : null;
+    return typeof this.data.idleLogoutMs === "number"
+      ? this.data.idleLogoutMs
+      : null;
   }
 
   setConfirmWindowClose(enabled: boolean): void {
@@ -831,7 +854,9 @@ export class StorageManager {
 
   setMcpServerPort(port: number): void {
     const parsed = Math.round(port);
-    const next = Number.isFinite(parsed) ? Math.max(1, Math.min(65535, parsed)) : 8787;
+    const next = Number.isFinite(parsed)
+      ? Math.max(1, Math.min(65535, parsed))
+      : 8787;
     this.data.mcpServerPort = next;
     this.save();
     this.dispatchPreferencesChanged({ mcpServerPort: next });
@@ -844,16 +869,23 @@ export class StorageManager {
   }
 
   setMcpEnabledTools(tools: string[]): void {
-    const next = Array.from(new Set((tools ?? []).map((t) => String(t).trim()).filter(Boolean)));
+    const next = Array.from(
+      new Set((tools ?? []).map((t) => String(t).trim()).filter(Boolean)),
+    );
     this.data.mcpEnabledTools = next.length ? next : [...DEFAULT_MCP_TOOLS];
     this.save();
-    this.dispatchPreferencesChanged({ mcpEnabledTools: this.data.mcpEnabledTools });
+    this.dispatchPreferencesChanged({
+      mcpEnabledTools: this.data.mcpEnabledTools,
+    });
   }
 
   getMcpEnabledTools(): string[] {
     const tools = this.data.mcpEnabledTools;
-    if (!Array.isArray(tools) || tools.length === 0) return [...DEFAULT_MCP_TOOLS];
-    return Array.from(new Set(tools.map((t) => String(t).trim()).filter(Boolean)));
+    if (!Array.isArray(tools) || tools.length === 0)
+      return [...DEFAULT_MCP_TOOLS];
+    return Array.from(
+      new Set(tools.map((t) => String(t).trim()).filter(Boolean)),
+    );
   }
 
   setLoadingOverlayTimeoutMs(ms: number): void {
@@ -895,7 +927,9 @@ export class StorageManager {
   setTopologyDnsServer(value: string): void {
     this.data.topologyDnsServer = String(value ?? "").trim() || "1.1.1.1";
     this.save();
-    this.dispatchPreferencesChanged({ topologyDnsServer: this.data.topologyDnsServer });
+    this.dispatchPreferencesChanged({
+      topologyDnsServer: this.data.topologyDnsServer,
+    });
   }
 
   getTopologyDnsServer(): string {
@@ -905,14 +939,18 @@ export class StorageManager {
   setTopologyCustomDnsServer(value: string): void {
     this.data.topologyCustomDnsServer = String(value ?? "").trim();
     this.save();
-    this.dispatchPreferencesChanged({ topologyCustomDnsServer: this.data.topologyCustomDnsServer });
+    this.dispatchPreferencesChanged({
+      topologyCustomDnsServer: this.data.topologyCustomDnsServer,
+    });
   }
 
   getTopologyCustomDnsServer(): string {
     return String(this.data.topologyCustomDnsServer ?? "").trim();
   }
 
-  setTopologyDohProvider(value: "google" | "cloudflare" | "quad9" | "custom"): void {
+  setTopologyDohProvider(
+    value: "google" | "cloudflare" | "quad9" | "custom",
+  ): void {
     this.data.topologyDohProvider = value;
     this.save();
     this.dispatchPreferencesChanged({ topologyDohProvider: value });
@@ -920,14 +958,17 @@ export class StorageManager {
 
   getTopologyDohProvider(): "google" | "cloudflare" | "quad9" | "custom" {
     const value = this.data.topologyDohProvider;
-    if (value === "cloudflare" || value === "quad9" || value === "custom") return value;
+    if (value === "cloudflare" || value === "quad9" || value === "custom")
+      return value;
     return "cloudflare";
   }
 
   setTopologyDohCustomUrl(value: string): void {
     this.data.topologyDohCustomUrl = String(value ?? "").trim();
     this.save();
-    this.dispatchPreferencesChanged({ topologyDohCustomUrl: this.data.topologyDohCustomUrl });
+    this.dispatchPreferencesChanged({
+      topologyDohCustomUrl: this.data.topologyDohCustomUrl,
+    });
   }
 
   getTopologyDohCustomUrl(): string {
@@ -947,7 +988,9 @@ export class StorageManager {
   setTopologyExportCustomPath(path: string): void {
     this.data.topologyExportCustomPath = String(path ?? "").trim();
     this.save();
-    this.dispatchPreferencesChanged({ topologyExportCustomPath: this.data.topologyExportCustomPath });
+    this.dispatchPreferencesChanged({
+      topologyExportCustomPath: this.data.topologyExportCustomPath,
+    });
   }
 
   getTopologyExportCustomPath(): string {
@@ -965,29 +1008,47 @@ export class StorageManager {
   }
 
   setTopologyCopyActions(actions: string[]): void {
-    const next = Array.from(new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)));
-    this.data.topologyCopyActions = next.length ? next : ["mermaid", "svg", "png"];
+    const next = Array.from(
+      new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)),
+    );
+    this.data.topologyCopyActions = next.length
+      ? next
+      : ["mermaid", "svg", "png"];
     this.save();
-    this.dispatchPreferencesChanged({ topologyCopyActions: this.data.topologyCopyActions });
+    this.dispatchPreferencesChanged({
+      topologyCopyActions: this.data.topologyCopyActions,
+    });
   }
 
   getTopologyCopyActions(): string[] {
     const value = this.data.topologyCopyActions;
-    if (!Array.isArray(value) || value.length === 0) return ["mermaid", "svg", "png"];
-    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+    if (!Array.isArray(value) || value.length === 0)
+      return ["mermaid", "svg", "png"];
+    return Array.from(
+      new Set(value.map((v) => String(v).trim()).filter(Boolean)),
+    );
   }
 
   setTopologyExportActions(actions: string[]): void {
-    const next = Array.from(new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)));
-    this.data.topologyExportActions = next.length ? next : ["mermaid", "svg", "png", "pdf"];
+    const next = Array.from(
+      new Set((actions ?? []).map((s) => String(s).trim()).filter(Boolean)),
+    );
+    this.data.topologyExportActions = next.length
+      ? next
+      : ["mermaid", "svg", "png", "pdf"];
     this.save();
-    this.dispatchPreferencesChanged({ topologyExportActions: this.data.topologyExportActions });
+    this.dispatchPreferencesChanged({
+      topologyExportActions: this.data.topologyExportActions,
+    });
   }
 
   getTopologyExportActions(): string[] {
     const value = this.data.topologyExportActions;
-    if (!Array.isArray(value) || value.length === 0) return ["mermaid", "svg", "png", "pdf"];
-    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+    if (!Array.isArray(value) || value.length === 0)
+      return ["mermaid", "svg", "png", "pdf"];
+    return Array.from(
+      new Set(value.map((v) => String(v).trim()).filter(Boolean)),
+    );
   }
 
   setTopologyDisableAnnotations(enabled: boolean): void {
@@ -1043,15 +1104,27 @@ export class StorageManager {
     return this.data.topologyDisableGeoLookups === true;
   }
 
-  setTopologyGeoProvider(value: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal"): void {
+  setTopologyGeoProvider(
+    value: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal",
+  ): void {
     this.data.topologyGeoProvider = value;
     this.save();
     this.dispatchPreferencesChanged({ topologyGeoProvider: value });
   }
 
-  getTopologyGeoProvider(): "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" {
+  getTopologyGeoProvider():
+    | "auto"
+    | "ipwhois"
+    | "ipapi_co"
+    | "ip_api"
+    | "internal" {
     const value = this.data.topologyGeoProvider;
-    if (value === "ipwhois" || value === "ipapi_co" || value === "ip_api" || value === "internal") {
+    if (
+      value === "ipwhois" ||
+      value === "ipapi_co" ||
+      value === "ip_api" ||
+      value === "internal"
+    ) {
       return value;
     }
     return "auto";
@@ -1070,7 +1143,9 @@ export class StorageManager {
   setTopologyDisableServiceDiscovery(enabled: boolean): void {
     this.data.topologyDisableServiceDiscovery = enabled;
     this.save();
-    this.dispatchPreferencesChanged({ topologyDisableServiceDiscovery: enabled });
+    this.dispatchPreferencesChanged({
+      topologyDisableServiceDiscovery: enabled,
+    });
   }
 
   getTopologyDisableServiceDiscovery(): boolean {
@@ -1078,7 +1153,9 @@ export class StorageManager {
   }
 
   setTopologyTcpServices(services: string[]): void {
-    const next = Array.from(new Set((services ?? []).map((s) => String(s).trim()).filter(Boolean)));
+    const next = Array.from(
+      new Set((services ?? []).map((s) => String(s).trim()).filter(Boolean)),
+    );
     this.data.topologyTcpServices = next;
     this.save();
     this.dispatchPreferencesChanged({ topologyTcpServices: next });
@@ -1087,7 +1164,9 @@ export class StorageManager {
   getTopologyTcpServices(): string[] {
     const value = this.data.topologyTcpServices;
     if (!Array.isArray(value)) return ["80", "443", "22"];
-    return Array.from(new Set(value.map((v) => String(v).trim()).filter(Boolean)));
+    return Array.from(
+      new Set(value.map((v) => String(v).trim()).filter(Boolean)),
+    );
   }
 
   setAuditExportDefaultDocuments(enabled: boolean): void {
@@ -1123,7 +1202,9 @@ export class StorageManager {
   setAuditExportCustomPath(path: string): void {
     this.data.auditExportCustomPath = path.trim();
     this.save();
-    this.dispatchPreferencesChanged({ auditExportCustomPath: this.data.auditExportCustomPath });
+    this.dispatchPreferencesChanged({
+      auditExportCustomPath: this.data.auditExportCustomPath,
+    });
   }
 
   getAuditExportCustomPath(): string {
@@ -1133,7 +1214,9 @@ export class StorageManager {
   setAuditExportSkipDestinationConfirm(enabled: boolean): void {
     this.data.auditExportSkipDestinationConfirm = enabled;
     this.save();
-    this.dispatchPreferencesChanged({ auditExportSkipDestinationConfirm: enabled });
+    this.dispatchPreferencesChanged({
+      auditExportSkipDestinationConfirm: enabled,
+    });
   }
 
   getAuditExportSkipDestinationConfirm(): boolean {
@@ -1151,10 +1234,16 @@ export class StorageManager {
       hygiene: categories.hygiene,
     };
     this.save();
-    this.dispatchPreferencesChanged({ domainAuditCategories: this.data.domainAuditCategories });
+    this.dispatchPreferencesChanged({
+      domainAuditCategories: this.data.domainAuditCategories,
+    });
   }
 
-  getDomainAuditCategories(): { email: boolean; security: boolean; hygiene: boolean } {
+  getDomainAuditCategories(): {
+    email: boolean;
+    security: boolean;
+    hygiene: boolean;
+  } {
     const raw = this.data.domainAuditCategories ?? {};
     return {
       email: raw.email !== false,
@@ -1163,16 +1252,24 @@ export class StorageManager {
     };
   }
 
-  setSessionSettingsProfile(sessionId: string, profile: SessionSettingsProfile): void {
+  setSessionSettingsProfile(
+    sessionId: string,
+    profile: SessionSettingsProfile,
+  ): void {
     const id = String(sessionId || "").trim();
     if (!id) return;
-    if (!this.data.sessionSettingsProfiles) this.data.sessionSettingsProfiles = {};
+    if (!this.data.sessionSettingsProfiles)
+      this.data.sessionSettingsProfiles = {};
     this.data.sessionSettingsProfiles[id] = { ...profile };
     this.save();
-    this.dispatchPreferencesChanged({ sessionSettingsProfiles: this.data.sessionSettingsProfiles });
+    this.dispatchPreferencesChanged({
+      sessionSettingsProfiles: this.data.sessionSettingsProfiles,
+    });
   }
 
-  getSessionSettingsProfile(sessionId: string): SessionSettingsProfile | undefined {
+  getSessionSettingsProfile(
+    sessionId: string,
+  ): SessionSettingsProfile | undefined {
     const id = String(sessionId || "").trim();
     if (!id) return undefined;
     const profile = this.data.sessionSettingsProfiles?.[id];

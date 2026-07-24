@@ -13,8 +13,9 @@ npm run tauri icon path/to/your/icon.png
 ```
 
 Required icon files:
+
 - `32x32.png` - Small icon
-- `128x128.png` - Medium icon  
+- `128x128.png` - Medium icon
 - `128x128@2x.png` - Retina display
 - `icon.icns` - macOS icon bundle
 - `icon.ico` - Windows icon

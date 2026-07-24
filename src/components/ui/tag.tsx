@@ -28,4 +28,3 @@ export function Tag({ className, variant, ...props }: TagProps) {
     />
   );
 }
-

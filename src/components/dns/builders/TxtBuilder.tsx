@@ -30,7 +30,10 @@ export function TxtBuilder({
   record: RecordDraft;
   onRecordChange: (draft: RecordDraft) => void;
   zoneName?: string;
-  simulateSPF?: (domain: string, ip: string) => Promise<{
+  simulateSPF?: (
+    domain: string,
+    ip: string,
+  ) => Promise<{
     result: string;
     reasons: string[];
     lookups: number;

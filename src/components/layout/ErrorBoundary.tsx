@@ -37,7 +37,10 @@ interface ErrorBoundaryState {
  * </ErrorBoundary>
  * ```
  */
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { error: null };
@@ -60,7 +63,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     if (this.state.error) {
       if (this.props.fallback) {
-        return this.props.fallback({ error: this.state.error, reset: this.reset });
+        return this.props.fallback({
+          error: this.state.error,
+          reset: this.reset,
+        });
       }
       return (
         <div

@@ -1,6 +1,6 @@
 /**
  * Tauri API client wrapper
- * 
+ *
  * This file provides a unified interface for calling Tauri backend commands.
  * It replaces the HTTP-based ServerClient for desktop app usage.
  */
@@ -85,7 +85,7 @@ export interface McpServerStatus {
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
-    return typeof window !== 'undefined' && '__TAURI__' in window;
+    return typeof window !== "undefined" && "__TAURI__" in window;
   }
 
   static async restartApp(): Promise<void> {
@@ -109,7 +109,7 @@ export class TauriClient {
     label: string,
     apiKey: string,
     email: string | undefined,
-    password: string
+    password: string,
   ): Promise<string> {
     return invoke("add_api_key", { label, apiKey, email, password });
   }
@@ -119,7 +119,7 @@ export class TauriClient {
     label?: string,
     email?: string,
     currentPassword?: string,
-    newPassword?: string
+    newPassword?: string,
   ): Promise<void> {
     return invoke("update_api_key", {
       id,
@@ -148,7 +148,7 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     _page?: number,
-    _perPage?: number
+    _perPage?: number,
   ): Promise<TauriDNSRecord[]> {
     return invoke("get_dns_records", {
       apiKey,
@@ -163,7 +163,7 @@ export class TauriClient {
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    record: TauriDNSRecordInput
+    record: TauriDNSRecordInput,
   ): Promise<TauriDNSRecord> {
     return invoke("create_dns_record", { apiKey, email, zoneId, record });
   }
@@ -173,7 +173,7 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     recordId: string,
-    record: TauriDNSRecordInput
+    record: TauriDNSRecordInput,
   ): Promise<TauriDNSRecord> {
     return invoke("update_dns_record", {
       apiKey,
@@ -188,7 +188,7 @@ export class TauriClient {
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    recordId: string
+    recordId: string,
   ): Promise<void> {
     return invoke("delete_dns_record", { apiKey, email, zoneId, recordId });
   }
@@ -198,7 +198,7 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     records: TauriDNSRecordInput[],
-    _dryrun?: boolean
+    _dryrun?: boolean,
   ): Promise<{ created: TauriDNSRecord[]; skipped: unknown[] }> {
     return invoke("create_bulk_dns_records", {
       apiKey,
@@ -215,7 +215,7 @@ export class TauriClient {
     zoneId: string,
     format: string,
     page?: number,
-    perPage?: number
+    perPage?: number,
   ): Promise<string> {
     return invoke("export_dns_records", {
       apiKey,
@@ -305,7 +305,7 @@ export class TauriClient {
 
   static async registerPasskey(
     id: string,
-    attestation: unknown
+    attestation: unknown,
   ): Promise<void> {
     return invoke("register_passkey", { id, attestation });
   }
@@ -316,7 +316,7 @@ export class TauriClient {
 
   static async authenticatePasskey(
     id: string,
-    assertion: unknown
+    assertion: unknown,
   ): Promise<unknown> {
     return invoke("authenticate_passkey", { id, assertion });
   }
@@ -364,7 +364,9 @@ export class TauriClient {
         : fallback.keyLength;
     return {
       iterations:
-        typeof obj.iterations === "number" ? obj.iterations : fallback.iterations,
+        typeof obj.iterations === "number"
+          ? obj.iterations
+          : fallback.iterations,
       keyLength: normalizedKeyLength,
       algorithm:
         typeof obj.algorithm === "string" ? obj.algorithm : fallback.algorithm,
@@ -377,7 +379,9 @@ export class TauriClient {
     algorithm: string;
   }): Promise<void> {
     const keyLengthBytes =
-      config.keyLength > 64 ? Math.floor(config.keyLength / 8) : config.keyLength;
+      config.keyLength > 64
+        ? Math.floor(config.keyLength / 8)
+        : config.keyLength;
     return invoke("update_encryption_settings", {
       config: {
         iterations: config.iterations,
@@ -397,7 +401,7 @@ export class TauriClient {
   }
 
   static async exportAuditEntries(
-    format: "json" | "csv" = "json"
+    format: "json" | "csv" = "json",
   ): Promise<string> {
     return invoke("export_audit_entries", { format });
   }
@@ -423,7 +427,7 @@ export class TauriClient {
   // SPF
   static async simulateSPF(
     domain: string,
-    ip: string
+    ip: string,
   ): Promise<{ result: string; reasons: string[]; lookups: number }> {
     return invoke("simulate_spf", { domain, ip });
   }
@@ -445,7 +449,12 @@ export class TauriClient {
     disablePtrLookups = false,
     tcpServicePorts?: number[],
     disableGeoLookups = false,
-    geoProvider: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" = "auto",
+    geoProvider:
+      | "auto"
+      | "ipwhois"
+      | "ipapi_co"
+      | "ip_api"
+      | "internal" = "auto",
     scanResolutionChain = true,
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
@@ -495,9 +504,14 @@ export class TauriClient {
     return invoke("update_preferences", { prefs });
   }
 
-  static async updatePreferenceFields(fields: Record<string, unknown>): Promise<void> {
+  static async updatePreferenceFields(
+    fields: Record<string, unknown>,
+  ): Promise<void> {
     const current = await this.getPreferences();
-    return this.updatePreferences({ ...(current as Record<string, unknown>), ...fields });
+    return this.updatePreferences({
+      ...(current as Record<string, unknown>),
+      ...fields,
+    });
   }
 
   // MCP Server
@@ -521,7 +535,9 @@ export class TauriClient {
     return invoke("mcp_stop_server");
   }
 
-  static async setMcpEnabledTools(enabledTools: string[]): Promise<McpServerStatus> {
+  static async setMcpEnabledTools(
+    enabledTools: string[],
+  ): Promise<McpServerStatus> {
     return invoke("mcp_set_enabled_tools", { enabled_tools: enabledTools });
   }
 
@@ -555,7 +571,9 @@ export class TauriClient {
     return invoke("delete_registrar_credential", { credentialId });
   }
 
-  static async verifyRegistrarCredential(credentialId: string): Promise<boolean> {
+  static async verifyRegistrarCredential(
+    credentialId: string,
+  ): Promise<boolean> {
     return invoke("verify_registrar_credential", { credentialId });
   }
 
@@ -563,7 +581,10 @@ export class TauriClient {
     return invoke("registrar_list_domains", { credentialId });
   }
 
-  static async registrarGetDomain(credentialId: string, domain: string): Promise<unknown> {
+  static async registrarGetDomain(
+    credentialId: string,
+    domain: string,
+  ): Promise<unknown> {
     return invoke("registrar_get_domain", { credentialId, domain });
   }
 
@@ -571,7 +592,10 @@ export class TauriClient {
     return invoke("registrar_list_all_domains");
   }
 
-  static async registrarHealthCheck(credentialId: string, domain: string): Promise<unknown> {
+  static async registrarHealthCheck(
+    credentialId: string,
+    domain: string,
+  ): Promise<unknown> {
     return invoke("registrar_health_check", { credentialId, domain });
   }
 
@@ -589,7 +613,9 @@ export class TauriClient {
     return invoke("parse_bind_zone", { text });
   }
 
-  static async validateDnsRecord(input: DNSRecordValidationInput): Promise<ValidationResult> {
+  static async validateDnsRecord(
+    input: DNSRecordValidationInput,
+  ): Promise<ValidationResult> {
     return invoke("validate_dns_record", { input });
   }
 
@@ -597,24 +623,52 @@ export class TauriClient {
     return invoke("parse_srv", { content });
   }
 
-  static async composeSrv(priority?: number, weight?: number, port?: number, target?: string): Promise<string> {
-    return invoke("compose_srv", { priority, weight, port, target: target ?? "" });
+  static async composeSrv(
+    priority?: number,
+    weight?: number,
+    port?: number,
+    target?: string,
+  ): Promise<string> {
+    return invoke("compose_srv", {
+      priority,
+      weight,
+      port,
+      target: target ?? "",
+    });
   }
 
   static async parseTlsa(content: string): Promise<TLSAFields> {
     return invoke("parse_tlsa", { content });
   }
 
-  static async composeTlsa(usage?: number, selector?: number, matchingType?: number, data?: string): Promise<string> {
-    return invoke("compose_tlsa", { usage, selector, matchingType, data: data ?? "" });
+  static async composeTlsa(
+    usage?: number,
+    selector?: number,
+    matchingType?: number,
+    data?: string,
+  ): Promise<string> {
+    return invoke("compose_tlsa", {
+      usage,
+      selector,
+      matchingType,
+      data: data ?? "",
+    });
   }
 
   static async parseSshfp(content: string): Promise<SSHFPFields> {
     return invoke("parse_sshfp", { content });
   }
 
-  static async composeSshfp(algorithm?: number, fptype?: number, fingerprint?: string): Promise<string> {
-    return invoke("compose_sshfp", { algorithm, fptype, fingerprint: fingerprint ?? "" });
+  static async composeSshfp(
+    algorithm?: number,
+    fptype?: number,
+    fingerprint?: string,
+  ): Promise<string> {
+    return invoke("compose_sshfp", {
+      algorithm,
+      fptype,
+      fingerprint: fingerprint ?? "",
+    });
   }
 
   static async parseNaptr(content: string): Promise<NAPTRFields> {
@@ -675,11 +729,17 @@ export class TauriClient {
     return invoke("biometric_authenticate", { reason });
   }
 
-  static async biometricStoreSecret(key: string, secret: string): Promise<void> {
+  static async biometricStoreSecret(
+    key: string,
+    secret: string,
+  ): Promise<void> {
     return invoke("biometric_store_secret", { key, secret });
   }
 
-  static async biometricGetSecret(key: string, reason: string): Promise<string> {
+  static async biometricGetSecret(
+    key: string,
+    reason: string,
+  ): Promise<string> {
     return invoke("biometric_get_secret", { key, reason });
   }
 
@@ -700,7 +760,13 @@ export class TauriClient {
     until?: string,
     email?: string,
   ): Promise<ZoneAnalytics> {
-    return invoke("get_zone_analytics", { apiKey, zoneId, since, until, email });
+    return invoke("get_zone_analytics", {
+      apiKey,
+      zoneId,
+      since,
+      until,
+      email,
+    });
   }
 
   static async getDnsAnalytics(
@@ -739,7 +805,13 @@ export class TauriClient {
     rule: FirewallRuleInput,
     email?: string,
   ): Promise<FirewallRuleResponse> {
-    return invoke("update_firewall_rule", { apiKey, zoneId, ruleId, rule, email });
+    return invoke("update_firewall_rule", {
+      apiKey,
+      zoneId,
+      ruleId,
+      rule,
+      email,
+    });
   }
 
   static async deleteFirewallRule(
@@ -767,7 +839,14 @@ export class TauriClient {
     notes?: string,
     email?: string,
   ): Promise<IpAccessRuleResponse> {
-    return invoke("create_ip_access_rule", { apiKey, zoneId, mode, ip, notes, email });
+    return invoke("create_ip_access_rule", {
+      apiKey,
+      zoneId,
+      mode,
+      ip,
+      notes,
+      email,
+    });
   }
 
   static async deleteIpAccessRule(
@@ -804,7 +883,13 @@ export class TauriClient {
     script: string,
     email?: string,
   ): Promise<WorkerRouteResponse> {
-    return invoke("create_worker_route", { apiKey, zoneId, pattern, script, email });
+    return invoke("create_worker_route", {
+      apiKey,
+      zoneId,
+      pattern,
+      script,
+      email,
+    });
   }
 
   static async deleteWorkerRoute(
@@ -849,7 +934,12 @@ export class TauriClient {
     ruleId: string,
     email?: string,
   ): Promise<void> {
-    return invoke("delete_email_routing_rule", { apiKey, zoneId, ruleId, email });
+    return invoke("delete_email_routing_rule", {
+      apiKey,
+      zoneId,
+      ruleId,
+      email,
+    });
   }
 
   // ── Page Rules ────────────────────────────────────────────────────────────
@@ -870,7 +960,12 @@ export class TauriClient {
     recordIds: string[],
     email?: string,
   ): Promise<void> {
-    return invoke("delete_bulk_dns_records", { apiKey, zoneId, recordIds, email });
+    return invoke("delete_bulk_dns_records", {
+      apiKey,
+      zoneId,
+      recordIds,
+      email,
+    });
   }
 
   // ── DNS Propagation ───────────────────────────────────────────────────────
@@ -880,7 +975,11 @@ export class TauriClient {
     recordType: string,
     extraResolvers?: string[],
   ): Promise<PropagationResult> {
-    return invoke("check_dns_propagation", { domain, recordType, extraResolvers });
+    return invoke("check_dns_propagation", {
+      domain,
+      recordType,
+      extraResolvers,
+    });
   }
 }
 
@@ -1150,7 +1249,12 @@ export interface DomainAuditOptions {
 
 // ── Biometric types ────────────────────────────────────────────────────────
 
-export type BiometricType = "touchId" | "faceId" | "windowsHello" | "fingerprint" | "none";
+export type BiometricType =
+  | "touchId"
+  | "faceId"
+  | "windowsHello"
+  | "fingerprint"
+  | "none";
 
 export interface BiometricStatus {
   available: boolean;

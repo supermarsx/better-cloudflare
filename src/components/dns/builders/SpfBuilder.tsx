@@ -59,7 +59,8 @@ function isValidIPv6Cidr(value: string) {
   if (hasDouble && addr.indexOf("::") !== addr.lastIndexOf("::")) return false;
   const [leftRaw, rightRaw] = addr.split("::");
   const left = leftRaw ? leftRaw.split(":").filter(Boolean) : [];
-  const right = hasDouble && rightRaw ? rightRaw.split(":").filter(Boolean) : [];
+  const right =
+    hasDouble && rightRaw ? rightRaw.split(":").filter(Boolean) : [];
   const toNum = (g: string) => Number.parseInt(g, 16);
   const leftNums = left.map(toNum);
   const rightNums = right.map(toNum);
@@ -96,7 +97,10 @@ export function SpfBuilder({
   record: RecordDraft;
   onRecordChange: (draft: RecordDraft) => void;
   zoneName?: string;
-  simulateSPF?: (domain: string, ip: string) => Promise<{
+  simulateSPF?: (
+    domain: string,
+    ip: string,
+  ) => Promise<{
     result: string;
     reasons: string[];
     lookups: number;
@@ -172,12 +176,16 @@ export function SpfBuilder({
       if (m.mechanism === "ip4") {
         if (!m.value) push("SPF: ip4 requires a value like 192.0.2.0/24.");
         else if (!isValidIPv4Cidr(m.value))
-          push("SPF: ip4 value must be a valid IPv4 address or CIDR (e.g., 192.0.2.0/24).");
+          push(
+            "SPF: ip4 value must be a valid IPv4 address or CIDR (e.g., 192.0.2.0/24).",
+          );
       }
       if (m.mechanism === "ip6") {
         if (!m.value) push("SPF: ip6 requires a value like 2001:db8::/32.");
         else if (!isValidIPv6Cidr(m.value))
-          push("SPF: ip6 value must be a valid IPv6 address or CIDR (e.g., 2001:db8::/32).");
+          push(
+            "SPF: ip6 value must be a valid IPv6 address or CIDR (e.g., 2001:db8::/32).",
+          );
       }
       if (m.mechanism === "include" || m.mechanism === "exists") {
         if (!m.value) push(`SPF: ${m.mechanism} requires a domain.`);
@@ -186,11 +194,18 @@ export function SpfBuilder({
         else {
           const tld = tldOf(m.value);
           if (tld && !KNOWN_TLDS.has(tld))
-            push(`SPF: ${m.mechanism} domain has unknown/invalid TLD “.${tld}”.`);
+            push(
+              `SPF: ${m.mechanism} domain has unknown/invalid TLD “.${tld}”.`,
+            );
         }
       }
-      if (m.mechanism === "a" || m.mechanism === "mx" || m.mechanism === "ptr") {
-        if (m.mechanism === "ptr") push("SPF: ptr is discouraged (can exceed lookup limits).");
+      if (
+        m.mechanism === "a" ||
+        m.mechanism === "mx" ||
+        m.mechanism === "ptr"
+      ) {
+        if (m.mechanism === "ptr")
+          push("SPF: ptr is discouraged (can exceed lookup limits).");
         if (m.value) {
           const domainPart = m.value.split("/")[0] ?? "";
           if (!looksLikeHostname(domainPart))
@@ -198,15 +213,19 @@ export function SpfBuilder({
           else {
             const tld = tldOf(domainPart);
             if (tld && !KNOWN_TLDS.has(tld))
-              push(`SPF: ${m.mechanism} domain has unknown/invalid TLD “.${tld}”.`);
+              push(
+                `SPF: ${m.mechanism} domain has unknown/invalid TLD “.${tld}”.`,
+              );
           }
         }
       }
     }
 
-    if ((mechCounts.get("all") ?? 0) > 1) push("SPF: multiple all mechanisms found.");
+    if ((mechCounts.get("all") ?? 0) > 1)
+      push("SPF: multiple all mechanisms found.");
 
-    const redirectValue = spf.modifiers?.find((m) => m.key === "redirect")?.value ?? "";
+    const redirectValue =
+      spf.modifiers?.find((m) => m.key === "redirect")?.value ?? "";
     const expValue = spf.modifiers?.find((m) => m.key === "exp")?.value ?? "";
     const hasRedirect = Boolean(redirectValue);
     if (redirectValue) {
@@ -224,17 +243,28 @@ export function SpfBuilder({
     if (hasAll && allIndex !== spf.mechanisms.length - 1)
       push("SPF: all should usually be the last mechanism.");
     if (!hasAll && !hasRedirect)
-      push("SPF: no all mechanism or redirect= modifier (record may be incomplete).");
+      push(
+        "SPF: no all mechanism or redirect= modifier (record may be incomplete).",
+      );
     if (hasRedirect && hasAll)
       push("SPF: redirect= will never be used if an all mechanism is present.");
     if (lookupEstimate > 10)
-      push(`SPF: estimated DNS lookups ${lookupEstimate}/10 (may cause permerror).`);
+      push(
+        `SPF: estimated DNS lookups ${lookupEstimate}/10 (may cause permerror).`,
+      );
 
     const v = validateSPF(record.content ?? "");
     if (!v.ok && v.problems.length)
       push(`SPF validation issues: ${v.problems.join(", ")}`);
 
-    return { canonical, issues, lookupEstimate, hasAll, allQualifier, hasRedirect };
+    return {
+      canonical,
+      issues,
+      lookupEstimate,
+      hasAll,
+      allQualifier,
+      hasRedirect,
+    };
   }, [parsed, record.content]);
 
   useEffect(() => {
@@ -254,9 +284,14 @@ export function SpfBuilder({
       value: mechVal || undefined,
     };
     const current =
-      parseSPF(record.content) ?? ({ version: "v=spf1", mechanisms: [] } as any);
+      parseSPF(record.content) ??
+      ({ version: "v=spf1", mechanisms: [] } as any);
     const mechs = [...(current.mechanisms ?? [])];
-    if (editingIndex !== null && editingIndex >= 0 && editingIndex < mechs.length) {
+    if (
+      editingIndex !== null &&
+      editingIndex >= 0 &&
+      editingIndex < mechs.length
+    ) {
       mechs[editingIndex] = next;
       setEditingIndex(null);
     } else {
@@ -277,7 +312,8 @@ export function SpfBuilder({
 
   const removeMechanism = (index: number) => {
     const current =
-      parseSPF(record.content) ?? ({ version: "v=spf1", mechanisms: [] } as any);
+      parseSPF(record.content) ??
+      ({ version: "v=spf1", mechanisms: [] } as any);
     const mechs = [...(current.mechanisms ?? [])];
     mechs.splice(index, 1);
     onRecordChange({
@@ -303,8 +339,11 @@ export function SpfBuilder({
   const applyRedirect = (next: string) => {
     setRedirect(next);
     const current =
-      parseSPF(record.content) ?? ({ version: "v=spf1", mechanisms: [] } as any);
-    const mods = (current.modifiers ?? []).filter((m: any) => m.key !== "redirect");
+      parseSPF(record.content) ??
+      ({ version: "v=spf1", mechanisms: [] } as any);
+    const mods = (current.modifiers ?? []).filter(
+      (m: any) => m.key !== "redirect",
+    );
     if (next) mods.push({ key: "redirect", value: next });
     onRecordChange({
       ...record,
@@ -328,7 +367,9 @@ export function SpfBuilder({
   return (
     <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs font-semibold text-muted-foreground">SPF builder</div>
+        <div className="text-xs font-semibold text-muted-foreground">
+          SPF builder
+        </div>
         <div className="text-[11px] text-muted-foreground">
           Est. DNS lookups: {diagnostics.lookupEstimate}/10
         </div>
@@ -339,7 +380,9 @@ export function SpfBuilder({
           <Label className="text-xs">Qualifier</Label>
           <Select
             value={newQualifier || "+"}
-            onValueChange={(value: string) => setNewQualifier(value === "+" ? "" : value)}
+            onValueChange={(value: string) =>
+              setNewQualifier(value === "+" ? "" : value)
+            }
           >
             <SelectTrigger className="h-8">
               <SelectValue />
@@ -355,7 +398,10 @@ export function SpfBuilder({
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">Mechanism</Label>
-          <Select value={newMechanism} onValueChange={(value: string) => setNewMechanism(value)}>
+          <Select
+            value={newMechanism}
+            onValueChange={(value: string) => setNewMechanism(value)}
+          >
             <SelectTrigger className="h-8">
               <SelectValue />
             </SelectTrigger>
@@ -377,7 +423,9 @@ export function SpfBuilder({
           <Input
             className="h-8"
             value={newMechanism === "all" ? "" : newValue}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setNewValue(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setNewValue(e.target.value)
+            }
             disabled={newMechanism === "all"}
             placeholder={(() => {
               switch (newMechanism) {
@@ -401,27 +449,44 @@ export function SpfBuilder({
         </div>
 
         <div className="flex items-end sm:col-span-1">
-          <Button size="sm" className="h-8 w-full" onClick={addOrUpdateMechanism}>
+          <Button
+            size="sm"
+            className="h-8 w-full"
+            onClick={addOrUpdateMechanism}
+          >
             {editingIndex !== null ? "Update" : "Add"}
           </Button>
         </div>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Mechanisms</div>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Mechanisms
+        </div>
         <div className="mt-2 space-y-2">
           {parsed?.mechanisms?.length ? (
             parsed.mechanisms.map((m, i) => (
-              <div key={`${m.mechanism}:${i}`} className="flex flex-wrap items-center gap-2">
+              <div
+                key={`${m.mechanism}:${i}`}
+                className="flex flex-wrap items-center gap-2"
+              >
                 <div className="text-xs text-foreground/85">
                   {`${m.qualifier ?? ""}${m.mechanism}${m.value ? `:${m.value}` : ""}`}
                   {editingIndex === i ? " (editing)" : ""}
                 </div>
                 <div className="ml-auto flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => editMechanism(i)}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => editMechanism(i)}
+                  >
                     Edit
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => removeMechanism(i)}>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => removeMechanism(i)}
+                  >
                     Remove
                   </Button>
                 </div>
@@ -429,8 +494,8 @@ export function SpfBuilder({
             ))
           ) : (
             <div className="text-[11px] text-muted-foreground">
-              No mechanisms yet. Add include/ip4/ip6 and end with <code>~all</code> or{" "}
-              <code>-all</code>.
+              No mechanisms yet. Add include/ip4/ip6 and end with{" "}
+              <code>~all</code> or <code>-all</code>.
             </div>
           )}
         </div>
@@ -442,9 +507,14 @@ export function SpfBuilder({
               variant="outline"
               onClick={() => {
                 const current =
-                  parseSPF(record.content) ?? ({ version: "v=spf1", mechanisms: [] } as any);
-                const all = (current.mechanisms ?? []).filter((m: any) => m.mechanism === "all");
-                const rest = (current.mechanisms ?? []).filter((m: any) => m.mechanism !== "all");
+                  parseSPF(record.content) ??
+                  ({ version: "v=spf1", mechanisms: [] } as any);
+                const all = (current.mechanisms ?? []).filter(
+                  (m: any) => m.mechanism === "all",
+                );
+                const rest = (current.mechanisms ?? []).filter(
+                  (m: any) => m.mechanism !== "all",
+                );
                 onRecordChange({
                   ...record,
                   content: composeSPF({
@@ -462,8 +532,11 @@ export function SpfBuilder({
               variant="outline"
               onClick={() => {
                 const current =
-                  parseSPF(record.content) ?? ({ version: "v=spf1", mechanisms: [] } as any);
-                const mechs = (current.mechanisms ?? []).filter((m: any) => m.mechanism !== "ptr");
+                  parseSPF(record.content) ??
+                  ({ version: "v=spf1", mechanisms: [] } as any);
+                const mechs = (current.mechanisms ?? []).filter(
+                  (m: any) => m.mechanism !== "ptr",
+                );
                 onRecordChange({
                   ...record,
                   content: composeSPF({
@@ -481,13 +554,17 @@ export function SpfBuilder({
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Redirect (optional)</div>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Redirect (optional)
+        </div>
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-5">
           <div className="sm:col-span-4">
             <Input
               className="h-8"
               value={redirect}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => applyRedirect(e.target.value.trim())}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                applyRedirect(e.target.value.trim())
+              }
               placeholder="_spf.example.com"
             />
           </div>
@@ -504,13 +581,18 @@ export function SpfBuilder({
           </div>
         </div>
         <div className="mt-2 text-[11px] text-muted-foreground">
-          Used only if no mechanism matches. Don’t combine with an <code>all</code> mechanism.
+          Used only if no mechanism matches. Don’t combine with an{" "}
+          <code>all</code> mechanism.
         </div>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Preview (canonical)
+        </div>
+        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+          {diagnostics.canonical}
+        </pre>
       </div>
 
       {diagnostics.issues.length > 0 && (
@@ -528,13 +610,17 @@ export function SpfBuilder({
 
       {(canSimulate || canGraph) && (
         <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Test</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Test
+          </div>
           <div className="mt-2 flex flex-wrap gap-2">
             <Input
               className="h-8 flex-1 min-w-48"
               placeholder="simulate IP e.g., 203.0.113.10"
               value={simIp}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSimIp(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setSimIp(e.target.value)
+              }
             />
             {canSimulate && (
               <Button
@@ -585,18 +671,24 @@ export function SpfBuilder({
 
           {simResult && (
             <div className="mt-3 text-sm">
-              Result: <span className="font-semibold">{simResult.result}</span> (lookups:{" "}
-              {simResult.lookups})
-              <div className="mt-1 text-xs text-muted-foreground">{simResult.reasons.join(", ")}</div>
+              Result: <span className="font-semibold">{simResult.result}</span>{" "}
+              (lookups: {simResult.lookups})
+              <div className="mt-1 text-xs text-muted-foreground">
+                {simResult.reasons.join(", ")}
+              </div>
             </div>
           )}
 
           {graphError && (
-            <div className="mt-3 text-sm text-red-600">Error building graph: {graphError}</div>
+            <div className="mt-3 text-sm text-red-600">
+              Error building graph: {graphError}
+            </div>
           )}
           {graph && (
             <div className="mt-3">
-              <div className="text-xs font-semibold text-muted-foreground">Graph</div>
+              <div className="text-xs font-semibold text-muted-foreground">
+                Graph
+              </div>
               <pre className="scrollbar-themed mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-background/30 p-2 text-xs">
                 {JSON.stringify(graph, null, 2)}
               </pre>
@@ -607,4 +699,3 @@ export function SpfBuilder({
     </div>
   );
 }
-

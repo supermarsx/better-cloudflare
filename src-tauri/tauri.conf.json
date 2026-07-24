@@ -28,9 +28,7 @@
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: https:; script-src 'self'",
-      "capabilities": [
-        "main-window-controls"
-      ]
+      "capabilities": ["main-window-controls"]
     }
   },
   "bundle": {

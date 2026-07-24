@@ -16,10 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
 function parseDSContent(value: string | undefined) {
-  const raw = (value ?? "")
-    .replace(/[()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
     return {
       keyTag: undefined as number | undefined,
@@ -54,7 +51,9 @@ function composeDS(fields: {
     .replace(/\s+/g, "")
     .toUpperCase()
     .replace(/[^0-9A-F]/g, "");
-  return `${keyTag} ${algorithm} ${digestType} ${digest}`.replace(/\s+/g, " ").trim();
+  return `${keyTag} ${algorithm} ${digestType} ${digest}`
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function DsBuilder({
@@ -92,7 +91,8 @@ export function DsBuilder({
     setDsDigest(parsed.digest);
 
     const algIsPreset =
-      parsed.algorithm !== undefined && [8, 13, 14, 15, 16].includes(parsed.algorithm);
+      parsed.algorithm !== undefined &&
+      [8, 13, 14, 15, 16].includes(parsed.algorithm);
     const digestIsPreset =
       parsed.digestType !== undefined && [1, 2, 4].includes(parsed.digestType);
     if (algIsPreset) {
@@ -125,7 +125,8 @@ export function DsBuilder({
   }, [dsDigestType, dsDigestTypeMode]);
 
   const diagnostics = useMemo(() => {
-    if (record.type !== "DS") return { canonical: "", issues: [], nameIssues: [] };
+    if (record.type !== "DS")
+      return { canonical: "", issues: [], nameIssues: [] };
     const issues: string[] = [];
     const nameIssues: string[] = [];
     const push = (list: string[], msg: string) => {
@@ -139,7 +140,8 @@ export function DsBuilder({
     const digest = digestRaw.replace(/\s+/g, "").toUpperCase();
 
     if (keyTag === undefined) push(issues, "DS: key tag is missing.");
-    else if (keyTag < 0 || keyTag > 65535) push(issues, "DS: key tag should be 0–65535.");
+    else if (keyTag < 0 || keyTag > 65535)
+      push(issues, "DS: key tag should be 0–65535.");
 
     const knownAlg: Record<number, string> = {
       5: "RSASHA1",
@@ -152,8 +154,10 @@ export function DsBuilder({
       16: "ED448",
     };
     if (alg === undefined) push(issues, "DS: algorithm is missing.");
-    else if (alg < 0 || alg > 255) push(issues, "DS: algorithm should be 0–255.");
-    else if (!knownAlg[alg]) push(issues, `DS: algorithm ${alg} is uncommon; double-check.`);
+    else if (alg < 0 || alg > 255)
+      push(issues, "DS: algorithm should be 0–255.");
+    else if (!knownAlg[alg])
+      push(issues, `DS: algorithm ${alg} is uncommon; double-check.`);
 
     const knownDigest: Record<number, { name: string; hexLen: number }> = {
       1: { name: "SHA-1", hexLen: 40 },
@@ -170,8 +174,10 @@ export function DsBuilder({
     else {
       if (!/^[0-9A-Fa-f]+$/.test(digestRaw.replace(/\s+/g, "")))
         push(issues, "DS: digest contains non-hex characters.");
-      if (digest.length % 2 !== 0) push(issues, "DS: digest hex length should be even.");
-      const expected = digestType !== undefined ? knownDigest[digestType]?.hexLen : undefined;
+      if (digest.length % 2 !== 0)
+        push(issues, "DS: digest hex length should be even.");
+      const expected =
+        digestType !== undefined ? knownDigest[digestType]?.hexLen : undefined;
       if (expected && digest.length !== expected)
         push(
           issues,
@@ -180,7 +186,10 @@ export function DsBuilder({
     }
 
     if (alg === 13 && digestType === 1)
-      push(issues, "DS: SHA-1 digests are deprecated; prefer digest type 2 (SHA-256).");
+      push(
+        issues,
+        "DS: SHA-1 digests are deprecated; prefer digest type 2 (SHA-256).",
+      );
 
     const name = (record.name ?? "").trim();
     if (!name) {
@@ -196,7 +205,10 @@ export function DsBuilder({
         );
       }
       if (name.startsWith("_"))
-        push(nameIssues, "DS: names starting with '_' are unusual for delegations.");
+        push(
+          nameIssues,
+          "DS: names starting with '_' are unusual for delegations.",
+        );
     }
 
     const canonical = composeDS({
@@ -213,7 +225,15 @@ export function DsBuilder({
       );
     }
     return { canonical, issues, nameIssues };
-  }, [record.type, record.name, record.content, dsAlgorithm, dsDigest, dsDigestType, dsKeyTag]);
+  }, [
+    record.type,
+    record.name,
+    record.content,
+    dsAlgorithm,
+    dsDigest,
+    dsDigestType,
+    dsKeyTag,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -226,11 +246,23 @@ export function DsBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange, record.type]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+    record.type,
+  ]);
 
   const digestNormalized = (dsDigest ?? "").replace(/\s+/g, "").toUpperCase();
   const expectedLen =
-    dsDigestType === 1 ? 40 : dsDigestType === 2 ? 64 : dsDigestType === 4 ? 96 : undefined;
+    dsDigestType === 1
+      ? 40
+      : dsDigestType === 2
+        ? 64
+        : dsDigestType === 4
+          ? 96
+          : undefined;
 
   return (
     <div className="space-y-2">
@@ -267,7 +299,9 @@ export function DsBuilder({
               onValueChange={(value: string) => {
                 if (value === "custom") {
                   setDsAlgorithmMode("custom");
-                  setDsAlgorithmCustomValue(dsAlgorithmCustomValue ?? dsAlgorithm);
+                  setDsAlgorithmCustomValue(
+                    dsAlgorithmCustomValue ?? dsAlgorithm,
+                  );
                   return;
                 }
                 const n = Number.parseInt(value, 10);
@@ -309,7 +343,9 @@ export function DsBuilder({
               onValueChange={(value: string) => {
                 if (value === "custom") {
                   setDsDigestTypeMode("custom");
-                  setDsDigestTypeCustomValue(dsDigestTypeCustomValue ?? dsDigestType);
+                  setDsDigestTypeCustomValue(
+                    dsDigestTypeCustomValue ?? dsDigestType,
+                  );
                   return;
                 }
                 const n = Number.parseInt(value, 10);
@@ -349,8 +385,14 @@ export function DsBuilder({
           <Textarea
             className="scrollbar-themed min-h-20 resize-y"
             value={dsDigest}
-            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDsDigest(e.target.value)}
-            placeholder={expectedLen ? `${expectedLen} hex chars (no spaces)` : "hex digest"}
+            onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+              setDsDigest(e.target.value)
+            }
+            placeholder={
+              expectedLen
+                ? `${expectedLen} hex chars (no spaces)`
+                : "hex digest"
+            }
           />
           <div className="text-[11px] text-muted-foreground">
             {expectedLen
@@ -360,7 +402,11 @@ export function DsBuilder({
         </div>
 
         <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={() => setDsDigest(digestNormalized)}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDsDigest(digestNormalized)}
+          >
             Normalize digest
           </Button>
           <Button
@@ -390,7 +436,9 @@ export function DsBuilder({
           <div className="text-xs font-semibold text-muted-foreground">
             Preview (canonical)
           </div>
-          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {diagnostics.canonical}
+          </pre>
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
@@ -399,9 +447,9 @@ export function DsBuilder({
           </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
-              DS records are normally published in the <em>parent</em> zone for a
-              child delegation. Only add DS here if you’re delegating a subdomain
-              from this zone.
+              DS records are normally published in the <em>parent</em> zone for
+              a child delegation. Only add DS here if you’re delegating a
+              subdomain from this zone.
             </li>
             <li>
               Prefer digest type <code>2</code> (SHA-256). Avoid SHA-1 unless
@@ -438,7 +486,8 @@ export function DsBuilder({
           </div>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">DS warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">

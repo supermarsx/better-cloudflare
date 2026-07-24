@@ -2,7 +2,8 @@
 // Version 2026012600, Last Updated Mon Jan 26 07:07:01 2026 UTC
 // Do not edit by hand.
 
-export const TLD_VERSION = "Version 2026012600, Last Updated Mon Jan 26 07:07:01 2026 UTC";
+export const TLD_VERSION =
+  "Version 2026012600, Last Updated Mon Jan 26 07:07:01 2026 UTC";
 
 const RAW_TLDS = `
 aaa

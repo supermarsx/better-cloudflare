@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { create } from "react-test-renderer";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { LanguageSelector } from "../src/components/layout/LanguageSelector";
 
-test("LanguageSelector renders select with aria-label", () => {
-  const r = create(React.createElement(LanguageSelector));
-  const select = r.root.findByType("select");
-  assert.ok(select.props["aria-label"]);
-  // default translation should be present (English key)
-  assert.equal(select.props["aria-label"], "Select language");
+afterEach(() => {
+  cleanup();
+});
+
+test("LanguageSelector renders trigger and can open language menu", () => {
+  render(<LanguageSelector />);
+
+  const trigger = screen.getByRole("button");
+  assert.ok(trigger);
+
+  fireEvent.click(trigger);
+  assert.ok(trigger.getAttribute("aria-haspopup"));
 });

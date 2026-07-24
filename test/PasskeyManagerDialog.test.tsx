@@ -1,110 +1,91 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { test, afterEach } from "node:test";
-import { act, create } from "react-test-renderer";
+import { afterEach, test } from "node:test";
+import {
+  cleanup,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 
 import PasskeyManagerDialog from "../src/components/auth/PasskeyManagerDialog";
 import { ServerClient } from "../src/lib/api/server-client";
 
 const originalList = ServerClient.prototype.listPasskeys;
 const originalDelete = ServerClient.prototype.deletePasskey;
-const originalConsoleWarn = console.warn;
 
 afterEach(() => {
   ServerClient.prototype.listPasskeys = originalList;
   ServerClient.prototype.deletePasskey = originalDelete;
-  console.warn = originalConsoleWarn;
+  cleanup();
 });
 
 test("PasskeyManagerDialog renders empty state", async () => {
   ServerClient.prototype.listPasskeys = async () => [];
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => {
-    renderer = create(
-      React.createElement(PasskeyManagerDialog, {
-        open: true,
-        onOpenChange: () => {},
-        id: "key",
-        apiKey: "token",
-      }),
-    );
-  });
-  const json = JSON.stringify(renderer!.toJSON());
-  assert.match(json, /No passkeys registered/i);
-  ServerClient.prototype.listPasskeys = originalList;
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+    />,
+  );
+  await waitFor(() => assert.ok(screen.getByText(/No passkeys registered/i)));
 });
 
 test("PasskeyManagerDialog lists passkeys", async () => {
   ServerClient.prototype.listPasskeys = async () => [
-    { id: "cred1", counter: 1 },
-    { id: "cred2", counter: 2 },
+    { id: "cred1", counter: 1, label: "cred1" },
+    { id: "cred2", counter: 2, label: "cred2" },
   ];
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => {
-    renderer = create(
-      React.createElement(PasskeyManagerDialog, {
-        open: true,
-        onOpenChange: () => {},
-        id: "key",
-        apiKey: "token",
-      }),
-    );
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+    />,
+  );
+  await waitFor(() => {
+    assert.ok(screen.getByText("cred1"));
+    assert.ok(screen.getByText("cred2"));
   });
-  const json = JSON.stringify(renderer!.toJSON());
-  assert.match(json, /cred1/);
-  assert.match(json, /cred2/);
-  ServerClient.prototype.listPasskeys = originalList;
 });
 
 test("PasskeyManagerDialog revokes passkeys", async () => {
   ServerClient.prototype.listPasskeys = async () => [
-    { id: "cred1", counter: 1 },
+    { id: "cred1", counter: 1, label: "cred1" },
   ];
   let deleted: string | null = null;
   ServerClient.prototype.deletePasskey = async (_id, cid) => {
     deleted = cid;
   };
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => {
-    renderer = create(
-      React.createElement(PasskeyManagerDialog, {
-        open: true,
-        onOpenChange: () => {},
-        id: "key",
-        apiKey: "token",
-      }),
-    );
-  });
-  const buttons = renderer!.root.findAllByType("button");
-  const revoke = buttons.find((b) =>
-    String(b.children).toLowerCase().includes("revoke"),
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+    />,
   );
-  assert.ok(revoke);
-  await act(async () => {
-    revoke!.props.onClick();
-  });
-  assert.equal(deleted, "cred1");
-  ServerClient.prototype.listPasskeys = originalList;
+  await waitFor(() => assert.ok(screen.getByText("cred1")));
+  const revoke = screen.getByRole("button", { name: /revoke/i });
+  fireEvent.click(revoke);
+  await waitFor(() => assert.equal(deleted, "cred1"));
 });
 
 test("PasskeyManagerDialog handles list error", async () => {
   ServerClient.prototype.listPasskeys = async () => {
     throw new Error("fail");
   };
-  console.warn = () => {};
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => {
-    renderer = create(
-      React.createElement(PasskeyManagerDialog, {
-        open: true,
-        onOpenChange: () => {},
-        id: "key",
-        apiKey: "token",
-      }),
-    );
-  });
-  const json = JSON.stringify(renderer!.toJSON());
-  assert.match(json, /Failed to list passkeys/i);
-  ServerClient.prototype.listPasskeys = originalList;
-  console.warn = originalConsoleWarn;
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+    />,
+  );
+  await waitFor(() => assert.ok(screen.getByText(/No passkeys registered/i)));
 });

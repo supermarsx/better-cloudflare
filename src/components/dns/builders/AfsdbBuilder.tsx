@@ -99,7 +99,11 @@ export function AfsdbBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "AFSDB") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -108,7 +112,8 @@ export function AfsdbBuilder({
     };
 
     const parsed = parseAfsdbContent(record.content);
-    if (parsed.extra) push(issues, "AFSDB: extra trailing tokens found in content.");
+    if (parsed.extra)
+      push(issues, "AFSDB: extra trailing tokens found in content.");
 
     if (subtype === undefined)
       push(issues, "AFSDB: subtype is required (usually 1 or 2).");
@@ -228,8 +233,8 @@ export function AfsdbBuilder({
               />
             )}
             <div className="text-[11px] text-muted-foreground">
-              {AFSDB_SUBTYPE_PRESETS.find((p) => Number(p.value) === subtype)?.desc ??
-                "Subtype is usually 1 (AFS) or 2 (DCE)."}
+              {AFSDB_SUBTYPE_PRESETS.find((p) => Number(p.value) === subtype)
+                ?.desc ?? "Subtype is usually 1 (AFS) or 2 (DCE)."}
             </div>
           </div>
 
@@ -266,7 +271,9 @@ export function AfsdbBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -281,7 +288,8 @@ export function AfsdbBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">AFSDB warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -300,4 +308,3 @@ export function AfsdbBuilder({
     </div>
   );
 }
-

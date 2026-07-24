@@ -11,7 +11,13 @@ import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
 import { LoginBiometricSection } from "./login-form/LoginBiometricSection";
 import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useLoginForm } from "@/hooks/auth/use-login-form";
 
@@ -113,7 +119,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     <div className="h-full w-full flex items-center justify-center bg-background p-4 relative overflow-hidden">
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
-      
+
       <Card className="w-full max-w-md relative z-10 border border-border/60 shadow-[0_0_18px_rgba(0,0,0,0.12)] bg-card/80 backdrop-blur-xl">
         <LoginHeader />
         <CardContent className="space-y-6 pt-4">
@@ -177,7 +183,6 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             newPassword={newPassword}
             setNewPassword={setNewPassword}
             handleAddKey={handleAddKey}
-
             showSettings={showSettings}
             setShowSettings={setShowSettings}
             encryptionSettings={encryptionSettings}
@@ -187,7 +192,6 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             benchmarkResult={benchmarkResult}
             vaultEnabled={vaultEnabled}
             setVaultEnabled={setVaultEnabled}
-
             showManagePasskeys={showManagePasskeys}
             setShowManagePasskeys={setShowManagePasskeys}
             selectedKeyId={selectedKeyId}
@@ -195,7 +199,6 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             passkeyViewEmail={passkeyViewEmail}
             setPasskeyViewKey={setPasskeyViewKey}
             setPasskeyViewEmail={setPasskeyViewEmail}
-
             showEditKey={showEditKey}
             setShowEditKey={setShowEditKey}
             editLabel={editLabel}
@@ -223,7 +226,8 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           <DialogHeader>
             <DialogTitle>Delete API Key</DialogTitle>
             <DialogDescription>
-              This removes the selected key from local storage. This cannot be undone.
+              This removes the selected key from local storage. This cannot be
+              undone.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -231,7 +235,11 @@ export function LoginForm({ onLogin }: LoginFormProps) {
               {deleteTarget ? deleteTarget.label : "Selected key"}
             </div>
             <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setShowDeleteConfirm(false)}>
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
                 Cancel
               </Button>
               <Button

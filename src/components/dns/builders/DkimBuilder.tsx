@@ -27,7 +27,9 @@ function validateDKIM(value: string) {
     return { ok: false, problems };
   }
   if (/-----BEGIN\b/i.test(content)) {
-    problems.push("p= looks like it includes a PEM header/footer (use base64 only).");
+    problems.push(
+      "p= looks like it includes a PEM header/footer (use base64 only).",
+    );
   }
   const tags = content
     .split(";")
@@ -59,35 +61,50 @@ function validateDKIM(value: string) {
       problems.push("p= contains non-base64 characters.");
     if (pk.length > 0 && pk.length % 4 !== 0)
       problems.push("p= base64 length is unusual (not a multiple of 4).");
-    if (pk.length === 0) problems.push("p= is empty (revoked key). This may be intentional.");
+    if (pk.length === 0)
+      problems.push("p= is empty (revoked key). This may be intentional.");
     if (pk.length > 255)
-      problems.push("p= is longer than 255 chars; some providers require splitting TXT strings.");
+      problems.push(
+        "p= is longer than 255 chars; some providers require splitting TXT strings.",
+      );
   }
   const k = map.get("k");
-  if (!k) problems.push("Missing k= (defaults to rsa, but most providers publish it).");
+  if (!k)
+    problems.push(
+      "Missing k= (defaults to rsa, but most providers publish it).",
+    );
   else if (!["rsa", "ed25519"].includes(k.toLowerCase()))
     problems.push("k= is usually rsa or ed25519.");
   const v = map.get("v");
   if (v && v.toUpperCase() !== "DKIM1") problems.push("v= should be DKIM1.");
   const t = map.get("t");
   if (t) {
-    const flags = t.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const flags = t
+      .split(":")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
     const allowed = new Set(["y", "s"]);
-    for (const f of flags) if (!allowed.has(f)) problems.push(`Unknown t= flag: ${f}`);
+    for (const f of flags)
+      if (!allowed.has(f)) problems.push(`Unknown t= flag: ${f}`);
   }
   const s = map.get("s");
   if (s && !["*", "email"].includes(s.trim().toLowerCase()))
     problems.push("s= is usually '*' or 'email'.");
   const h = map.get("h");
   if (h) {
-    const parts = h.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const parts = h
+      .split(":")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
     const allowed = new Set(["sha1", "sha256"]);
-    for (const alg of parts) if (!allowed.has(alg)) problems.push(`Unknown h= algorithm: ${alg}`);
+    for (const alg of parts)
+      if (!allowed.has(alg)) problems.push(`Unknown h= algorithm: ${alg}`);
   }
   const g = map.get("g");
   if (g) {
     if (/\s/.test(g)) problems.push("g= contains whitespace.");
-    if (g.includes("@")) problems.push("g= should be a local-part pattern (no @domain).");
+    if (g.includes("@"))
+      problems.push("g= should be a local-part pattern (no @domain).");
   }
   return { ok: problems.length === 0, problems };
 }
@@ -118,19 +135,31 @@ function parseDKIM(value: string | undefined) {
     const v = rest.join("=").trim();
     tags.set(k, v);
   }
-  const keyType = (tags.get("k")?.toLowerCase() === "ed25519" ? "ed25519" : "rsa") as
-    | "rsa"
-    | "ed25519";
+  const keyType = (
+    tags.get("k")?.toLowerCase() === "ed25519" ? "ed25519" : "rsa"
+  ) as "rsa" | "ed25519";
   const publicKey = tags.get("p") ?? "";
   const t = tags.get("t") ?? "";
-  const flags = t.split(":").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const flags = t
+    .split(":")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
   const testMode = flags.includes("y");
   const strictMode = flags.includes("s");
   const notes = tags.get("n") ?? "";
   const serviceType = tags.get("s") ?? "";
   const hashAlgs = tags.get("h") ?? "";
   const granularity = tags.get("g") ?? "";
-  return { keyType, publicKey, testMode, strictMode, serviceType, hashAlgs, granularity, notes };
+  return {
+    keyType,
+    publicKey,
+    testMode,
+    strictMode,
+    serviceType,
+    hashAlgs,
+    granularity,
+    notes,
+  };
 }
 
 function buildDKIM(fields: {
@@ -220,7 +249,10 @@ export function DkimBuilder({
       const v = validateDKIM(content);
       for (const p of v.problems) uniquePush(issues, `DKIM: ${p}`);
       if (!content.endsWith(";"))
-        uniquePush(issues, "DKIM: consider ending tags with ';' for readability.");
+        uniquePush(
+          issues,
+          "DKIM: consider ending tags with ';' for readability.",
+        );
     }
 
     const selectorTrim = selector.trim();
@@ -241,10 +273,14 @@ export function DkimBuilder({
     const pk = publicKey.trim().replace(/\s+/g, "");
     if (keyType === "ed25519" && pk) {
       if (pk.length < 40 || pk.length > 64)
-        uniquePush(issues, "DKIM: ed25519 p= length looks unusual (expected ~44 base64 chars).");
+        uniquePush(
+          issues,
+          "DKIM: ed25519 p= length looks unusual (expected ~44 base64 chars).",
+        );
     }
     if (keyType === "rsa" && pk) {
-      if (pk.length < 200) uniquePush(issues, "DKIM: rsa p= looks unusually short.");
+      if (pk.length < 200)
+        uniquePush(issues, "DKIM: rsa p= looks unusually short.");
     }
 
     const canonical = buildDKIM({
@@ -286,16 +322,26 @@ export function DkimBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+  ]);
 
   return (
     <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
-      <div className="text-xs font-semibold text-muted-foreground">DKIM builder</div>
+      <div className="text-xs font-semibold text-muted-foreground">
+        DKIM builder
+      </div>
 
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">Key type</Label>
-          <Select value={keyType} onValueChange={(value: string) => setKeyType(value as any)}>
+          <Select
+            value={keyType}
+            onValueChange={(value: string) => setKeyType(value as any)}
+          >
             <SelectTrigger className="h-9">
               <SelectValue />
             </SelectTrigger>
@@ -310,7 +356,9 @@ export function DkimBuilder({
           <Label className="text-xs">Selector</Label>
           <Input
             value={selector}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setSelector(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setSelector(e.target.value)
+            }
             placeholder="e.g., default"
           />
           <div className="text-[11px] text-muted-foreground">
@@ -322,7 +370,13 @@ export function DkimBuilder({
           <Label className="text-xs">Mode</Label>
           <Select
             value={
-              testMode && strictMode ? "test+strict" : testMode ? "test" : strictMode ? "strict" : "prod"
+              testMode && strictMode
+                ? "test+strict"
+                : testMode
+                  ? "test"
+                  : strictMode
+                    ? "strict"
+                    : "prod"
             }
             onValueChange={(value: string) => {
               if (value === "prod") {
@@ -356,7 +410,9 @@ export function DkimBuilder({
           <Label className="text-xs">Public key (p=)</Label>
           <Input
             value={publicKey}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setPublicKey(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setPublicKey(e.target.value)
+            }
             placeholder="base64 public key (no PEM header/footer)"
           />
         </div>
@@ -387,7 +443,9 @@ export function DkimBuilder({
             <Input
               className="mt-2"
               value={hashAlgs}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setHashAlgs(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setHashAlgs(e.target.value)
+              }
               placeholder="e.g., sha256"
             />
           )}
@@ -395,17 +453,34 @@ export function DkimBuilder({
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">s= (service type)</Label>
-          <Input value={serviceType} onChange={(e: ChangeEvent<HTMLInputElement>) => setServiceType(e.target.value)} placeholder="e.g., * or email" />
+          <Input
+            value={serviceType}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setServiceType(e.target.value)
+            }
+            placeholder="e.g., * or email"
+          />
         </div>
 
         <div className="space-y-1 sm:col-span-2">
           <Label className="text-xs">g= (granularity)</Label>
-          <Input value={granularity} onChange={(e: ChangeEvent<HTMLInputElement>) => setGranularity(e.target.value)} placeholder="optional" />
+          <Input
+            value={granularity}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setGranularity(e.target.value)
+            }
+            placeholder="optional"
+          />
         </div>
 
         <div className="space-y-1 sm:col-span-6">
           <Label className="text-xs">n= (notes)</Label>
-          <Input value={notes} onChange={(e: ChangeEvent<HTMLInputElement>) => setNotes(e.target.value)} />
+          <Input
+            value={notes}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setNotes(e.target.value)
+            }
+          />
         </div>
       </div>
 
@@ -439,21 +514,33 @@ export function DkimBuilder({
         >
           Load from content
         </Button>
-        <Button size="sm" onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}>
+        <Button
+          size="sm"
+          onClick={() =>
+            onRecordChange({ ...record, content: diagnostics.canonical })
+          }
+        >
           Build DKIM TXT
         </Button>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Preview (canonical)
+        </div>
+        <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+          {diagnostics.canonical}
+        </pre>
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">Recommendations</div>
+        <div className="text-xs font-semibold text-muted-foreground">
+          Recommendations
+        </div>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
           <li>
-            Keep TXT value as a single line; some providers require splitting long <code>p=</code> into multiple strings.
+            Keep TXT value as a single line; some providers require splitting
+            long <code>p=</code> into multiple strings.
           </li>
           <li>
             Start with production mode; use <code>t=y</code> only for testing.
@@ -480,4 +567,3 @@ export function DkimBuilder({
     </div>
   );
 }
-

@@ -99,7 +99,9 @@ export function useHotkeys(bindings: HotkeyBinding[], enabled = true): void {
  * Return a human-readable representation of a hotkey binding.
  * Useful for rendering shortcut hints in tooltips and help dialogs.
  */
-export function formatHotkey(binding: Pick<HotkeyBinding, "key" | "ctrl" | "shift" | "alt">): string {
+export function formatHotkey(
+  binding: Pick<HotkeyBinding, "key" | "ctrl" | "shift" | "alt">,
+): string {
   const parts: string[] = [];
   if (binding.ctrl) parts.push(isMac ? "⌘" : "Ctrl");
   if (binding.shift) parts.push(isMac ? "⇧" : "Shift");

@@ -16,10 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
 function parseDNSKEYContent(value: string | undefined) {
-  const raw = (value ?? "")
-    .replace(/[()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
     return {
       flags: undefined as number | undefined,
@@ -51,7 +48,9 @@ function composeDNSKEY(fields: {
   const protocol = fields.protocol ?? "";
   const algorithm = fields.algorithm ?? "";
   const publicKey = (fields.publicKey ?? "").replace(/\s+/g, "");
-  return `${flags} ${protocol} ${algorithm} ${publicKey}`.replace(/\s+/g, " ").trim();
+  return `${flags} ${protocol} ${algorithm} ${publicKey}`
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function DnskeyBuilder({
@@ -65,7 +64,9 @@ export function DnskeyBuilder({
 }) {
   const [dnskeyFlags, setDnskeyFlags] = useState<number | undefined>(257);
   const [dnskeyProtocol, setDnskeyProtocol] = useState<number | undefined>(3);
-  const [dnskeyAlgorithm, setDnskeyAlgorithm] = useState<number | undefined>(13);
+  const [dnskeyAlgorithm, setDnskeyAlgorithm] = useState<number | undefined>(
+    13,
+  );
   const [dnskeyPublicKey, setDnskeyPublicKey] = useState<string>("");
 
   const [dnskeyFlagsMode, setDnskeyFlagsMode] = useState<"preset" | "custom">(
@@ -89,7 +90,8 @@ export function DnskeyBuilder({
     setDnskeyAlgorithm(parsed.algorithm);
     setDnskeyPublicKey(parsed.publicKey);
 
-    const flagsIsPreset = parsed.flags !== undefined && [256, 257].includes(parsed.flags);
+    const flagsIsPreset =
+      parsed.flags !== undefined && [256, 257].includes(parsed.flags);
     if (flagsIsPreset) {
       setDnskeyFlagsMode("preset");
     } else {
@@ -98,7 +100,8 @@ export function DnskeyBuilder({
     }
 
     const algIsPreset =
-      parsed.algorithm !== undefined && [8, 13, 14, 15, 16].includes(parsed.algorithm);
+      parsed.algorithm !== undefined &&
+      [8, 13, 14, 15, 16].includes(parsed.algorithm);
     if (algIsPreset) {
       setDnskeyAlgorithmMode("preset");
     } else {
@@ -133,14 +136,20 @@ export function DnskeyBuilder({
 
   const dnskeyAlgorithmSelectValue = useMemo(() => {
     if (dnskeyAlgorithmMode === "custom") return "custom";
-    if (dnskeyAlgorithm === undefined || dnskeyAlgorithm === null) return "custom";
-    if ([8, 13, 14, 15, 16].includes(dnskeyAlgorithm)) return String(dnskeyAlgorithm);
+    if (dnskeyAlgorithm === undefined || dnskeyAlgorithm === null)
+      return "custom";
+    if ([8, 13, 14, 15, 16].includes(dnskeyAlgorithm))
+      return String(dnskeyAlgorithm);
     return "custom";
   }, [dnskeyAlgorithm, dnskeyAlgorithmMode]);
 
   const diagnostics = useMemo(() => {
     if (record.type !== "DNSKEY" && record.type !== "CDNSKEY") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
     const issues: string[] = [];
     const nameIssues: string[] = [];
@@ -155,11 +164,13 @@ export function DnskeyBuilder({
     const pk = pkRaw.replace(/\s+/g, "");
 
     if (flags === undefined) push(issues, "DNSKEY: flags are missing.");
-    else if (flags < 0 || flags > 65535) push(issues, "DNSKEY: flags should be 0–65535.");
+    else if (flags < 0 || flags > 65535)
+      push(issues, "DNSKEY: flags should be 0–65535.");
     else if (![256, 257].includes(flags))
       push(issues, "DNSKEY: flags are usually 256 (ZSK) or 257 (KSK).");
 
-    if (protocol === undefined) push(issues, "DNSKEY: protocol is missing (usually 3).");
+    if (protocol === undefined)
+      push(issues, "DNSKEY: protocol is missing (usually 3).");
     else if (protocol !== 3) push(issues, "DNSKEY: protocol should be 3.");
 
     const knownAlg: Record<number, string> = {
@@ -173,14 +184,22 @@ export function DnskeyBuilder({
       16: "ED448",
     };
     if (alg === undefined) push(issues, "DNSKEY: algorithm is missing.");
-    else if (alg < 0 || alg > 255) push(issues, "DNSKEY: algorithm should be 0–255.");
-    else if (!knownAlg[alg]) push(issues, `DNSKEY: algorithm ${alg} is uncommon; double-check.`);
+    else if (alg < 0 || alg > 255)
+      push(issues, "DNSKEY: algorithm should be 0–255.");
+    else if (!knownAlg[alg])
+      push(issues, `DNSKEY: algorithm ${alg} is uncommon; double-check.`);
 
     if (!pk) push(issues, "DNSKEY: public key is missing.");
     if (pkRaw && pkRaw !== pk)
-      push(issues, "DNSKEY: public key contains whitespace (will be normalized).");
+      push(
+        issues,
+        "DNSKEY: public key contains whitespace (will be normalized).",
+      );
     if (/-----BEGIN\b/i.test(pkRaw))
-      push(issues, "DNSKEY: public key looks like PEM; paste base64 only (no header/footer).");
+      push(
+        issues,
+        "DNSKEY: public key looks like PEM; paste base64 only (no header/footer).",
+      );
     if (pk) {
       if (!/^[A-Za-z0-9+/=]+$/.test(pk))
         push(issues, "DNSKEY: public key contains non-base64 characters.");
@@ -190,7 +209,10 @@ export function DnskeyBuilder({
 
     const name = (record.name ?? "").trim();
     if (!name || name !== "@") {
-      push(nameIssues, `DNSKEY: name is typically "@" (zone apex) for ${record.type}.`);
+      push(
+        nameIssues,
+        `DNSKEY: name is typically "@" (zone apex) for ${record.type}.`,
+      );
     }
 
     const canonical = composeDNSKEY({
@@ -208,7 +230,15 @@ export function DnskeyBuilder({
     }
 
     return { canonical, issues, nameIssues };
-  }, [record.type, record.name, record.content, dnskeyAlgorithm, dnskeyFlags, dnskeyProtocol, dnskeyPublicKey]);
+  }, [
+    record.type,
+    record.name,
+    record.content,
+    dnskeyAlgorithm,
+    dnskeyFlags,
+    dnskeyProtocol,
+    dnskeyPublicKey,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -221,7 +251,13 @@ export function DnskeyBuilder({
       nameIssues: diagnostics.nameIssues,
       canonical: diagnostics.canonical,
     });
-  }, [diagnostics.canonical, diagnostics.issues, diagnostics.nameIssues, onWarningsChange, record.type]);
+  }, [
+    diagnostics.canonical,
+    diagnostics.issues,
+    diagnostics.nameIssues,
+    onWarningsChange,
+    record.type,
+  ]);
 
   const pkNormalized = (dnskeyPublicKey ?? "").replace(/\s+/g, "");
 
@@ -229,7 +265,9 @@ export function DnskeyBuilder({
     <div className="space-y-2">
       <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-muted-foreground">DNSKEY builder</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            DNSKEY builder
+          </div>
           <div className="text-[11px] text-muted-foreground">
             Format: <code>flags protocol algorithm publicKey</code>
           </div>
@@ -243,7 +281,9 @@ export function DnskeyBuilder({
               onValueChange={(value: string) => {
                 if (value === "custom") {
                   setDnskeyFlagsMode("custom");
-                  setDnskeyFlagsCustomValue(dnskeyFlagsCustomValue ?? dnskeyFlags);
+                  setDnskeyFlagsCustomValue(
+                    dnskeyFlagsCustomValue ?? dnskeyFlags,
+                  );
                   return;
                 }
                 const n = Number.parseInt(value, 10);
@@ -291,13 +331,15 @@ export function DnskeyBuilder({
               </div>
               <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
                 <div>
-                  <code>256</code> Zone Key: {dnskeyFlagsExplainer.zoneKey ? "on" : "off"}
+                  <code>256</code> Zone Key:{" "}
+                  {dnskeyFlagsExplainer.zoneKey ? "on" : "off"}
                 </div>
                 <div>
                   <code>1</code> SEP: {dnskeyFlagsExplainer.sep ? "on" : "off"}
                 </div>
                 <div className="col-span-2">
-                  <code>128</code> REVOKE: {dnskeyFlagsExplainer.revoke ? "on" : "off"}
+                  <code>128</code> REVOKE:{" "}
+                  {dnskeyFlagsExplainer.revoke ? "on" : "off"}
                 </div>
               </div>
               {dnskeyFlagsExplainer.unknownBits.length > 0 && (
@@ -334,7 +376,9 @@ export function DnskeyBuilder({
               onValueChange={(value: string) => {
                 if (value === "custom") {
                   setDnskeyAlgorithmMode("custom");
-                  setDnskeyAlgorithmCustomValue(dnskeyAlgorithmCustomValue ?? dnskeyAlgorithm);
+                  setDnskeyAlgorithmCustomValue(
+                    dnskeyAlgorithmCustomValue ?? dnskeyAlgorithm,
+                  );
                   return;
                 }
                 const n = Number.parseInt(value, 10);
@@ -376,19 +420,30 @@ export function DnskeyBuilder({
           <Textarea
             className="scrollbar-themed min-h-24 resize-y"
             value={dnskeyPublicKey}
-            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDnskeyPublicKey(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+              setDnskeyPublicKey(e.target.value)
+            }
             placeholder="Paste the base64 public key (no PEM header/footer)"
           />
           <div className="text-[11px] text-muted-foreground">
-            Whitespace is ignored; it will be normalized in the canonical preview.
+            Whitespace is ignored; it will be normalized in the canonical
+            preview.
           </div>
         </div>
 
         <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={() => onRecordChange({ ...record, name: "@" })}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onRecordChange({ ...record, name: "@" })}
+          >
             Set name to @
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setDnskeyPublicKey(pkNormalized)}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDnskeyPublicKey(pkNormalized)}
+          >
             Normalize key whitespace
           </Button>
           <Button
@@ -415,23 +470,29 @@ export function DnskeyBuilder({
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Preview (canonical)</div>
-          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{diagnostics.canonical}</pre>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Preview (canonical)
+          </div>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {diagnostics.canonical}
+          </pre>
         </div>
 
         <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-          <div className="text-xs font-semibold text-muted-foreground">Recommendations</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Recommendations
+          </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
               DNSKEY records are published at the zone apex (<code>@</code>).
             </li>
             <li>
-              Most modern zones use algorithm <code>13</code> (ECDSAP256SHA256) or{" "}
-              <code>15</code> (ED25519).
+              Most modern zones use algorithm <code>13</code> (ECDSAP256SHA256)
+              or <code>15</code> (ED25519).
             </li>
             <li>
-              Keep protocol at <code>3</code>. Flags are usually <code>257</code> (KSK)
-              or <code>256</code> (ZSK).
+              Keep protocol at <code>3</code>. Flags are usually{" "}
+              <code>257</code> (KSK) or <code>256</code> (ZSK).
             </li>
           </ul>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -464,7 +525,8 @@ export function DnskeyBuilder({
           </div>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">DNSKEY warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">

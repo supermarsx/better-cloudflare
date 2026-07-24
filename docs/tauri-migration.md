@@ -5,12 +5,14 @@ This guide explains the conversion of Better Cloudflare from a web application t
 ## Architecture Overview
 
 ### Before (Web App)
+
 - **Frontend**: Next.js React application
 - **Backend**: Express.js Node server
 - **Communication**: HTTP/REST API
 - **Storage**: IndexedDB + OS Keychain (via keytar)
 
 ### After (Desktop App)
+
 - **Frontend**: Next.js React application (same)
 - **Backend**: Rust with Tauri framework
 - **Communication**: Tauri IPC (Inter-Process Communication)
@@ -21,6 +23,7 @@ This guide explains the conversion of Better Cloudflare from a web application t
 ### 1. Backend Migration (TypeScript → Rust)
 
 **Express Routes → Tauri Commands**
+
 ```typescript
 // Before: Express endpoint
 app.post('/api/verify-token', async (req, res) => {
@@ -38,21 +41,23 @@ pub async fn verify_token(api_key: String, email: Option<String>) -> Result<bool
 ### 2. Frontend Changes
 
 **HTTP Calls → Tauri Invoke**
+
 ```typescript
 // Before: HTTP fetch
-const response = await fetch('/api/verify-token', {
-  method: 'POST',
-  body: JSON.stringify({ apiKey, email })
+const response = await fetch("/api/verify-token", {
+  method: "POST",
+  body: JSON.stringify({ apiKey, email }),
 });
 
 // After: Tauri invoke
-import { invoke } from '@tauri-apps/api/core';
-const result = await invoke('verify_token', { apiKey, email });
+import { invoke } from "@tauri-apps/api/core";
+const result = await invoke("verify_token", { apiKey, email });
 ```
 
 ### 3. Storage Changes
 
 **Node.js keytar → Rust keyring**
+
 - Same OS-level keychain integration
 - Automatic fallback to in-memory storage
 - Compatible credential format
@@ -60,6 +65,7 @@ const result = await invoke('verify_token', { apiKey, email });
 ## Installation & Setup
 
 ### Prerequisites
+
 ```bash
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -72,6 +78,7 @@ npm install -D @tauri-apps/cli
 ```
 
 ### Development
+
 ```bash
 # Install dependencies
 npm install
@@ -86,6 +93,7 @@ npm run tauri:dev
 ```
 
 ### Building for Production
+
 ```bash
 # Build desktop app
 npm run tauri:build
@@ -122,30 +130,36 @@ better-cloudflare/
 ## Configuration
 
 ### tauri.conf.json
+
 Key configuration options:
+
 ```json
 {
   "build": {
-    "devUrl": "http://localhost:3000",    // Next.js dev server
-    "frontendDist": "../out"               // Next.js export output
+    "devUrl": "http://localhost:3000", // Next.js dev server
+    "frontendDist": "../out" // Next.js export output
   },
   "app": {
-    "windows": [{
-      "title": "Better Cloudflare DNS Manager",
-      "width": 1280,
-      "height": 800
-    }]
+    "windows": [
+      {
+        "title": "Better Cloudflare DNS Manager",
+        "width": 1280,
+        "height": 800
+      }
+    ]
   }
 }
 ```
 
 ### next.config.mjs
+
 Updated for static export:
+
 ```javascript
 const nextConfig = {
-  output: 'export',           // Required for Tauri
+  output: "export", // Required for Tauri
   images: {
-    unoptimized: true,        // No server-side image optimization
+    unoptimized: true, // No server-side image optimization
   },
 };
 ```
@@ -155,7 +169,7 @@ const nextConfig = {
 ### Tauri Client Usage
 
 ```typescript
-import { TauriClient } from '@/lib/tauri-client';
+import { TauriClient } from "@/lib/tauri-client";
 
 // Check if running in Tauri
 if (TauriClient.isTauri()) {
@@ -167,6 +181,7 @@ if (TauriClient.isTauri()) {
 ### Available Commands
 
 **Authentication & Keys**
+
 - `verify_token(apiKey, email)` - Verify Cloudflare API token
 - `get_api_keys()` - List stored API keys
 - `add_api_key(label, apiKey, email, password)` - Add encrypted key
@@ -175,6 +190,7 @@ if (TauriClient.isTauri()) {
 - `decrypt_api_key(id, password)` - Decrypt stored key
 
 **DNS Operations**
+
 - `get_zones(apiKey, email)` - List Cloudflare zones
 - `get_dns_records(apiKey, email, zoneId)` - List DNS records
 - `create_dns_record(apiKey, email, zoneId, record)` - Create record
@@ -184,6 +200,7 @@ if (TauriClient.isTauri()) {
 - `export_dns_records(apiKey, email, zoneId, format)` - Export
 
 **Vault & Passkeys**
+
 - `store_vault_secret(id, secret)` - Store in OS keychain
 - `get_vault_secret(id, passkey_token)` - Retrieve from keychain (requires passkey token)
 - `delete_vault_secret(id)` - Delete from keychain
@@ -194,21 +211,25 @@ if (TauriClient.isTauri()) {
 - `delete_passkey(id, credentialId)` - Revoke passkey
 
 **Encryption**
+
 - `get_encryption_settings()` - Get current settings
 - `update_encryption_settings(config)` - Update settings
 - `benchmark_encryption(iterations)` - Performance test
 
 **Audit**
+
 - `get_audit_entries()` - Get audit log
 - `export_audit_entries(format)` - Export audit log as JSON or CSV
 
 **Preferences**
+
 - `get_preferences()` - Load desktop preferences
 - `update_preferences(preferences)` - Persist desktop preferences
 
 ## Security Improvements
 
 ### Desktop App Benefits
+
 1. **No Network Exposure**: Backend runs locally, no server to attack
 2. **Native OS Integration**: Uses system keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux)
 3. **Sandboxed**: Tauri security model restricts file system and network access
@@ -216,6 +237,7 @@ if (TauriClient.isTauri()) {
 5. **Auto-Updates**: Built-in updater plugin available
 
 ### Encryption
+
 - **Algorithm**: AES-256-GCM (Galois/Counter Mode)
 - **Key Derivation**: PBKDF2-HMAC-SHA256
 - **Default Iterations**: 100,000
@@ -225,6 +247,7 @@ if (TauriClient.isTauri()) {
 ## Testing
 
 ### Development Testing
+
 ```bash
 # Run unit tests (Rust)
 cd src-tauri
@@ -235,6 +258,7 @@ npm run test:e2e
 ```
 
 ### Manual Testing
+
 1. Launch with `npm run tauri:dev`
 2. Test API key storage and encryption
 3. Test DNS record operations
@@ -246,6 +270,7 @@ npm run test:e2e
 ### Build Issues
 
 **Rust compilation errors**
+
 ```bash
 # Update Rust
 rustup update stable
@@ -257,6 +282,7 @@ cargo build
 ```
 
 **Frontend not loading**
+
 ```bash
 # Ensure Next.js is building correctly
 npm run build
@@ -266,11 +292,13 @@ npm run build
 ### Runtime Issues
 
 **Keyring not available**
+
 - App will automatically fall back to in-memory storage
 - Data will not persist between restarts
 - Check system keychain permissions
 
 **WebAuthn not working**
+
 - Passkeys require HTTPS or localhost
 - Desktop app runs on localhost internally
 - Ensure system supports WebAuthn (biometric/security keys)
@@ -278,6 +306,7 @@ npm run build
 ## Distribution
 
 ### macOS
+
 ```bash
 npm run tauri:build
 # Output: src-tauri/target/release/bundle/dmg/
@@ -285,6 +314,7 @@ npm run tauri:build
 ```
 
 ### Windows
+
 ```bash
 npm run tauri:build
 # Output: src-tauri/target/release/bundle/msi/
@@ -292,6 +322,7 @@ npm run tauri:build
 ```
 
 ### Linux
+
 ```bash
 npm run tauri:build
 # Output: src-tauri/target/release/bundle/
@@ -337,6 +368,7 @@ npm run tauri:build
 ## Support
 
 For issues specific to the Tauri implementation:
+
 1. Check Tauri logs: `~/.config/better-cloudflare/logs/`
 2. Enable debug mode in `tauri.conf.json`
 3. Review Rust console output during `tauri:dev`

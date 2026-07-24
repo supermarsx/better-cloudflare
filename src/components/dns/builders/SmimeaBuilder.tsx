@@ -43,7 +43,12 @@ function parseSmimeaContent(content?: string) {
     };
   const parts = raw.split(/\s+/).filter(Boolean);
   if (parts.length < 4) {
-    return { usage: undefined, selector: undefined, matchingType: undefined, data: raw };
+    return {
+      usage: undefined,
+      selector: undefined,
+      matchingType: undefined,
+      data: raw,
+    };
   }
   const [u, s, m, ...rest] = parts;
   return {
@@ -74,7 +79,9 @@ export function SmimeaBuilder({
 }) {
   const [usage, setUsage] = useState<number | undefined>(undefined);
   const [selector, setSelector] = useState<number | undefined>(undefined);
-  const [matchingType, setMatchingType] = useState<number | undefined>(undefined);
+  const [matchingType, setMatchingType] = useState<number | undefined>(
+    undefined,
+  );
   const [data, setData] = useState<string>("");
 
   const [usageMode, setUsageMode] = useState<"preset" | "custom">("preset");
@@ -88,7 +95,9 @@ export function SmimeaBuilder({
   const usageSelectValue = useMemo(() => {
     if (usageMode === "custom") return "custom";
     if (usage === undefined) return "";
-    return ["0", "1", "2", "3"].includes(String(usage)) ? String(usage) : "custom";
+    return ["0", "1", "2", "3"].includes(String(usage))
+      ? String(usage)
+      : "custom";
   }, [usage, usageMode]);
 
   const selectorSelectValue = useMemo(() => {
@@ -113,12 +122,14 @@ export function SmimeaBuilder({
     setMatchingType(parsed.matchingType);
     setData(parsed.data ?? "");
     setUsageMode(
-      parsed.usage !== undefined && ["0", "1", "2", "3"].includes(String(parsed.usage))
+      parsed.usage !== undefined &&
+        ["0", "1", "2", "3"].includes(String(parsed.usage))
         ? "preset"
         : "custom",
     );
     setSelectorMode(
-      parsed.selector !== undefined && ["0", "1"].includes(String(parsed.selector))
+      parsed.selector !== undefined &&
+        ["0", "1"].includes(String(parsed.selector))
         ? "preset"
         : "custom",
     );
@@ -133,7 +144,11 @@ export function SmimeaBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "SMIMEA") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -145,15 +160,22 @@ export function SmimeaBuilder({
     const parsed = parseSmimeaContent(record.content);
     const hasExtraFormatIssue =
       (record.content ?? "").trim() &&
-      (parsed.usage === undefined || parsed.selector === undefined || parsed.matchingType === undefined);
+      (parsed.usage === undefined ||
+        parsed.selector === undefined ||
+        parsed.matchingType === undefined);
     if (hasExtraFormatIssue)
-      push(issues, 'SMIMEA: content should be: "usage selector matching-type data".');
+      push(
+        issues,
+        'SMIMEA: content should be: "usage selector matching-type data".',
+      );
 
-    if (usage === undefined) push(issues, "SMIMEA: usage is required (usually 0–3).");
+    if (usage === undefined)
+      push(issues, "SMIMEA: usage is required (usually 0–3).");
     else if (![0, 1, 2, 3].includes(Number(usage)))
       push(issues, "SMIMEA: usage is usually 0–3.");
 
-    if (selector === undefined) push(issues, "SMIMEA: selector is required (usually 0–1).");
+    if (selector === undefined)
+      push(issues, "SMIMEA: selector is required (usually 0–1).");
     else if (![0, 1].includes(Number(selector)))
       push(issues, "SMIMEA: selector is usually 0–1.");
 
@@ -177,10 +199,18 @@ export function SmimeaBuilder({
         push(issues, "SMIMEA: SHA-512 data is typically 128 hex chars.");
     }
 
-    const canonical = composeSmimea(usage, selector, matchingType, dNoSpaces || dTrim);
+    const canonical = composeSmimea(
+      usage,
+      selector,
+      matchingType,
+      dNoSpaces || dTrim,
+    );
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "SMIMEA: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "SMIMEA: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -193,7 +223,15 @@ export function SmimeaBuilder({
       push(nameIssues, "SMIMEA: name usually includes “._smimecert”.");
 
     return { canonical, issues, nameIssues };
-  }, [data, matchingType, record.content, record.name, record.type, selector, usage]);
+  }, [
+    data,
+    matchingType,
+    record.content,
+    record.name,
+    record.type,
+    selector,
+    usage,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -244,7 +282,12 @@ export function SmimeaBuilder({
                 setUsageMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeSmimea(val, selector, matchingType, data.trim().replace(/\s+/g, "")),
+                  content: composeSmimea(
+                    val,
+                    selector,
+                    matchingType,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -272,7 +315,12 @@ export function SmimeaBuilder({
                   setUsage(val);
                   onRecordChange({
                     ...record,
-                    content: composeSmimea(val, selector, matchingType, data.trim().replace(/\s+/g, "")),
+                    content: composeSmimea(
+                      val,
+                      selector,
+                      matchingType,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -294,7 +342,12 @@ export function SmimeaBuilder({
                 setSelectorMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeSmimea(usage, val, matchingType, data.trim().replace(/\s+/g, "")),
+                  content: composeSmimea(
+                    usage,
+                    val,
+                    matchingType,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -322,7 +375,12 @@ export function SmimeaBuilder({
                   setSelector(val);
                   onRecordChange({
                     ...record,
-                    content: composeSmimea(usage, val, matchingType, data.trim().replace(/\s+/g, "")),
+                    content: composeSmimea(
+                      usage,
+                      val,
+                      matchingType,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -344,7 +402,12 @@ export function SmimeaBuilder({
                 setMatchingMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeSmimea(usage, selector, val, data.trim().replace(/\s+/g, "")),
+                  content: composeSmimea(
+                    usage,
+                    selector,
+                    val,
+                    data.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -372,7 +435,12 @@ export function SmimeaBuilder({
                   setMatchingType(val);
                   onRecordChange({
                     ...record,
-                    content: composeSmimea(usage, selector, val, data.trim().replace(/\s+/g, "")),
+                    content: composeSmimea(
+                      usage,
+                      selector,
+                      val,
+                      data.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -419,7 +487,9 @@ export function SmimeaBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -434,7 +504,8 @@ export function SmimeaBuilder({
           </pre>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">SMIMEA warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -453,4 +524,3 @@ export function SmimeaBuilder({
     </div>
   );
 }
-

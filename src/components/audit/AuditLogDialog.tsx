@@ -108,16 +108,10 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
           <div className="flex items-center justify-between">
             {entries.length > 0 && (
               <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => exportAudit("json")}
-                >
+                <Button variant="outline" onClick={() => exportAudit("json")}>
                   Export JSON
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => exportAudit("csv")}
-                >
+                <Button variant="outline" onClick={() => exportAudit("csv")}>
                   Export CSV
                 </Button>
               </div>

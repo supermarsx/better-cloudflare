@@ -91,7 +91,7 @@ export function useRegistrarMonitor(
   const clearError = useCallback(() => setError(null), []);
 
   const withLoading = useCallback(
-    async <T,>(fn: () => Promise<T>): Promise<T> => {
+    async <T>(fn: () => Promise<T>): Promise<T> => {
       setIsLoading(true);
       setError(null);
       try {
@@ -129,7 +129,8 @@ export function useRegistrarMonitor(
           params.extra,
         );
         // Refresh credentials list
-        const creds = (await api.listRegistrarCredentials()) as RegistrarCredential[];
+        const creds =
+          (await api.listRegistrarCredentials()) as RegistrarCredential[];
         setCredentials(creds);
         return id;
       });
@@ -142,7 +143,8 @@ export function useRegistrarMonitor(
       if (!api) throw new Error("Not authenticated");
       return withLoading(async () => {
         await api.deleteRegistrarCredential(credentialId);
-        const creds = (await api.listRegistrarCredentials()) as RegistrarCredential[];
+        const creds =
+          (await api.listRegistrarCredentials()) as RegistrarCredential[];
         setCredentials(creds);
       });
     },
@@ -160,7 +162,8 @@ export function useRegistrarMonitor(
   const refreshCredentials = useCallback(async (): Promise<void> => {
     if (!api) return;
     return withLoading(async () => {
-      const creds = (await api.listRegistrarCredentials()) as RegistrarCredential[];
+      const creds =
+        (await api.listRegistrarCredentials()) as RegistrarCredential[];
       setCredentials(creds);
     });
   }, [api, withLoading]);
@@ -184,7 +187,8 @@ export function useRegistrarMonitor(
   const runHealthChecks = useCallback(async (): Promise<void> => {
     if (!api) return;
     return withLoading(async () => {
-      const checks = (await api.registrarHealthCheckAll()) as DomainHealthCheck[];
+      const checks =
+        (await api.registrarHealthCheckAll()) as DomainHealthCheck[];
       setHealthChecks(checks);
     });
   }, [api, withLoading]);

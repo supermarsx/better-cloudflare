@@ -1,83 +1,108 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { test, afterEach } from "node:test";
-import { act, create } from "react-test-renderer";
+import { afterEach, beforeEach, test } from "node:test";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import { DNSManager } from "../src/components/dns/DNSManager";
-import { useCloudflareAPI } from "../src/hooks/dns/use-cloudflare-api";
 import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
-const originalUseCloudflare = useCloudflareAPI;
+const originalFetch = globalThis.fetch;
 const originalGetPrefs = TauriClient.getPreferences;
+const originalGetZones = TauriClient.getZones;
+const originalGetDNSRecords = TauriClient.getDNSRecords;
+const originalGetAuditEntries = TauriClient.getAuditEntries;
+const originalClearAuditEntries = TauriClient.clearAuditEntries;
 
-function mockHook() {
-  return {
-    getZones: async () => [],
-    getDNSRecords: async () => [],
-    createDNSRecord: async () => ({}),
-    updateDNSRecord: async () => ({}),
-    bulkCreateDNSRecords: async () => ({ created: [], skipped: [] }),
-    deleteDNSRecord: async () => {},
-    exportDNSRecords: async () => "",
-  };
+function setWindow(value: unknown): void {
+  (globalThis as unknown as { window?: unknown }).window = value;
 }
 
+function setFetchMock(): void {
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }) as Response;
+}
+
+function setDesktopClientMock(): void {
+  TauriClient.getPreferences = async () => ({});
+  TauriClient.getZones = async () => [];
+  TauriClient.getDNSRecords = async () => [];
+  TauriClient.getAuditEntries = async () => [];
+  TauriClient.clearAuditEntries = async () => {};
+}
+
+beforeEach(() => {
+  setWindow(originalWindow);
+  if (originalFetch) {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 afterEach(() => {
-  (useCloudflareAPI as unknown as (apiKey?: string, email?: string) => any) =
-    originalUseCloudflare;
+  if (originalFetch) {
+    globalThis.fetch = originalFetch;
+  } else {
+    delete (globalThis as { fetch?: typeof fetch }).fetch;
+  }
+  setWindow(originalWindow);
   TauriClient.getPreferences = originalGetPrefs;
-  (globalThis as unknown as { window?: unknown }).window = originalWindow;
+  TauriClient.getZones = originalGetZones;
+  TauriClient.getDNSRecords = originalGetDNSRecords;
+  TauriClient.getAuditEntries = originalGetAuditEntries;
+  TauriClient.clearAuditEntries = originalClearAuditEntries;
+  cleanup();
 });
 
 test("DNSManager shows audit button only in desktop mode", async () => {
-  (globalThis as unknown as { window?: unknown }).window = undefined;
-  (useCloudflareAPI as unknown as (apiKey?: string, email?: string) => any) =
-    mockHook;
-  let renderer = create(
-    React.createElement(DNSManager, {
-      apiKey: "token",
-      onLogout: () => {},
-    }),
-  );
-  let json = JSON.stringify(renderer.toJSON());
-  assert.ok(!json.includes("Audit Log"));
+  setWindow(undefined);
+  setFetchMock();
+  setDesktopClientMock();
+  render(<DNSManager apiKey="token" onLogout={() => {}} />);
 
-  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
-  TauriClient.getPreferences = async () => ({});
-  renderer = create(
-    React.createElement(DNSManager, {
-      apiKey: "token",
-      onLogout: () => {},
-    }),
-  );
-  json = JSON.stringify(renderer.toJSON());
-  assert.ok(json.includes("Audit Log"));
+  await waitFor(() => {
+    assert.equal(screen.queryByText(/Audit Log/i), null);
+  });
+  cleanup();
 
+  setWindow({ __TAURI__: {} });
+  setFetchMock();
+  render(<DNSManager apiKey="token" onLogout={() => {}} />);
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: /audit log/i }));
+  });
 });
 
 test("DNSManager opens audit dialog on click", async () => {
-  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
-  TauriClient.getPreferences = async () => ({});
-  (useCloudflareAPI as unknown as (apiKey?: string, email?: string) => any) =
-    mockHook;
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => {
-    renderer = create(
-      React.createElement(DNSManager, {
-        apiKey: "token",
-        onLogout: () => {},
-      }),
-    );
-  });
-  const buttons = renderer!.root.findAllByType("button");
-  const audit = buttons.find((b) =>
-    String(b.children).includes("Audit Log"),
+  setWindow({ __TAURI__: {} });
+  setFetchMock();
+  setDesktopClientMock();
+  render(<DNSManager apiKey="token" onLogout={() => {}} />);
+
+  const buttons = await screen.findAllByRole("button");
+  const audit = buttons.find((button) =>
+    String(button.getAttribute("aria-label") || "")
+      .toLowerCase()
+      .includes("audit log"),
   );
   assert.ok(audit);
-  await act(async () => {
-    audit!.props.onClick();
+  fireEvent.click(audit!);
+
+  await waitFor(() => {
+    assert.ok(
+      screen.getByRole("heading", {
+        name: /Audit log/i,
+        level: 3,
+      }),
+    );
+    assert.ok(screen.getByRole("button", { name: /refresh/i }));
   });
-  const json = JSON.stringify(renderer!.toJSON());
-  assert.ok(json.includes("Audit Log"));
 });

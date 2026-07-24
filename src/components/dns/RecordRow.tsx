@@ -207,7 +207,7 @@ export function RecordRow({
     storageManager.getZoneTags(zoneId),
   );
   const [tagDraft, setTagDraft] = useState("");
-  
+
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
     parseSRV(record.content).priority,
   );
@@ -220,7 +220,7 @@ export function RecordRow({
   const [srvTarget, setSrvTarget] = useState<string>(
     parseSRV(record.content).target ?? "",
   );
-  
+
   const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
     parseTLSA(record.content).usage,
   );
@@ -233,7 +233,7 @@ export function RecordRow({
   const [tlsaData, setTlsaData] = useState<string>(
     parseTLSA(record.content).data ?? "",
   );
-  
+
   const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
     parseSSHFP(record.content).algorithm,
   );
@@ -243,7 +243,7 @@ export function RecordRow({
   const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(
     parseSSHFP(record.content).fingerprint ?? "",
   );
-  
+
   const [naptrOrder, setNaptrOrder] = useState<number | undefined>(
     parseNAPTR(record.content).order,
   );
@@ -278,7 +278,10 @@ export function RecordRow({
     );
     if (needsValue && !spfValue.trim()) {
       setSpfBuilderError(
-        t("Value required for this mechanism", "Value required for this mechanism"),
+        t(
+          "Value required for this mechanism",
+          "Value required for this mechanism",
+        ),
       );
       return;
     }
@@ -811,10 +814,7 @@ export function RecordRow({
               </SelectTrigger>
               <SelectContent>
                 {RECORD_TYPES.map((type) => (
-                  <SelectItem
-                    key={type}
-                    value={type}
-                  >
+                  <SelectItem key={type} value={type}>
                     <Tooltip tip={getRecordTypeLabel(type)} side="right">
                       <span>{getRecordTypeLabel(type)}</span>
                     </Tooltip>
@@ -1383,11 +1383,12 @@ export function RecordRow({
                         {t("Builder diagnostics", "Builder diagnostics")}
                       </div>
                       <ul className="mt-1 list-disc pl-4 text-xs text-foreground/85">
-                        {[...builderWarnings.nameIssues, ...builderWarnings.issues].map(
-                          (issue) => (
-                            <li key={issue}>{issue}</li>
-                          ),
-                        )}
+                        {[
+                          ...builderWarnings.nameIssues,
+                          ...builderWarnings.issues,
+                        ].map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
                       </ul>
                       {builderWarnings.canonical &&
                         builderWarnings.canonical !== editedRecord.content && (
@@ -1400,11 +1401,15 @@ export function RecordRow({
                               onClick={() =>
                                 setEditedRecord((prev) => ({
                                   ...prev,
-                                  content: builderWarnings.canonical ?? prev.content,
+                                  content:
+                                    builderWarnings.canonical ?? prev.content,
                                 }))
                               }
                             >
-                              {t("Apply canonical content", "Apply canonical content")}
+                              {t(
+                                "Apply canonical content",
+                                "Apply canonical content",
+                              )}
                             </Button>
                           </div>
                         )}
@@ -1416,9 +1421,9 @@ export function RecordRow({
           )}
         </div>
         <div className="mt-4 space-y-1">
-            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Comment", "Comment")}
-            </Label>
+          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            {t("Comment", "Comment")}
+          </Label>
           <Textarea
             value={editedRecord.comment ?? ""}
             onChange={(e) =>
@@ -1427,7 +1432,10 @@ export function RecordRow({
                 comment: e.target.value,
               })
             }
-            placeholder={t("Optional: add a note for this record", "Optional: add a note for this record")}
+            placeholder={t(
+              "Optional: add a note for this record",
+              "Optional: add a note for this record",
+            )}
             className="min-h-20 resize-y"
           />
           <div className="text-[11px] text-muted-foreground">
@@ -1482,7 +1490,9 @@ export function RecordRow({
                     <input
                       type="checkbox"
                       checked={isSelected}
-                      onChange={(event) => onSelectChange?.(event.target.checked)}
+                      onChange={(event) =>
+                        onSelectChange?.(event.target.checked)
+                      }
                       onClick={(event) => event.stopPropagation()}
                       className="checkbox-themed"
                       aria-label={t("Select record", "Select record")}
@@ -1512,7 +1522,9 @@ export function RecordRow({
                         }
                       }}
                       role={
-                        record.name.length > MAX_PREVIEW_CHARS ? "button" : undefined
+                        record.name.length > MAX_PREVIEW_CHARS
+                          ? "button"
+                          : undefined
                       }
                       tabIndex={record.name.length > MAX_PREVIEW_CHARS ? 0 : -1}
                     >
@@ -1532,9 +1544,13 @@ export function RecordRow({
                         }
                       }}
                       role={
-                        record.content.length > MAX_PREVIEW_CHARS ? "button" : undefined
+                        record.content.length > MAX_PREVIEW_CHARS
+                          ? "button"
+                          : undefined
                       }
-                      tabIndex={record.content.length > MAX_PREVIEW_CHARS ? 0 : -1}
+                      tabIndex={
+                        record.content.length > MAX_PREVIEW_CHARS ? 0 : -1
+                      }
                     >
                       {truncate(record.content)}
                     </div>
@@ -1544,7 +1560,10 @@ export function RecordRow({
                 const c = (record.comment ?? "").trim();
                 if (!c) {
                   return (
-                    <div key={col} className="text-[10px] text-muted-foreground/80">
+                    <div
+                      key={col}
+                      className="text-[10px] text-muted-foreground/80"
+                    >
                       —
                     </div>
                   );
@@ -1581,7 +1600,9 @@ export function RecordRow({
                         )}
                       </>
                     ) : (
-                      <span className="text-[10px] text-muted-foreground/70">—</span>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        —
+                      </span>
                     )}
                   </div>
                 );
@@ -1592,8 +1613,11 @@ export function RecordRow({
                     key={col}
                     className="text-[10px] text-muted-foreground whitespace-nowrap"
                   >
-                    {t("TTL", "TTL")} {record.ttl === 1 ? t("Auto", "Auto") : record.ttl}
-                    {typeof record.priority === "number" ? ` • P${record.priority}` : ""}
+                    {t("TTL", "TTL")}{" "}
+                    {record.ttl === 1 ? t("Auto", "Auto") : record.ttl}
+                    {typeof record.priority === "number"
+                      ? ` • P${record.priority}`
+                      : ""}
                   </div>
                 );
               case "proxied":
@@ -1609,7 +1633,9 @@ export function RecordRow({
                         {t("Proxied", "Proxied")}
                       </Tag>
                     ) : (
-                      <span className="text-xs text-muted-foreground/80">—</span>
+                      <span className="text-xs text-muted-foreground/80">
+                        —
+                      </span>
                     )}
                     {(record.type === "A" ||
                       record.type === "AAAA" ||
@@ -1634,16 +1660,19 @@ export function RecordRow({
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
-                    <DropdownMenu open={dotMenuOpen} onOpenChange={setDotMenuOpen}>
+                    <DropdownMenu
+                      open={dotMenuOpen}
+                      onOpenChange={setDotMenuOpen}
+                    >
                       <Tooltip tip={t("Actions", "Actions")} side="top">
                         <DropdownMenuTrigger asChild>
                           <Button
-                              size="sm"
-                              variant="ghost"
-                              className="ui-icon-button h-7 w-7 p-0"
-                              aria-label={t("Record Actions", "Record Actions")}
-                              onClick={(event) => event.stopPropagation()}
-                            >
+                            size="sm"
+                            variant="ghost"
+                            className="ui-icon-button h-7 w-7 p-0"
+                            aria-label={t("Record Actions", "Record Actions")}
+                            onClick={(event) => event.stopPropagation()}
+                          >
                             <MoreHorizontal className="h-3.5 w-3.5" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -1662,135 +1691,138 @@ export function RecordRow({
                 return null;
             }
           })}
-      {(expandedName || expandedContent) && (
-        <div className="glass-surface glass-sheen glass-fade col-span-full relative mt-2 space-y-2 rounded-lg px-3 py-2 text-xs text-foreground/80">
-          <div
-            className="absolute right-2 top-2 flex gap-1"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {expandedName && (
-              <Tooltip tip={t("Copy name", "Copy name")} side="left">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="ui-icon-button h-7 w-7 p-0"
-                  aria-label={t("Copy name", "Copy name")}
-                  onClick={() =>
-                    void navigator.clipboard?.writeText(record.name)
-                  }
-                >
-                  <Copy className="h-3 w-3" />
-                </Button>
-              </Tooltip>
-            )}
-            {expandedContent && (
-              <Tooltip tip={t("Copy content", "Copy content")} side="left">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="ui-icon-button h-7 w-7 p-0"
-                  aria-label={t("Copy content", "Copy content")}
-                  onClick={() =>
-                    void navigator.clipboard?.writeText(record.content)
-                  }
-                >
-                  <Copy className="h-3 w-3" />
-                </Button>
-              </Tooltip>
-            )}
-          </div>
-          {expandedName && (
-            <div className="break-all pr-16">
+          {(expandedName || expandedContent) && (
+            <div className="glass-surface glass-sheen glass-fade col-span-full relative mt-2 space-y-2 rounded-lg px-3 py-2 text-xs text-foreground/80">
+              <div
+                className="absolute right-2 top-2 flex gap-1"
+                onClick={(event) => event.stopPropagation()}
+              >
+                {expandedName && (
+                  <Tooltip tip={t("Copy name", "Copy name")} side="left">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ui-icon-button h-7 w-7 p-0"
+                      aria-label={t("Copy name", "Copy name")}
+                      onClick={() =>
+                        void navigator.clipboard?.writeText(record.name)
+                      }
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </Tooltip>
+                )}
+                {expandedContent && (
+                  <Tooltip tip={t("Copy content", "Copy content")} side="left">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ui-icon-button h-7 w-7 p-0"
+                      aria-label={t("Copy content", "Copy content")}
+                      onClick={() =>
+                        void navigator.clipboard?.writeText(record.content)
+                      }
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </Tooltip>
+                )}
+              </div>
+              {expandedName && (
+                <div className="break-all pr-16">
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Name", "Name")}
+                  </span>
+                  <div className="mt-1 font-mono text-sm text-foreground">
+                    {record.name}
+                  </div>
+                </div>
+              )}
+              {expandedContent && (
+                <div className="break-all pr-16">
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Content", "Content")}
+                  </span>
+                  <div className="mt-1 text-foreground">{record.content}</div>
+                </div>
+              )}
+              {!!(record.comment ?? "").trim() && (
+                <div className="break-all pr-16">
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Comment", "Comment")}
+                  </span>
+                  <div className="mt-1 text-foreground">{record.comment}</div>
+                </div>
+              )}
+              <div className="pr-16">
                 <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Name", "Name")}
+                  {t("Tags", "Tags")}
                 </span>
-              <div className="mt-1 font-mono text-sm text-foreground">
-                {record.name}
+                <div className="mt-2 flex flex-wrap items-center gap-1">
+                  {tags.length ? (
+                    tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1"
+                      >
+                        <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                        <button
+                          type="button"
+                          className="ui-icon-button h-5 w-5"
+                          aria-label={t("Remove tag {{tag}}", {
+                            tag,
+                            defaultValue: `Remove tag ${tag}`,
+                          })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeTag(tag);
+                          }}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {t("No tags", "No tags")}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    list={tagSuggestionListId}
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addTag();
+                      }
+                    }}
+                    placeholder={t("Add tag", "Add tag")}
+                    className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
+                  />
+                  <datalist id={tagSuggestionListId}>
+                    {zoneTags.map((tag) => (
+                      <option key={tag} value={tag} />
+                    ))}
+                  </datalist>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      addTag();
+                    }}
+                  >
+                    {t("Add", "Add")}
+                  </Button>
+                </div>
               </div>
             </div>
           )}
-          {expandedContent && (
-            <div className="break-all pr-16">
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Content", "Content")}
-                </span>
-              <div className="mt-1 text-foreground">{record.content}</div>
-            </div>
-          )}
-          {!!(record.comment ?? "").trim() && (
-            <div className="break-all pr-16">
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Comment", "Comment")}
-                </span>
-              <div className="mt-1 text-foreground">{record.comment}</div>
-            </div>
-          )}
-          <div className="pr-16">
-            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Tags", "Tags")}
-            </span>
-            <div className="mt-2 flex flex-wrap items-center gap-1">
-              {tags.length ? (
-                tags.map((tag) => (
-                  <span key={tag} className="inline-flex items-center gap-1">
-                    <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
-                    <button
-                      type="button"
-                      className="ui-icon-button h-5 w-5"
-                      aria-label={t("Remove tag {{tag}}", {
-                        tag,
-                        defaultValue: `Remove tag ${tag}`,
-                      })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeTag(tag);
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))
-              ) : (
-                <span className="text-[10px] text-muted-foreground/70">
-                  {t("No tags", "No tags")}
-                </span>
-              )}
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <input
-                list={tagSuggestionListId}
-                value={tagDraft}
-                onChange={(e) => setTagDraft(e.target.value)}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addTag();
-                  }
-                }}
-                placeholder={t("Add tag", "Add tag")}
-                className="ui-focus h-7 w-44 rounded-md border border-input bg-background px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
-              />
-              <datalist id={tagSuggestionListId}>
-                {zoneTags.map((tag) => (
-                  <option key={tag} value={tag} />
-                ))}
-              </datalist>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  addTag();
-                }}
-              >
-                {t("Add", "Add")}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent onClick={(event) => event.stopPropagation()}>

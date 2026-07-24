@@ -17,7 +17,8 @@ export function base64urlToUint8Array(data: Base64urlString): Uint8Array {
 export function bufferToBase64url(data: ArrayBuffer | Uint8Array): string {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i++)
+    binary += String.fromCharCode(bytes[i]);
   const base64 = btoa(binary);
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }

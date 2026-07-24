@@ -1,29 +1,33 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { create } from "react-test-renderer";
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
+import { act, render, screen, cleanup } from "@testing-library/react";
 
 import { AddRecordDialog } from "../src/components/dns/AddRecordDialog";
 
 const noop = () => {};
 
-test("AddRecordDialog renders fields and aria-labels for TLSA", () => {
+afterEach(() => {
+  cleanup();
+});
+
+test("AddRecordDialog renders TLSA fields", async () => {
   const record = { type: "TLSA", name: "test", content: "1 2 3 abc" };
-  const r = create(
-    React.createElement(AddRecordDialog, {
-      open: true,
-      onOpenChange: noop,
-      record,
-      onRecordChange: noop,
-      onAdd: noop,
-      zoneName: "example.com",
-    }),
-  );
-  const root = r.root;
-  // Name input should have aria-label set
-  const name = root.findAllByProps({ "aria-label": "Name" });
-  assert.ok(name.length >= 1);
-  // TLSA data field should exist and be labelled 'data'
-  const tlsa = root.findAllByProps({ "aria-label": "data" });
-  assert.ok(tlsa.length >= 1);
+  await act(async () => {
+    render(
+      <AddRecordDialog
+        open={true}
+        onOpenChange={noop}
+        record={record}
+        onRecordChange={noop}
+        onAdd={noop}
+        zoneName="example.com"
+      />,
+    );
+  });
+
+  const nameInput = screen.getByRole("textbox", { name: /Name/i });
+  const tlsaDataField = screen.getByPlaceholderText(/hex/i);
+  assert.ok(nameInput !== null);
+  assert.ok(tlsaDataField !== null);
 });

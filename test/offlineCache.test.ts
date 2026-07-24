@@ -30,7 +30,10 @@ class LocalStorageMock {
 }
 
 const storage = new LocalStorageMock();
-Object.defineProperty(globalThis, "localStorage", { value: storage, writable: true });
+Object.defineProperty(globalThis, "localStorage", {
+  value: storage,
+  writable: true,
+});
 
 // Now import after mocking
 const {

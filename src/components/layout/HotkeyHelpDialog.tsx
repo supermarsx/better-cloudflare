@@ -66,7 +66,11 @@ export function HotkeyHelpDialog() {
           ))}
         </div>
         <p className="mt-2 text-center text-xs text-muted-foreground">
-          Press <kbd className="rounded border bg-muted px-1 py-0.5 font-mono text-[10px]">Shift+?</kbd> to toggle
+          Press{" "}
+          <kbd className="rounded border bg-muted px-1 py-0.5 font-mono text-[10px]">
+            Shift+?
+          </kbd>{" "}
+          to toggle
         </p>
       </DialogContent>
     </Dialog>

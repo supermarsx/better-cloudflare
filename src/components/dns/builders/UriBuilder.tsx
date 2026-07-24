@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
 function escapeDnsQuotedString(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function parseURIContent(value: string | undefined) {
@@ -27,13 +27,13 @@ function parseURIContent(value: string | undefined) {
   };
 
   // If the string starts with a quote, treat it as target-only.
-  if (!remaining.startsWith("\"")) {
+  if (!remaining.startsWith('"')) {
     const t1 = readToken();
     const n1 = t1 ? Number.parseInt(t1, 10) : Number.NaN;
     if (t1 && !Number.isNaN(n1) && /^\d+$/.test(t1)) priority = n1;
     else if (t1) remaining = `${t1} ${remaining}`.trim();
 
-    if (!remaining.startsWith("\"")) {
+    if (!remaining.startsWith('"')) {
       const t2 = readToken();
       const n2 = t2 ? Number.parseInt(t2, 10) : Number.NaN;
       if (t2 && !Number.isNaN(n2) && /^\d+$/.test(t2)) weight = n2;
@@ -42,10 +42,10 @@ function parseURIContent(value: string | undefined) {
   }
 
   let target = remaining.trim();
-  if (target.startsWith("\"") && target.endsWith("\"") && target.length >= 2) {
+  if (target.startsWith('"') && target.endsWith('"') && target.length >= 2) {
     target = target.slice(1, -1);
   }
-  target = target.replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+  target = target.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   return {
     priority,
     weight,
@@ -114,7 +114,10 @@ export function UriBuilder({
       if (!list.includes(msg)) list.push(msg);
     };
 
-    const validateU16 = (value: number | undefined, label: "priority" | "weight") => {
+    const validateU16 = (
+      value: number | undefined,
+      label: "priority" | "weight",
+    ) => {
       if (value === undefined) {
         pushUnique(fieldIssues[label], `${label} is required.`);
         return;
@@ -136,7 +139,10 @@ export function UriBuilder({
       if (spaceConvertedWarning)
         pushUnique(fieldIssues.target, "Spaces were converted to %20.");
       if (/\s/.test(t))
-        pushUnique(fieldIssues.target, "URI should not contain spaces (use %20).");
+        pushUnique(
+          fieldIssues.target,
+          "URI should not contain spaces (use %20).",
+        );
       if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t))
         pushUnique(
           fieldIssues.target,
@@ -185,12 +191,16 @@ export function UriBuilder({
 
   if (record.type !== "URI") return null;
 
-  const apply = (next: { priority?: number; weight?: number; target?: string }) => {
+  const apply = (next: {
+    priority?: number;
+    weight?: number;
+    target?: string;
+  }) => {
     const has = (k: "priority" | "weight" | "target") =>
       Object.prototype.hasOwnProperty.call(next, k);
     const pr = has("priority") ? next.priority : priority;
     const wt = has("weight") ? next.weight : weight;
-    const tg = has("target") ? next.target ?? "" : target;
+    const tg = has("target") ? (next.target ?? "") : target;
     onRecordChange({
       ...record,
       content: composeURI({ priority: pr, weight: wt, target: tg }),
@@ -264,7 +274,8 @@ export function UriBuilder({
               }}
             />
             <div className="text-[11px] text-muted-foreground">
-              Stored as a quoted string. Include a scheme; avoid spaces (use %20).
+              Stored as a quoted string. Include a scheme; avoid spaces (use
+              %20).
             </div>
           </div>
         </div>
@@ -285,7 +296,9 @@ export function UriBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: validation.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: validation.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -307,7 +320,11 @@ export function UriBuilder({
                 setWeight(1);
                 setTarget("https://example.com/");
                 setSpaceConvertedWarning(false);
-                apply({ priority: 10, weight: 1, target: "https://example.com/" });
+                apply({
+                  priority: 10,
+                  weight: 1,
+                  target: "https://example.com/",
+                });
               }}
             >
               Example https
@@ -338,8 +355,14 @@ export function UriBuilder({
           </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>Keep target under ~2KB for broad resolver compatibility.</li>
-            <li>Prefer percent-encoding over spaces (builder converts spaces to %20).</li>
-            <li>Use multiple records with same priority and different weights for balancing.</li>
+            <li>
+              Prefer percent-encoding over spaces (builder converts spaces to
+              %20).
+            </li>
+            <li>
+              Use multiple records with same priority and different weights for
+              balancing.
+            </li>
           </ul>
         </div>
 

@@ -132,10 +132,11 @@ export function AddRecordDialog({
   const [typeSelectOpen, setTypeSelectOpen] = useState(false);
   const [typeFilter, setTypeFilter] = useState("");
   const typeFilterInputRef = useRef<HTMLInputElement | null>(null);
-  const [activeBuilderWarnings, setActiveBuilderWarnings] = useState<BuilderWarnings>({
-    issues: [],
-    nameIssues: [],
-  });
+  const [activeBuilderWarnings, setActiveBuilderWarnings] =
+    useState<BuilderWarnings>({
+      issues: [],
+      nameIssues: [],
+    });
   const openSnapshotRef = useRef<Partial<DNSRecord> | null>(null);
   const wasOpenRef = useRef(false);
 
@@ -260,9 +261,9 @@ export function AddRecordDialog({
       case "NAPTR":
         return "order / preference / flags / service / regexp / replacement.";
       case "CAA":
-        return "Typically: flags tag \"value\" (e.g., 0 issue \"letsencrypt.org\").";
+        return 'Typically: flags tag "value" (e.g., 0 issue "letsencrypt.org").';
       case "URI":
-        return "Typically: priority weight \"target\" (RFC 7553).";
+        return 'Typically: priority weight "target" (RFC 7553).';
       case "HTTPS":
       case "SVCB":
         return "Service binding record (complex); double-check params.";
@@ -399,7 +400,7 @@ export function AddRecordDialog({
       case "HINFO":
         return 'e.g., "CPU" "OS"';
       case "LOC":
-        return 'e.g., 37 47 0.000 N 122 24 0.000 W 10m 1m 100m 10m';
+        return "e.g., 37 47 0.000 N 122 24 0.000 W 10m 1m 100m 10m";
       case "RP":
         return "e.g., mailbox.example.com text.example.com";
       case "DNAME":
@@ -460,7 +461,9 @@ export function AddRecordDialog({
 
     if (name && /\s/.test(name)) pushUnique("Name contains whitespace.");
     if (name && name.includes("://"))
-      pushUnique("Name looks like a URL; DNS names should not include a scheme.");
+      pushUnique(
+        "Name looks like a URL; DNS names should not include a scheme.",
+      );
     if (name && name.startsWith("."))
       pushUnique("Name starts with '.', which is unusual for DNS records.");
 
@@ -480,11 +483,12 @@ export function AddRecordDialog({
       const parts = value.split(".").map((p) => Number(p));
       if (parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
       return (
-        ((parts[0] << 24) >>> 0) |
-        ((parts[1] << 16) >>> 0) |
-        ((parts[2] << 8) >>> 0) |
-        (parts[3] >>> 0)
-      ) >>> 0;
+        (((parts[0] << 24) >>> 0) |
+          ((parts[1] << 16) >>> 0) |
+          ((parts[2] << 8) >>> 0) |
+          (parts[3] >>> 0)) >>>
+        0
+      );
     };
 
     const ipv4InCidr = (value: string, base: string, prefix: number) => {
@@ -492,7 +496,7 @@ export function AddRecordDialog({
       const b = ipv4ToInt(base);
       if (v === null || b === null) return false;
       const mask = prefix === 0 ? 0 : (~((1 << (32 - prefix)) - 1) >>> 0) >>> 0;
-      return ((v & mask) >>> 0) === ((b & mask) >>> 0);
+      return (v & mask) >>> 0 === (b & mask) >>> 0;
     };
 
     const isValidIPv4 = (value: string) => {
@@ -509,7 +513,8 @@ export function AddRecordDialog({
       if (!value.includes(":")) return false;
       if (!/^[0-9a-fA-F:]+$/.test(value)) return false;
       const double = value.includes("::");
-      if (double && value.indexOf("::") !== value.lastIndexOf("::")) return false;
+      if (double && value.indexOf("::") !== value.lastIndexOf("::"))
+        return false;
       const groups = value.split(":").filter((g) => g.length > 0);
       if (groups.some((g) => g.length > 4)) return false;
       return double ? groups.length <= 7 : groups.length === 8;
@@ -521,7 +526,8 @@ export function AddRecordDialog({
       const hasDouble = input.includes("::");
       const parts = input.split("::");
       const left = parts[0] ? parts[0].split(":").filter(Boolean) : [];
-      const right = hasDouble && parts[1] ? parts[1].split(":").filter(Boolean) : [];
+      const right =
+        hasDouble && parts[1] ? parts[1].split(":").filter(Boolean) : [];
       const leftNums = left.map((g) => Number.parseInt(g, 16));
       const rightNums = right.map((g) => Number.parseInt(g, 16));
       if (
@@ -544,7 +550,7 @@ export function AddRecordDialog({
       for (let i = 0; i < 8; i++) {
         if (bits <= 0) return true;
         const take = Math.min(16, bits);
-        const mask = take === 16 ? 0xffff : ((0xffff << (16 - take)) & 0xffff);
+        const mask = take === 16 ? 0xffff : (0xffff << (16 - take)) & 0xffff;
         if ((v[i] & mask) !== (b[i] & mask)) return false;
         bits -= take;
       }
@@ -576,7 +582,9 @@ export function AddRecordDialog({
     switch (type) {
       case "A":
         if (content && !isValidIPv4(content))
-          pushUnique("A record content does not look like a valid IPv4 address.");
+          pushUnique(
+            "A record content does not look like a valid IPv4 address.",
+          );
         if (content && isValidIPv4(content)) {
           if (ipv4InCidr(content, "10.0.0.0", 8))
             pushUnique("IPv4 is private (RFC1918): 10.0.0.0/8.");
@@ -617,10 +625,8 @@ export function AddRecordDialog({
           );
         if (content && isValidIPv6(content)) {
           const c = content.trim().toLowerCase();
-          if (c === "::")
-            pushUnique("IPv6 is unspecified address (::).");
-          else if (c === "::1")
-            pushUnique("IPv6 is loopback (::1).");
+          if (c === "::") pushUnique("IPv6 is unspecified address (::).");
+          else if (c === "::1") pushUnique("IPv6 is loopback (::1).");
           else if (ipv6InPrefix(c, "fc00::", 7))
             pushUnique("IPv6 is unique local (ULA): fc00::/7.");
           else if (ipv6InPrefix(c, "fe80::", 10))
@@ -658,7 +664,9 @@ export function AddRecordDialog({
       }
       case "TXT":
         if (content.includes("\n"))
-          pushUnique("TXT content contains newlines (often rejected by DNS providers).");
+          pushUnique(
+            "TXT content contains newlines (often rejected by DNS providers).",
+          );
         if (content.length > 255)
           pushUnique(
             "TXT content is longer than 255 characters (may need quoting/splitting).",
@@ -704,12 +712,7 @@ export function AddRecordDialog({
     }
 
     return warnings;
-  }, [
-    record.type,
-    record.name,
-    record.content,
-    record.priority,
-  ]);
+  }, [record.type, record.name, record.content, record.priority]);
 
   useEffect(() => {
     setConfirmInvalid(false);
@@ -853,88 +856,88 @@ export function AddRecordDialog({
         </div>
         <div className="scrollbar-themed min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6">
           <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>{t("Type", "Type")}</Label>
-              <Select
-                aria-label={t("Record Type", "Record Type")}
-                value={record.type}
-                open={typeSelectOpen}
-                onOpenChange={setTypeSelectOpen}
-                onValueChange={(value: string) => {
-                  setTypeFilter("");
-                  setTypeSelectOpen(false);
-                  onRecordChange({
-                    ...record,
-                    type: value as RecordType,
-                    priority: value === "MX" ? record.priority : undefined,
-                  });
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-              <SelectContent>
-                  <div className="sticky top-0 z-10 rounded-lg border border-border/50 bg-popover/80 p-2 backdrop-blur-sm">
-                    <Input
-                      ref={typeFilterInputRef}
-                      value={typeFilter}
-                      onChange={(e) => setTypeFilter(e.target.value)}
-                      placeholder={t("Search types…", "Search types…")}
-                      className="h-8 text-xs"
-                      onKeyDown={(e) => {
-                        e.stopPropagation();
-                        if (e.key === "Escape") {
-                          if (typeFilter.trim().length) {
-                            e.preventDefault();
-                            setTypeFilter("");
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>{t("Type", "Type")}</Label>
+                <Select
+                  aria-label={t("Record Type", "Record Type")}
+                  value={record.type}
+                  open={typeSelectOpen}
+                  onOpenChange={setTypeSelectOpen}
+                  onValueChange={(value: string) => {
+                    setTypeFilter("");
+                    setTypeSelectOpen(false);
+                    onRecordChange({
+                      ...record,
+                      type: value as RecordType,
+                      priority: value === "MX" ? record.priority : undefined,
+                    });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <div className="sticky top-0 z-10 rounded-lg border border-border/50 bg-popover/80 p-2 backdrop-blur-sm">
+                      <Input
+                        ref={typeFilterInputRef}
+                        value={typeFilter}
+                        onChange={(e) => setTypeFilter(e.target.value)}
+                        placeholder={t("Search types…", "Search types…")}
+                        className="h-8 text-xs"
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === "Escape") {
+                            if (typeFilter.trim().length) {
+                              e.preventDefault();
+                              setTypeFilter("");
+                              return;
+                            }
+                            setTypeSelectOpen(false);
                             return;
                           }
-                          setTypeSelectOpen(false);
-                          return;
-                        }
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          const next = filteredRecordTypeOptions[0];
-                          if (!next) return;
-                          setTypeFilter("");
-                          setTypeSelectOpen(false);
-                          onRecordChange({
-                            ...record,
-                            type: next as RecordType,
-                            priority:
-                              next === "MX" ? record.priority : undefined,
-                          });
-                        }
-                      }}
-                    />
-                    <div className="mt-1 text-[10px] text-muted-foreground">
-                      {t("Match by type or label.", "Match by type or label.")}
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const next = filteredRecordTypeOptions[0];
+                            if (!next) return;
+                            setTypeFilter("");
+                            setTypeSelectOpen(false);
+                            onRecordChange({
+                              ...record,
+                              type: next as RecordType,
+                              priority:
+                                next === "MX" ? record.priority : undefined,
+                            });
+                          }
+                        }}
+                      />
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {t(
+                          "Match by type or label.",
+                          "Match by type or label.",
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  {filteredRecordTypeOptions.length === 0 && (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">
-                      {t(
-                        "No matching record types.",
-                        "No matching record types.",
-                      )}
-                    </div>
-                  )}
-                  {filteredRecordTypeOptions.map((type) => (
-                    <SelectItem
-                      key={type}
-                      value={type}
-                    >
-                      <Tooltip tip={getRecordTypeLabel(type)} side="right">
-                        <span>{getRecordTypeLabel(type)}</span>
-                      </Tooltip>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>{t("TTL", "TTL")}</Label>
+                    {filteredRecordTypeOptions.length === 0 && (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">
+                        {t(
+                          "No matching record types.",
+                          "No matching record types.",
+                        )}
+                      </div>
+                    )}
+                    {filteredRecordTypeOptions.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        <Tooltip tip={getRecordTypeLabel(type)} side="right">
+                          <span>{getRecordTypeLabel(type)}</span>
+                        </Tooltip>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{t("TTL", "TTL")}</Label>
                 <Select
                   aria-label={t("TTL select", "TTL")}
                   value={ttlMode === "custom" ? "custom" : String(ttlValue)}
@@ -955,369 +958,372 @@ export function AddRecordDialog({
                     }
                   }}
                 >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {getTTLPresets().map((ttl) => (
-                    <SelectItem key={ttl} value={String(ttl)}>
-                      {formatTtlLabel(ttl)}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value="custom">Custom</SelectItem>
-                </SelectContent>
-              </Select>
-              {record.type && (
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <div className="text-xs text-muted-foreground">
-                    Suggested:
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {getTTLPresets().map((ttl) => (
+                      <SelectItem key={ttl} value={String(ttl)}>
+                        {formatTtlLabel(ttl)}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+                {record.type && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="text-xs text-muted-foreground">
+                      Suggested:
+                    </div>
+                    {ttlSuggestions.map((ttl) => (
+                      <Button
+                        key={String(ttl)}
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[10px] leading-none"
+                        onClick={() => {
+                          if (ttl === "auto") {
+                            setTtlMode("preset");
+                            onRecordChange({ ...record, ttl: "auto" });
+                            return;
+                          }
+                          if (getTTLPresets().includes(ttl)) {
+                            setTtlMode("preset");
+                          } else {
+                            setTtlMode("custom");
+                          }
+                          onRecordChange({ ...record, ttl });
+                        }}
+                      >
+                        {formatTtlLabel(ttl)}
+                      </Button>
+                    ))}
                   </div>
-                  {ttlSuggestions.map((ttl) => (
-                    <Button
-                      key={String(ttl)}
-                      size="sm"
-                      variant="outline"
-                      className="h-6 px-2 text-[10px] leading-none"
-                      onClick={() => {
-                        if (ttl === "auto") {
-                          setTtlMode("preset");
-                          onRecordChange({ ...record, ttl: "auto" });
-                          return;
-                        }
-                        if (getTTLPresets().includes(ttl)) {
-                          setTtlMode("preset");
-                        } else {
-                          setTtlMode("custom");
-                        }
-                        onRecordChange({ ...record, ttl });
-                      }}
-                    >
-                      {formatTtlLabel(ttl)}
-                    </Button>
-                  ))}
+                )}
+                {ttlMode === "custom" && (
+                  <Input
+                    type="number"
+                    value={typeof record.ttl === "number" ? record.ttl : ""}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                      const n = Number.parseInt(e.target.value, 10);
+                      onRecordChange({
+                        ...record,
+                        ttl: Number.isNaN(n) ? 300 : n,
+                      });
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("Name", "Name")}</Label>
+              <Input
+                aria-label={t("Name input", "Name")}
+                value={record.name}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  onRecordChange({
+                    ...record,
+                    name: e.target.value,
+                  })
+                }
+                placeholder={namePlaceholder}
+              />
+              <div className="text-xs text-muted-foreground">
+                Use <code>@</code> for the zone apex. Names are usually relative
+                to <code>{zoneName}</code>.
+                {nameHint && <div className="mt-1">{nameHint}</div>}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("Content", "Content")}</Label>
+              {recordGuide && (
+                <div className="text-xs text-muted-foreground">
+                  {recordGuide}
                 </div>
               )}
-              {ttlMode === "custom" && (
+              {(() => {
+                switch (record.type) {
+                  case "TXT":
+                    return (
+                      <TxtBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        zoneName={zoneName}
+                        simulateSPF={simulateSPF}
+                        getSPFGraph={getSPFGraph}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "DS":
+                    return (
+                      <DsBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "DNSKEY":
+                  case "CDNSKEY":
+                    return (
+                      <DnskeyBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "CAA":
+                    return (
+                      <CaaBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        zoneName={zoneName}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SRV":
+                    return (
+                      <SrvBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "TLSA":
+                    return (
+                      <TlsaBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SSHFP":
+                    return (
+                      <SshfpBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "HINFO":
+                    return (
+                      <HinfoBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "LOC":
+                    return (
+                      <LocBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "AFSDB":
+                    return (
+                      <AfsdbBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "APL":
+                    return (
+                      <AplBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "RP":
+                    return (
+                      <RpBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "DNAME":
+                    return (
+                      <DnameBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "CERT":
+                    return (
+                      <CertBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SMIMEA":
+                    return (
+                      <SmimeaBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "OPENPGPKEY":
+                    return (
+                      <OpenpgpkeyBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "NAPTR":
+                    return (
+                      <NaptrBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "ALIAS":
+                  case "ANAME":
+                    return (
+                      <AnameBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "URI":
+                    return (
+                      <UriBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SVCB":
+                  case "HTTPS":
+                    return (
+                      <SvcbBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SOA":
+                    return (
+                      <SoaBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        zoneName={zoneName}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  case "SPF":
+                    return (
+                      <SpfBuilder
+                        record={record}
+                        onRecordChange={onRecordChange}
+                        zoneName={zoneName}
+                        simulateSPF={simulateSPF}
+                        getSPFGraph={getSPFGraph}
+                        onWarningsChange={setActiveBuilderWarnings}
+                      />
+                    );
+                  default:
+                    return (
+                      <Input
+                        aria-label={t("Default content input", "Content")}
+                        value={record.content}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                          onRecordChange({
+                            ...record,
+                            content: e.target.value,
+                          })
+                        }
+                        placeholder={contentPlaceholder}
+                      />
+                    );
+                }
+              })()}
+            </div>
+            <div className="space-y-2">
+              <Label>{t("Comment", "Comment")}</Label>
+              <Textarea
+                aria-label={t("Comment input", "Comment")}
+                value={record.comment ?? ""}
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                  onRecordChange({
+                    ...record,
+                    comment: e.target.value,
+                  })
+                }
+                placeholder={t(
+                  "Optional: add a note for this record",
+                  "Optional: add a note for this record",
+                )}
+                className="min-h-16 resize-y"
+              />
+              <div className="text-xs text-muted-foreground">
+                Visible in Cloudflare and helps document why this record exists.
+              </div>
+            </div>
+            {record.type === "MX" && (
+              <div className="space-y-2">
+                <Label>Priority</Label>
                 <Input
                   type="number"
-                  value={typeof record.ttl === "number" ? record.ttl : ""}
+                  value={record.priority || ""}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => {
                     const n = Number.parseInt(e.target.value, 10);
                     onRecordChange({
                       ...record,
-                      ttl: Number.isNaN(n) ? 300 : n,
+                      priority: Number.isNaN(n) ? undefined : n,
                     });
                   }}
+                  placeholder="10 (common) or 0 (primary)"
                 />
-              )}
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>{t("Name", "Name")}</Label>
-            <Input
-              aria-label={t("Name input", "Name")}
-              value={record.name}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                onRecordChange({
-                  ...record,
-                  name: e.target.value,
-                })
-              }
-              placeholder={namePlaceholder}
-            />
-            <div className="text-xs text-muted-foreground">
-              Use <code>@</code> for the zone apex. Names are usually relative to{" "}
-              <code>{zoneName}</code>.
-              {nameHint && <div className="mt-1">{nameHint}</div>}
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>{t("Content", "Content")}</Label>
-            {recordGuide && (
-              <div className="text-xs text-muted-foreground">{recordGuide}</div>
+                <div className="text-xs text-muted-foreground">
+                  Lower numbers have higher priority. Typical setups use 10/20
+                  or 0/10.
+                </div>
+              </div>
             )}
-            {(() => {
-              switch (record.type) {
-                case "TXT":
-                  return (
-                    <TxtBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      zoneName={zoneName}
-                      simulateSPF={simulateSPF}
-                      getSPFGraph={getSPFGraph}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "DS":
-                  return (
-                    <DsBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "DNSKEY":
-                case "CDNSKEY":
-                  return (
-                    <DnskeyBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "CAA":
-                  return (
-                    <CaaBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      zoneName={zoneName}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SRV":
-                  return (
-                    <SrvBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "TLSA":
-                  return (
-                    <TlsaBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SSHFP":
-                  return (
-                    <SshfpBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "HINFO":
-                  return (
-                    <HinfoBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "LOC":
-                  return (
-                    <LocBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "AFSDB":
-                  return (
-                    <AfsdbBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "APL":
-                  return (
-                    <AplBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "RP":
-                  return (
-                    <RpBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "DNAME":
-                  return (
-                    <DnameBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "CERT":
-                  return (
-                    <CertBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SMIMEA":
-                  return (
-                    <SmimeaBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "OPENPGPKEY":
-                  return (
-                    <OpenpgpkeyBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "NAPTR":
-                  return (
-                    <NaptrBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "ALIAS":
-                case "ANAME":
-                  return (
-                    <AnameBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "URI":
-                  return (
-                    <UriBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SVCB":
-                case "HTTPS":
-                  return (
-                    <SvcbBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SOA":
-                  return (
-                    <SoaBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      zoneName={zoneName}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                case "SPF":
-                  return (
-                    <SpfBuilder
-                      record={record}
-                      onRecordChange={onRecordChange}
-                      zoneName={zoneName}
-                      simulateSPF={simulateSPF}
-                      getSPFGraph={getSPFGraph}
-                      onWarningsChange={setActiveBuilderWarnings}
-                    />
-                  );
-                default:
-                  return (
-                    <Input
-                      aria-label={t("Default content input", "Content")}
-                      value={record.content}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                        onRecordChange({
-                          ...record,
-                          content: e.target.value,
-                        })
-                      }
-                      placeholder={contentPlaceholder}
-                    />
-                  );
-              }
-            })()}
+            {(record.type === "A" ||
+              record.type === "AAAA" ||
+              record.type === "CNAME") && (
+              <div className="flex items-center space-x-2">
+                <Switch
+                  checked={record.proxied || false}
+                  onCheckedChange={(checked: boolean) =>
+                    onRecordChange({
+                      ...record,
+                      proxied: checked,
+                    })
+                  }
+                />
+                <Label>Proxied through Cloudflare</Label>
+              </div>
+            )}
+            {validationWarnings.length > 0 && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                <div className="text-sm font-semibold">
+                  Potential validation issues
+                </div>
+                <div className="scrollbar-themed mt-2 max-h-44 overflow-auto pr-2">
+                  <ul className="list-disc pl-5 text-xs text-foreground/85">
+                    {validationWarnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  You can still create the record, but it may be rejected or
+                  behave unexpectedly.
+                </div>
+              </div>
+            )}
           </div>
-          <div className="space-y-2">
-            <Label>{t("Comment", "Comment")}</Label>
-            <Textarea
-              aria-label={t("Comment input", "Comment")}
-              value={record.comment ?? ""}
-              onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                onRecordChange({
-                  ...record,
-                  comment: e.target.value,
-                })
-              }
-              placeholder={t(
-                "Optional: add a note for this record",
-                "Optional: add a note for this record",
-              )}
-              className="min-h-16 resize-y"
-            />
-            <div className="text-xs text-muted-foreground">
-              Visible in Cloudflare and helps document why this record exists.
-            </div>
-          </div>
-          {record.type === "MX" && (
-            <div className="space-y-2">
-              <Label>Priority</Label>
-              <Input
-                type="number"
-                value={record.priority || ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  onRecordChange({
-                    ...record,
-                    priority: Number.isNaN(n) ? undefined : n,
-                  });
-                }}
-                placeholder="10 (common) or 0 (primary)"
-              />
-              <div className="text-xs text-muted-foreground">
-                Lower numbers have higher priority. Typical setups use 10/20 or 0/10.
-              </div>
-            </div>
-          )}
-          {(record.type === "A" ||
-            record.type === "AAAA" ||
-            record.type === "CNAME") && (
-            <div className="flex items-center space-x-2">
-              <Switch
-                checked={record.proxied || false}
-                onCheckedChange={(checked: boolean) =>
-                  onRecordChange({
-                    ...record,
-                    proxied: checked,
-                  })
-                }
-              />
-              <Label>Proxied through Cloudflare</Label>
-            </div>
-          )}
-          {validationWarnings.length > 0 && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-              <div className="text-sm font-semibold">
-                Potential validation issues
-              </div>
-              <div className="scrollbar-themed mt-2 max-h-44 overflow-auto pr-2">
-                <ul className="list-disc pl-5 text-xs text-foreground/85">
-                  {validationWarnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="mt-2 text-xs text-muted-foreground">
-                You can still create the record, but it may be rejected or behave
-                unexpectedly.
-              </div>
-            </div>
-          )}
-        </div>
         </div>
         <div className="border-t border-border/40 bg-popover/20 p-4">
           <Button

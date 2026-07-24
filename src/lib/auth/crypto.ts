@@ -118,9 +118,10 @@ export class CryptoManager {
 
     // Attempt to load Node.js built-in crypto.webcrypto without eval
     try {
-      const maybeRequire = (typeof (globalThis as any).require === "function")
-        ? (globalThis as any).require
-        : undefined;
+      const maybeRequire =
+        typeof (globalThis as any).require === "function"
+          ? (globalThis as any).require
+          : undefined;
       if (maybeRequire) {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const nodeCrypto = maybeRequire("crypto");

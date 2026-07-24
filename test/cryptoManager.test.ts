@@ -46,7 +46,10 @@ test("minimum iterations are enforced against tampering", () => {
   const cryptoMgr = new CryptoManager({}, storage);
   const config = cryptoMgr.getConfig();
   // Should be clamped to the minimum (100000), not 1
-  assert.ok(config.iterations >= 100000, `Expected >= 100000 but got ${config.iterations}`);
+  assert.ok(
+    config.iterations >= 100000,
+    `Expected >= 100000 but got ${config.iterations}`,
+  );
 });
 
 test("benchmark returns numeric duration", async () => {

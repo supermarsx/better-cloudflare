@@ -6,6 +6,7 @@
 ## 🚀 Phase 1: Development Environment Setup
 
 ### Prerequisites
+
 - [ ] **Install Rust toolchain**
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -26,6 +27,7 @@
   ```
 
 ### Icon Generation
+
 - [ ] **Create 1024x1024 app icon** (PNG format with transparency)
   - Design app icon or use placeholder
   - Save as `icon.png` in project root
@@ -42,26 +44,32 @@
 ## 🔧 Phase 2: Rust Backend Development
 
 ### Key Management
+
 - [x] **Re-encrypt API keys when updating password** (Tauri `update_api_key`)
 
 ### Testing & Validation
+
 - [x] **Add storage unit tests** (in-memory keyring off)
 - [x] **Add SPF parser/unit tests** (parse + CIDR checks)
 - [x] **Add crypto error-case tests** (invalid base64/short payload)
 - [ ] **Test crypto module** (`src-tauri/src/crypto.rs`)
+
   ```bash
   cd src-tauri
   cargo test crypto::tests
   ```
+
   - [ ] Verify encryption/decryption round-trip
   - [ ] Test with various password lengths
   - [ ] Test error cases (wrong password, corrupted data)
   - [ ] Benchmark performance vs Node.js implementation
 
 - [ ] **Test storage module** (`src-tauri/src/storage.rs`)
+
   ```bash
   cargo test storage::tests
   ```
+
   - [ ] Test on macOS (Keychain)
   - [ ] Test on Windows (Credential Manager)
   - [ ] Test on Linux (Secret Service)
@@ -83,6 +91,7 @@
   - [ ] Cross-platform passkey compatibility
 
 ### Code Quality
+
 - [ ] **Add comprehensive error handling**
   - [ ] Review all `.unwrap()` and `.expect()` calls
   - [ ] Replace with proper error propagation
@@ -104,6 +113,7 @@
   - [ ] Add integration tests for command handlers
 
 ### Storage & Encryption Parity
+
 - [x] **Persist encryption settings in Rust storage** (Tauri)
 
 - [ ] **Security audit**
@@ -122,6 +132,7 @@
   - [ ] Benchmark vs Node.js backend
 
 ### Additional Features
+
 - [x] **Implement audit logging** (`src-tauri/src/commands.rs`, `src-tauri/src/storage.rs`)
   - [x] Design audit log format (JSON array stored in `audit_log`)
   - [x] Log all sensitive operations (login, key changes, DNS modifications)
@@ -135,6 +146,7 @@
   - [x] Add export functionality
 
 ### Passkey Storage
+
 - [x] **Persist passkey credentials in secure storage** (keychain with memory fallback)
 - [x] **Share storage between PasskeyManager and Tauri Storage state** (avoid split keychains)
 - [ ] **Verify passkey assertions/attestations** (full WebAuthn verification)
@@ -159,6 +171,7 @@
 ## 💻 Phase 3: Frontend Migration
 
 ### Core Infrastructure
+
 - [x] **Update `src/lib/server-client.ts`**
   - [x] Detect Tauri environment vs web environment
   - [x] Route requests to TauriClient when in desktop mode
@@ -166,6 +179,7 @@
   - [x] Update all method signatures to match TauriClient
 
 - [x] **Create environment detection utility**
+
   ```typescript
   // src/lib/environment.ts
   export const isDesktop = () => window.__TAURI__ !== undefined;
@@ -181,6 +195,7 @@
 ### Component Migration (by feature)
 
 #### Authentication Components
+
 - [ ] **`src/components/auth/LoginForm.tsx`**
   - [x] Replace `serverClient` with `TauriClient` or abstraction
   - [ ] Test login with password flow
@@ -204,6 +219,7 @@
   - [ ] Verify re-encryption of all vaults
 
 #### DNS Management Components
+
 - [ ] **DNS zone listing**
   - [ ] Update zone fetching logic
   - [ ] Test with multiple accounts
@@ -226,6 +242,7 @@
   - [ ] Update tests to work with Tauri
 
 #### Vault & Storage Components
+
 - [ ] **Vault management UI**
   - [ ] Test vault creation
   - [ ] Test vault listing
@@ -241,6 +258,7 @@
   - [ ] Test other user preferences
 
 ### Hooks Migration
+
 - [ ] **`src/hooks/use-cloudflare-api.ts`**
   - [x] Update to use TauriClient
   - [ ] Test all hook methods
@@ -257,6 +275,7 @@
   - [ ] Test hook state management
 
 ### Tauri-Only Parity Checklist
+
 - [ ] **Decide final support for web/server mode** (dual-mode vs desktop-only)
 - [ ] **Remove server runtime entrypoints if desktop-only**
   - [x] Remove `server.ts`
@@ -279,6 +298,7 @@
 - [x] **Add backend audit export command** (optional, to export without UI)
 
 ### API Route Removal (if using App Router API routes)
+
 - [ ] **Remove `app/api/*` routes** (no longer needed in desktop app)
   - [ ] Remove all API route handlers
   - [ ] Update imports that reference API routes
@@ -289,6 +309,7 @@
 ## 🧪 Phase 4: Testing
 
 ### Unit Tests
+
 - [ ] **Update existing tests** (test/ directory)
   - [ ] `cloudflareApi.test.ts` - Mock Tauri invoke
   - [ ] `cryptoManager.test.ts` - Test against Rust crypto
@@ -310,13 +331,16 @@
   - [x] Test audit export command wiring
 
 - [ ] **Run test suite**
+
   ```bash
   npm run test
   ```
+
   - [ ] Achieve >80% frontend code coverage
   - [ ] All tests passing
 
 ### Integration Tests
+
 - [ ] **Create Tauri integration tests**
   - [ ] Test complete login flow (password + API key)
   - [ ] Test complete passkey registration flow
@@ -333,6 +357,7 @@
   - [ ] Run: `npm run test:e2e`
 
 ### Manual Testing
+
 - [ ] **Test on macOS**
   - [ ] Build: `npm run tauri:dev`
   - [ ] Test all features end-to-end
@@ -360,6 +385,7 @@
 ## 📦 Phase 5: Build & Distribution
 
 ### Code Signing Setup
+
 - [ ] **macOS code signing**
   - [ ] Obtain Apple Developer account
   - [ ] Create App ID and certificates
@@ -378,6 +404,7 @@
   - [ ] Test package installation
 
 ### Release Configuration
+
 - [ ] **Update version numbers**
   - [ ] `package.json` version
   - [ ] `src-tauri/Cargo.toml` version
@@ -391,9 +418,11 @@
   - [ ] Test update installation
 
 - [ ] **Create installers**
+
   ```bash
   npm run tauri:build
   ```
+
   - [ ] macOS: `.dmg` and `.app` bundle
   - [ ] Windows: `.msi` and `.exe` installers
   - [ ] Linux: `.AppImage`, `.deb`, `.rpm`
@@ -406,6 +435,7 @@
   - [ ] Test app appears in launcher/start menu
 
 ### CI/CD Setup
+
 - [ ] **GitHub Actions workflow**
   - [ ] Create `.github/workflows/build-tauri.yml`
   - [ ] Build on multiple platforms (ubuntu, macos, windows)
@@ -425,6 +455,7 @@
 ## 📝 Phase 6: Documentation Updates
 
 ### Project Documentation
+
 - [ ] **Update `README.md`**
   - [x] Replace web app instructions with desktop app
   - [x] Add platform-specific installation instructions
@@ -463,6 +494,7 @@
   - [ ] Generate TypeDoc for TauriClient
 
 ### User Documentation
+
 - [ ] **Create user manual**
   - [ ] Installation guide per platform
   - [ ] First-time setup walkthrough
@@ -481,6 +513,7 @@
 ## 🔒 Phase 7: Security & Compliance
 
 ### Security Review
+
 - [ ] **Conduct security audit**
   - [ ] Review Tauri permissions configuration
   - [ ] Audit all IPC commands for security
@@ -497,14 +530,17 @@
   - [ ] Document findings and fixes
 
 - [ ] **Dependency audit**
+
   ```bash
   cargo audit
   npm audit
   ```
+
   - [ ] Review and update vulnerable dependencies
   - [ ] Set up automated dependency scanning
 
 ### Privacy & Compliance
+
 - [ ] **Review data handling**
   - [ ] Document what data is stored locally
   - [ ] Document what data is sent to Cloudflare
@@ -527,6 +563,7 @@
 ## 🚢 Phase 8: Migration Cleanup
 
 ### Remove Obsolete Code
+
 - [ ] **Remove server-only code**
   - [x] Remove `server.ts` (Express server)
   - [x] Remove `src/server/*` directory
@@ -553,6 +590,7 @@
   - [ ] Verify `out/` directory is ignored ✅
 
 ### Configuration Cleanup
+
 - [ ] **Archive web app configs** (if keeping dual mode)
   - [ ] Move old server configs to `archive/` folder
   - [ ] Document migration path in archive
@@ -567,6 +605,7 @@
 ## 📊 Phase 9: Performance & Optimization
 
 ### Benchmarking
+
 - [ ] **Benchmark critical operations**
   - [ ] App startup time
   - [ ] Login flow duration
@@ -578,9 +617,11 @@
   - [ ] Compare to web app baseline
 
 - [ ] **Profile Rust backend**
+
   ```bash
   cargo build --release --features profiling
   ```
+
   - [ ] Identify bottlenecks
   - [ ] Optimize hot paths
   - [ ] Reduce allocations
@@ -593,6 +634,7 @@
   - [ ] Lazy load components where appropriate
 
 ### Optimization Tasks
+
 - [ ] **Bundle size optimization**
   - [ ] Analyze bundle with `npm run build -- --analyze`
   - [ ] Remove unused dependencies
@@ -616,6 +658,7 @@
 ## 🎯 Phase 10: Launch Preparation
 
 ### Pre-Launch Checklist
+
 - [ ] **Feature completeness**
   - [ ] All features from web app ported
   - [ ] All tests passing
@@ -635,6 +678,7 @@
   - [ ] Update social media profiles
 
 ### Launch
+
 - [ ] **Release v1.0.0**
   - [ ] Tag release in git
   - [ ] Build final installers
@@ -659,6 +703,7 @@
   - [ ] Update project homepage
 
 ### Post-Launch
+
 - [ ] **Monitor metrics**
   - [ ] Track downloads/installs
   - [ ] Monitor crash reports (if telemetry enabled)
@@ -682,6 +727,7 @@
 ## 🎨 Optional Enhancements
 
 ### UI/UX Improvements
+
 - [ ] **Native menus**
   - [ ] Add macOS menu bar
   - [ ] Add Windows system tray
@@ -701,6 +747,7 @@
   - [ ] Font size scaling
 
 ### Advanced Features
+
 - [ ] **CLI companion tool**
   - [ ] Create CLI for automation
   - [ ] Support batch operations from terminal
@@ -738,6 +785,7 @@ These items MUST be completed for the desktop app to be functional:
 ## 📋 Progress Tracking
 
 ### Completion Summary
+
 - **Phase 1**: ⬜ 0% (0/9 tasks)
 - **Phase 2**: ⬜ 0% (0/35 tasks)
 - **Phase 3**: ⬜ 0% (0/28 tasks)

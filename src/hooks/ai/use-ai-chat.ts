@@ -35,18 +35,27 @@ export function useAiProviders() {
     refresh();
   }, [refresh]);
 
-  const configure = useCallback(async (config: ProviderConfig) => {
-    await invoke("ai_configure_provider", { config });
-    await refresh();
-  }, [refresh]);
+  const configure = useCallback(
+    async (config: ProviderConfig) => {
+      await invoke("ai_configure_provider", { config });
+      await refresh();
+    },
+    [refresh],
+  );
 
-  const testProvider = useCallback(async (kind: ProviderKind): Promise<Model[]> => {
-    return invoke<Model[]>("ai_test_provider", { kind });
-  }, []);
+  const testProvider = useCallback(
+    async (kind: ProviderKind): Promise<Model[]> => {
+      return invoke<Model[]>("ai_test_provider", { kind });
+    },
+    [],
+  );
 
-  const listModels = useCallback(async (kind: ProviderKind): Promise<Model[]> => {
-    return invoke<Model[]>("ai_list_models", { kind });
-  }, []);
+  const listModels = useCallback(
+    async (kind: ProviderKind): Promise<Model[]> => {
+      return invoke<Model[]>("ai_list_models", { kind });
+    },
+    [],
+  );
 
   return { providers, loading, refresh, configure, testProvider, listModels };
 }
@@ -143,7 +152,9 @@ export function useAiChat(conversationId: string | null) {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
-  const [pendingApproval, setPendingApproval] = useState<AgentEvent | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<AgentEvent | null>(
+    null,
+  );
   const unlistenRef = useRef<UnlistenFn | null>(null);
 
   // Load the full conversation
@@ -280,7 +291,9 @@ export function useAiPresets() {
   const [presets, setPresets] = useState<Preset[]>([]);
 
   useEffect(() => {
-    invoke<Preset[]>("ai_list_presets").then(setPresets).catch(() => {});
+    invoke<Preset[]>("ai_list_presets")
+      .then(setPresets)
+      .catch(() => {});
   }, []);
 
   const getPreset = useCallback(async (id: string): Promise<Preset> => {

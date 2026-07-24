@@ -1,9 +1,15 @@
-
 /**
  * Top-level DNS Manager UI which composes the zone selector, the record
  * list and dialogs for creating/importing records.
  */
-import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type ChangeEvent,
+} from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,7 +35,10 @@ import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/hooks/use-i18n";
-import { storageManager, type SessionSettingsProfile } from "@/lib/storage/storage";
+import {
+  storageManager,
+  type SessionSettingsProfile,
+} from "@/lib/storage/storage";
 import {
   ArrowUpDown,
   ClipboardPaste,
@@ -57,14 +66,24 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { filterRecords } from "@/lib/dns/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
 import { ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
-import { runDomainAudit, type DomainAuditCategory, type DomainAuditItem } from "@/lib/audit/domain-audit";
+import {
+  runDomainAudit,
+  type DomainAuditCategory,
+  type DomainAuditItem,
+} from "@/lib/audit/domain-audit";
 import type { DomainHealthCheck, DomainInfo } from "@/types/registrar";
 import { AnalyticsPanel } from "@/components/analytics/AnalyticsPanel";
 import { FirewallPanel } from "@/components/firewall/FirewallPanel";
@@ -75,8 +94,10 @@ import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
 import { HotkeyHelpDialog } from "@/components/layout/HotkeyHelpDialog";
 import { useUndoRedo } from "@/hooks/dns/use-undo-redo";
-import { cacheZoneRecords, getCachedZoneRecords } from "@/lib/storage/offline-cache";
-
+import {
+  cacheZoneRecords,
+  getCachedZoneRecords,
+} from "@/lib/storage/offline-cache";
 
 type ActionTab =
   | "records"
@@ -97,10 +118,20 @@ type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab = "general" | "topology" | "audit" | "mcp" | "profiles";
-type ExportFolderPreset = "system" | "documents" | "downloads" | "desktop" | "custom";
+type ExportFolderPreset =
+  | "system"
+  | "documents"
+  | "downloads"
+  | "desktop"
+  | "custom";
 type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
-type TopologyGeoProvider = "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+type TopologyGeoProvider =
+  | "auto"
+  | "ipwhois"
+  | "ipapi_co"
+  | "ip_api"
+  | "internal";
 type TopologyCopyAction = "mermaid" | "svg" | "png";
 type TopologyExportAction = "mermaid" | "svg" | "png" | "pdf";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
@@ -141,12 +172,18 @@ const TOPOLOGY_TCP_SERVICE_OPTIONS: Array<{ port: number; label: string }> = [
   { port: 3306, label: "MySQL (3306)" },
   { port: 5432, label: "PostgreSQL (5432)" },
 ];
-const TOPOLOGY_COPY_ACTION_OPTIONS: Array<{ value: TopologyCopyAction; label: string }> = [
+const TOPOLOGY_COPY_ACTION_OPTIONS: Array<{
+  value: TopologyCopyAction;
+  label: string;
+}> = [
   { value: "mermaid", label: "Mermaid code" },
   { value: "svg", label: "SVG" },
   { value: "png", label: "PNG" },
 ];
-const TOPOLOGY_EXPORT_ACTION_OPTIONS: Array<{ value: TopologyExportAction; label: string }> = [
+const TOPOLOGY_EXPORT_ACTION_OPTIONS: Array<{
+  value: TopologyExportAction;
+  label: string;
+}> = [
   { value: "mermaid", label: "Mermaid code" },
   { value: "svg", label: "SVG" },
   { value: "png", label: "PNG" },
@@ -295,7 +332,9 @@ function extractMcpEnabledTools(status: McpServerStatus | null): string[] {
     : Array.isArray(status.enabled_tools)
       ? status.enabled_tools
       : [];
-  return Array.from(new Set(raw.map((value) => String(value).trim()).filter(Boolean)));
+  return Array.from(
+    new Set(raw.map((value) => String(value).trim()).filter(Boolean)),
+  );
 }
 
 function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
@@ -304,7 +343,10 @@ function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
   while (parent) {
     const style = window.getComputedStyle(parent);
     const overflowY = style.overflowY;
-    if ((overflowY === "auto" || overflowY === "scroll") && parent.scrollHeight > parent.clientHeight) {
+    if (
+      (overflowY === "auto" || overflowY === "scroll") &&
+      parent.scrollHeight > parent.clientHeight
+    ) {
       return parent;
     }
     parent = parent.parentElement;
@@ -312,7 +354,8 @@ function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
   return window;
 }
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
-  basic: "Standard caching behavior. Query strings are respected for cache variation.",
+  basic:
+    "Standard caching behavior. Query strings are respected for cache variation.",
   aggressive:
     "Caches more aggressively by reducing query-string variation. Better hit rate, but ensure query params do not change content.",
   simplified:
@@ -419,7 +462,10 @@ function formatAuditTimestampFull(value: unknown): string {
   })} | ${date.toISOString()}`;
 }
 
-function formatHumanizedDateTime(value: unknown): { short: string; full: string } {
+function formatHumanizedDateTime(value: unknown): {
+  short: string;
+  full: string;
+} {
   const parsed = parseAuditTimestamp(value);
   if (parsed === null) return { short: "—", full: "—" };
   const date = new Date(parsed);
@@ -429,7 +475,10 @@ function formatHumanizedDateTime(value: unknown): { short: string; full: string 
   };
 }
 
-function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: boolean } {
+function useLoadingOverlay(
+  loading: boolean,
+  timeoutMs: number,
+): { visible: boolean } {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -438,9 +487,12 @@ function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: bool
       return;
     }
     setVisible(true);
-    const id = window.setTimeout(() => {
-      setVisible(false);
-    }, Math.max(1000, Math.min(60000, timeoutMs)));
+    const id = window.setTimeout(
+      () => {
+        setVisible(false);
+      },
+      Math.max(1000, Math.min(60000, timeoutMs)),
+    );
     return () => window.clearTimeout(id);
   }, [loading, timeoutMs]);
 
@@ -449,7 +501,9 @@ function useLoadingOverlay(loading: boolean, timeoutMs: number): { visible: bool
 
 function SectionLoadingOverlay({ label }: { label: string }) {
   const theme =
-    typeof document !== "undefined" ? document.documentElement.dataset.theme ?? "sunset" : "sunset";
+    typeof document !== "undefined"
+      ? (document.documentElement.dataset.theme ?? "sunset")
+      : "sunset";
   const isDarkOverlayTheme = theme === "sunset" || theme === "oled";
   const spinnerGradient =
     "conic-gradient(from 0deg, hsl(var(--primary)) 0deg, hsl(var(--primary) / 0.2) 90deg, hsl(var(--primary)) 220deg, hsl(var(--primary)) 360deg)";
@@ -545,7 +599,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.getAutoRefreshInterval(),
   );
   const registrarMonitor = useRegistrarMonitor(apiKey, email);
-  const [auditEntries, setAuditEntries] = useState<Array<Record<string, unknown>>>([]);
+  const [auditEntries, setAuditEntries] = useState<
+    Array<Record<string, unknown>>
+  >([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
@@ -560,26 +616,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [compactTopBar, setCompactTopBar] = useState(false);
   const [recordsBottomFade, setRecordsBottomFade] = useState(1);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
-  const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>({});
+  const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>(
+    {},
+  );
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
   const [pendingLastActiveTab, setPendingLastActiveTab] = useState("");
-  const [auditExportDefaultDocuments, setAuditExportDefaultDocuments] = useState(
-    storageManager.getAuditExportDefaultDocuments(),
-  );
+  const [auditExportDefaultDocuments, setAuditExportDefaultDocuments] =
+    useState(storageManager.getAuditExportDefaultDocuments());
   const [confirmClearAuditLogs, setConfirmClearAuditLogs] = useState(
     storageManager.getConfirmClearAuditLogs(),
   );
-  const [auditExportFolderPreset, setAuditExportFolderPreset] = useState<ExportFolderPreset>(
-    storageManager.getAuditExportFolderPreset() as ExportFolderPreset,
-  );
+  const [auditExportFolderPreset, setAuditExportFolderPreset] =
+    useState<ExportFolderPreset>(
+      storageManager.getAuditExportFolderPreset() as ExportFolderPreset,
+    );
   const [auditExportCustomPath, setAuditExportCustomPath] = useState(
     storageManager.getAuditExportCustomPath(),
   );
-  const [auditExportSkipDestinationConfirm, setAuditExportSkipDestinationConfirm] =
-    useState(storageManager.getAuditExportSkipDestinationConfirm());
-  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("general");
+  const [
+    auditExportSkipDestinationConfirm,
+    setAuditExportSkipDestinationConfirm,
+  ] = useState(storageManager.getAuditExportSkipDestinationConfirm());
+  const [settingsSubtab, setSettingsSubtab] =
+    useState<SettingsSubtab>("general");
   const [sessionSettingsProfiles, setSessionSettingsProfiles] = useState<
     Record<string, SessionSettingsProfile>
   >(storageManager.getSessionSettingsProfiles());
@@ -603,12 +664,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [renameTagTo, setRenameTagTo] = useState("");
   const [tagsVersion, setTagsVersion] = useState(0);
   const [tagManagerRecords, setTagManagerRecords] = useState<DNSRecord[]>([]);
-  const [tagManagerRecordsLoading, setTagManagerRecordsLoading] = useState(false);
-  const [tagManagerRecordsError, setTagManagerRecordsError] = useState<string | null>(null);
+  const [tagManagerRecordsLoading, setTagManagerRecordsLoading] =
+    useState(false);
+  const [tagManagerRecordsError, setTagManagerRecordsError] = useState<
+    string | null
+  >(null);
   const [tagAssociationSearch, setTagAssociationSearch] = useState("");
-  const [tagAssociationDrafts, setTagAssociationDrafts] = useState<Record<string, string>>(
-    {},
-  );
+  const [tagAssociationDrafts, setTagAssociationDrafts] = useState<
+    Record<string, string>
+  >({});
   const [confirmLogout, setConfirmLogout] = useState(true);
   const [idleLogoutMs, setIdleLogoutMs] = useState<number | null>(null);
   const [confirmWindowClose, setConfirmWindowClose] = useState(true);
@@ -635,36 +699,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyResolutionMaxHops, setTopologyResolutionMaxHops] = useState(
     storageManager.getTopologyResolutionMaxHops(),
   );
-  const [topologyResolverMode, setTopologyResolverMode] = useState<TopologyResolverMode>(
-    storageManager.getTopologyResolverMode(),
-  );
+  const [topologyResolverMode, setTopologyResolverMode] =
+    useState<TopologyResolverMode>(storageManager.getTopologyResolverMode());
   const [topologyDnsServer, setTopologyDnsServer] = useState(
     storageManager.getTopologyDnsServer(),
   );
   const [topologyCustomDnsServer, setTopologyCustomDnsServer] = useState(
     storageManager.getTopologyCustomDnsServer(),
   );
-  const [topologyDohProvider, setTopologyDohProvider] = useState<TopologyDohProvider>(
-    storageManager.getTopologyDohProvider(),
-  );
+  const [topologyDohProvider, setTopologyDohProvider] =
+    useState<TopologyDohProvider>(storageManager.getTopologyDohProvider());
   const [topologyDohCustomUrl, setTopologyDohCustomUrl] = useState(
     storageManager.getTopologyDohCustomUrl(),
   );
   const [topologyExportConfirmPath, setTopologyExportConfirmPath] = useState(
     storageManager.getTopologyExportConfirmPath(),
   );
-  const [topologyExportFolderPreset, setTopologyExportFolderPreset] = useState<ExportFolderPreset>(
-    storageManager.getTopologyExportFolderPreset() as ExportFolderPreset,
-  );
+  const [topologyExportFolderPreset, setTopologyExportFolderPreset] =
+    useState<ExportFolderPreset>(
+      storageManager.getTopologyExportFolderPreset() as ExportFolderPreset,
+    );
   const [topologyExportCustomPath, setTopologyExportCustomPath] = useState(
     storageManager.getTopologyExportCustomPath(),
   );
-  const [topologyCopyActions, setTopologyCopyActions] = useState<TopologyCopyAction[]>(
-    storageManager.getTopologyCopyActions() as TopologyCopyAction[],
-  );
-  const [topologyExportActions, setTopologyExportActions] = useState<TopologyExportAction[]>(
-    storageManager.getTopologyExportActions() as TopologyExportAction[],
-  );
+  const [topologyCopyActions, setTopologyCopyActions] = useState<
+    TopologyCopyAction[]
+  >(storageManager.getTopologyCopyActions() as TopologyCopyAction[]);
+  const [topologyExportActions, setTopologyExportActions] = useState<
+    TopologyExportAction[]
+  >(storageManager.getTopologyExportActions() as TopologyExportAction[]);
   const [topologyDisableAnnotations, setTopologyDisableAnnotations] = useState(
     storageManager.getTopologyDisableAnnotations(),
   );
@@ -680,48 +743,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [topologyDisableGeoLookups, setTopologyDisableGeoLookups] = useState(
     storageManager.getTopologyDisableGeoLookups(),
   );
-  const [topologyGeoProvider, setTopologyGeoProvider] = useState<TopologyGeoProvider>(
-    storageManager.getTopologyGeoProvider(),
-  );
-  const [topologyScanResolutionChain, setTopologyScanResolutionChain] = useState(
-    storageManager.getTopologyScanResolutionChain(),
-  );
-  const [topologyDisableServiceDiscovery, setTopologyDisableServiceDiscovery] = useState(
-    storageManager.getTopologyDisableServiceDiscovery(),
-  );
+  const [topologyGeoProvider, setTopologyGeoProvider] =
+    useState<TopologyGeoProvider>(storageManager.getTopologyGeoProvider());
+  const [topologyScanResolutionChain, setTopologyScanResolutionChain] =
+    useState(storageManager.getTopologyScanResolutionChain());
+  const [topologyDisableServiceDiscovery, setTopologyDisableServiceDiscovery] =
+    useState(storageManager.getTopologyDisableServiceDiscovery());
   const [topologyTcpServices, setTopologyTcpServices] = useState<string[]>(
     storageManager.getTopologyTcpServices(),
   );
   const [cacheSettingsLoading, setCacheSettingsLoading] = useState(false);
-  const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(null);
-  const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(null);
-  const [zoneCacheLevel, setZoneCacheLevel] = useState<ZoneSetting<string> | null>(null);
+  const [cacheSettingsError, setCacheSettingsError] = useState<string | null>(
+    null,
+  );
+  const [zoneDevMode, setZoneDevMode] = useState<ZoneSetting<string> | null>(
+    null,
+  );
+  const [zoneCacheLevel, setZoneCacheLevel] =
+    useState<ZoneSetting<string> | null>(null);
   const [purgeUrlsInput, setPurgeUrlsInput] = useState("");
-  const [showPurgeEverythingConfirm, setShowPurgeEverythingConfirm] = useState(false);
+  const [showPurgeEverythingConfirm, setShowPurgeEverythingConfirm] =
+    useState(false);
   const [showPurgeUrlsConfirm, setShowPurgeUrlsConfirm] = useState(false);
   const [pendingPurgeUrls, setPendingPurgeUrls] = useState<string[]>([]);
   const [pendingPurgeIssues, setPendingPurgeIssues] = useState<string[]>([]);
   const [sslSettingsLoading, setSslSettingsLoading] = useState(false);
   const [sslSettingsError, setSslSettingsError] = useState<string | null>(null);
-  const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(null);
-  const [zoneMinTlsVersion, setZoneMinTlsVersion] = useState<ZoneSetting<string> | null>(null);
+  const [zoneSslMode, setZoneSslMode] = useState<ZoneSetting<string> | null>(
+    null,
+  );
+  const [zoneMinTlsVersion, setZoneMinTlsVersion] =
+    useState<ZoneSetting<string> | null>(null);
   const [zoneTls13, setZoneTls13] = useState<ZoneSetting<string> | null>(null);
-  const [zoneAlwaysUseHttps, setZoneAlwaysUseHttps] = useState<ZoneSetting<string> | null>(null);
-  const [zoneAutoHttpsRewrites, setZoneAutoHttpsRewrites] = useState<ZoneSetting<string> | null>(null);
+  const [zoneAlwaysUseHttps, setZoneAlwaysUseHttps] =
+    useState<ZoneSetting<string> | null>(null);
+  const [zoneAutoHttpsRewrites, setZoneAutoHttpsRewrites] =
+    useState<ZoneSetting<string> | null>(null);
   const [zoneOpportunisticEncryption, setZoneOpportunisticEncryption] =
     useState<ZoneSetting<string> | null>(null);
   const [domainAuditShowPassed, setDomainAuditShowPassed] = useState(false);
   const [domainAuditCategories, setDomainAuditCategories] = useState<
     Record<DomainAuditCategory, boolean>
   >(sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()));
-  const [auditOverridesByZone, setAuditOverridesByZone] = useState<Record<string, Set<string>>>({});
+  const [auditOverridesByZone, setAuditOverridesByZone] = useState<
+    Record<string, Set<string>>
+  >({});
   const [registryLookupDomain, setRegistryLookupDomain] = useState("");
   const [registryChecksLoading, setRegistryChecksLoading] = useState(false);
-  const [registryChecksError, setRegistryChecksError] = useState<string | null>(null);
-  const [rdapResult, setRdapResult] = useState<Record<string, unknown> | null>(null);
+  const [registryChecksError, setRegistryChecksError] = useState<string | null>(
+    null,
+  );
+  const [rdapResult, setRdapResult] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const [showRawRdap, setShowRawRdap] = useState(false);
-  const [registrarDomainResult, setRegistrarDomainResult] = useState<DomainInfo | null>(null);
-  const [registrarHealthResult, setRegistrarHealthResult] = useState<DomainHealthCheck | null>(null);
+  const [registrarDomainResult, setRegistrarDomainResult] =
+    useState<DomainInfo | null>(null);
+  const [registrarHealthResult, setRegistrarHealthResult] =
+    useState<DomainHealthCheck | null>(null);
   const {
     getZones,
     getDNSRecords,
@@ -784,7 +863,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }
         case "delete": {
           // Undo a delete → re-create the record
-          const restored = await createDNSRecord(reverse.zoneId, reverse.record);
+          const restored = await createDNSRecord(
+            reverse.zoneId,
+            reverse.record,
+          );
           updateTabByZone(reverse.zoneId, (prev) => ({
             ...prev,
             records: [restored, ...prev.records],
@@ -892,14 +974,60 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
   const sessionProfileIds = useMemo(
-    () => Object.keys(sessionSettingsProfiles).sort((a, b) => a.localeCompare(b)),
+    () =>
+      Object.keys(sessionSettingsProfiles).sort((a, b) => a.localeCompare(b)),
     [sessionSettingsProfiles],
   );
 
-  const buildSessionSettingsProfile = useCallback((): SessionSettingsProfile => {
-    return {
+  const buildSessionSettingsProfile =
+    useCallback((): SessionSettingsProfile => {
+      return {
+        autoRefreshInterval,
+        defaultPerPage: globalPerPage,
+        zonePerPage,
+        showUnsupportedRecordTypes,
+        zoneShowUnsupportedRecordTypes,
+        reopenLastTabs,
+        reopenZoneTabs,
+        confirmLogout,
+        idleLogoutMs,
+        confirmWindowClose,
+        closeTabOnMiddleClick,
+        mcpServerEnabled,
+        mcpServerHost,
+        mcpServerPort,
+        mcpEnabledTools,
+        loadingOverlayTimeoutMs,
+        topologyResolutionMaxHops,
+        topologyResolverMode,
+        topologyDnsServer,
+        topologyCustomDnsServer,
+        topologyDohProvider,
+        topologyDohCustomUrl,
+        topologyExportConfirmPath,
+        topologyExportFolderPreset,
+        topologyExportCustomPath,
+        topologyCopyActions,
+        topologyExportActions,
+        topologyDisableAnnotations,
+        topologyDisableFullWindow,
+        topologyLookupTimeoutMs,
+        topologyDisablePtrLookups,
+        topologyDisableGeoLookups,
+        topologyGeoProvider,
+        topologyScanResolutionChain,
+        topologyDisableServiceDiscovery,
+        topologyTcpServices,
+        auditExportDefaultDocuments,
+        confirmClearAuditLogs,
+        auditExportFolderPreset,
+        auditExportCustomPath,
+        auditExportSkipDestinationConfirm,
+        domainAuditCategories,
+      };
+    }, [
       autoRefreshInterval,
-      defaultPerPage: globalPerPage,
+      globalPerPage,
       zonePerPage,
       showUnsupportedRecordTypes,
       zoneShowUnsupportedRecordTypes,
@@ -940,216 +1068,232 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       auditExportCustomPath,
       auditExportSkipDestinationConfirm,
       domainAuditCategories,
-    };
-  }, [
-    autoRefreshInterval,
-    globalPerPage,
-    zonePerPage,
-    showUnsupportedRecordTypes,
-    zoneShowUnsupportedRecordTypes,
-    reopenLastTabs,
-    reopenZoneTabs,
-    confirmLogout,
-    idleLogoutMs,
-    confirmWindowClose,
-    closeTabOnMiddleClick,
-    mcpServerEnabled,
-    mcpServerHost,
-    mcpServerPort,
-    mcpEnabledTools,
-    loadingOverlayTimeoutMs,
-    topologyResolutionMaxHops,
-    topologyResolverMode,
-    topologyDnsServer,
-    topologyCustomDnsServer,
-    topologyDohProvider,
-    topologyDohCustomUrl,
-    topologyExportConfirmPath,
-    topologyExportFolderPreset,
-    topologyExportCustomPath,
-    topologyCopyActions,
-    topologyExportActions,
-    topologyDisableAnnotations,
-    topologyDisableFullWindow,
-    topologyLookupTimeoutMs,
-    topologyDisablePtrLookups,
-    topologyDisableGeoLookups,
-    topologyGeoProvider,
-    topologyScanResolutionChain,
-    topologyDisableServiceDiscovery,
-    topologyTcpServices,
-    auditExportDefaultDocuments,
-    confirmClearAuditLogs,
-    auditExportFolderPreset,
-    auditExportCustomPath,
-    auditExportSkipDestinationConfirm,
-    domainAuditCategories,
-  ]);
+    ]);
 
-  const applySessionSettingsProfile = useCallback((profile: SessionSettingsProfile) => {
-    if (typeof profile.autoRefreshInterval === "number" || profile.autoRefreshInterval === null) {
-      setAutoRefreshInterval(profile.autoRefreshInterval ?? null);
-    }
-    if (typeof profile.defaultPerPage === "number") {
-      setGlobalPerPage(profile.defaultPerPage);
-    }
-    if (profile.zonePerPage && typeof profile.zonePerPage === "object") {
-      setZonePerPage(profile.zonePerPage);
-    }
-    if (typeof profile.showUnsupportedRecordTypes === "boolean") {
-      setShowUnsupportedRecordTypes(profile.showUnsupportedRecordTypes);
-    }
-    if (
-      profile.zoneShowUnsupportedRecordTypes &&
-      typeof profile.zoneShowUnsupportedRecordTypes === "object"
-    ) {
-      setZoneShowUnsupportedRecordTypes(profile.zoneShowUnsupportedRecordTypes);
-    }
-    if (typeof profile.reopenLastTabs === "boolean") {
-      setReopenLastTabs(profile.reopenLastTabs);
-    }
-    if (profile.reopenZoneTabs && typeof profile.reopenZoneTabs === "object") {
-      setReopenZoneTabs(profile.reopenZoneTabs);
-    }
-    if (typeof profile.confirmLogout === "boolean") {
-      setConfirmLogout(profile.confirmLogout);
-    }
-    if (typeof profile.idleLogoutMs === "number" || profile.idleLogoutMs === null) {
-      setIdleLogoutMs(profile.idleLogoutMs ?? null);
-    }
-    if (typeof profile.confirmWindowClose === "boolean") {
-      setConfirmWindowClose(profile.confirmWindowClose);
-    }
-    if (typeof profile.closeTabOnMiddleClick === "boolean") {
-      setCloseTabOnMiddleClick(profile.closeTabOnMiddleClick);
-    }
-    if (typeof profile.mcpServerEnabled === "boolean") {
-      setMcpServerEnabled(profile.mcpServerEnabled);
-    }
-    if (typeof profile.mcpServerHost === "string") {
-      setMcpServerHost(profile.mcpServerHost || "127.0.0.1");
-    }
-    if (typeof profile.mcpServerPort === "number") {
-      setMcpServerPort(Math.max(1, Math.min(65535, Math.round(profile.mcpServerPort))));
-    }
-    if (Array.isArray(profile.mcpEnabledTools)) {
-      setMcpEnabledTools(
-        Array.from(
-          new Set(profile.mcpEnabledTools.map((v) => String(v).trim()).filter(Boolean)),
-        ),
-      );
-    }
-    if (typeof profile.loadingOverlayTimeoutMs === "number") {
-      setLoadingOverlayTimeoutMs(Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)));
-    }
-    if (typeof profile.topologyResolutionMaxHops === "number") {
-      setTopologyResolutionMaxHops(Math.max(1, Math.min(15, Math.round(profile.topologyResolutionMaxHops))));
-    }
-    if (profile.topologyResolverMode === "dns" || profile.topologyResolverMode === "doh") {
-      setTopologyResolverMode(profile.topologyResolverMode);
-    }
-    if (typeof profile.topologyDnsServer === "string") {
-      setTopologyDnsServer(profile.topologyDnsServer || "1.1.1.1");
-    }
-    if (typeof profile.topologyCustomDnsServer === "string") {
-      setTopologyCustomDnsServer(profile.topologyCustomDnsServer);
-    }
-    if (
-      profile.topologyDohProvider === "google" ||
-      profile.topologyDohProvider === "cloudflare" ||
-      profile.topologyDohProvider === "quad9" ||
-      profile.topologyDohProvider === "custom"
-    ) {
-      setTopologyDohProvider(profile.topologyDohProvider);
-    }
-    if (typeof profile.topologyDohCustomUrl === "string") {
-      setTopologyDohCustomUrl(profile.topologyDohCustomUrl);
-    }
-    if (typeof profile.topologyExportConfirmPath === "boolean") {
-      setTopologyExportConfirmPath(profile.topologyExportConfirmPath);
-    }
-    if (typeof profile.topologyExportFolderPreset === "string") {
-      setTopologyExportFolderPreset(profile.topologyExportFolderPreset as ExportFolderPreset);
-    }
-    if (typeof profile.topologyExportCustomPath === "string") {
-      setTopologyExportCustomPath(profile.topologyExportCustomPath);
-    }
-    if (Array.isArray(profile.topologyCopyActions)) {
-      setTopologyCopyActions(
-        Array.from(
-          new Set(
-            profile.topologyCopyActions
-              .map((v) => String(v).trim())
-              .filter((v): v is TopologyCopyAction => v === "mermaid" || v === "svg" || v === "png"),
+  const applySessionSettingsProfile = useCallback(
+    (profile: SessionSettingsProfile) => {
+      if (
+        typeof profile.autoRefreshInterval === "number" ||
+        profile.autoRefreshInterval === null
+      ) {
+        setAutoRefreshInterval(profile.autoRefreshInterval ?? null);
+      }
+      if (typeof profile.defaultPerPage === "number") {
+        setGlobalPerPage(profile.defaultPerPage);
+      }
+      if (profile.zonePerPage && typeof profile.zonePerPage === "object") {
+        setZonePerPage(profile.zonePerPage);
+      }
+      if (typeof profile.showUnsupportedRecordTypes === "boolean") {
+        setShowUnsupportedRecordTypes(profile.showUnsupportedRecordTypes);
+      }
+      if (
+        profile.zoneShowUnsupportedRecordTypes &&
+        typeof profile.zoneShowUnsupportedRecordTypes === "object"
+      ) {
+        setZoneShowUnsupportedRecordTypes(
+          profile.zoneShowUnsupportedRecordTypes,
+        );
+      }
+      if (typeof profile.reopenLastTabs === "boolean") {
+        setReopenLastTabs(profile.reopenLastTabs);
+      }
+      if (
+        profile.reopenZoneTabs &&
+        typeof profile.reopenZoneTabs === "object"
+      ) {
+        setReopenZoneTabs(profile.reopenZoneTabs);
+      }
+      if (typeof profile.confirmLogout === "boolean") {
+        setConfirmLogout(profile.confirmLogout);
+      }
+      if (
+        typeof profile.idleLogoutMs === "number" ||
+        profile.idleLogoutMs === null
+      ) {
+        setIdleLogoutMs(profile.idleLogoutMs ?? null);
+      }
+      if (typeof profile.confirmWindowClose === "boolean") {
+        setConfirmWindowClose(profile.confirmWindowClose);
+      }
+      if (typeof profile.closeTabOnMiddleClick === "boolean") {
+        setCloseTabOnMiddleClick(profile.closeTabOnMiddleClick);
+      }
+      if (typeof profile.mcpServerEnabled === "boolean") {
+        setMcpServerEnabled(profile.mcpServerEnabled);
+      }
+      if (typeof profile.mcpServerHost === "string") {
+        setMcpServerHost(profile.mcpServerHost || "127.0.0.1");
+      }
+      if (typeof profile.mcpServerPort === "number") {
+        setMcpServerPort(
+          Math.max(1, Math.min(65535, Math.round(profile.mcpServerPort))),
+        );
+      }
+      if (Array.isArray(profile.mcpEnabledTools)) {
+        setMcpEnabledTools(
+          Array.from(
+            new Set(
+              profile.mcpEnabledTools
+                .map((v) => String(v).trim())
+                .filter(Boolean),
+            ),
           ),
-        ),
-      );
-    }
-    if (Array.isArray(profile.topologyExportActions)) {
-      setTopologyExportActions(
-        Array.from(
-          new Set(
-            profile.topologyExportActions
-              .map((v) => String(v).trim())
-              .filter((v): v is TopologyExportAction => v === "mermaid" || v === "svg" || v === "png" || v === "pdf"),
+        );
+      }
+      if (typeof profile.loadingOverlayTimeoutMs === "number") {
+        setLoadingOverlayTimeoutMs(
+          Math.max(1000, Math.min(60000, profile.loadingOverlayTimeoutMs)),
+        );
+      }
+      if (typeof profile.topologyResolutionMaxHops === "number") {
+        setTopologyResolutionMaxHops(
+          Math.max(
+            1,
+            Math.min(15, Math.round(profile.topologyResolutionMaxHops)),
           ),
-        ),
-      );
-    }
-    if (typeof profile.topologyDisableAnnotations === "boolean") {
-      setTopologyDisableAnnotations(profile.topologyDisableAnnotations);
-    }
-    if (typeof profile.topologyDisableFullWindow === "boolean") {
-      setTopologyDisableFullWindow(profile.topologyDisableFullWindow);
-    }
-    if (typeof profile.topologyLookupTimeoutMs === "number") {
-      setTopologyLookupTimeoutMs(Math.max(250, Math.min(10000, Math.round(profile.topologyLookupTimeoutMs))));
-    }
-    if (typeof profile.topologyDisablePtrLookups === "boolean") {
-      setTopologyDisablePtrLookups(profile.topologyDisablePtrLookups);
-    }
-    if (typeof profile.topologyDisableGeoLookups === "boolean") {
-      setTopologyDisableGeoLookups(profile.topologyDisableGeoLookups);
-    }
-    if (
-      profile.topologyGeoProvider === "auto" ||
-      profile.topologyGeoProvider === "ipwhois" ||
-      profile.topologyGeoProvider === "ipapi_co" ||
-      profile.topologyGeoProvider === "ip_api" ||
-      profile.topologyGeoProvider === "internal"
-    ) {
-      setTopologyGeoProvider(profile.topologyGeoProvider);
-    }
-    if (typeof profile.topologyScanResolutionChain === "boolean") {
-      setTopologyScanResolutionChain(profile.topologyScanResolutionChain);
-    }
-    if (typeof profile.topologyDisableServiceDiscovery === "boolean") {
-      setTopologyDisableServiceDiscovery(profile.topologyDisableServiceDiscovery);
-    }
-    if (Array.isArray(profile.topologyTcpServices)) {
-      setTopologyTcpServices(
-        Array.from(new Set(profile.topologyTcpServices.map((v) => String(v).trim()).filter(Boolean))),
-      );
-    }
-    if (typeof profile.auditExportDefaultDocuments === "boolean") {
-      setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
-    }
-    if (typeof profile.confirmClearAuditLogs === "boolean") {
-      setConfirmClearAuditLogs(profile.confirmClearAuditLogs);
-    }
-    if (typeof profile.auditExportFolderPreset === "string") {
-      setAuditExportFolderPreset(profile.auditExportFolderPreset as ExportFolderPreset);
-    }
-    if (typeof profile.auditExportCustomPath === "string") {
-      setAuditExportCustomPath(profile.auditExportCustomPath);
-    }
-    if (typeof profile.auditExportSkipDestinationConfirm === "boolean") {
-      setAuditExportSkipDestinationConfirm(profile.auditExportSkipDestinationConfirm);
-    }
-    if (profile.domainAuditCategories) {
-      setDomainAuditCategories(sanitizeDomainAuditCategories(profile.domainAuditCategories));
-    }
-  }, []);
+        );
+      }
+      if (
+        profile.topologyResolverMode === "dns" ||
+        profile.topologyResolverMode === "doh"
+      ) {
+        setTopologyResolverMode(profile.topologyResolverMode);
+      }
+      if (typeof profile.topologyDnsServer === "string") {
+        setTopologyDnsServer(profile.topologyDnsServer || "1.1.1.1");
+      }
+      if (typeof profile.topologyCustomDnsServer === "string") {
+        setTopologyCustomDnsServer(profile.topologyCustomDnsServer);
+      }
+      if (
+        profile.topologyDohProvider === "google" ||
+        profile.topologyDohProvider === "cloudflare" ||
+        profile.topologyDohProvider === "quad9" ||
+        profile.topologyDohProvider === "custom"
+      ) {
+        setTopologyDohProvider(profile.topologyDohProvider);
+      }
+      if (typeof profile.topologyDohCustomUrl === "string") {
+        setTopologyDohCustomUrl(profile.topologyDohCustomUrl);
+      }
+      if (typeof profile.topologyExportConfirmPath === "boolean") {
+        setTopologyExportConfirmPath(profile.topologyExportConfirmPath);
+      }
+      if (typeof profile.topologyExportFolderPreset === "string") {
+        setTopologyExportFolderPreset(
+          profile.topologyExportFolderPreset as ExportFolderPreset,
+        );
+      }
+      if (typeof profile.topologyExportCustomPath === "string") {
+        setTopologyExportCustomPath(profile.topologyExportCustomPath);
+      }
+      if (Array.isArray(profile.topologyCopyActions)) {
+        setTopologyCopyActions(
+          Array.from(
+            new Set(
+              profile.topologyCopyActions
+                .map((v) => String(v).trim())
+                .filter(
+                  (v): v is TopologyCopyAction =>
+                    v === "mermaid" || v === "svg" || v === "png",
+                ),
+            ),
+          ),
+        );
+      }
+      if (Array.isArray(profile.topologyExportActions)) {
+        setTopologyExportActions(
+          Array.from(
+            new Set(
+              profile.topologyExportActions
+                .map((v) => String(v).trim())
+                .filter(
+                  (v): v is TopologyExportAction =>
+                    v === "mermaid" ||
+                    v === "svg" ||
+                    v === "png" ||
+                    v === "pdf",
+                ),
+            ),
+          ),
+        );
+      }
+      if (typeof profile.topologyDisableAnnotations === "boolean") {
+        setTopologyDisableAnnotations(profile.topologyDisableAnnotations);
+      }
+      if (typeof profile.topologyDisableFullWindow === "boolean") {
+        setTopologyDisableFullWindow(profile.topologyDisableFullWindow);
+      }
+      if (typeof profile.topologyLookupTimeoutMs === "number") {
+        setTopologyLookupTimeoutMs(
+          Math.max(
+            250,
+            Math.min(10000, Math.round(profile.topologyLookupTimeoutMs)),
+          ),
+        );
+      }
+      if (typeof profile.topologyDisablePtrLookups === "boolean") {
+        setTopologyDisablePtrLookups(profile.topologyDisablePtrLookups);
+      }
+      if (typeof profile.topologyDisableGeoLookups === "boolean") {
+        setTopologyDisableGeoLookups(profile.topologyDisableGeoLookups);
+      }
+      if (
+        profile.topologyGeoProvider === "auto" ||
+        profile.topologyGeoProvider === "ipwhois" ||
+        profile.topologyGeoProvider === "ipapi_co" ||
+        profile.topologyGeoProvider === "ip_api" ||
+        profile.topologyGeoProvider === "internal"
+      ) {
+        setTopologyGeoProvider(profile.topologyGeoProvider);
+      }
+      if (typeof profile.topologyScanResolutionChain === "boolean") {
+        setTopologyScanResolutionChain(profile.topologyScanResolutionChain);
+      }
+      if (typeof profile.topologyDisableServiceDiscovery === "boolean") {
+        setTopologyDisableServiceDiscovery(
+          profile.topologyDisableServiceDiscovery,
+        );
+      }
+      if (Array.isArray(profile.topologyTcpServices)) {
+        setTopologyTcpServices(
+          Array.from(
+            new Set(
+              profile.topologyTcpServices
+                .map((v) => String(v).trim())
+                .filter(Boolean),
+            ),
+          ),
+        );
+      }
+      if (typeof profile.auditExportDefaultDocuments === "boolean") {
+        setAuditExportDefaultDocuments(profile.auditExportDefaultDocuments);
+      }
+      if (typeof profile.confirmClearAuditLogs === "boolean") {
+        setConfirmClearAuditLogs(profile.confirmClearAuditLogs);
+      }
+      if (typeof profile.auditExportFolderPreset === "string") {
+        setAuditExportFolderPreset(
+          profile.auditExportFolderPreset as ExportFolderPreset,
+        );
+      }
+      if (typeof profile.auditExportCustomPath === "string") {
+        setAuditExportCustomPath(profile.auditExportCustomPath);
+      }
+      if (typeof profile.auditExportSkipDestinationConfirm === "boolean") {
+        setAuditExportSkipDestinationConfirm(
+          profile.auditExportSkipDestinationConfirm,
+        );
+      }
+      if (profile.domainAuditCategories) {
+        setDomainAuditCategories(
+          sanitizeDomainAuditCategories(profile.domainAuditCategories),
+        );
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!prefsReady) return;
@@ -1159,17 +1303,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       applySessionSettingsProfile(profile);
     }
     sessionProfileHydratedRef.current = true;
-  }, [applySessionSettingsProfile, currentSessionId, prefsReady, sessionSettingsProfiles]);
+  }, [
+    applySessionSettingsProfile,
+    currentSessionId,
+    prefsReady,
+    sessionSettingsProfiles,
+  ]);
 
   const resolvedShowUnsupportedRecordTypes = useMemo(() => {
-    if (!activeTab || activeTab.kind !== "zone") return showUnsupportedRecordTypes;
+    if (!activeTab || activeTab.kind !== "zone")
+      return showUnsupportedRecordTypes;
     const zoneId = activeTab.zoneId;
-    if (Object.prototype.hasOwnProperty.call(zoneShowUnsupportedRecordTypes, zoneId))
+    if (
+      Object.prototype.hasOwnProperty.call(
+        zoneShowUnsupportedRecordTypes,
+        zoneId,
+      )
+    )
       return zoneShowUnsupportedRecordTypes[zoneId] === true;
     return showUnsupportedRecordTypes;
   }, [activeTab, showUnsupportedRecordTypes, zoneShowUnsupportedRecordTypes]);
 
-  const [domainAuditItems, setDomainAuditItems] = useState<DomainAuditItem[]>([]);
+  const [domainAuditItems, setDomainAuditItems] = useState<DomainAuditItem[]>(
+    [],
+  );
 
   useEffect(() => {
     if (!activeTab || activeTab.kind !== "zone") {
@@ -1182,8 +1339,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       registrarDomainResult.domain.trim().toLowerCase() === zone
         ? registrarDomainResult.expires_at
         : null;
-    const rdapEventsRaw = Array.isArray((rdapResult as Record<string, unknown> | null)?.events)
-      ? ((rdapResult as Record<string, unknown>).events as Array<Record<string, unknown>>)
+    const rdapEventsRaw = Array.isArray(
+      (rdapResult as Record<string, unknown> | null)?.events,
+    )
+      ? ((rdapResult as Record<string, unknown>).events as Array<
+          Record<string, unknown>
+        >)
       : [];
     const rdapExpiryEvent =
       rdapEventsRaw
@@ -1198,15 +1359,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       domainExpiresAt: registrarExpiry ?? rdapExpiryEvent,
     };
     if (isDesktop()) {
-      const records = activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
+      const records =
+        activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
       TauriClient.runDomainAudit(activeTab.zoneName, records, opts)
         .then(setDomainAuditItems)
         .catch(() => {
           // Fallback to frontend implementation on error
-          setDomainAuditItems(runDomainAudit(activeTab.zoneName, activeTab.records, opts));
+          setDomainAuditItems(
+            runDomainAudit(activeTab.zoneName, activeTab.records, opts),
+          );
         });
     } else {
-      setDomainAuditItems(runDomainAudit(activeTab.zoneName, activeTab.records, opts));
+      setDomainAuditItems(
+        runDomainAudit(activeTab.zoneName, activeTab.records, opts),
+      );
     }
   }, [activeTab, domainAuditCategories, rdapResult, registrarDomainResult]);
 
@@ -1231,39 +1397,42 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return domainAuditItemsWithOverrides.filter((i) => i.severity !== "pass");
   }, [domainAuditItemsWithOverrides, domainAuditShowPassed]);
 
-  const parseLastActiveTab = useCallback((value: string): { tabId: string; action?: ActionTab } | null => {
-    const raw = value.trim();
-    if (!raw) return null;
-    if (raw.startsWith("__")) return { tabId: raw };
-    if (
-      raw === "records" ||
-      raw === "import" ||
-      raw === "zone-settings" ||
-      raw === "cache" ||
-      raw === "ssl-tls" ||
-      raw === "domain-audit" ||
-      raw === "domain-registry" ||
-      raw === "topology"
-    ) {
-      // Legacy malformed value (action without zone id): ignore.
-      return null;
-    }
-    const [zoneId, actionRaw] = raw.split("|", 2);
-    if (!zoneId) return null;
-    if (
-      actionRaw === "records" ||
-      actionRaw === "import" ||
-      actionRaw === "zone-settings" ||
-      actionRaw === "cache" ||
-      actionRaw === "ssl-tls" ||
-      actionRaw === "domain-audit" ||
-      actionRaw === "domain-registry" ||
-      actionRaw === "topology"
-    ) {
-      return { tabId: zoneId, action: actionRaw };
-    }
-    return { tabId: zoneId };
-  }, [t]);
+  const parseLastActiveTab = useCallback(
+    (value: string): { tabId: string; action?: ActionTab } | null => {
+      const raw = value.trim();
+      if (!raw) return null;
+      if (raw.startsWith("__")) return { tabId: raw };
+      if (
+        raw === "records" ||
+        raw === "import" ||
+        raw === "zone-settings" ||
+        raw === "cache" ||
+        raw === "ssl-tls" ||
+        raw === "domain-audit" ||
+        raw === "domain-registry" ||
+        raw === "topology"
+      ) {
+        // Legacy malformed value (action without zone id): ignore.
+        return null;
+      }
+      const [zoneId, actionRaw] = raw.split("|", 2);
+      if (!zoneId) return null;
+      if (
+        actionRaw === "records" ||
+        actionRaw === "import" ||
+        actionRaw === "zone-settings" ||
+        actionRaw === "cache" ||
+        actionRaw === "ssl-tls" ||
+        actionRaw === "domain-audit" ||
+        actionRaw === "domain-registry" ||
+        actionRaw === "topology"
+      ) {
+        return { tabId: zoneId, action: actionRaw };
+      }
+      return { tabId: zoneId };
+    },
+    [t],
+  );
 
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
@@ -1321,18 +1490,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [activeTabId],
   );
-  const openActionTab = useCallback(
-    (kind: Exclude<TabKind, "zone">) => {
-      const id = `__${kind}`;
-      setTabs((prev) => {
-        if (prev.some((tab) => tab.id === id)) return prev;
-        return [...prev, createActionTab(kind)];
-      });
-      setActiveTabId(id);
-      setSelectedZoneId("");
-    },
-    [],
-  );
+  const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
+    const id = `__${kind}`;
+    setTabs((prev) => {
+      if (prev.some((tab) => tab.id === id)) return prev;
+      return [...prev, createActionTab(kind)];
+    });
+    setActiveTabId(id);
+    setSelectedZoneId("");
+  }, []);
   const loadZones = useCallback(
     async (signal?: AbortSignal) => {
       try {
@@ -1390,7 +1556,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setAuditError(null);
     try {
       const list = await TauriClient.getAuditEntries();
-      const items = Array.isArray(list) ? (list as Array<Record<string, unknown>>) : [];
+      const items = Array.isArray(list)
+        ? (list as Array<Record<string, unknown>>)
+        : [];
       setAuditEntries(items);
     } catch (err) {
       setAuditError((err as Error).message);
@@ -1477,7 +1645,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         let currentPage = 1;
         let combined: DNSRecord[] = [];
         while (true) {
-          const batch = await getDNSRecords(zoneId, currentPage, pageSize, signal);
+          const batch = await getDNSRecords(
+            zoneId,
+            currentPage,
+            pageSize,
+            signal,
+          );
           combined = combined.concat(batch);
           if (batch.length < pageSize) break;
           currentPage += 1;
@@ -1518,12 +1691,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       expandTimerId = 0;
     };
     const canToggle = () => {
-      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
       return now - lastToggleAt >= SWITCH_COOLDOWN_MS;
     };
     const applyCompactState = (next: boolean) => {
       if (compactTopBarRef.current === next) return;
-      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
       lastToggleAt = now;
       compactTopBarRef.current = next;
       setCompactTopBar(next);
@@ -1594,17 +1769,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   }, [t, toast]);
 
-  const applyMcpEnabledTools = useCallback(
-    async (tools: string[]) => {
-      if (!isDesktop()) return;
-      const normalized = Array.from(new Set(tools.map((v) => String(v).trim()).filter(Boolean)));
-      const status = await TauriClient.setMcpEnabledTools(normalized);
-      setMcpStatus(status);
-      const fromStatus = extractMcpEnabledTools(status);
-      setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
-    },
-    [],
-  );
+  const applyMcpEnabledTools = useCallback(async (tools: string[]) => {
+    if (!isDesktop()) return;
+    const normalized = Array.from(
+      new Set(tools.map((v) => String(v).trim()).filter(Boolean)),
+    );
+    const status = await TauriClient.setMcpEnabledTools(normalized);
+    setMcpStatus(status);
+    const fromStatus = extractMcpEnabledTools(status);
+    setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
+  }, []);
 
   const setMcpServerRunning = useCallback(
     async (enabled: boolean, host?: string, port?: number) => {
@@ -1612,9 +1786,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setMcpBusy(true);
       try {
         const nextHost = (host ?? mcpServerHost).trim() || "127.0.0.1";
-        const nextPort = Math.max(1, Math.min(65535, Math.round(port ?? mcpServerPort)));
+        const nextPort = Math.max(
+          1,
+          Math.min(65535, Math.round(port ?? mcpServerPort)),
+        );
         const status = enabled
-          ? await TauriClient.startMcpServer(nextHost, nextPort, mcpEnabledTools)
+          ? await TauriClient.startMcpServer(
+              nextHost,
+              nextPort,
+              mcpEnabledTools,
+            )
           : await TauriClient.stopMcpServer();
         setMcpStatus(status);
         const tools = extractMcpEnabledTools(status);
@@ -1645,7 +1826,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       loadRecords(activeTab, controller.signal);
       return () => controller.abort();
     }
-  }, [activeTab?.zoneId, activeTab?.page, activeTab?.perPage, activeTab?.kind, loadRecords]);
+  }, [
+    activeTab?.zoneId,
+    activeTab?.page,
+    activeTab?.perPage,
+    activeTab?.kind,
+    loadRecords,
+  ]);
 
   useEffect(() => {
     if (activeTab?.kind === "audit") {
@@ -1705,9 +1892,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         if (ssl.status === "fulfilled") setZoneSslMode(ssl.value);
         if (minTls.status === "fulfilled") setZoneMinTlsVersion(minTls.value);
         if (tls13.status === "fulfilled") setZoneTls13(tls13.value);
-        if (alwaysHttps.status === "fulfilled") setZoneAlwaysUseHttps(alwaysHttps.value);
-        if (rewrites.status === "fulfilled") setZoneAutoHttpsRewrites(rewrites.value);
-        if (oppEnc.status === "fulfilled") setZoneOpportunisticEncryption(oppEnc.value);
+        if (alwaysHttps.status === "fulfilled")
+          setZoneAlwaysUseHttps(alwaysHttps.value);
+        if (rewrites.status === "fulfilled")
+          setZoneAutoHttpsRewrites(rewrites.value);
+        if (oppEnc.status === "fulfilled")
+          setZoneOpportunisticEncryption(oppEnc.value);
         const errors = results
           .filter((r) => r.status === "rejected")
           .map((r) => (r as PromiseRejectedResult).reason)
@@ -1803,22 +1993,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (typeof prefObj.default_per_page === "number") {
             setGlobalPerPage(prefObj.default_per_page);
           }
-          if (prefObj.zone_per_page && typeof prefObj.zone_per_page === "object") {
+          if (
+            prefObj.zone_per_page &&
+            typeof prefObj.zone_per_page === "object"
+          ) {
             setZonePerPage(prefObj.zone_per_page);
           }
           if (typeof prefObj.show_unsupported_record_types === "boolean") {
-            setShowUnsupportedRecordTypes(prefObj.show_unsupported_record_types);
+            setShowUnsupportedRecordTypes(
+              prefObj.show_unsupported_record_types,
+            );
           }
           if (
             prefObj.zone_show_unsupported_record_types &&
             typeof prefObj.zone_show_unsupported_record_types === "object"
           ) {
-            setZoneShowUnsupportedRecordTypes(prefObj.zone_show_unsupported_record_types);
+            setZoneShowUnsupportedRecordTypes(
+              prefObj.zone_show_unsupported_record_types,
+            );
           }
           if (typeof prefObj.reopen_last_tabs === "boolean") {
             setReopenLastTabs(prefObj.reopen_last_tabs);
           }
-          if (prefObj.reopen_zone_tabs && typeof prefObj.reopen_zone_tabs === "object") {
+          if (
+            prefObj.reopen_zone_tabs &&
+            typeof prefObj.reopen_zone_tabs === "object"
+          ) {
             setReopenZoneTabs(prefObj.reopen_zone_tabs);
           }
           if (Array.isArray(prefObj.last_open_tabs)) {
@@ -1846,26 +2046,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setMcpServerHost(prefObj.mcp_server_host || "127.0.0.1");
           }
           if (typeof prefObj.mcp_server_port === "number") {
-            setMcpServerPort(Math.max(1, Math.min(65535, Math.round(prefObj.mcp_server_port))));
+            setMcpServerPort(
+              Math.max(1, Math.min(65535, Math.round(prefObj.mcp_server_port))),
+            );
           }
           if (Array.isArray(prefObj.mcp_enabled_tools)) {
             setMcpEnabledTools(
               Array.from(
-                new Set(prefObj.mcp_enabled_tools.map((v) => String(v).trim()).filter(Boolean)),
+                new Set(
+                  prefObj.mcp_enabled_tools
+                    .map((v) => String(v).trim())
+                    .filter(Boolean),
+                ),
               ),
             );
           }
           if (typeof prefObj.loading_overlay_timeout_ms === "number") {
             setLoadingOverlayTimeoutMs(
-              Math.max(1000, Math.min(60000, prefObj.loading_overlay_timeout_ms)),
+              Math.max(
+                1000,
+                Math.min(60000, prefObj.loading_overlay_timeout_ms),
+              ),
             );
           }
           if (typeof prefObj.topology_resolution_max_hops === "number") {
             setTopologyResolutionMaxHops(
-              Math.max(1, Math.min(15, Math.round(prefObj.topology_resolution_max_hops))),
+              Math.max(
+                1,
+                Math.min(15, Math.round(prefObj.topology_resolution_max_hops)),
+              ),
             );
           }
-          if (prefObj.topology_resolver_mode === "dns" || prefObj.topology_resolver_mode === "doh") {
+          if (
+            prefObj.topology_resolver_mode === "dns" ||
+            prefObj.topology_resolver_mode === "doh"
+          ) {
             setTopologyResolverMode(prefObj.topology_resolver_mode);
           }
           if (typeof prefObj.topology_dns_server === "string") {
@@ -1889,7 +2104,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setTopologyExportConfirmPath(prefObj.topology_export_confirm_path);
           }
           if (typeof prefObj.topology_export_folder_preset === "string") {
-            setTopologyExportFolderPreset(prefObj.topology_export_folder_preset as ExportFolderPreset);
+            setTopologyExportFolderPreset(
+              prefObj.topology_export_folder_preset as ExportFolderPreset,
+            );
           }
           if (typeof prefObj.topology_export_custom_path === "string") {
             setTopologyExportCustomPath(prefObj.topology_export_custom_path);
@@ -1900,7 +2117,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 new Set(
                   prefObj.topology_copy_actions
                     .map((v) => String(v).trim())
-                    .filter((v): v is TopologyCopyAction => v === "mermaid" || v === "svg" || v === "png"),
+                    .filter(
+                      (v): v is TopologyCopyAction =>
+                        v === "mermaid" || v === "svg" || v === "png",
+                    ),
                 ),
               ),
             );
@@ -1911,7 +2131,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 new Set(
                   prefObj.topology_export_actions
                     .map((v) => String(v).trim())
-                    .filter((v): v is TopologyExportAction => v === "mermaid" || v === "svg" || v === "png" || v === "pdf"),
+                    .filter(
+                      (v): v is TopologyExportAction =>
+                        v === "mermaid" ||
+                        v === "svg" ||
+                        v === "png" ||
+                        v === "pdf",
+                    ),
                 ),
               ),
             );
@@ -1923,7 +2149,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setTopologyDisableFullWindow(prefObj.topology_disable_full_window);
           }
           if (typeof prefObj.topology_lookup_timeout_ms === "number") {
-            setTopologyLookupTimeoutMs(Math.max(250, Math.min(10000, Math.round(prefObj.topology_lookup_timeout_ms))));
+            setTopologyLookupTimeoutMs(
+              Math.max(
+                250,
+                Math.min(10000, Math.round(prefObj.topology_lookup_timeout_ms)),
+              ),
+            );
           }
           if (typeof prefObj.topology_disable_ptr_lookups === "boolean") {
             setTopologyDisablePtrLookups(prefObj.topology_disable_ptr_lookups);
@@ -1941,33 +2172,56 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setTopologyGeoProvider(prefObj.topology_geo_provider);
           }
           if (typeof prefObj.topology_scan_resolution_chain === "boolean") {
-            setTopologyScanResolutionChain(prefObj.topology_scan_resolution_chain);
+            setTopologyScanResolutionChain(
+              prefObj.topology_scan_resolution_chain,
+            );
           }
           if (typeof prefObj.topology_disable_service_discovery === "boolean") {
-            setTopologyDisableServiceDiscovery(prefObj.topology_disable_service_discovery);
+            setTopologyDisableServiceDiscovery(
+              prefObj.topology_disable_service_discovery,
+            );
           }
           if (Array.isArray(prefObj.topology_tcp_services)) {
             setTopologyTcpServices(
-              Array.from(new Set(prefObj.topology_tcp_services.map((v) => String(v).trim()).filter(Boolean))),
+              Array.from(
+                new Set(
+                  prefObj.topology_tcp_services
+                    .map((v) => String(v).trim())
+                    .filter(Boolean),
+                ),
+              ),
             );
           }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
-            setAuditExportDefaultDocuments(prefObj.audit_export_default_documents);
+            setAuditExportDefaultDocuments(
+              prefObj.audit_export_default_documents,
+            );
           }
           if (typeof prefObj.confirm_clear_audit_logs === "boolean") {
             setConfirmClearAuditLogs(prefObj.confirm_clear_audit_logs);
           }
           if (typeof prefObj.audit_export_folder_preset === "string") {
-            setAuditExportFolderPreset(prefObj.audit_export_folder_preset as ExportFolderPreset);
+            setAuditExportFolderPreset(
+              prefObj.audit_export_folder_preset as ExportFolderPreset,
+            );
           }
           if (typeof prefObj.audit_export_custom_path === "string") {
             setAuditExportCustomPath(prefObj.audit_export_custom_path);
           }
-          if (typeof prefObj.audit_export_skip_destination_confirm === "boolean") {
-            setAuditExportSkipDestinationConfirm(prefObj.audit_export_skip_destination_confirm);
+          if (
+            typeof prefObj.audit_export_skip_destination_confirm === "boolean"
+          ) {
+            setAuditExportSkipDestinationConfirm(
+              prefObj.audit_export_skip_destination_confirm,
+            );
           }
-          if (prefObj.domain_audit_categories && typeof prefObj.domain_audit_categories === "object") {
-            setDomainAuditCategories(sanitizeDomainAuditCategories(prefObj.domain_audit_categories));
+          if (
+            prefObj.domain_audit_categories &&
+            typeof prefObj.domain_audit_categories === "object"
+          ) {
+            setDomainAuditCategories(
+              sanitizeDomainAuditCategories(prefObj.domain_audit_categories),
+            );
           }
           if (
             prefObj.session_settings_profiles &&
@@ -1984,7 +2238,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (last) setSelectedZoneId(last);
     setGlobalPerPage(storageManager.getDefaultPerPage());
     setZonePerPage(storageManager.getZonePerPageMap());
-    setShowUnsupportedRecordTypes(storageManager.getShowUnsupportedRecordTypes());
+    setShowUnsupportedRecordTypes(
+      storageManager.getShowUnsupportedRecordTypes(),
+    );
     setZoneShowUnsupportedRecordTypes(
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
@@ -2008,27 +2264,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setTopologyDohProvider(storageManager.getTopologyDohProvider());
     setTopologyDohCustomUrl(storageManager.getTopologyDohCustomUrl());
     setTopologyExportConfirmPath(storageManager.getTopologyExportConfirmPath());
-    setTopologyExportFolderPreset(storageManager.getTopologyExportFolderPreset() as ExportFolderPreset);
+    setTopologyExportFolderPreset(
+      storageManager.getTopologyExportFolderPreset() as ExportFolderPreset,
+    );
     setTopologyExportCustomPath(storageManager.getTopologyExportCustomPath());
-    setTopologyCopyActions(storageManager.getTopologyCopyActions() as TopologyCopyAction[]);
-    setTopologyExportActions(storageManager.getTopologyExportActions() as TopologyExportAction[]);
-    setTopologyDisableAnnotations(storageManager.getTopologyDisableAnnotations());
+    setTopologyCopyActions(
+      storageManager.getTopologyCopyActions() as TopologyCopyAction[],
+    );
+    setTopologyExportActions(
+      storageManager.getTopologyExportActions() as TopologyExportAction[],
+    );
+    setTopologyDisableAnnotations(
+      storageManager.getTopologyDisableAnnotations(),
+    );
     setTopologyDisableFullWindow(storageManager.getTopologyDisableFullWindow());
     setTopologyLookupTimeoutMs(storageManager.getTopologyLookupTimeoutMs());
     setTopologyDisablePtrLookups(storageManager.getTopologyDisablePtrLookups());
     setTopologyDisableGeoLookups(storageManager.getTopologyDisableGeoLookups());
     setTopologyGeoProvider(storageManager.getTopologyGeoProvider());
-    setTopologyScanResolutionChain(storageManager.getTopologyScanResolutionChain());
-    setTopologyDisableServiceDiscovery(storageManager.getTopologyDisableServiceDiscovery());
+    setTopologyScanResolutionChain(
+      storageManager.getTopologyScanResolutionChain(),
+    );
+    setTopologyDisableServiceDiscovery(
+      storageManager.getTopologyDisableServiceDiscovery(),
+    );
     setTopologyTcpServices(storageManager.getTopologyTcpServices());
-    setAuditExportDefaultDocuments(storageManager.getAuditExportDefaultDocuments());
+    setAuditExportDefaultDocuments(
+      storageManager.getAuditExportDefaultDocuments(),
+    );
     setConfirmClearAuditLogs(storageManager.getConfirmClearAuditLogs());
-    setAuditExportFolderPreset(storageManager.getAuditExportFolderPreset() as ExportFolderPreset);
+    setAuditExportFolderPreset(
+      storageManager.getAuditExportFolderPreset() as ExportFolderPreset,
+    );
     setAuditExportCustomPath(storageManager.getAuditExportCustomPath());
     setAuditExportSkipDestinationConfirm(
       storageManager.getAuditExportSkipDestinationConfirm(),
     );
-    setDomainAuditCategories(sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()));
+    setDomainAuditCategories(
+      sanitizeDomainAuditCategories(storageManager.getDomainAuditCategories()),
+    );
     setSessionSettingsProfiles(storageManager.getSessionSettingsProfiles());
     setPrefsReady(true);
   }, []);
@@ -2041,7 +2315,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       try {
         await TauriClient.setMcpEnabledTools(mcpEnabledTools);
         if (mcpServerEnabled) {
-          await TauriClient.startMcpServer(mcpServerHost, mcpServerPort, mcpEnabledTools);
+          await TauriClient.startMcpServer(
+            mcpServerHost,
+            mcpServerPort,
+            mcpEnabledTools,
+          );
         } else {
           await TauriClient.stopMcpServer();
         }
@@ -2066,7 +2344,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const encoded =
       activeTab && activeTab.kind === "zone"
         ? `${activeTab.zoneId}|${actionTab}`
-        : activeTab?.id ?? "";
+        : (activeTab?.id ?? "");
 
     storageManager.setLastOpenTabs(openTabIds);
     storageManager.setLastActiveTabId(encoded || null);
@@ -2162,7 +2440,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setDefaultPerPage(globalPerPage);
     storageManager.setZonePerPageMap(zonePerPage);
     storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
-    storageManager.setZoneShowUnsupportedRecordTypesMap(zoneShowUnsupportedRecordTypes);
+    storageManager.setZoneShowUnsupportedRecordTypesMap(
+      zoneShowUnsupportedRecordTypes,
+    );
     storageManager.setReopenLastTabs(reopenLastTabs);
     storageManager.setReopenZoneTabs(reopenZoneTabs);
     storageManager.setLastOpenTabs(lastOpenTabs);
@@ -2193,7 +2473,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setTopologyDisableGeoLookups(topologyDisableGeoLookups);
     storageManager.setTopologyGeoProvider(topologyGeoProvider);
     storageManager.setTopologyScanResolutionChain(topologyScanResolutionChain);
-    storageManager.setTopologyDisableServiceDiscovery(topologyDisableServiceDiscovery);
+    storageManager.setTopologyDisableServiceDiscovery(
+      topologyDisableServiceDiscovery,
+    );
     storageManager.setTopologyTcpServices(topologyTcpServices);
     storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
     storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
@@ -2203,7 +2485,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       auditExportSkipDestinationConfirm,
     );
     storageManager.setDomainAuditCategories(domainAuditCategories);
-    storageManager.setSessionSettingsProfile(currentSessionId, buildSessionSettingsProfile());
+    storageManager.setSessionSettingsProfile(
+      currentSessionId,
+      buildSessionSettingsProfile(),
+    );
 
     if (isDesktop()) {
       TauriClient.getPreferences()
@@ -2250,7 +2535,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             confirm_clear_audit_logs: confirmClearAuditLogs,
             audit_export_folder_preset: auditExportFolderPreset,
             audit_export_custom_path: auditExportCustomPath,
-            audit_export_skip_destination_confirm: auditExportSkipDestinationConfirm,
+            audit_export_skip_destination_confirm:
+              auditExportSkipDestinationConfirm,
             domain_audit_categories: domainAuditCategories,
             session_settings_profiles: {
               ...sessionSettingsProfiles,
@@ -2444,7 +2730,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       "wheel",
     ];
 
-    for (const ev of events) window.addEventListener(ev, reset, { passive: true });
+    for (const ev of events)
+      window.addEventListener(ev, reset, { passive: true });
     reset();
     return () => {
       if (timeout) window.clearTimeout(timeout);
@@ -2552,13 +2839,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setRegistryChecksError(null);
 
     const [rdap, domains, health] = await Promise.allSettled([
-      fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`)
-        .then(async (res) => {
+      fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`).then(
+        async (res) => {
           if (!res.ok) {
             throw new Error(`RDAP lookup failed (${res.status})`);
           }
           return (await res.json()) as Record<string, unknown>;
-        }),
+        },
+      ),
       registrarListAllDomains(),
       registrarHealthCheckAll(),
     ]);
@@ -2568,11 +2856,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setRdapResult(rdap.value);
     } else {
       setRdapResult(null);
-      errors.push(rdap.reason instanceof Error ? rdap.reason.message : String(rdap.reason));
+      errors.push(
+        rdap.reason instanceof Error
+          ? rdap.reason.message
+          : String(rdap.reason),
+      );
     }
 
     if (domains.status === "fulfilled") {
-      const list = (Array.isArray(domains.value) ? domains.value : []) as DomainInfo[];
+      const list = (
+        Array.isArray(domains.value) ? domains.value : []
+      ) as DomainInfo[];
       const match =
         list.find((d) => d.domain.toLowerCase() === domain) ??
         list.find((d) => d.domain.toLowerCase().endsWith(`.${domain}`)) ??
@@ -2581,33 +2875,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     } else {
       setRegistrarDomainResult(null);
       errors.push(
-        domains.reason instanceof Error ? domains.reason.message : String(domains.reason),
+        domains.reason instanceof Error
+          ? domains.reason.message
+          : String(domains.reason),
       );
     }
 
     if (health.status === "fulfilled") {
-      const checks = (Array.isArray(health.value) ? health.value : []) as DomainHealthCheck[];
-      const match = checks.find((h) => h.domain.toLowerCase() === domain) ?? null;
+      const checks = (
+        Array.isArray(health.value) ? health.value : []
+      ) as DomainHealthCheck[];
+      const match =
+        checks.find((h) => h.domain.toLowerCase() === domain) ?? null;
       setRegistrarHealthResult(match);
     } else {
       setRegistrarHealthResult(null);
-      errors.push(health.reason instanceof Error ? health.reason.message : String(health.reason));
+      errors.push(
+        health.reason instanceof Error
+          ? health.reason.message
+          : String(health.reason),
+      );
     }
 
     setRegistryChecksError(errors.length ? errors.join(" | ") : null);
     setRegistryChecksLoading(false);
   }, [registrarHealthCheckAll, registrarListAllDomains, registryLookupDomain]);
 
-
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
     const query = activeTab.searchTerm.trim().toLowerCase();
     const base = activeTab.records.filter((record: DNSRecord) => {
-      if (activeTab.typeFilter && record.type !== activeTab.typeFilter) return false;
+      if (activeTab.typeFilter && record.type !== activeTab.typeFilter)
+        return false;
       if (!query) return true;
       const matchesRecord = filterRecords([record], query).length > 0;
       if (matchesRecord) return true;
-      const recordTags = storageManager.getRecordTags(activeTab.zoneId, record.id);
+      const recordTags = storageManager.getRecordTags(
+        activeTab.zoneId,
+        record.id,
+      );
       return recordTags.some((tag) => tag.toLowerCase().includes(query));
     });
 
@@ -2634,7 +2940,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         case "ttl":
           return dir * (getTtl(a) - getTtl(b));
         case "proxied":
-          return dir * (Number(Boolean(a.proxied)) - Number(Boolean(b.proxied)));
+          return (
+            dir * (Number(Boolean(a.proxied)) - Number(Boolean(b.proxied)))
+          );
         default:
           return 0;
       }
@@ -2644,7 +2952,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [activeTab, tagsVersion]);
 
   const shouldShowRecordsTable =
-    activeTab?.kind === "zone" && actionTab === "records" && !activeTab.isLoading && filteredRecords.length > 0;
+    activeTab?.kind === "zone" &&
+    actionTab === "records" &&
+    !activeTab.isLoading &&
+    filteredRecords.length > 0;
 
   useEffect(() => {
     if (!shouldShowRecordsTable) {
@@ -2675,7 +2986,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       const fadeWindowPx = Math.max(72, Math.min(220, rect.height * 0.2));
       const nextFade = Math.max(0, Math.min(1, hiddenBottomPx / fadeWindowPx));
-      setRecordsBottomFade((prev) => (Math.abs(prev - nextFade) < 0.015 ? prev : nextFade));
+      setRecordsBottomFade((prev) =>
+        Math.abs(prev - nextFade) < 0.015 ? prev : nextFade,
+      );
     };
 
     const onScroll = () => {
@@ -2813,10 +3126,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
         if (rule.operator === "equals" && haystack !== needle) return false;
         if (rule.operator === "not_equals" && haystack === needle) return false;
-        if (rule.operator === "contains" && !haystack.includes(needle)) return false;
-        if (rule.operator === "not_contains" && haystack.includes(needle)) return false;
-        if (rule.operator === "starts_with" && !haystack.startsWith(needle)) return false;
-        if (rule.operator === "ends_with" && !haystack.endsWith(needle)) return false;
+        if (rule.operator === "contains" && !haystack.includes(needle))
+          return false;
+        if (rule.operator === "not_contains" && haystack.includes(needle))
+          return false;
+        if (rule.operator === "starts_with" && !haystack.startsWith(needle))
+          return false;
+        if (rule.operator === "ends_with" && !haystack.endsWith(needle))
+          return false;
         if (rule.operator === "matches") {
           try {
             const re = new RegExp(rule.value, "i");
@@ -2859,11 +3176,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     };
     entries.sort((a, b) => {
       if (auditSort.field === "operation") {
-        const cmp = String(a.operation ?? "").localeCompare(String(b.operation ?? ""));
+        const cmp = String(a.operation ?? "").localeCompare(
+          String(b.operation ?? ""),
+        );
         return auditSort.dir === "asc" ? cmp : -cmp;
       }
       if (auditSort.field === "resource") {
-        const cmp = String(a.resource ?? "").localeCompare(String(b.resource ?? ""));
+        const cmp = String(a.resource ?? "").localeCompare(
+          String(b.resource ?? ""),
+        );
         return auditSort.dir === "asc" ? cmp : -cmp;
       }
       const aTime = parseTime(a.timestamp);
@@ -2943,7 +3264,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       startOfToday.setHours(0, 0, 0, 0);
       const presetRules: AuditFilterRule[] =
         preset === "errors"
-          ? [createAuditFilterRule("details", "contains", "\"success\":false")]
+          ? [createAuditFilterRule("details", "contains", '"success":false')]
           : preset === "auth"
             ? [createAuditFilterRule("operation", "contains", "auth:")]
             : preset === "dns"
@@ -2951,7 +3272,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               : preset === "api_keys"
                 ? [createAuditFilterRule("operation", "contains", "api_key:")]
                 : preset === "zone_settings"
-                  ? [createAuditFilterRule("operation", "contains", "zone_setting")]
+                  ? [
+                      createAuditFilterRule(
+                        "operation",
+                        "contains",
+                        "zone_setting",
+                      ),
+                    ]
                   : preset === "cache"
                     ? [createAuditFilterRule("operation", "contains", "cache")]
                     : preset === "last24h"
@@ -2967,13 +3294,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             createAuditFilterRule(
                               "timestamp",
                               "gte",
-                              new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(),
+                              new Date(
+                                now - 7 * 24 * 60 * 60 * 1000,
+                              ).toISOString(),
                             ),
                           ]
-                        : [createAuditFilterRule("timestamp", "gte", startOfToday.toISOString())];
+                        : [
+                            createAuditFilterRule(
+                              "timestamp",
+                              "gte",
+                              startOfToday.toISOString(),
+                            ),
+                          ];
 
       setAuditFilters((prev) => {
-        const existing = new Set(prev.map((r) => `${r.field}|${r.operator}|${r.value}`));
+        const existing = new Set(
+          prev.map((r) => `${r.field}|${r.operator}|${r.value}`),
+        );
         const additions = presetRules.filter(
           (r) => !existing.has(`${r.field}|${r.operator}|${r.value}`),
         );
@@ -2983,14 +3320,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [createAuditFilterRule],
   );
 
-  const toggleAuditSort = useCallback((field: "timestamp" | "operation" | "resource") => {
-    setAuditSort((prev) => {
-      if (prev.field !== field) {
-        return { field, dir: field === "timestamp" ? "desc" : "asc" };
-      }
-      return { field, dir: prev.dir === "asc" ? "desc" : "asc" };
-    });
-  }, []);
+  const toggleAuditSort = useCallback(
+    (field: "timestamp" | "operation" | "resource") => {
+      setAuditSort((prev) => {
+        if (prev.field !== field) {
+          return { field, dir: field === "timestamp" ? "desc" : "asc" };
+        }
+        return { field, dir: prev.dir === "asc" ? "desc" : "asc" };
+      });
+    },
+    [],
+  );
 
   const exportSessionSettings = useCallback(() => {
     const payload = {
@@ -3010,7 +3350,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     URL.revokeObjectURL(url);
     toast({
       title: t("Exported", "Exported"),
-      description: t("Session settings exported.", "Session settings exported."),
+      description: t(
+        "Session settings exported.",
+        "Session settings exported.",
+      ),
     });
   }, [buildSessionSettingsProfile, currentSessionId, toast]);
 
@@ -3046,7 +3389,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }
         toast({
           title: t("Imported", "Imported"),
-          description: t("Session settings imported.", "Session settings imported."),
+          description: t(
+            "Session settings imported.",
+            "Session settings imported.",
+          ),
         });
       } catch (error) {
         toast({
@@ -3107,7 +3453,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }),
       });
     },
-    [applySessionSettingsProfile, currentSessionId, sessionSettingsProfiles, toast],
+    [
+      applySessionSettingsProfile,
+      currentSessionId,
+      sessionSettingsProfiles,
+      toast,
+    ],
   );
   const handleAddRecord = async () => {
     if (!activeTab) return;
@@ -3115,7 +3466,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (!draft.type || !draft.name || !draft.content) {
       toast({
         title: t("Error", "Error"),
-        description: t("Please fill in all required fields", "Please fill in all required fields"),
+        description: t(
+          "Please fill in all required fields",
+          "Please fill in all required fields",
+        ),
         variant: "destructive",
       });
       return;
@@ -3131,12 +3485,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }));
       pushUndo({
         description: `Create ${createdRecord.type} ${createdRecord.name}`,
-        forward: { kind: "create", zoneId: activeTab.zoneId, record: createdRecord },
-        reverse: { kind: "delete", zoneId: activeTab.zoneId, recordId: createdRecord.id, record: createdRecord },
+        forward: {
+          kind: "create",
+          zoneId: activeTab.zoneId,
+          record: createdRecord,
+        },
+        reverse: {
+          kind: "delete",
+          zoneId: activeTab.zoneId,
+          recordId: createdRecord.id,
+          record: createdRecord,
+        },
       });
       toast({
         title: t("Success", "Success"),
-        description: t("DNS record created successfully", "DNS record created successfully"),
+        description: t(
+          "DNS record created successfully",
+          "DNS record created successfully",
+        ),
       });
     } catch (error) {
       toast({
@@ -3161,7 +3527,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       );
       const nextRecordId = updatedRecord.id || record.id;
       if (nextRecordId !== record.id) {
-        storageManager.moveRecordTags(activeTab.zoneId, record.id, nextRecordId);
+        storageManager.moveRecordTags(
+          activeTab.zoneId,
+          record.id,
+          nextRecordId,
+        );
       }
       updateTab(activeTab.id, (prev) => ({
         ...prev,
@@ -3169,20 +3539,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           r.id === record.id ? { ...updatedRecord, id: nextRecordId } : r,
         ),
         selectedIds: Array.from(
-          new Set(prev.selectedIds.map((id) => (id === record.id ? nextRecordId : id))),
+          new Set(
+            prev.selectedIds.map((id) =>
+              id === record.id ? nextRecordId : id,
+            ),
+          ),
         ),
         editingRecord: null,
       }));
       if (oldRecord) {
         pushUndo({
           description: `Update ${record.type} ${record.name}`,
-          forward: { kind: "update", zoneId: activeTab.zoneId, record: { ...updatedRecord, id: nextRecordId } },
-          reverse: { kind: "update", zoneId: activeTab.zoneId, record: oldRecord },
+          forward: {
+            kind: "update",
+            zoneId: activeTab.zoneId,
+            record: { ...updatedRecord, id: nextRecordId },
+          },
+          reverse: {
+            kind: "update",
+            zoneId: activeTab.zoneId,
+            record: oldRecord,
+          },
         });
       }
       toast({
         title: t("Success", "Success"),
-        description: t("DNS record updated successfully", "DNS record updated successfully"),
+        description: t(
+          "DNS record updated successfully",
+          "DNS record updated successfully",
+        ),
       });
     } catch (error) {
       toast({
@@ -3199,17 +3584,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
     if (!activeTab) return;
     try {
-      const updatedRecord = await updateDNSRecord(
-        activeTab.zoneId,
-        record.id,
-        {
-          ...record,
-          proxied,
-        },
-      );
+      const updatedRecord = await updateDNSRecord(activeTab.zoneId, record.id, {
+        ...record,
+        proxied,
+      });
       const nextRecordId = updatedRecord.id || record.id;
       if (nextRecordId !== record.id) {
-        storageManager.moveRecordTags(activeTab.zoneId, record.id, nextRecordId);
+        storageManager.moveRecordTags(
+          activeTab.zoneId,
+          record.id,
+          nextRecordId,
+        );
       }
       updateTab(activeTab.id, (prev) => ({
         ...prev,
@@ -3217,7 +3602,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           r.id === record.id ? { ...updatedRecord, id: nextRecordId } : r,
         ),
         selectedIds: Array.from(
-          new Set(prev.selectedIds.map((id) => (id === record.id ? nextRecordId : id))),
+          new Set(
+            prev.selectedIds.map((id) =>
+              id === record.id ? nextRecordId : id,
+            ),
+          ),
         ),
       }));
     } catch (error) {
@@ -3246,13 +3635,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (deletedRecord) {
         pushUndo({
           description: `Delete ${deletedRecord.type} ${deletedRecord.name}`,
-          forward: { kind: "delete", zoneId: activeTab.zoneId, recordId, record: deletedRecord },
-          reverse: { kind: "create", zoneId: activeTab.zoneId, record: deletedRecord },
+          forward: {
+            kind: "delete",
+            zoneId: activeTab.zoneId,
+            recordId,
+            record: deletedRecord,
+          },
+          reverse: {
+            kind: "create",
+            zoneId: activeTab.zoneId,
+            record: deletedRecord,
+          },
         });
       }
       toast({
         title: t("Success", "Success"),
-        description: t("DNS record deleted successfully", "DNS record deleted successfully"),
+        description: t(
+          "DNS record deleted successfully",
+          "DNS record deleted successfully",
+        ),
       });
     } catch (error) {
       toast({
@@ -3273,7 +3674,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     let mimeType = "";
 
     if (isDesktop()) {
-      const records = activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
+      const records =
+        activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
       try {
         switch (format) {
           case "json":
@@ -3388,12 +3790,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           case "csv":
             items = isDesktop()
-              ? (await TauriClient.parseCsvRecords(tab.importData)) as Partial<DNSRecord>[]
+              ? ((await TauriClient.parseCsvRecords(
+                  tab.importData,
+                )) as Partial<DNSRecord>[])
               : parseCSVRecords(tab.importData);
             break;
           case "bind":
             items = isDesktop()
-              ? (await TauriClient.parseBindZone(tab.importData)) as Partial<DNSRecord>[]
+              ? ((await TauriClient.parseBindZone(
+                  tab.importData,
+                )) as Partial<DNSRecord>[])
               : parseBINDZone(tab.importData);
             break;
         }
@@ -3497,10 +3903,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         toast({
           title: t("Error", "Error"),
           description: skipped
-            ? t("No new records imported. Skipped {{count}} invalid or duplicate item(s).", {
-                count: skipped,
-                defaultValue: `No new records imported. Skipped ${skipped} invalid or duplicate item(s).`,
-              })
+            ? t(
+                "No new records imported. Skipped {{count}} invalid or duplicate item(s).",
+                {
+                  count: skipped,
+                  defaultValue: `No new records imported. Skipped ${skipped} invalid or duplicate item(s).`,
+                },
+              )
             : t("No valid records found.", "No valid records found."),
           variant: "destructive",
         });
@@ -3525,7 +3934,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (!selectedRecords.length) {
       toast({
         title: t("Nothing selected", "Nothing selected"),
-        description: t("Select one or more records to copy.", "Select one or more records to copy."),
+        description: t(
+          "Select one or more records to copy.",
+          "Select one or more records to copy.",
+        ),
       });
       return;
     }
@@ -3639,7 +4051,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         toast({
           title: t("Saved", "Saved"),
           description: enabled
-            ? t("Development mode enabled (cache bypass).", "Development mode enabled (cache bypass).")
+            ? t(
+                "Development mode enabled (cache bypass).",
+                "Development mode enabled (cache bypass).",
+              )
             : t("Development mode disabled.", "Development mode disabled."),
         });
       } catch (error) {
@@ -3784,7 +4199,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       try {
         setSslSettingsLoading(true);
         setSslSettingsError(null);
-        const next = await updateZoneSetting<string>(activeTab.zoneId, settingId, value);
+        const next = await updateZoneSetting<string>(
+          activeTab.zoneId,
+          settingId,
+          value,
+        );
         switch (settingId) {
           case "ssl":
             setZoneSslMode(next);
@@ -3904,15 +4323,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           : false,
       )
     : undefined;
-  const cacheOverlay = useLoadingOverlay(cacheSettingsLoading, loadingOverlayTimeoutMs);
-  const sslOverlay = useLoadingOverlay(sslSettingsLoading, loadingOverlayTimeoutMs);
-  const auditOverlay = useLoadingOverlay(
-    activeTab?.kind === "zone" && actionTab === "domain-audit" && activeTab.isLoading,
+  const cacheOverlay = useLoadingOverlay(
+    cacheSettingsLoading,
     loadingOverlayTimeoutMs,
   );
-  const registryOverlay = useLoadingOverlay(registryChecksLoading, loadingOverlayTimeoutMs);
+  const sslOverlay = useLoadingOverlay(
+    sslSettingsLoading,
+    loadingOverlayTimeoutMs,
+  );
+  const auditOverlay = useLoadingOverlay(
+    activeTab?.kind === "zone" &&
+      actionTab === "domain-audit" &&
+      activeTab.isLoading,
+    loadingOverlayTimeoutMs,
+  );
+  const registryOverlay = useLoadingOverlay(
+    registryChecksLoading,
+    loadingOverlayTimeoutMs,
+  );
   const mcpRunning = mcpStatus?.running === true;
-  const mcpUrl = mcpStatus?.url ?? `http://${mcpServerHost}:${mcpServerPort}/mcp`;
+  const mcpUrl =
+    mcpStatus?.url ?? `http://${mcpServerHost}:${mcpServerPort}/mcp`;
   const mcpLastError =
     (typeof mcpStatus?.lastError === "string" ? mcpStatus.lastError : null) ??
     (typeof mcpStatus?.last_error === "string" ? mcpStatus.last_error : null);
@@ -3935,7 +4366,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               </Button>
             </Tooltip>
           )}
-          <Tooltip tip={t("Registry Monitoring", "Registry Monitoring")} side="bottom">
+          <Tooltip
+            tip={t("Registry Monitoring", "Registry Monitoring")}
+            side="bottom"
+          >
             <Button
               onClick={() => openActionTab("registry")}
               variant="ghost"
@@ -3982,15 +4416,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </div>
       </div>
       <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-          <div ref={topBarRef} className="sticky top-0 z-20">
-            <Card
-              className={cn(
-                "border-border/60 backdrop-blur transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                compactTopBar
-                  ? "w-[min(94vw,980px)] bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
-                  : "w-full bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
-              )}
-            >
+        <div ref={topBarRef} className="sticky top-0 z-20">
+          <Card
+            className={cn(
+              "border-border/60 backdrop-blur transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              compactTopBar
+                ? "w-[min(94vw,980px)] bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
+                : "w-full bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
+            )}
+          >
             <CardHeader
               className={cn(
                 "overflow-hidden transition-[max-height,opacity,transform,padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -4014,14 +4448,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div />
               </div>
             </CardHeader>
-            <CardContent className={cn(compactTopBar ? "space-y-2 px-2 py-2" : "space-y-4")}>
+            <CardContent
+              className={cn(
+                compactTopBar ? "space-y-2 px-2 py-2" : "space-y-4",
+              )}
+            >
               <div
                 className={cn(
                   "grid gap-4 md:grid-cols-[1fr_auto] md:items-end",
-                  compactTopBar && "grid-cols-1 items-start justify-items-start gap-2",
+                  compactTopBar &&
+                    "grid-cols-1 items-start justify-items-start gap-2",
                 )}
               >
-                <div className={cn("space-y-2", compactTopBar && "w-full max-w-xs space-y-0")}>
+                <div
+                  className={cn(
+                    "space-y-2",
+                    compactTopBar && "w-full max-w-xs space-y-0",
+                  )}
+                >
                   <div
                     className={cn(
                       "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -4030,7 +4474,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         : "max-h-12 translate-y-0 opacity-100",
                     )}
                   >
-                    <Label htmlFor="zone-select">{t("Domain/Zone", "Domain/Zone")}</Label>
+                    <Label htmlFor="zone-select">
+                      {t("Domain/Zone", "Domain/Zone")}
+                    </Label>
                   </div>
                   <Select
                     value={selectedZoneId || undefined}
@@ -4045,7 +4491,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         compactTopBar && "h-8 w-full text-xs",
                       )}
                     >
-                      <SelectValue placeholder={t("Select a domain", "Select a domain")} />
+                      <SelectValue
+                        placeholder={t("Select a domain", "Select a domain")}
+                      />
                     </SelectTrigger>
                     <SelectContent className="bg-popover/70 text-foreground">
                       {availableZones.map((zone: Zone) => (
@@ -4060,41 +4508,46 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </SelectContent>
                   </Select>
                 </div>
-                  <div
-                    className={cn(
-                      "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                      compactTopBar || !activeTab
-                        ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
-                        : "max-h-20 translate-y-0 opacity-100",
-                    )}
-                  >
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        {t("{{count}} records", {
-                          count: activeTab?.records.length ?? 0,
-                          defaultValue: `${activeTab?.records.length ?? 0} records`,
-                        })}
-                      </div>
-                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        {t("{{count}} visible", {
-                          count: filteredRecords.length,
-                          defaultValue: `${filteredRecords.length} visible`,
-                        })}
-                      </div>
-                      <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                        {t("Zone: {{name}}", {
-                          name: selectedZoneData?.name ?? activeTab?.zoneName ?? "",
-                          defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab?.zoneName ?? ""}`,
-                        })}
-                      </div>
+                <div
+                  className={cn(
+                    "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    compactTopBar || !activeTab
+                      ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
+                      : "max-h-20 translate-y-0 opacity-100",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                      {t("{{count}} records", {
+                        count: activeTab?.records.length ?? 0,
+                        defaultValue: `${activeTab?.records.length ?? 0} records`,
+                      })}
+                    </div>
+                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                      {t("{{count}} visible", {
+                        count: filteredRecords.length,
+                        defaultValue: `${filteredRecords.length} visible`,
+                      })}
+                    </div>
+                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
+                      {t("Zone: {{name}}", {
+                        name:
+                          selectedZoneData?.name ?? activeTab?.zoneName ?? "",
+                        defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab?.zoneName ?? ""}`,
+                      })}
                     </div>
                   </div>
+                </div>
               </div>
-              {(tabs.length > 0 || activeTab?.kind === "settings" || activeTab?.kind === "audit" || activeTab?.kind === "registry") && (
+              {(tabs.length > 0 ||
+                activeTab?.kind === "settings" ||
+                activeTab?.kind === "audit" ||
+                activeTab?.kind === "registry") && (
                 <div
                   className={cn(
                     "flex flex-wrap gap-2 fade-in",
-                    compactTopBar && "w-full justify-start items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
+                    compactTopBar &&
+                      "w-full justify-start items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
                   )}
                   onDragOver={(event) => {
                     event.preventDefault();
@@ -4161,7 +4614,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           event.preventDefault();
                           event.stopPropagation();
                           const sourceId =
-                            dragTabId || event.dataTransfer.getData("text/plain");
+                            dragTabId ||
+                            event.dataTransfer.getData("text/plain");
                           if (sourceId) {
                             reorderTabs(sourceId, tab.id);
                           }
@@ -4178,8 +4632,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {!compactTopBar && (
                           <GripVertical className="h-3 w-3 text-muted-foreground/60" />
                         )}
-                        <span className={cn("truncate", compactTopBar ? "max-w-[112px]" : "max-w-[140px]")}>
-                          {tab.kind === "zone" ? tab.zoneName : t(tab.zoneName, tab.zoneName)}
+                        <span
+                          className={cn(
+                            "truncate",
+                            compactTopBar ? "max-w-[112px]" : "max-w-[140px]",
+                          )}
+                        >
+                          {tab.kind === "zone"
+                            ? tab.zoneName
+                            : t(tab.zoneName, tab.zoneName)}
                         </span>
                         {!compactTopBar && tab.kind === "zone" && (
                           <span className="text-[10px] uppercase tracking-widest opacity-60">
@@ -4197,7 +4658,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           )}
                           aria-label={t("Close tab", "Close tab")}
                         >
-                          <X className={cn(compactTopBar ? "h-2.5 w-2.5" : "h-3 w-3")} />
+                          <X
+                            className={cn(
+                              compactTopBar ? "h-2.5 w-2.5" : "h-3 w-3",
+                            )}
+                          />
                         </button>
                       </div>
                     );
@@ -4210,15 +4675,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         {activeTab ? (
           <Card className="min-h-[70vh] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
             {(!compactTopBar || activeTab.kind === "zone") && (
-              <CardHeader className={cn("space-y-4", compactTopBar && "space-y-2 py-3")}>
+              <CardHeader
+                className={cn("space-y-4", compactTopBar && "space-y-2 py-3")}
+              >
                 {!compactTopBar && (
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div className="space-y-1">
                       <CardTitle className="text-xl">
-                        {activeTab.kind === "zone" ? activeTab.zoneName : t(activeTab.zoneName, activeTab.zoneName)}
+                        {activeTab.kind === "zone"
+                          ? activeTab.zoneName
+                          : t(activeTab.zoneName, activeTab.zoneName)}
                       </CardTitle>
                       {activeTab.kind === "zone" && (
-                        <p className="text-xs text-muted-foreground">{actionHint}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {actionHint}
+                        </p>
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-2" />
@@ -4236,7 +4707,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         key={tab.id}
                         onClick={() => setActionTab(tab.id)}
                         data-active={actionTab === tab.id}
-                        className={cn("ui-segment", compactTopBar && "h-7 px-2 text-[11px]")}
+                        className={cn(
+                          "ui-segment",
+                          compactTopBar && "h-7 px-2 text-[11px]",
+                        )}
                       >
                         {t(tab.label, tab.label)}
                       </button>
@@ -4248,454 +4722,519 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <>
-                <div className="space-y-4 fade-in">
-                  <div className="rounded-xl border border-border/60 bg-card/60 p-3">
-                    <div className="mb-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                      {t("Assigned nameservers", "Assigned nameservers")}
+                  <div className="space-y-4 fade-in">
+                    <div className="rounded-xl border border-border/60 bg-card/60 p-3">
+                      <div className="mb-2 text-[11px] uppercase tracking-widest text-muted-foreground">
+                        {t("Assigned nameservers", "Assigned nameservers")}
+                      </div>
+                      {selectedZoneData?.name_servers &&
+                      selectedZoneData.name_servers.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedZoneData.name_servers.map((ns) => (
+                            <span
+                              key={ns}
+                              className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs text-foreground/90"
+                            >
+                              {ns}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">
+                          {t(
+                            "Not available for this zone.",
+                            "Not available for this zone.",
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {selectedZoneData?.name_servers && selectedZoneData.name_servers.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {selectedZoneData.name_servers.map((ns) => (
-                          <span
-                            key={ns}
-                            className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs text-foreground/90"
+                    {activeTab.isLoading && (
+                      <div className="space-y-3">
+                        {Array.from({ length: 6 }).map((_, idx) => (
+                          <div
+                            key={`skeleton-${idx}`}
+                            className="rounded-xl border border-border/50 bg-muted/30 p-4"
                           >
-                            {ns}
-                          </span>
+                            <div className="flex items-center gap-3">
+                              <div className="skeleton h-4 w-4 rounded-md" />
+                              <div className="skeleton h-6 w-16 rounded-md" />
+                              <div className="skeleton h-4 w-36 rounded-md" />
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              <div className="skeleton h-3 w-5/6 rounded-md" />
+                              <div className="skeleton h-3 w-2/3 rounded-md" />
+                            </div>
+                          </div>
                         ))}
+                      </div>
+                    )}
+                    <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          placeholder={t("Search records", "Search records")}
+                          value={activeTab.searchTerm}
+                          onChange={(e) =>
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              searchTerm: e.target.value,
+                            }))
+                          }
+                          className="pl-9"
+                        />
+                      </div>
+                      <Select
+                        value={activeTab.typeFilter || "all"}
+                        onValueChange={(v) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            typeFilter: v === "all" ? "" : (v as RecordType),
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue
+                            placeholder={t("All types", "All types")}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">
+                            {t("All types", "All types")}
+                          </SelectItem>
+                          {RECORD_TYPES.map((type) => (
+                            <SelectItem key={type} value={type}>
+                              {type}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={String(activeTab.perPage)}
+                        onValueChange={(v) => {
+                          const value = Number(v);
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            perPage: Number.isNaN(value) ? 50 : value,
+                            page: 1,
+                          }));
+                          if (!Number.isNaN(value)) {
+                            setZonePerPage((prev) => ({
+                              ...prev,
+                              [activeTab.zoneId]: value,
+                            }));
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue
+                            placeholder={t("Per page", "Per page")}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="25">25</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                          <SelectItem value="200">200</SelectItem>
+                          <SelectItem value="500">500</SelectItem>
+                          <SelectItem value="0">{t("All", "All")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <div className="flex items-center gap-2 justify-start md:justify-end">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-2 text-xs"
+                          onClick={() => void loadRecords(activeTab)}
+                          disabled={activeTab.isLoading}
+                          title={t(
+                            "Force refresh from Cloudflare",
+                            "Force refresh from Cloudflare",
+                          )}
+                        >
+                          <RefreshCw
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              activeTab.isLoading && "animate-spin",
+                            )}
+                          />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              searchTerm: "",
+                              typeFilter: "",
+                              page: 1,
+                            }))
+                          }
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          {t("Clear", "Clear")}
+                        </Button>
+                        <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
+                          <Filter className="h-3 w-3" />
+                          {t("Page {{page}}", {
+                            page: activeTab.page,
+                            defaultValue: `Page ${activeTab.page}`,
+                          })}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              page: Math.max(1, prev.page - 1),
+                            }))
+                          }
+                          disabled={activeTab.page <= 1}
+                        >
+                          {t("Prev", "Prev")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              page: prev.page + 1,
+                            }))
+                          }
+                        >
+                          {t("Next", "Next")}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <AddRecordDialog
+                        open={activeTab.showAddRecord}
+                        onOpenChange={(open) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            showAddRecord: open,
+                          }))
+                        }
+                        record={activeTab.newRecord}
+                        onRecordChange={(record) =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            newRecord: record,
+                          }))
+                        }
+                        onAdd={handleAddRecord}
+                        zoneName={activeTab.zoneName}
+                        showUnsupportedRecordTypes={
+                          resolvedShowUnsupportedRecordTypes
+                        }
+                        apiKey={apiKey}
+                        email={email}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleCopySelected}
+                        disabled={!activeTab.selectedIds.length}
+                      >
+                        <Copy className="h-4 w-4 mr-2" />
+                        {t("Copy selected", "Copy selected")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handlePasteRecords}
+                        disabled={!copyBuffer}
+                      >
+                        <ClipboardPaste className="h-4 w-4 mr-2" />
+                        {t("Paste", "Paste")}{" "}
+                        {copyBuffer ? `${copyBuffer.records.length}` : ""}
+                      </Button>
+                      {copyBuffer && (
+                        <div className="text-xs text-muted-foreground">
+                          {t("Buffer: {{count}} from {{zone}}", {
+                            count: copyBuffer.records.length,
+                            zone: copyBuffer.sourceZoneName,
+                            defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
+                          })}
+                        </div>
+                      )}
+                      {activeTab.selectedIds.length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            updateTab(activeTab.id, (prev) => ({
+                              ...prev,
+                              selectedIds: [],
+                            }))
+                          }
+                        >
+                          {t("Clear selection", "Clear selection")}
+                        </Button>
+                      )}
+                    </div>
+                    {activeTab.isLoading ? (
+                      <div className="text-center py-8">
+                        {t("Loading...", "Loading...")}
+                      </div>
+                    ) : filteredRecords.length === 0 ? (
+                      <div className="text-center py-8 text-muted-foreground">
+                        {t("No DNS records found", "No DNS records found")}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">
-                        {t("Not available for this zone.", "Not available for this zone.")}
-                      </div>
-                    )}
-                  </div>
-                  {activeTab.isLoading && (
-                    <div className="space-y-3">
-                      {Array.from({ length: 6 }).map((_, idx) => (
-                        <div
-                          key={`skeleton-${idx}`}
-                          className="rounded-xl border border-border/50 bg-muted/30 p-4"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="skeleton h-4 w-4 rounded-md" />
-                            <div className="skeleton h-6 w-16 rounded-md" />
-                            <div className="skeleton h-4 w-36 rounded-md" />
-                          </div>
-                          <div className="mt-3 space-y-2">
-                            <div className="skeleton h-3 w-5/6 rounded-md" />
-                            <div className="skeleton h-3 w-2/3 rounded-md" />
-                          </div>
+                      <div
+                        ref={recordsTableRef}
+                        className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
+                        style={{
+                          ["--table-bottom-fade" as string]:
+                            recordsBottomFade.toFixed(3),
+                        }}
+                      >
+                        <div className="ui-table-head">
+                          <span />
+                          <button
+                            type="button"
+                            className="text-left hover:text-foreground"
+                            onClick={() => toggleSort("type")}
+                          >
+                            {t("Type", "Type")}{" "}
+                            <span className="opacity-70">
+                              {sortIndicator("type")}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left hover:text-foreground"
+                            onClick={() => toggleSort("name")}
+                          >
+                            {t("Name", "Name")}{" "}
+                            <span className="opacity-70">
+                              {sortIndicator("name")}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left hover:text-foreground"
+                            onClick={() => toggleSort("content")}
+                          >
+                            {t("Content", "Content")}{" "}
+                            <span className="opacity-70">
+                              {sortIndicator("content")}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left hover:text-foreground"
+                            onClick={() => toggleSort("ttl")}
+                          >
+                            {t("TTL", "TTL")}{" "}
+                            <span className="opacity-70">
+                              {sortIndicator("ttl")}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left hover:text-foreground"
+                            onClick={() => toggleSort("proxied")}
+                          >
+                            {t("Proxy", "Proxy")}{" "}
+                            <span className="opacity-70">
+                              {sortIndicator("proxied")}
+                            </span>
+                          </button>
+                          <span className="text-right">
+                            {t("Actions", "Actions")}
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        placeholder={t("Search records", "Search records")}
-                        value={activeTab.searchTerm}
-                        onChange={(e) =>
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            searchTerm: e.target.value,
-                          }))
-                        }
-                        className="pl-9"
-                      />
-                    </div>
-                    <Select
-                      value={activeTab.typeFilter || "all"}
-                      onValueChange={(v) =>
-                        updateTab(activeTab.id, (prev) => ({
-                          ...prev,
-                          typeFilter: v === "all" ? "" : (v as RecordType),
-                        }))
-                      }
-                    >
-                      <SelectTrigger className="w-[180px]">
-                        <SelectValue placeholder={t("All types", "All types")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">
-                          {t("All types", "All types")}
-                        </SelectItem>
-                        {RECORD_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {type}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Select
-                      value={String(activeTab.perPage)}
-                      onValueChange={(v) => {
-                        const value = Number(v);
-                        updateTab(activeTab.id, (prev) => ({
-                          ...prev,
-                          perPage: Number.isNaN(value) ? 50 : value,
-                          page: 1,
-                        }));
-                        if (!Number.isNaN(value)) {
-                          setZonePerPage((prev) => ({
-                            ...prev,
-                            [activeTab.zoneId]: value,
-                          }));
-                        }
-                      }}
-                    >
-                      <SelectTrigger className="w-32">
-                        <SelectValue placeholder={t("Per page", "Per page")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="25">25</SelectItem>
-                        <SelectItem value="50">50</SelectItem>
-                        <SelectItem value="100">100</SelectItem>
-                        <SelectItem value="200">200</SelectItem>
-                        <SelectItem value="500">500</SelectItem>
-                        <SelectItem value="0">{t("All", "All")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <div className="flex items-center gap-2 justify-start md:justify-end">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 px-2 text-xs"
-                        onClick={() => void loadRecords(activeTab)}
-                        disabled={activeTab.isLoading}
-                        title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
-                      >
-                        <RefreshCw className={cn("h-3.5 w-3.5", activeTab.isLoading && "animate-spin")} />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            searchTerm: "",
-                            typeFilter: "",
-                            page: 1,
-                          }))
-                        }
-                      >
-                        <X className="h-3 w-3 mr-1" />
-                        {t("Clear", "Clear")}
-                      </Button>
-                      <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
-                        <Filter className="h-3 w-3" />
-                        {t("Page {{page}}", {
-                          page: activeTab.page,
-                          defaultValue: `Page ${activeTab.page}`,
-                        })}
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            page: Math.max(1, prev.page - 1),
-                          }))
-                        }
-                        disabled={activeTab.page <= 1}
-                      >
-                        {t("Prev", "Prev")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            page: prev.page + 1,
-                          }))
-                        }
-                      >
-                        {t("Next", "Next")}
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <AddRecordDialog
-                      open={activeTab.showAddRecord}
-                      onOpenChange={(open) =>
-                        updateTab(activeTab.id, (prev) => ({
-                          ...prev,
-                          showAddRecord: open,
-                        }))
-                      }
-                      record={activeTab.newRecord}
-                      onRecordChange={(record) =>
-                        updateTab(activeTab.id, (prev) => ({
-                          ...prev,
-                          newRecord: record,
-                        }))
-                      }
-                      onAdd={handleAddRecord}
-                      zoneName={activeTab.zoneName}
-                      showUnsupportedRecordTypes={resolvedShowUnsupportedRecordTypes}
-                      apiKey={apiKey}
-                      email={email}
-                    />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={handleCopySelected}
-                      disabled={!activeTab.selectedIds.length}
-                    >
-                      <Copy className="h-4 w-4 mr-2" />
-                      {t("Copy selected", "Copy selected")}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={handlePasteRecords}
-                      disabled={!copyBuffer}
-                    >
-                      <ClipboardPaste className="h-4 w-4 mr-2" />
-                      {t("Paste", "Paste")} {copyBuffer ? `${copyBuffer.records.length}` : ""}
-                    </Button>
-                    {copyBuffer && (
-                      <div className="text-xs text-muted-foreground">
-                        {t("Buffer: {{count}} from {{zone}}", {
-                          count: copyBuffer.records.length,
-                          zone: copyBuffer.sourceZoneName,
-                          defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
-                        })}
-                      </div>
-                    )}
-                    {activeTab.selectedIds.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          updateTab(activeTab.id, (prev) => ({
-                            ...prev,
-                            selectedIds: [],
-                          }))
-                        }
-                      >
-                        {t("Clear selection", "Clear selection")}
-                      </Button>
-                    )}
-                  </div>
-                  {activeTab.isLoading ? (
-                    <div className="text-center py-8">{t("Loading...", "Loading...")}</div>
-                  ) : filteredRecords.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      {t("No DNS records found", "No DNS records found")}
-                    </div>
-                  ) : (
-                    <div
-                      ref={recordsTableRef}
-                      className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
-                      style={{ ["--table-bottom-fade" as string]: recordsBottomFade.toFixed(3) }}
-                    >
-                      <div className="ui-table-head">
-                        <span />
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("type")}
-                        >
-                          {t("Type", "Type")}{" "}
-                          <span className="opacity-70">{sortIndicator("type")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("name")}
-                        >
-                          {t("Name", "Name")}{" "}
-                          <span className="opacity-70">{sortIndicator("name")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("content")}
-                        >
-                          {t("Content", "Content")}{" "}
-                          <span className="opacity-70">{sortIndicator("content")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("ttl")}
-                        >
-                          {t("TTL", "TTL")}{" "}
-                          <span className="opacity-70">{sortIndicator("ttl")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="text-left hover:text-foreground"
-                          onClick={() => toggleSort("proxied")}
-                        >
-                          {t("Proxy", "Proxy")}{" "}
-                          <span className="opacity-70">{sortIndicator("proxied")}</span>
-                        </button>
-                        <span className="text-right">{t("Actions", "Actions")}</span>
-                      </div>
-                      {filteredRecords.map((record) => {
-                        const isSelected = activeTab.selectedIds.includes(
-                          record.id,
-                        );
-                        return (
-                          <RecordRow
-                            key={record.id}
-                            zoneId={activeTab.zoneId}
-                            zoneName={activeTab.zoneName}
-                            record={record}
-                            isEditing={activeTab.editingRecord === record.id}
-                            isSelected={isSelected}
-                            simulateSPF={simulateSPF}
-                            getSPFGraph={getSPFGraph}
-                            onSelectChange={(checked) =>
-                              updateTab(activeTab.id, (prev) => ({
-                                ...prev,
-                                selectedIds: checked
-                                  ? [...prev.selectedIds, record.id]
-                                  : prev.selectedIds.filter(
-                                      (id) => id !== record.id,
-                                    ),
-                              }))
-                            }
-                            onEdit={() =>
-                              updateTab(activeTab.id, (prev) => ({
-                                ...prev,
-                                editingRecord: record.id,
-                              }))
-                            }
-                            onSave={(updatedRecord: DNSRecord) =>
-                              handleUpdateRecord(updatedRecord)
-                            }
-                            onCancel={() =>
-                              updateTab(activeTab.id, (prev) => ({
-                                ...prev,
-                                editingRecord: null,
-                              }))
-                            }
-                            onDelete={() => handleDeleteRecord(record.id)}
-                            onToggleProxy={(next) =>
-                              handleToggleProxy(record, next)
-                            }
-                            onCopy={() => handleCopySingle(record)}
-                            onClone={async () => {
-                              try {
-                                const cloned = await createDNSRecord(activeTab.zoneId, {
-                                  ...record,
-                                  name: `${record.name}-copy`,
-                                });
+                        {filteredRecords.map((record) => {
+                          const isSelected = activeTab.selectedIds.includes(
+                            record.id,
+                          );
+                          return (
+                            <RecordRow
+                              key={record.id}
+                              zoneId={activeTab.zoneId}
+                              zoneName={activeTab.zoneName}
+                              record={record}
+                              isEditing={activeTab.editingRecord === record.id}
+                              isSelected={isSelected}
+                              simulateSPF={simulateSPF}
+                              getSPFGraph={getSPFGraph}
+                              onSelectChange={(checked) =>
                                 updateTab(activeTab.id, (prev) => ({
                                   ...prev,
-                                  records: [cloned, ...prev.records],
-                                }));
-                                pushUndo({
-                                  description: `Clone ${record.type} ${record.name}`,
-                                  forward: { kind: "create", zoneId: activeTab.zoneId, record: cloned },
-                                  reverse: { kind: "delete", zoneId: activeTab.zoneId, recordId: cloned.id, record: cloned },
-                                });
-                                toast({ title: t("Cloned", "Cloned"), description: `${cloned.type} ${cloned.name}` });
-                              } catch (err) {
-                                toast({
-                                  title: t("Error", "Error"),
-                                  description: err instanceof Error ? err.message : "Clone failed",
-                                  variant: "destructive",
-                                });
+                                  selectedIds: checked
+                                    ? [...prev.selectedIds, record.id]
+                                    : prev.selectedIds.filter(
+                                        (id) => id !== record.id,
+                                      ),
+                                }))
                               }
-                            }}
-                          />
+                              onEdit={() =>
+                                updateTab(activeTab.id, (prev) => ({
+                                  ...prev,
+                                  editingRecord: record.id,
+                                }))
+                              }
+                              onSave={(updatedRecord: DNSRecord) =>
+                                handleUpdateRecord(updatedRecord)
+                              }
+                              onCancel={() =>
+                                updateTab(activeTab.id, (prev) => ({
+                                  ...prev,
+                                  editingRecord: null,
+                                }))
+                              }
+                              onDelete={() => handleDeleteRecord(record.id)}
+                              onToggleProxy={(next) =>
+                                handleToggleProxy(record, next)
+                              }
+                              onCopy={() => handleCopySingle(record)}
+                              onClone={async () => {
+                                try {
+                                  const cloned = await createDNSRecord(
+                                    activeTab.zoneId,
+                                    {
+                                      ...record,
+                                      name: `${record.name}-copy`,
+                                    },
+                                  );
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    records: [cloned, ...prev.records],
+                                  }));
+                                  pushUndo({
+                                    description: `Clone ${record.type} ${record.name}`,
+                                    forward: {
+                                      kind: "create",
+                                      zoneId: activeTab.zoneId,
+                                      record: cloned,
+                                    },
+                                    reverse: {
+                                      kind: "delete",
+                                      zoneId: activeTab.zoneId,
+                                      recordId: cloned.id,
+                                      record: cloned,
+                                    },
+                                  });
+                                  toast({
+                                    title: t("Cloned", "Cloned"),
+                                    description: `${cloned.type} ${cloned.name}`,
+                                  });
+                                } catch (err) {
+                                  toast({
+                                    title: t("Error", "Error"),
+                                    description:
+                                      err instanceof Error
+                                        ? err.message
+                                        : "Clone failed",
+                                    variant: "destructive",
+                                  });
+                                }
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <BulkEditBar
+                    selectedCount={activeTab.selectedIds.length}
+                    onBulkDelete={async () => {
+                      if (!activeTab.selectedIds.length) return;
+                      try {
+                        await deleteBulkDnsRecords(
+                          activeTab.zoneId,
+                          activeTab.selectedIds,
                         );
-                      })}
-                    </div>
-                  )}
-                </div>
-                <BulkEditBar
-                  selectedCount={activeTab.selectedIds.length}
-                  onBulkDelete={async () => {
-                    if (!activeTab.selectedIds.length) return;
-                    try {
-                      await deleteBulkDnsRecords(activeTab.zoneId, activeTab.selectedIds);
-                      toast({
-                        title: t("Deleted", "Deleted"),
-                        description: t("{{count}} records deleted", {
-                          count: activeTab.selectedIds.length,
-                          defaultValue: `${activeTab.selectedIds.length} records deleted`,
-                        }),
-                      });
+                        toast({
+                          title: t("Deleted", "Deleted"),
+                          description: t("{{count}} records deleted", {
+                            count: activeTab.selectedIds.length,
+                            defaultValue: `${activeTab.selectedIds.length} records deleted`,
+                          }),
+                        });
+                        updateTab(activeTab.id, (prev) => ({
+                          ...prev,
+                          selectedIds: [],
+                          records: prev.records.filter(
+                            (r) => !activeTab.selectedIds.includes(r.id),
+                          ),
+                        }));
+                      } catch (err) {
+                        toast({
+                          title: t("Error", "Error"),
+                          description:
+                            err instanceof Error
+                              ? err.message
+                              : "Bulk delete failed",
+                          variant: "destructive",
+                        });
+                      }
+                    }}
+                    onDeselectAll={() =>
                       updateTab(activeTab.id, (prev) => ({
                         ...prev,
                         selectedIds: [],
-                        records: prev.records.filter(
-                          (r) => !activeTab.selectedIds.includes(r.id),
+                      }))
+                    }
+                    onBulkSetTTL={async (ttl: number) => {
+                      if (!activeTab.selectedIds.length) return;
+                      const selected = activeTab.records.filter((r) =>
+                        activeTab.selectedIds.includes(r.id),
+                      );
+                      for (const rec of selected) {
+                        await updateDNSRecord(activeTab.zoneId, rec.id, {
+                          ...rec,
+                          ttl,
+                        });
+                      }
+                      updateTab(activeTab.id, (prev) => ({
+                        ...prev,
+                        records: prev.records.map((r) =>
+                          activeTab.selectedIds.includes(r.id)
+                            ? { ...r, ttl }
+                            : r,
                         ),
                       }));
-                    } catch (err) {
                       toast({
-                        title: t("Error", "Error"),
-                        description:
-                          err instanceof Error ? err.message : "Bulk delete failed",
-                        variant: "destructive",
+                        title: t("Updated", "Updated"),
+                        description: t("TTL set on {{count}} records", {
+                          count: selected.length,
+                          defaultValue: `TTL set on ${selected.length} records`,
+                        }),
                       });
-                    }
-                  }}
-                  onDeselectAll={() =>
-                    updateTab(activeTab.id, (prev) => ({
-                      ...prev,
-                      selectedIds: [],
-                    }))
-                  }
-                  onBulkSetTTL={async (ttl: number) => {
-                    if (!activeTab.selectedIds.length) return;
-                    const selected = activeTab.records.filter((r) =>
-                      activeTab.selectedIds.includes(r.id),
-                    );
-                    for (const rec of selected) {
-                      await updateDNSRecord(activeTab.zoneId, rec.id, { ...rec, ttl });
-                    }
-                    updateTab(activeTab.id, (prev) => ({
-                      ...prev,
-                      records: prev.records.map((r) =>
-                        activeTab.selectedIds.includes(r.id)
-                          ? { ...r, ttl }
-                          : r,
-                      ),
-                    }));
-                    toast({
-                      title: t("Updated", "Updated"),
-                      description: t("TTL set on {{count}} records", {
-                        count: selected.length,
-                        defaultValue: `TTL set on ${selected.length} records`,
-                      }),
-                    });
-                  }}
-                  onBulkSetProxy={async (proxied: boolean) => {
-                    if (!activeTab.selectedIds.length) return;
-                    const selected = activeTab.records.filter((r) =>
-                      activeTab.selectedIds.includes(r.id),
-                    );
-                    for (const rec of selected) {
-                      await updateDNSRecord(activeTab.zoneId, rec.id, { ...rec, proxied });
-                    }
-                    updateTab(activeTab.id, (prev) => ({
-                      ...prev,
-                      records: prev.records.map((r) =>
-                        activeTab.selectedIds.includes(r.id)
-                          ? { ...r, proxied }
-                          : r,
-                      ),
-                    }));
-                    toast({
-                      title: t("Updated", "Updated"),
-                      description: t("Proxy set on {{count}} records", {
-                        count: selected.length,
-                        defaultValue: `Proxy set on ${selected.length} records`,
-                      }),
-                    });
-                  }}
-                  onBulkExport={() => handleExport("json")}
-                />
+                    }}
+                    onBulkSetProxy={async (proxied: boolean) => {
+                      if (!activeTab.selectedIds.length) return;
+                      const selected = activeTab.records.filter((r) =>
+                        activeTab.selectedIds.includes(r.id),
+                      );
+                      for (const rec of selected) {
+                        await updateDNSRecord(activeTab.zoneId, rec.id, {
+                          ...rec,
+                          proxied,
+                        });
+                      }
+                      updateTab(activeTab.id, (prev) => ({
+                        ...prev,
+                        records: prev.records.map((r) =>
+                          activeTab.selectedIds.includes(r.id)
+                            ? { ...r, proxied }
+                            : r,
+                        ),
+                      }));
+                      toast({
+                        title: t("Updated", "Updated"),
+                        description: t("Proxy set on {{count}} records", {
+                          count: selected.length,
+                          defaultValue: `Proxy set on ${selected.length} records`,
+                        }),
+                      });
+                    }}
+                    onBulkExport={() => handleExport("json")}
+                  />
                 </>
               )}
               {activeTab.kind === "zone" && actionTab === "import" && (
@@ -4762,18 +5301,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             URL.revokeObjectURL(url);
                             toast({
                               title: t("Success", "Success"),
-                              description: t("Server export {{format}} completed", {
-                                format: format.toUpperCase(),
-                                defaultValue: `Server export ${format.toUpperCase()} completed`,
-                              }),
+                              description: t(
+                                "Server export {{format}} completed",
+                                {
+                                  format: format.toUpperCase(),
+                                  defaultValue: `Server export ${format.toUpperCase()} completed`,
+                                },
+                              ),
                             });
                           } catch (err) {
                             toast({
                               title: t("Error", "Error"),
-                              description: t("Server export failed: {{error}}", {
-                                error: (err as Error).message,
-                                defaultValue: `Server export failed: ${(err as Error).message}`,
-                              }),
+                              description: t(
+                                "Server export failed: {{error}}",
+                                {
+                                  error: (err as Error).message,
+                                  defaultValue: `Server export failed: ${(err as Error).message}`,
+                                },
+                              ),
                               variant: "destructive",
                             });
                           }
@@ -4834,11 +5379,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "zone-settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">{t("Zone settings", "Zone settings")}</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("Zone settings", "Zone settings")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Per-page override", "Per-page override")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Per-page override", "Per-page override")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         <Select
                           value={
@@ -4886,7 +5435,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }}
                         >
                           <SelectTrigger className="w-48">
-                            <SelectValue placeholder={t("Per page", "Per page")} />
+                            <SelectValue
+                              placeholder={t("Per page", "Per page")}
+                            />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="inherit">
@@ -4910,7 +5461,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
                       <div className="font-medium text-sm">
-                        {t("Unsupported record types", "Unsupported record types")}
+                        {t(
+                          "Unsupported record types",
+                          "Unsupported record types",
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
                         <Select
@@ -4932,14 +5486,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 return next;
                               });
                               notifySaved(
-                                t("Zone unsupported record types set to inherit ({{state}}).", {
-                                  state: showUnsupportedRecordTypes
-                                    ? t("Show", "Show").toLowerCase()
-                                    : t("Hide", "Hide").toLowerCase(),
-                                  defaultValue: `Zone unsupported record types set to inherit (${
-                                    showUnsupportedRecordTypes ? "show" : "hide"
-                                  }).`,
-                                }),
+                                t(
+                                  "Zone unsupported record types set to inherit ({{state}}).",
+                                  {
+                                    state: showUnsupportedRecordTypes
+                                      ? t("Show", "Show").toLowerCase()
+                                      : t("Hide", "Hide").toLowerCase(),
+                                    defaultValue: `Zone unsupported record types set to inherit (${
+                                      showUnsupportedRecordTypes
+                                        ? "show"
+                                        : "hide"
+                                    }).`,
+                                  },
+                                ),
                               );
                               return;
                             }
@@ -4962,15 +5521,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }}
                         >
                           <SelectTrigger className="w-48">
-                            <SelectValue placeholder={t("Inherit", "Inherit")} />
+                            <SelectValue
+                              placeholder={t("Inherit", "Inherit")}
+                            />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="inherit">
                               {t("Inherit", "Inherit")} (
-                              {showUnsupportedRecordTypes ? t("Show", "Show") : t("Hide", "Hide")})
+                              {showUnsupportedRecordTypes
+                                ? t("Show", "Show")
+                                : t("Hide", "Hide")}
+                              )
                             </SelectItem>
-                            <SelectItem value="hide">{t("Hide", "Hide")}</SelectItem>
-                            <SelectItem value="show">{t("Show", "Show")}</SelectItem>
+                            <SelectItem value="hide">
+                              {t("Hide", "Hide")}
+                            </SelectItem>
+                            <SelectItem value="show">
+                              {t("Show", "Show")}
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                         <div className="text-xs text-muted-foreground">
@@ -4982,7 +5550,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Reopen on launch", "Reopen on launch")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Reopen on launch", "Reopen on launch")}
+                      </div>
                       <div className="flex items-center gap-3">
                         <Switch
                           checked={reopenZoneTabs[activeTab.zoneId] !== false}
@@ -4993,8 +5563,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }));
                             notifySaved(
                               checked
-                                ? t("Zone will reopen on launch.", "Zone will reopen on launch.")
-                                : t("Zone will not reopen on launch.", "Zone will not reopen on launch."),
+                                ? t(
+                                    "Zone will reopen on launch.",
+                                    "Zone will reopen on launch.",
+                                  )
+                                : t(
+                                    "Zone will not reopen on launch.",
+                                    "Zone will not reopen on launch.",
+                                  ),
                             );
                           }}
                         />
@@ -5012,7 +5588,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "cache" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">{t("Cache", "Cache")}</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("Cache", "Cache")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -5027,25 +5605,39 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           size="sm"
                           variant="outline"
                           className="h-8 px-2 text-xs"
-                          onClick={() => void refreshCacheSettings(activeTab.zoneId)}
+                          onClick={() =>
+                            void refreshCacheSettings(activeTab.zoneId)
+                          }
                           disabled={cacheSettingsLoading}
-                          title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
+                          title={t(
+                            "Force refresh from Cloudflare",
+                            "Force refresh from Cloudflare",
+                          )}
                         >
                           <RefreshCw
-                            className={cn("h-3.5 w-3.5", cacheSettingsLoading && "animate-spin")}
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              cacheSettingsLoading && "animate-spin",
+                            )}
                           />
                         </Button>
                         {cacheSettingsLoading && (
-                          <div className="text-xs text-muted-foreground">{t("Loading…", "Loading…")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Loading…", "Loading…")}
+                          </div>
                         )}
                       </div>
                     </div>
                     {cacheSettingsError && (
-                      <div className="text-xs text-destructive">{cacheSettingsError}</div>
+                      <div className="text-xs text-destructive">
+                        {cacheSettingsError}
+                      </div>
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Development mode", "Development mode")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Development mode", "Development mode")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneDevMode ? (
                           <Switch
@@ -5056,7 +5648,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || cacheSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5068,7 +5662,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Cache level", "Cache level")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Cache level", "Cache level")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneCacheLevel ? (
                           <Select
@@ -5077,7 +5673,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || cacheSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder={t("Cache level", "Cache level")} />
+                              <SelectValue
+                                placeholder={t("Cache level", "Cache level")}
+                              />
                             </SelectTrigger>
                             <SelectContent>
                               {zoneCacheLevel.value &&
@@ -5091,13 +5689,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   })}
                                 </SelectItem>
                               ) : null}
-                              <SelectItem value="basic">{t("Basic", "Basic")}</SelectItem>
-                              <SelectItem value="aggressive">{t("Aggressive", "Aggressive")}</SelectItem>
-                              <SelectItem value="simplified">{t("Simplified", "Simplified")}</SelectItem>
+                              <SelectItem value="basic">
+                                {t("Basic", "Basic")}
+                              </SelectItem>
+                              <SelectItem value="aggressive">
+                                {t("Aggressive", "Aggressive")}
+                              </SelectItem>
+                              <SelectItem value="simplified">
+                                {t("Simplified", "Simplified")}
+                              </SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5106,26 +5712,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           )}
                         </div>
                         <div className="w-full space-y-1 rounded-lg border border-border/60 bg-card/55 p-2 text-[11px] text-muted-foreground">
-                          {(["basic", "aggressive", "simplified"] as const).map((level) => (
-                            <div
-                              key={level}
-                              className={cn(
-                                "rounded-md px-2 py-1",
-                                zoneCacheLevel?.value === level
-                                  ? "bg-primary/10 text-foreground"
-                                  : "bg-transparent",
-                              )}
-                            >
-                              <span className="font-medium capitalize">{level}</span>:{" "}
-                              {t(CACHE_LEVEL_DETAILS[level], CACHE_LEVEL_DETAILS[level])}
-                            </div>
-                          ))}
+                          {(["basic", "aggressive", "simplified"] as const).map(
+                            (level) => (
+                              <div
+                                key={level}
+                                className={cn(
+                                  "rounded-md px-2 py-1",
+                                  zoneCacheLevel?.value === level
+                                    ? "bg-primary/10 text-foreground"
+                                    : "bg-transparent",
+                                )}
+                              >
+                                <span className="font-medium capitalize">
+                                  {level}
+                                </span>
+                                :{" "}
+                                {t(
+                                  CACHE_LEVEL_DETAILS[level],
+                                  CACHE_LEVEL_DETAILS[level],
+                                )}
+                              </div>
+                            ),
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-start">
-                      <div className="font-medium text-sm">{t("Purge cache", "Purge cache")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Purge cache", "Purge cache")}
+                      </div>
                       <div className="space-y-2">
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -5139,7 +5755,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="space-y-2">
                           <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                            {t("Purge URLs (one per line)", "Purge URLs (one per line)")}
+                            {t(
+                              "Purge URLs (one per line)",
+                              "Purge URLs (one per line)",
+                            )}
                           </Label>
                           <Textarea
                             value={purgeUrlsInput}
@@ -5168,7 +5787,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {cacheOverlay.visible && (
                       <SectionLoadingOverlay
-                        label={t("Loading cache settings...", "Loading cache settings...")}
+                        label={t(
+                          "Loading cache settings...",
+                          "Loading cache settings...",
+                        )}
                       />
                     )}
                   </CardContent>
@@ -5177,7 +5799,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "ssl-tls" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">{t("SSL/TLS", "SSL/TLS")}</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("SSL/TLS", "SSL/TLS")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -5192,44 +5816,72 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           size="sm"
                           variant="outline"
                           className="h-8 px-2 text-xs"
-                          onClick={() => void refreshSslSettings(activeTab.zoneId)}
+                          onClick={() =>
+                            void refreshSslSettings(activeTab.zoneId)
+                          }
                           disabled={sslSettingsLoading}
-                          title={t("Force refresh from Cloudflare", "Force refresh from Cloudflare")}
+                          title={t(
+                            "Force refresh from Cloudflare",
+                            "Force refresh from Cloudflare",
+                          )}
                         >
                           <RefreshCw
-                            className={cn("h-3.5 w-3.5", sslSettingsLoading && "animate-spin")}
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              sslSettingsLoading && "animate-spin",
+                            )}
                           />
                         </Button>
                         {sslSettingsLoading && (
-                          <div className="text-xs text-muted-foreground">{t("Loading…", "Loading…")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Loading…", "Loading…")}
+                          </div>
                         )}
                       </div>
                     </div>
                     {sslSettingsError && (
-                      <div className="text-xs text-destructive">{sslSettingsError}</div>
+                      <div className="text-xs text-destructive">
+                        {sslSettingsError}
+                      </div>
                     )}
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Encryption mode", "Encryption mode")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Encryption mode", "Encryption mode")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneSslMode ? (
                           <Select
                             value={zoneSslMode.value ?? "off"}
-                            onValueChange={(v) => handleSetSslTlsSetting("ssl", v)}
+                            onValueChange={(v) =>
+                              handleSetSslTlsSetting("ssl", v)
+                            }
                             disabled={!apiKey || sslSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder={t("SSL mode", "SSL mode")} />
+                              <SelectValue
+                                placeholder={t("SSL mode", "SSL mode")}
+                              />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="off">{t("Off", "Off")}</SelectItem>
-                              <SelectItem value="flexible">{t("Flexible", "Flexible")}</SelectItem>
-                              <SelectItem value="full">{t("Full", "Full")}</SelectItem>
-                              <SelectItem value="strict">{t("Full (strict)", "Full (strict)")}</SelectItem>
+                              <SelectItem value="off">
+                                {t("Off", "Off")}
+                              </SelectItem>
+                              <SelectItem value="flexible">
+                                {t("Flexible", "Flexible")}
+                              </SelectItem>
+                              <SelectItem value="full">
+                                {t("Full", "Full")}
+                              </SelectItem>
+                              <SelectItem value="strict">
+                                {t("Full (strict)", "Full (strict)")}
+                              </SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5241,7 +5893,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Minimum TLS version", "Minimum TLS version")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Minimum TLS version", "Minimum TLS version")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneMinTlsVersion ? (
                           <Select
@@ -5252,7 +5906,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           >
                             <SelectTrigger className="w-48">
-                              <SelectValue placeholder={t("Min TLS", "Min TLS")} />
+                              <SelectValue
+                                placeholder={t("Min TLS", "Min TLS")}
+                              />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="1.0">1.0</SelectItem>
@@ -5262,7 +5918,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </SelectContent>
                           </Select>
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5274,18 +5932,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("TLS 1.3", "TLS 1.3")}</div>
+                      <div className="font-medium text-sm">
+                        {t("TLS 1.3", "TLS 1.3")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneTls13 ? (
                           <Switch
                             checked={zoneTls13.value === "on"}
                             onCheckedChange={(checked: boolean) =>
-                              handleSetSslTlsSetting("tls_1_3", checked ? "on" : "off")
+                              handleSetSslTlsSetting(
+                                "tls_1_3",
+                                checked ? "on" : "off",
+                              )
                             }
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5297,7 +5962,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
-                      <div className="font-medium text-sm">{t("Always Use HTTPS", "Always Use HTTPS")}</div>
+                      <div className="font-medium text-sm">
+                        {t("Always Use HTTPS", "Always Use HTTPS")}
+                      </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneAlwaysUseHttps ? (
                           <Switch
@@ -5311,17 +5978,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
-                          {t("Redirect HTTP to HTTPS at the edge.", "Redirect HTTP to HTTPS at the edge.")}
+                          {t(
+                            "Redirect HTTP to HTTPS at the edge.",
+                            "Redirect HTTP to HTTPS at the edge.",
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
                       <div className="font-medium text-sm">
-                        {t("Automatic HTTPS Rewrites", "Automatic HTTPS Rewrites")}
+                        {t(
+                          "Automatic HTTPS Rewrites",
+                          "Automatic HTTPS Rewrites",
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneAutoHttpsRewrites ? (
@@ -5336,7 +6011,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5349,7 +6026,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
                     <div className="grid gap-3 md:grid-cols-[200px_1fr] md:items-center">
                       <div className="font-medium text-sm">
-                        {t("Opportunistic encryption", "Opportunistic encryption")}
+                        {t(
+                          "Opportunistic encryption",
+                          "Opportunistic encryption",
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
                         {zoneOpportunisticEncryption ? (
@@ -5364,7 +6044,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             disabled={!apiKey || sslSettingsLoading}
                           />
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("Unavailable.", "Unavailable.")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("Unavailable.", "Unavailable.")}
+                          </div>
                         )}
                         <div className="text-xs text-muted-foreground">
                           {t(
@@ -5376,7 +6058,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {sslOverlay.visible && (
                       <SectionLoadingOverlay
-                        label={t("Loading SSL/TLS settings...", "Loading SSL/TLS settings...")}
+                        label={t(
+                          "Loading SSL/TLS settings...",
+                          "Loading SSL/TLS settings...",
+                        )}
                       />
                     )}
                   </CardContent>
@@ -5385,12 +6070,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "zone" && actionTab === "domain-audit" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">{t("Domain audits", "Domain audits")}</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("Domain audits", "Domain audits")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="relative space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-sm text-muted-foreground">
-                        {t("Audits run against the records currently loaded for", "Audits run against the records currently loaded for")}{" "}
+                        {t(
+                          "Audits run against the records currently loaded for",
+                          "Audits run against the records currently loaded for",
+                        )}{" "}
                         <span className="font-medium text-foreground/90">
                           {activeTab.zoneName}
                         </span>
@@ -5452,7 +6142,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             }))
                           }
                         />
-                        {t("Hygiene (private IPs, deprecated)", "Hygiene (private IPs, deprecated)")}
+                        {t(
+                          "Hygiene (private IPs, deprecated)",
+                          "Hygiene (private IPs, deprecated)",
+                        )}
                       </label>
                       <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
                         <Switch
@@ -5474,7 +6167,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             count: auditOverridesByZone[activeTab.zoneId].size,
                             defaultValue: `Clear ${auditOverridesByZone[activeTab.zoneId].size} override`,
                           })}
-                          {auditOverridesByZone[activeTab.zoneId].size !== 1 ? "s" : ""}
+                          {auditOverridesByZone[activeTab.zoneId].size !== 1
+                            ? "s"
+                            : ""}
                         </Button>
                       )}
                     </div>
@@ -5490,18 +6185,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       ) : (
                         <div className="space-y-2">
                           {domainAuditVisibleItems.map((item) => {
-                            const isOverridden = auditOverridesByZone[activeTab.zoneId]?.has(
-                              item.id,
-                            );
+                            const isOverridden = auditOverridesByZone[
+                              activeTab.zoneId
+                            ]?.has(item.id);
                             const originalSeverity =
-                              isOverridden && item.title.includes("(overridden)")
-                                ? (item.details.match(/Original severity: (\w+)/)?.[1] as
+                              isOverridden &&
+                              item.title.includes("(overridden)")
+                                ? (item.details.match(
+                                    /Original severity: (\w+)/,
+                                  )?.[1] as
                                     | "fail"
                                     | "warn"
                                     | "info"
                                     | undefined)
                                 : undefined;
-                            const displaySeverity = originalSeverity ?? item.severity;
+                            const displaySeverity =
+                              originalSeverity ?? item.severity;
 
                             const badge =
                               displaySeverity === "fail"
@@ -5537,10 +6236,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       <div
                                         className={cn(
                                           "font-medium text-sm",
-                                          isOverridden && "line-through opacity-60",
+                                          isOverridden &&
+                                            "line-through opacity-60",
                                         )}
                                       >
-                                        {item.title.replace(" (overridden)", "")}
+                                        {item.title.replace(
+                                          " (overridden)",
+                                          "",
+                                        )}
                                       </div>
                                     </div>
                                     <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
@@ -5548,24 +6251,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     </div>
                                   </div>
                                   <div className="flex flex-wrap items-center gap-2">
-                                    {item.severity !== "pass" && !isOverridden && (
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="text-xs"
-                                        onClick={() => handleOverrideAuditItem(item.id)}
-                                        title={t("Mark as acknowledged/passing", "Mark as acknowledged/passing")}
-                                      >
-                                        {t("Override", "Override")}
-                                      </Button>
-                                    )}
+                                    {item.severity !== "pass" &&
+                                      !isOverridden && (
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="text-xs"
+                                          onClick={() =>
+                                            handleOverrideAuditItem(item.id)
+                                          }
+                                          title={t(
+                                            "Mark as acknowledged/passing",
+                                            "Mark as acknowledged/passing",
+                                          )}
+                                        >
+                                          {t("Override", "Override")}
+                                        </Button>
+                                      )}
                                     {isOverridden && (
                                       <Button
                                         size="sm"
                                         variant="ghost"
                                         className="text-xs"
-                                        onClick={() => handleClearAuditOverride(item.id)}
-                                        title={t("Remove override", "Remove override")}
+                                        onClick={() =>
+                                          handleClearAuditOverride(item.id)
+                                        }
+                                        title={t(
+                                          "Remove override",
+                                          "Remove override",
+                                        )}
                                       >
                                         {t("Restore", "Restore")}
                                       </Button>
@@ -5588,7 +6302,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           }))
                                         }
                                       >
-                                        {t("Add suggested record…", "Add suggested record…")}
+                                        {t(
+                                          "Add suggested record…",
+                                          "Add suggested record…",
+                                        )}
                                       </Button>
                                     )}
                                   </div>
@@ -5608,7 +6325,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {auditOverlay.visible && (
                       <SectionLoadingOverlay
-                        label={t("Loading audit data...", "Loading audit data...")}
+                        label={t(
+                          "Loading audit data...",
+                          "Loading audit data...",
+                        )}
                       />
                     )}
                   </CardContent>
@@ -5625,12 +6345,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
                       <Input
                         value={registryLookupDomain}
-                        onChange={(e) => setRegistryLookupDomain(e.target.value)}
+                        onChange={(e) =>
+                          setRegistryLookupDomain(e.target.value)
+                        }
                         placeholder={t("example.com", "example.com")}
                       />
                       <Button
                         onClick={() => void runDomainRegistryChecks()}
-                        disabled={!registryLookupDomain.trim() || registryChecksLoading}
+                        disabled={
+                          !registryLookupDomain.trim() || registryChecksLoading
+                        }
                       >
                         {registryChecksLoading
                           ? t("Checking...", "Checking...")
@@ -5682,28 +6406,44 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                     <div className="grid gap-3 lg:grid-cols-2">
                       <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">{t("Registrar API Match", "Registrar API Match")}</div>
+                        <div className="text-sm font-medium">
+                          {t("Registrar API Match", "Registrar API Match")}
+                        </div>
                         {registrarDomainResult ? (
                           <div className="text-xs text-muted-foreground space-y-1">
                             <div>
                               {t("Domain:", "Domain:")}{" "}
-                              <span className="text-foreground">{registrarDomainResult.domain}</span>
+                              <span className="text-foreground">
+                                {registrarDomainResult.domain}
+                              </span>
                             </div>
                             <div>
                               {t("Registrar:", "Registrar:")}{" "}
-                              <span className="text-foreground">{registrarDomainResult.registrar}</span>
+                              <span className="text-foreground">
+                                {registrarDomainResult.registrar}
+                              </span>
                             </div>
                             <div>
                               {t("Status:", "Status:")}{" "}
-                              <span className="text-foreground">{registrarDomainResult.status}</span>
+                              <span className="text-foreground">
+                                {registrarDomainResult.status}
+                              </span>
                             </div>
                             <div>
                               {t("Expires:", "Expires:")}{" "}
                               <span
                                 className="text-foreground"
-                                title={formatHumanizedDateTime(registrarDomainResult.expires_at).full}
+                                title={
+                                  formatHumanizedDateTime(
+                                    registrarDomainResult.expires_at,
+                                  ).full
+                                }
                               >
-                                {formatHumanizedDateTime(registrarDomainResult.expires_at).short}
+                                {
+                                  formatHumanizedDateTime(
+                                    registrarDomainResult.expires_at,
+                                  ).short
+                                }
                               </span>
                             </div>
                           </div>
@@ -5718,17 +6458,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
 
                       <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">{t("Health Checks", "Health Checks")}</div>
+                        <div className="text-sm font-medium">
+                          {t("Health Checks", "Health Checks")}
+                        </div>
                         {registrarHealthResult ? (
                           <div className="text-xs text-muted-foreground space-y-1">
                             <div>
                               {t("Overall:", "Overall:")}{" "}
-                              <span className="text-foreground">{registrarHealthResult.status}</span>
+                              <span className="text-foreground">
+                                {registrarHealthResult.status}
+                              </span>
                             </div>
                             {registrarHealthResult.checks.map((check) => (
                               <div key={check.name}>
                                 {check.name}:{" "}
-                                <span className="text-foreground">{check.message}</span>
+                                <span className="text-foreground">
+                                  {check.message}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -5745,7 +6491,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
                     <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">{t("RDAP Response", "RDAP Response")}</div>
+                        <div className="text-sm font-medium">
+                          {t("RDAP Response", "RDAP Response")}
+                        </div>
                         <div className="flex items-center gap-2">
                           <Button
                             size="sm"
@@ -5778,7 +6526,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   toast({
                                     title: t("Copy failed", "Copy failed"),
                                     description:
-                                      error instanceof Error ? error.message : String(error),
+                                      error instanceof Error
+                                        ? error.message
+                                        : String(error),
                                     variant: "destructive",
                                   }),
                                 );
@@ -5811,31 +6561,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Domain", "Domain")}</td>
-                                    <td className="px-3 py-2">{String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Domain", "Domain")}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {String(
+                                        rdapObject.ldhName ??
+                                          rdapObject.unicodeName ??
+                                          "—",
+                                      )}
+                                    </td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Handle", "Handle")}</td>
-                                    <td className="px-3 py-2">{String(rdapObject.handle ?? "—")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Handle", "Handle")}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {String(rdapObject.handle ?? "—")}
+                                    </td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Object Class", "Object Class")}</td>
-                                    <td className="px-3 py-2">{String(rdapObject.objectClassName ?? "—")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Object Class", "Object Class")}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {String(
+                                        rdapObject.objectClassName ?? "—",
+                                      )}
+                                    </td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Port 43", "Port 43")}</td>
-                                    <td className="px-3 py-2">{String(rdapObject.port43 ?? "—")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Port 43", "Port 43")}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {String(rdapObject.port43 ?? "—")}
+                                    </td>
                                   </tr>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Registrar (API)", "Registrar (API)")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Registrar (API)", "Registrar (API)")}
+                                    </td>
                                     <td className="px-3 py-2">
                                       {registrarDomainResult?.registrar ?? "—"}
                                     </td>
                                   </tr>
                                   <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Status", "Status")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Status", "Status")}
+                                    </td>
                                     <td className="px-3 py-2">
-                                      {rdapStatuses.length ? rdapStatuses.join(", ") : "—"}
+                                      {rdapStatuses.length
+                                        ? rdapStatuses.join(", ")
+                                        : "—"}
                                     </td>
                                   </tr>
                                 </tbody>
@@ -5846,23 +6624,49 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <thead>
                                   <tr className="border-b border-border/40 text-muted-foreground">
-                                    <th className="px-3 py-2 text-left font-medium">{t("Event", "Event")}</th>
-                                    <th className="px-3 py-2 text-left font-medium">{t("Date", "Date")}</th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      {t("Event", "Event")}
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      {t("Date", "Date")}
+                                    </th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {rdapEvents.length ? (
                                     rdapEvents.map((event, idx) => (
-                                      <tr key={`${event.action}-${idx}`} className="border-b border-border/30 last:border-b-0">
-                                        <td className="px-3 py-2">{event.action}</td>
-                                        <td className="px-3 py-2" title={formatHumanizedDateTime(event.date).full}>
-                                          {formatHumanizedDateTime(event.date).short}
+                                      <tr
+                                        key={`${event.action}-${idx}`}
+                                        className="border-b border-border/30 last:border-b-0"
+                                      >
+                                        <td className="px-3 py-2">
+                                          {event.action}
+                                        </td>
+                                        <td
+                                          className="px-3 py-2"
+                                          title={
+                                            formatHumanizedDateTime(event.date)
+                                              .full
+                                          }
+                                        >
+                                          {
+                                            formatHumanizedDateTime(event.date)
+                                              .short
+                                          }
                                         </td>
                                       </tr>
                                     ))
                                   ) : (
                                     <tr>
-                                      <td className="px-3 py-2 text-muted-foreground" colSpan={2}>{t("No events returned.", "No events returned.")}</td>
+                                      <td
+                                        className="px-3 py-2 text-muted-foreground"
+                                        colSpan={2}
+                                      >
+                                        {t(
+                                          "No events returned.",
+                                          "No events returned.",
+                                        )}
+                                      </td>
                                     </tr>
                                   )}
                                 </tbody>
@@ -5873,13 +6677,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Registrar Entity", "Registrar Entity")}</td>
-                                    <td className="px-3 py-2">{String(rdapRegistrarEntity?.handle ?? "—")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t(
+                                        "Registrar Entity",
+                                        "Registrar Entity",
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {String(
+                                        rdapRegistrarEntity?.handle ?? "—",
+                                      )}
+                                    </td>
                                   </tr>
                                   <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">{t("Nameservers", "Nameservers")}</td>
+                                    <td className="px-3 py-2 font-medium text-muted-foreground">
+                                      {t("Nameservers", "Nameservers")}
+                                    </td>
                                     <td className="px-3 py-2">
-                                      {rdapNameservers.length ? rdapNameservers.join(", ") : "—"}
+                                      {rdapNameservers.length
+                                        ? rdapNameservers.join(", ")
+                                        : "—"}
                                     </td>
                                   </tr>
                                 </tbody>
@@ -5889,13 +6706,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )
                       ) : (
                         <div className="text-xs text-muted-foreground">
-                          {t("Run checks to load RDAP response.", "Run checks to load RDAP response.")}
+                          {t(
+                            "Run checks to load RDAP response.",
+                            "Run checks to load RDAP response.",
+                          )}
                         </div>
                       )}
                     </div>
                     {registryOverlay.visible && (
                       <SectionLoadingOverlay
-                        label={t("Loading registry data...", "Loading registry data...")}
+                        label={t(
+                          "Loading registry data...",
+                          "Loading registry data...",
+                        )}
                       />
                     )}
                   </CardContent>
@@ -5925,7 +6748,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   geoProvider={topologyGeoProvider}
                   scanResolutionChain={topologyScanResolutionChain}
                   disableServiceDiscovery={topologyDisableServiceDiscovery}
-                  tcpServicePorts={topologyTcpServices.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)}
+                  tcpServicePorts={topologyTcpServices
+                    .map((v) => Number(v))
+                    .filter((v) => Number.isFinite(v) && v > 0)}
                   onRefresh={async () => {
                     await loadRecords(activeTab);
                   }}
@@ -6000,7 +6825,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <CardTitle className="text-lg">{t("Audit log", "Audit log")}</CardTitle>
+                      <CardTitle className="text-lg">
+                        {t("Audit log", "Audit log")}
+                      </CardTitle>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
                           size="sm"
@@ -6010,7 +6837,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           title={t("Refresh", "Refresh")}
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
-                          <span className="text-xs">{t("Refresh", "Refresh")}</span>
+                          <span className="text-xs">
+                            {t("Refresh", "Refresh")}
+                          </span>
                         </Button>
                         <Button
                           size="sm"
@@ -6050,20 +6879,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 }),
                                 action: (
                                   <ToastAction
-                                    altText={t("Open export folder", "Open export folder")}
+                                    altText={t(
+                                      "Open export folder",
+                                      "Open export folder",
+                                    )}
                                     onClick={() => {
-                                      void TauriClient.openPathInFileManager(path).catch(
-                                        (error) => {
-                                          toast({
-                                            title: t("Open folder failed", "Open folder failed"),
-                                            description:
-                                              error instanceof Error
-                                                ? error.message
-                                                : String(error),
-                                            variant: "destructive",
-                                          });
-                                        },
-                                      );
+                                      void TauriClient.openPathInFileManager(
+                                        path,
+                                      ).catch((error) => {
+                                        toast({
+                                          title: t(
+                                            "Open folder failed",
+                                            "Open folder failed",
+                                          ),
+                                          description:
+                                            error instanceof Error
+                                              ? error.message
+                                              : String(error),
+                                          variant: "destructive",
+                                        });
+                                      });
                                     }}
                                   >
                                     {t("Open folder", "Open folder")}
@@ -6072,8 +6907,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               });
                             } catch (error) {
                               const message =
-                                error instanceof Error ? error.message : String(error);
-                              if (message.toLowerCase().includes("cancel")) return;
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error);
+                              if (message.toLowerCase().includes("cancel"))
+                                return;
                               toast({
                                 title: t("Export failed", "Export failed"),
                                 description: message,
@@ -6108,20 +6946,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 }),
                                 action: (
                                   <ToastAction
-                                    altText={t("Open export folder", "Open export folder")}
+                                    altText={t(
+                                      "Open export folder",
+                                      "Open export folder",
+                                    )}
                                     onClick={() => {
-                                      void TauriClient.openPathInFileManager(path).catch(
-                                        (error) => {
-                                          toast({
-                                            title: t("Open folder failed", "Open folder failed"),
-                                            description:
-                                              error instanceof Error
-                                                ? error.message
-                                                : String(error),
-                                            variant: "destructive",
-                                          });
-                                        },
-                                      );
+                                      void TauriClient.openPathInFileManager(
+                                        path,
+                                      ).catch((error) => {
+                                        toast({
+                                          title: t(
+                                            "Open folder failed",
+                                            "Open folder failed",
+                                          ),
+                                          description:
+                                            error instanceof Error
+                                              ? error.message
+                                              : String(error),
+                                          variant: "destructive",
+                                        });
+                                      });
                                     }}
                                   >
                                     {t("Open folder", "Open folder")}
@@ -6130,8 +6974,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               });
                             } catch (error) {
                               const message =
-                                error instanceof Error ? error.message : String(error);
-                              if (message.toLowerCase().includes("cancel")) return;
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error);
+                              if (message.toLowerCase().includes("cancel"))
+                                return;
                               toast({
                                 title: t("Export failed", "Export failed"),
                                 description: message,
@@ -6153,7 +7000,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="relative">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
-                          placeholder={t("Search audit entries", "Search audit entries")}
+                          placeholder={t(
+                            "Search audit entries",
+                            "Search audit entries",
+                          )}
                           value={auditSearch}
                           onChange={(e) => setAuditSearch(e.target.value)}
                           className="h-8 pl-9 text-xs"
@@ -6172,9 +7022,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <SelectItem value="all">{t("All", "All")}</SelectItem>
                         </SelectContent>
                       </Select>
-                      <Button size="sm" variant="outline" className="h-8 gap-1 px-2" onClick={addAuditFilter}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 px-2"
+                        onClick={addAuditFilter}
+                      >
                         <Plus className="h-3.5 w-3.5" />
-                        <span className="text-xs">{t("Add filter", "Add filter")}</span>
+                        <span className="text-xs">
+                          {t("Add filter", "Add filter")}
+                        </span>
                       </Button>
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
@@ -6262,21 +7119,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {auditFilters.length > 0 && (
                       <div className="space-y-2 rounded-lg border border-border/60 bg-card/50 p-2">
                         {auditFilters.map((rule) => (
-                          <div key={rule.id} className="grid gap-2 md:grid-cols-[140px_130px_1fr_auto]">
+                          <div
+                            key={rule.id}
+                            className="grid gap-2 md:grid-cols-[140px_130px_1fr_auto]"
+                          >
                             <Select
                               value={rule.field}
                               onValueChange={(v) =>
-                                updateAuditFilter(rule.id, { field: v as AuditFilterField })
+                                updateAuditFilter(rule.id, {
+                                  field: v as AuditFilterField,
+                                })
                               }
                             >
                               <SelectTrigger className="h-8">
-                                <SelectValue placeholder={t("Field", "Field")} />
+                                <SelectValue
+                                  placeholder={t("Field", "Field")}
+                                />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="operation">{t("Operation", "Operation")}</SelectItem>
-                                <SelectItem value="resource">{t("Resource", "Resource")}</SelectItem>
-                                <SelectItem value="timestamp">{t("Timestamp", "Timestamp")}</SelectItem>
-                                <SelectItem value="details">{t("Details", "Details")}</SelectItem>
+                                <SelectItem value="operation">
+                                  {t("Operation", "Operation")}
+                                </SelectItem>
+                                <SelectItem value="resource">
+                                  {t("Resource", "Resource")}
+                                </SelectItem>
+                                <SelectItem value="timestamp">
+                                  {t("Timestamp", "Timestamp")}
+                                </SelectItem>
+                                <SelectItem value="details">
+                                  {t("Details", "Details")}
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                             <Select
@@ -6288,26 +7160,61 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               }
                             >
                               <SelectTrigger className="h-8">
-                                <SelectValue placeholder={t("Operator", "Operator")} />
+                                <SelectValue
+                                  placeholder={t("Operator", "Operator")}
+                                />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="equals">{t("equals", "equals")}</SelectItem>
-                                <SelectItem value="not_equals">{t("not equals", "not equals")}</SelectItem>
-                                <SelectItem value="contains">{t("contains", "contains")}</SelectItem>
-                                <SelectItem value="not_contains">{t("not contains", "not contains")}</SelectItem>
-                                <SelectItem value="starts_with">{t("starts with", "starts with")}</SelectItem>
-                                <SelectItem value="ends_with">{t("ends with", "ends with")}</SelectItem>
-                                <SelectItem value="matches">{t("matches (regex)", "matches (regex)")}</SelectItem>
-                                <SelectItem value="gt">{t("greater than (&gt;)", "greater than (&gt;)")}</SelectItem>
-                                <SelectItem value="gte">{t("greater/equal (&gt;=)", "greater/equal (&gt;=)")}</SelectItem>
-                                <SelectItem value="lt">{t("less than (&lt;)", "less than (&lt;)")}</SelectItem>
-                                <SelectItem value="lte">{t("less/equal (&lt;=)", "less/equal (&lt;=)")}</SelectItem>
+                                <SelectItem value="equals">
+                                  {t("equals", "equals")}
+                                </SelectItem>
+                                <SelectItem value="not_equals">
+                                  {t("not equals", "not equals")}
+                                </SelectItem>
+                                <SelectItem value="contains">
+                                  {t("contains", "contains")}
+                                </SelectItem>
+                                <SelectItem value="not_contains">
+                                  {t("not contains", "not contains")}
+                                </SelectItem>
+                                <SelectItem value="starts_with">
+                                  {t("starts with", "starts with")}
+                                </SelectItem>
+                                <SelectItem value="ends_with">
+                                  {t("ends with", "ends with")}
+                                </SelectItem>
+                                <SelectItem value="matches">
+                                  {t("matches (regex)", "matches (regex)")}
+                                </SelectItem>
+                                <SelectItem value="gt">
+                                  {t(
+                                    "greater than (&gt;)",
+                                    "greater than (&gt;)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="gte">
+                                  {t(
+                                    "greater/equal (&gt;=)",
+                                    "greater/equal (&gt;=)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="lt">
+                                  {t("less than (&lt;)", "less than (&lt;)")}
+                                </SelectItem>
+                                <SelectItem value="lte">
+                                  {t(
+                                    "less/equal (&lt;=)",
+                                    "less/equal (&lt;=)",
+                                  )}
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                             <Input
                               value={rule.value}
                               onChange={(e) =>
-                                updateAuditFilter(rule.id, { value: e.target.value })
+                                updateAuditFilter(rule.id, {
+                                  value: e.target.value,
+                                })
                               }
                               className="h-8 text-xs"
                               placeholder={t("Value", "Value")}
@@ -6349,109 +7256,143 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     )}
                     {auditError && (
-                      <div className="text-sm text-destructive">{auditError}</div>
-                    )}
-                    {!auditLoading && !auditError && limitedAuditEntries.length === 0 && (
-                      <div className="text-sm text-muted-foreground">
-                        {t(
-                          "No audit entries match the current filters.",
-                          "No audit entries match the current filters.",
-                        )}
+                      <div className="text-sm text-destructive">
+                        {auditError}
                       </div>
                     )}
-                    {!auditLoading && !auditError && limitedAuditEntries.length > 0 && (
-                      <div className="overflow-auto rounded-lg border border-border/60">
-                      <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                          <button
-                            type="button"
-                            className="flex items-center gap-1 text-left hover:text-foreground"
-                            onClick={() => toggleAuditSort("timestamp")}
-                          >
-                            {t("Timestamp", "Timestamp")}
-                            <ArrowUpDown className="h-3 w-3" />
-                            <span className="text-[10px]">
-                              {auditSort.field === "timestamp"
-                                ? auditSort.dir === "asc"
-                                  ? t("ASC", "ASC")
-                                  : t("DESC", "DESC")
-                                : ""}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="flex items-center gap-1 text-left hover:text-foreground"
-                            onClick={() => toggleAuditSort("operation")}
-                          >
-                            {t("Operation", "Operation")}
-                            <ArrowUpDown className="h-3 w-3" />
-                            <span className="text-[10px]">
-                              {auditSort.field === "operation"
-                                ? auditSort.dir === "asc"
-                                  ? t("ASC", "ASC")
-                                  : t("DESC", "DESC")
-                                : ""}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="flex items-center gap-1 text-left hover:text-foreground"
-                            onClick={() => toggleAuditSort("resource")}
-                          >
-                            {t("Resource", "Resource")}
-                            <ArrowUpDown className="h-3 w-3" />
-                            <span className="text-[10px]">
-                              {auditSort.field === "resource"
-                                ? auditSort.dir === "asc"
-                                  ? t("ASC", "ASC")
-                                  : t("DESC", "DESC")
-                                : ""}
-                            </span>
-                          </button>
-                          <div>{t("Details", "Details")}</div>
+                    {!auditLoading &&
+                      !auditError &&
+                      limitedAuditEntries.length === 0 && (
+                        <div className="text-sm text-muted-foreground">
+                          {t(
+                            "No audit entries match the current filters.",
+                            "No audit entries match the current filters.",
+                          )}
                         </div>
-                        <div className="divide-y divide-white/10">
-                          {limitedAuditEntries.map((entry, index) => {
-                            const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "unknown";
-                            const operation = typeof entry.operation === "string" ? entry.operation : "operation";
-                            const resource = typeof entry.resource === "string" ? entry.resource : "resource";
-                            const timestampShort = formatAuditTimestampShort(entry.timestamp);
-                            const timestampFull = formatAuditTimestampFull(entry.timestamp);
-                            return (
-                              <details key={`${timestamp}-${index}`} className="px-4 py-3 text-sm">
-                                <summary className="grid grid-cols-[220px_160px_1fr_80px] gap-3 cursor-pointer list-none">
-                                  <div className="text-xs text-muted-foreground" title={timestampFull}>
-                                    {timestampShort}
+                      )}
+                    {!auditLoading &&
+                      !auditError &&
+                      limitedAuditEntries.length > 0 && (
+                        <div className="overflow-auto rounded-lg border border-border/60">
+                          <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 text-left hover:text-foreground"
+                              onClick={() => toggleAuditSort("timestamp")}
+                            >
+                              {t("Timestamp", "Timestamp")}
+                              <ArrowUpDown className="h-3 w-3" />
+                              <span className="text-[10px]">
+                                {auditSort.field === "timestamp"
+                                  ? auditSort.dir === "asc"
+                                    ? t("ASC", "ASC")
+                                    : t("DESC", "DESC")
+                                  : ""}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 text-left hover:text-foreground"
+                              onClick={() => toggleAuditSort("operation")}
+                            >
+                              {t("Operation", "Operation")}
+                              <ArrowUpDown className="h-3 w-3" />
+                              <span className="text-[10px]">
+                                {auditSort.field === "operation"
+                                  ? auditSort.dir === "asc"
+                                    ? t("ASC", "ASC")
+                                    : t("DESC", "DESC")
+                                  : ""}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 text-left hover:text-foreground"
+                              onClick={() => toggleAuditSort("resource")}
+                            >
+                              {t("Resource", "Resource")}
+                              <ArrowUpDown className="h-3 w-3" />
+                              <span className="text-[10px]">
+                                {auditSort.field === "resource"
+                                  ? auditSort.dir === "asc"
+                                    ? t("ASC", "ASC")
+                                    : t("DESC", "DESC")
+                                  : ""}
+                              </span>
+                            </button>
+                            <div>{t("Details", "Details")}</div>
+                          </div>
+                          <div className="divide-y divide-white/10">
+                            {limitedAuditEntries.map((entry, index) => {
+                              const timestamp =
+                                typeof entry.timestamp === "string"
+                                  ? entry.timestamp
+                                  : "unknown";
+                              const operation =
+                                typeof entry.operation === "string"
+                                  ? entry.operation
+                                  : "operation";
+                              const resource =
+                                typeof entry.resource === "string"
+                                  ? entry.resource
+                                  : "resource";
+                              const timestampShort = formatAuditTimestampShort(
+                                entry.timestamp,
+                              );
+                              const timestampFull = formatAuditTimestampFull(
+                                entry.timestamp,
+                              );
+                              return (
+                                <details
+                                  key={`${timestamp}-${index}`}
+                                  className="px-4 py-3 text-sm"
+                                >
+                                  <summary className="grid grid-cols-[220px_160px_1fr_80px] gap-3 cursor-pointer list-none">
+                                    <div
+                                      className="text-xs text-muted-foreground"
+                                      title={timestampFull}
+                                    >
+                                      {timestampShort}
+                                    </div>
+                                    <div className="font-medium">
+                                      {operation}
+                                    </div>
+                                    <div className="truncate text-muted-foreground">
+                                      {resource}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground hover:text-foreground">
+                                      {t("View", "View")}
+                                    </div>
+                                  </summary>
+                                  <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
+                                    <div className="mb-2">
+                                      <span className="font-medium text-foreground">
+                                        {t(
+                                          "Full timestamp:",
+                                          "Full timestamp:",
+                                        )}
+                                      </span>{" "}
+                                      {timestampFull}
+                                    </div>
+                                    <pre className="whitespace-pre-wrap">
+                                      {JSON.stringify(entry, null, 2)}
+                                    </pre>
                                   </div>
-                                  <div className="font-medium">{operation}</div>
-                                  <div className="truncate text-muted-foreground">
-                                    {resource}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground hover:text-foreground">
-                                    {t("View", "View")}
-                                  </div>
-                                </summary>
-                                <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
-                                  <div className="mb-2">
-                                    <span className="font-medium text-foreground">{t("Full timestamp:", "Full timestamp:")}</span>{" "}
-                                    {timestampFull}
-                                  </div>
-                                  <pre className="whitespace-pre-wrap">
-                                    {JSON.stringify(entry, null, 2)}
-                                  </pre>
-                                </div>
-                              </details>
-                            );
-                          })}
+                                </details>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
                   </CardContent>
                 </Card>
               )}
               {activeTab.kind === "tags" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">{t("Tag manager", "Tag manager")}</CardTitle>
+                    <CardTitle className="text-lg">
+                      {t("Tag manager", "Tag manager")}
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-[180px_1fr] md:items-center">
@@ -6465,11 +7406,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         }}
                       >
                         <SelectTrigger className="w-72">
-                          <SelectValue placeholder={t("Select a zone", "Select a zone")} />
+                          <SelectValue
+                            placeholder={t("Select a zone", "Select a zone")}
+                          />
                         </SelectTrigger>
                         <SelectContent className="bg-popover/70 text-foreground">
                           {availableZones.map((zone: Zone) => (
-                            <SelectItem key={zone.id} value={zone.id} className="cursor-pointer">
+                            <SelectItem
+                              key={zone.id}
+                              value={zone.id}
+                              className="cursor-pointer"
+                            >
                               {zone.name} ({zone.status})
                             </SelectItem>
                           ))}
@@ -6536,9 +7483,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <div className="glass-surface glass-sheen glass-fade rounded-xl overflow-hidden">
                           <div className="grid grid-cols-[1fr_90px_1fr_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
                             <div>{t("Tag", "Tag")}</div>
-                            <div className="text-right">{t("Used", "Used")}</div>
+                            <div className="text-right">
+                              {t("Used", "Used")}
+                            </div>
                             <div>{t("Linked records", "Linked records")}</div>
-                            <div className="text-right">{t("Actions", "Actions")}</div>
+                            <div className="text-right">
+                              {t("Actions", "Actions")}
+                            </div>
                           </div>
                           {zoneTags.length === 0 ? (
                             <div className="px-3 py-6 text-sm text-muted-foreground">
@@ -6550,9 +7501,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           ) : (
                             <div className="divide-y divide-white/10">
                               {zoneTags.map((tag) => {
-                                const linkedRecords = tagManagerRecordsByTag[tag] ?? [];
+                                const linkedRecords =
+                                  tagManagerRecordsByTag[tag] ?? [];
                                 const preview = linkedRecords.slice(0, 2);
-                                const remaining = Math.max(0, linkedRecords.length - preview.length);
+                                const remaining = Math.max(
+                                  0,
+                                  linkedRecords.length - preview.length,
+                                );
                                 return (
                                   <div
                                     key={tag}
@@ -6562,7 +7517,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       {renameTagFrom === tag ? (
                                         <Input
                                           value={renameTagTo}
-                                          onChange={(e) => setRenameTagTo(e.target.value)}
+                                          onChange={(e) =>
+                                            setRenameTagTo(e.target.value)
+                                          }
                                           className="h-8"
                                           autoFocus
                                           onKeyDown={(e) => {
@@ -6570,20 +7527,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                             e.preventDefault();
                                             const next = renameTagTo.trim();
                                             if (!next) return;
-                                            storageManager.renameTag(tagsZoneId, tag, next);
+                                            storageManager.renameTag(
+                                              tagsZoneId,
+                                              tag,
+                                              next,
+                                            );
                                             notifySaved(
-                                              t("Tag renamed: {{from}} -> {{to}}", {
-                                                from: tag,
-                                                to: next,
-                                                defaultValue: `Tag renamed: ${tag} -> ${next}`,
-                                              }),
+                                              t(
+                                                "Tag renamed: {{from}} -> {{to}}",
+                                                {
+                                                  from: tag,
+                                                  to: next,
+                                                  defaultValue: `Tag renamed: ${tag} -> ${next}`,
+                                                },
+                                              ),
                                             );
                                             setRenameTagFrom(null);
                                             setRenameTagTo("");
                                           }}
                                         />
                                       ) : (
-                                        <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                                        <Tag className="text-[9px] px-2 py-0.5">
+                                          {tag}
+                                        </Tag>
                                       )}
                                     </div>
                                     <div className="text-right text-sm text-muted-foreground">
@@ -6593,13 +7559,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       {preview.length ? (
                                         <>
                                           {preview.map((record) => (
-                                            <span key={record.id} className="mr-2 inline-block truncate max-w-[180px]">
+                                            <span
+                                              key={record.id}
+                                              className="mr-2 inline-block truncate max-w-[180px]"
+                                            >
                                               {record.name} ({record.type})
                                             </span>
                                           ))}
                                           {remaining > 0 && (
                                             <span>
-                                              +{t("{{count}} more", {
+                                              +
+                                              {t("{{count}} more", {
                                                 count: remaining,
                                                 defaultValue: `${remaining} more`,
                                               })}
@@ -6607,7 +7577,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           )}
                                         </>
                                       ) : (
-                                        <span>{t("Not linked", "Not linked")}</span>
+                                        <span>
+                                          {t("Not linked", "Not linked")}
+                                        </span>
                                       )}
                                     </div>
                                     <div className="flex justify-end gap-2">
@@ -6620,13 +7592,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                             onClick={() => {
                                               const next = renameTagTo.trim();
                                               if (!next) return;
-                                              storageManager.renameTag(tagsZoneId, tag, next);
+                                              storageManager.renameTag(
+                                                tagsZoneId,
+                                                tag,
+                                                next,
+                                              );
                                               notifySaved(
-                                                t("Tag renamed: {{from}} -> {{to}}", {
-                                                  from: tag,
-                                                  to: next,
-                                                  defaultValue: `Tag renamed: ${tag} -> ${next}`,
-                                                }),
+                                                t(
+                                                  "Tag renamed: {{from}} -> {{to}}",
+                                                  {
+                                                    from: tag,
+                                                    to: next,
+                                                    defaultValue: `Tag renamed: ${tag} -> ${next}`,
+                                                  },
+                                                ),
                                               );
                                               setRenameTagFrom(null);
                                               setRenameTagTo("");
@@ -6664,7 +7643,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                             variant="destructive"
                                             className="h-8"
                                             onClick={() => {
-                                              storageManager.deleteTag(tagsZoneId, tag);
+                                              storageManager.deleteTag(
+                                                tagsZoneId,
+                                                tag,
+                                              );
                                               notifySaved(
                                                 t("Tag deleted: {{tag}}", {
                                                   tag,
@@ -6693,15 +7675,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             <div className="flex items-center gap-2">
                               <Input
                                 value={tagAssociationSearch}
-                                onChange={(e) => setTagAssociationSearch(e.target.value)}
-                                placeholder={t("Search records or tags", "Search records or tags")}
+                                onChange={(e) =>
+                                  setTagAssociationSearch(e.target.value)
+                                }
+                                placeholder={t(
+                                  "Search records or tags",
+                                  "Search records or tags",
+                                )}
                                 className="h-8 w-64"
                               />
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-8"
-                                onClick={() => void loadTagManagerRecords(tagsZoneId)}
+                                onClick={() =>
+                                  void loadTagManagerRecords(tagsZoneId)
+                                }
                                 disabled={tagManagerRecordsLoading}
                               >
                                 {t("Refresh", "Refresh")}
@@ -6721,13 +7710,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           ) : filteredTagManagerRecords.length === 0 ? (
                             <div className="text-sm text-muted-foreground">
-                              {t("No records found for this zone.", "No records found for this zone.")}
+                              {t(
+                                "No records found for this zone.",
+                                "No records found for this zone.",
+                              )}
                             </div>
                           ) : (
                             <div className="divide-y divide-white/10 rounded-lg border border-border/50 bg-card/40">
                               {visibleTagManagerRecords.map((record) => {
-                                const recordTags = storageManager.getRecordTags(tagsZoneId, record.id);
-                                const draftTag = tagAssociationDrafts[record.id] ?? "";
+                                const recordTags = storageManager.getRecordTags(
+                                  tagsZoneId,
+                                  record.id,
+                                );
+                                const draftTag =
+                                  tagAssociationDrafts[record.id] ?? "";
                                 const listId = `tag-association-options-${record.id}`;
                                 return (
                                   <div
@@ -6735,7 +7731,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     className="grid gap-3 px-3 py-3 md:grid-cols-[1.2fr_1.6fr_1fr]"
                                   >
                                     <div className="min-w-0">
-                                      <div className="truncate text-sm font-medium">{record.name}</div>
+                                      <div className="truncate text-sm font-medium">
+                                        {record.name}
+                                      </div>
                                       <div className="truncate text-xs text-muted-foreground">
                                         {record.type} | {record.content}
                                       </div>
@@ -6743,16 +7741,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     <div className="flex min-w-0 flex-wrap items-center gap-1">
                                       {recordTags.length ? (
                                         recordTags.map((tag) => (
-                                          <span key={tag} className="inline-flex items-center gap-1">
-                                            <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                                          <span
+                                            key={tag}
+                                            className="inline-flex items-center gap-1"
+                                          >
+                                            <Tag className="text-[9px] px-2 py-0.5">
+                                              {tag}
+                                            </Tag>
                                             <button
                                               type="button"
                                               className="ui-icon-button h-5 w-5"
-                                              aria-label={t("Remove tag {{tag}}", {
-                                                tag,
-                                                defaultValue: `Remove tag ${tag}`,
-                                              })}
-                                              onClick={() => detachTagFromRecord(record.id, tag)}
+                                              aria-label={t(
+                                                "Remove tag {{tag}}",
+                                                {
+                                                  tag,
+                                                  defaultValue: `Remove tag ${tag}`,
+                                                },
+                                              )}
+                                              onClick={() =>
+                                                detachTagFromRecord(
+                                                  record.id,
+                                                  tag,
+                                                )
+                                              }
                                             >
                                               <X className="h-3 w-3" />
                                             </button>
@@ -6777,13 +7788,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         onKeyDown={(e) => {
                                           if (e.key !== "Enter") return;
                                           e.preventDefault();
-                                          attachTagToRecord(record.id, draftTag);
+                                          attachTagToRecord(
+                                            record.id,
+                                            draftTag,
+                                          );
                                           setTagAssociationDrafts((prev) => ({
                                             ...prev,
                                             [record.id]: "",
                                           }));
                                         }}
-                                        placeholder={t("Attach tag", "Attach tag")}
+                                        placeholder={t(
+                                          "Attach tag",
+                                          "Attach tag",
+                                        )}
                                         className="h-8"
                                       />
                                       <datalist id={listId}>
@@ -6796,7 +7813,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         variant="outline"
                                         className="h-8"
                                         onClick={() => {
-                                          attachTagToRecord(record.id, draftTag);
+                                          attachTagToRecord(
+                                            record.id,
+                                            draftTag,
+                                          );
                                           setTagAssociationDrafts((prev) => ({
                                             ...prev,
                                             [record.id]: "",
@@ -6811,7 +7831,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               })}
                             </div>
                           )}
-                          {filteredTagManagerRecords.length > visibleTagManagerRecords.length && (
+                          {filteredTagManagerRecords.length >
+                            visibleTagManagerRecords.length && (
                             <div className="text-xs text-muted-foreground">
                               {t(
                                 "Showing first {{count}} records. Refine search to narrow the list.",
@@ -6877,319 +7898,443 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </button>
                     </div>
                     {settingsSubtab === "general" && (
-                    <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Auto refresh", "Auto refresh")}</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={String(autoRefreshInterval ?? 0)}
-                            onValueChange={(v) => {
-                              const next = v ? Number(v) : 0;
-                              setAutoRefreshInterval(next ? next : null);
-                              notifySaved(
-                                next
-                                  ? t("Auto refresh set to {{seconds}}s.", {
-                                      seconds: next / 1000,
-                                      defaultValue: `Auto refresh set to ${next / 1000}s.`,
-                                    })
-                                  : t("Auto refresh off.", "Auto refresh off."),
-                              );
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder={t("Auto-refresh", "Auto-refresh")} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">{t("Off", "Off")}</SelectItem>
-                              <SelectItem value="60000">{t("1 min", "1 min")}</SelectItem>
-                              <SelectItem value="300000">{t("5 min", "5 min")}</SelectItem>
-                              <SelectItem value="600000">{t("10 min", "10 min")}</SelectItem>
-                              <SelectItem value="1800000">{t("30 min", "30 min")}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Pauses while editing records or dialogs are open.",
-                              "Pauses while editing records or dialogs are open.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Default per-page", "Default per-page")}</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={String(globalPerPage)}
-                            onValueChange={(v) => {
-                              const value = Number(v);
-                              const next = Number.isNaN(value) ? 50 : value;
-                              setGlobalPerPage(next);
-                              notifySaved(
-                                t("Default per-page set to {{count}}.", {
-                                  count: next,
-                                  defaultValue: `Default per-page set to ${next}.`,
-                                }),
-                              );
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder={t("Per page", "Per page")} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="25">25</SelectItem>
-                              <SelectItem value="50">50</SelectItem>
-                              <SelectItem value="100">100</SelectItem>
-                              <SelectItem value="200">200</SelectItem>
-                              <SelectItem value="500">500</SelectItem>
-                              <SelectItem value="0">{t("All", "All")}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "New zone tabs inherit this value unless overridden.",
-                              "New zone tabs inherit this value unless overridden.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Loader timeout", "Loader timeout")}</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={String(Math.round(loadingOverlayTimeoutMs / 1000))}
-                            onValueChange={(v) => {
-                              const sec = Number(v);
-                              const clampedSec = Math.max(1, Math.min(60, Number.isNaN(sec) ? 60 : sec));
-                              setLoadingOverlayTimeoutMs(clampedSec * 1000);
-                              notifySaved(
-                                t("Loader timeout set to {{seconds}}s.", {
-                                  seconds: clampedSec,
-                                  defaultValue: `Loader timeout set to ${clampedSec}s.`,
-                                }),
-                              );
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder={t("Timeout", "Timeout")} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="5">{t("5 s", "5 s")}</SelectItem>
-                              <SelectItem value="10">{t("10 s", "10 s")}</SelectItem>
-                              <SelectItem value="20">{t("20 s", "20 s")}</SelectItem>
-                              <SelectItem value="30">{t("30 s", "30 s")}</SelectItem>
-                              <SelectItem value="45">{t("45 s", "45 s")}</SelectItem>
-                              <SelectItem value="60">{t("60 s", "60 s")}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Max 60s. Loading overlay auto-hides after timeout.",
-                              "Max 60s. Loading overlay auto-hides after timeout.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">
-                          {t("Unsupported record types", "Unsupported record types")}
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            checked={showUnsupportedRecordTypes}
-                            onCheckedChange={(checked: boolean) => {
-                              setShowUnsupportedRecordTypes(checked);
-                              notifySaved(
-                                checked
-                                  ? t(
-                                      "Unsupported record types will show in Add Record.",
-                                      "Unsupported record types will show in Add Record.",
-                                    )
-                                  : t(
-                                      "Add Record will show Cloudflare-supported types only.",
-                                      "Add Record will show Cloudflare-supported types only.",
-                                    ),
-                              );
-                            }}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Controls the Type dropdown default. Zones can override this.",
-                              "Controls the Type dropdown default. Zones can override this.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Reopen last tabs", "Reopen last tabs")}</div>
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            checked={reopenLastTabs}
-                            onCheckedChange={(checked: boolean) => {
-                              setReopenLastTabs(checked);
-                              notifySaved(
-                                checked
-                                  ? t("Will reopen last tabs on launch.", "Will reopen last tabs on launch.")
-                                  : t(
-                                      "Will not reopen last tabs on launch.",
-                                      "Will not reopen last tabs on launch.",
-                                    ),
-                              );
-                            }}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Restore tabs from the last session on launch.",
-                              "Restore tabs from the last session on launch.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Middle-click closes tabs", "Middle-click closes tabs")}</div>
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            checked={closeTabOnMiddleClick}
-                            onCheckedChange={(checked: boolean) => {
-                              setCloseTabOnMiddleClick(checked);
-                              notifySaved(
-                                checked
-                                  ? t("Middle-click tab close enabled.", "Middle-click tab close enabled.")
-                                  : t("Middle-click tab close disabled.", "Middle-click tab close disabled."),
-                              );
-                            }}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Controls whether pressing the mouse wheel on a tab closes it.",
-                              "Controls whether pressing the mouse wheel on a tab closes it.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Confirm logout", "Confirm logout")}</div>
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            checked={confirmLogout}
-                            onCheckedChange={(checked: boolean) => {
-                              setConfirmLogout(checked);
-                              notifySaved(
-                                checked
-                                  ? t("Logout confirmation enabled.", "Logout confirmation enabled.")
-                                  : t("Logout confirmation disabled.", "Logout confirmation disabled."),
-                              );
-                            }}
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "Show a confirmation dialog when logging out.",
-                              "Show a confirmation dialog when logging out.",
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      {isDesktop() && (
+                      <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Confirm window close", "Confirm window close")}</div>
+                          <div className="font-medium">
+                            {t("Auto refresh", "Auto refresh")}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(autoRefreshInterval ?? 0)}
+                              onValueChange={(v) => {
+                                const next = v ? Number(v) : 0;
+                                setAutoRefreshInterval(next ? next : null);
+                                notifySaved(
+                                  next
+                                    ? t("Auto refresh set to {{seconds}}s.", {
+                                        seconds: next / 1000,
+                                        defaultValue: `Auto refresh set to ${next / 1000}s.`,
+                                      })
+                                    : t(
+                                        "Auto refresh off.",
+                                        "Auto refresh off.",
+                                      ),
+                                );
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue
+                                  placeholder={t(
+                                    "Auto-refresh",
+                                    "Auto-refresh",
+                                  )}
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">
+                                  {t("Off", "Off")}
+                                </SelectItem>
+                                <SelectItem value="60000">
+                                  {t("1 min", "1 min")}
+                                </SelectItem>
+                                <SelectItem value="300000">
+                                  {t("5 min", "5 min")}
+                                </SelectItem>
+                                <SelectItem value="600000">
+                                  {t("10 min", "10 min")}
+                                </SelectItem>
+                                <SelectItem value="1800000">
+                                  {t("30 min", "30 min")}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Pauses while editing records or dialogs are open.",
+                                "Pauses while editing records or dialogs are open.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t("Default per-page", "Default per-page")}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(globalPerPage)}
+                              onValueChange={(v) => {
+                                const value = Number(v);
+                                const next = Number.isNaN(value) ? 50 : value;
+                                setGlobalPerPage(next);
+                                notifySaved(
+                                  t("Default per-page set to {{count}}.", {
+                                    count: next,
+                                    defaultValue: `Default per-page set to ${next}.`,
+                                  }),
+                                );
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue
+                                  placeholder={t("Per page", "Per page")}
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="25">25</SelectItem>
+                                <SelectItem value="50">50</SelectItem>
+                                <SelectItem value="100">100</SelectItem>
+                                <SelectItem value="200">200</SelectItem>
+                                <SelectItem value="500">500</SelectItem>
+                                <SelectItem value="0">
+                                  {t("All", "All")}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "New zone tabs inherit this value unless overridden.",
+                                "New zone tabs inherit this value unless overridden.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t("Loader timeout", "Loader timeout")}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(
+                                Math.round(loadingOverlayTimeoutMs / 1000),
+                              )}
+                              onValueChange={(v) => {
+                                const sec = Number(v);
+                                const clampedSec = Math.max(
+                                  1,
+                                  Math.min(60, Number.isNaN(sec) ? 60 : sec),
+                                );
+                                setLoadingOverlayTimeoutMs(clampedSec * 1000);
+                                notifySaved(
+                                  t("Loader timeout set to {{seconds}}s.", {
+                                    seconds: clampedSec,
+                                    defaultValue: `Loader timeout set to ${clampedSec}s.`,
+                                  }),
+                                );
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue
+                                  placeholder={t("Timeout", "Timeout")}
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="5">
+                                  {t("5 s", "5 s")}
+                                </SelectItem>
+                                <SelectItem value="10">
+                                  {t("10 s", "10 s")}
+                                </SelectItem>
+                                <SelectItem value="20">
+                                  {t("20 s", "20 s")}
+                                </SelectItem>
+                                <SelectItem value="30">
+                                  {t("30 s", "30 s")}
+                                </SelectItem>
+                                <SelectItem value="45">
+                                  {t("45 s", "45 s")}
+                                </SelectItem>
+                                <SelectItem value="60">
+                                  {t("60 s", "60 s")}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Max 60s. Loading overlay auto-hides after timeout.",
+                                "Max 60s. Loading overlay auto-hides after timeout.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t(
+                              "Unsupported record types",
+                              "Unsupported record types",
+                            )}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
-                              checked={confirmWindowClose}
+                              checked={showUnsupportedRecordTypes}
                               onCheckedChange={(checked: boolean) => {
-                                setConfirmWindowClose(checked);
+                                setShowUnsupportedRecordTypes(checked);
                                 notifySaved(
                                   checked
                                     ? t(
-                                        "Window close confirmation enabled.",
-                                        "Window close confirmation enabled.",
+                                        "Unsupported record types will show in Add Record.",
+                                        "Unsupported record types will show in Add Record.",
                                       )
                                     : t(
-                                        "Window close confirmation disabled.",
-                                        "Window close confirmation disabled.",
+                                        "Add Record will show Cloudflare-supported types only.",
+                                        "Add Record will show Cloudflare-supported types only.",
                                       ),
                                 );
                               }}
                             />
                             <div className="text-xs text-muted-foreground">
                               {t(
-                                "Show a confirmation dialog when closing the app window.",
-                                "Show a confirmation dialog when closing the app window.",
+                                "Controls the Type dropdown default. Zones can override this.",
+                                "Controls the Type dropdown default. Zones can override this.",
                               )}
                             </div>
                           </div>
                         </div>
-                      )}
-                      <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                        <div className="font-medium">{t("Auto logout (idle)", "Auto logout (idle)")}</div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Select
-                            value={String(idleLogoutMs ?? 0)}
-                            onValueChange={(v) => {
-                              const next = Number(v);
-                              setIdleLogoutMs(next ? next : null);
-                              notifySaved(
-                                next
-                                  ? t("Auto logout after {{minutes}} min idle.", {
-                                      minutes: Math.round(next / 60000),
-                                      defaultValue: `Auto logout after ${Math.round(next / 60000)} min idle.`,
-                                    })
-                                  : t("Auto logout disabled.", "Auto logout disabled."),
-                              );
-                            }}
-                          >
-                            <SelectTrigger className="w-44">
-                              <SelectValue placeholder={t("Idle timeout", "Idle timeout")} />
-                            </SelectTrigger>
-                            <SelectContent className="bg-popover/70 text-foreground">
-                              <SelectItem value="0">{t("Never", "Never")}</SelectItem>
-                              <SelectItem value="60000">{t("1 min", "1 min")}</SelectItem>
-                              <SelectItem value="120000">{t("2 min", "2 min")}</SelectItem>
-                              <SelectItem value="300000">{t("5 min", "5 min")}</SelectItem>
-                              <SelectItem value="600000">{t("10 min", "10 min")}</SelectItem>
-                              <SelectItem value="1800000">{t("30 min", "30 min")}</SelectItem>
-                              <SelectItem value="3600000">{t("1 hour", "1 hour")}</SelectItem>
-                              <SelectItem value="14400000">{t("4 hours", "4 hours")}</SelectItem>
-                              <SelectItem value="86400000">{t("24 hours", "24 hours")}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <div className="text-xs text-muted-foreground">
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t("Reopen last tabs", "Reopen last tabs")}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={reopenLastTabs}
+                              onCheckedChange={(checked: boolean) => {
+                                setReopenLastTabs(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Will reopen last tabs on launch.",
+                                        "Will reopen last tabs on launch.",
+                                      )
+                                    : t(
+                                        "Will not reopen last tabs on launch.",
+                                        "Will not reopen last tabs on launch.",
+                                      ),
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Restore tabs from the last session on launch.",
+                                "Restore tabs from the last session on launch.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
                             {t(
-                              "Logs out automatically after inactivity.",
-                              "Logs out automatically after inactivity.",
+                              "Middle-click closes tabs",
+                              "Middle-click closes tabs",
                             )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={closeTabOnMiddleClick}
+                              onCheckedChange={(checked: boolean) => {
+                                setCloseTabOnMiddleClick(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Middle-click tab close enabled.",
+                                        "Middle-click tab close enabled.",
+                                      )
+                                    : t(
+                                        "Middle-click tab close disabled.",
+                                        "Middle-click tab close disabled.",
+                                      ),
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Controls whether pressing the mouse wheel on a tab closes it.",
+                                "Controls whether pressing the mouse wheel on a tab closes it.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t("Confirm logout", "Confirm logout")}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={confirmLogout}
+                              onCheckedChange={(checked: boolean) => {
+                                setConfirmLogout(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Logout confirmation enabled.",
+                                        "Logout confirmation enabled.",
+                                      )
+                                    : t(
+                                        "Logout confirmation disabled.",
+                                        "Logout confirmation disabled.",
+                                      ),
+                                );
+                              }}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Show a confirmation dialog when logging out.",
+                                "Show a confirmation dialog when logging out.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {isDesktop() && (
+                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div className="font-medium">
+                              {t(
+                                "Confirm window close",
+                                "Confirm window close",
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Switch
+                                checked={confirmWindowClose}
+                                onCheckedChange={(checked: boolean) => {
+                                  setConfirmWindowClose(checked);
+                                  notifySaved(
+                                    checked
+                                      ? t(
+                                          "Window close confirmation enabled.",
+                                          "Window close confirmation enabled.",
+                                        )
+                                      : t(
+                                          "Window close confirmation disabled.",
+                                          "Window close confirmation disabled.",
+                                        ),
+                                  );
+                                }}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                {t(
+                                  "Show a confirmation dialog when closing the app window.",
+                                  "Show a confirmation dialog when closing the app window.",
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t("Auto logout (idle)", "Auto logout (idle)")}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Select
+                              value={String(idleLogoutMs ?? 0)}
+                              onValueChange={(v) => {
+                                const next = Number(v);
+                                setIdleLogoutMs(next ? next : null);
+                                notifySaved(
+                                  next
+                                    ? t(
+                                        "Auto logout after {{minutes}} min idle.",
+                                        {
+                                          minutes: Math.round(next / 60000),
+                                          defaultValue: `Auto logout after ${Math.round(next / 60000)} min idle.`,
+                                        },
+                                      )
+                                    : t(
+                                        "Auto logout disabled.",
+                                        "Auto logout disabled.",
+                                      ),
+                                );
+                              }}
+                            >
+                              <SelectTrigger className="w-44">
+                                <SelectValue
+                                  placeholder={t(
+                                    "Idle timeout",
+                                    "Idle timeout",
+                                  )}
+                                />
+                              </SelectTrigger>
+                              <SelectContent className="bg-popover/70 text-foreground">
+                                <SelectItem value="0">
+                                  {t("Never", "Never")}
+                                </SelectItem>
+                                <SelectItem value="60000">
+                                  {t("1 min", "1 min")}
+                                </SelectItem>
+                                <SelectItem value="120000">
+                                  {t("2 min", "2 min")}
+                                </SelectItem>
+                                <SelectItem value="300000">
+                                  {t("5 min", "5 min")}
+                                </SelectItem>
+                                <SelectItem value="600000">
+                                  {t("10 min", "10 min")}
+                                </SelectItem>
+                                <SelectItem value="1800000">
+                                  {t("30 min", "30 min")}
+                                </SelectItem>
+                                <SelectItem value="3600000">
+                                  {t("1 hour", "1 hour")}
+                                </SelectItem>
+                                <SelectItem value="14400000">
+                                  {t("4 hours", "4 hours")}
+                                </SelectItem>
+                                <SelectItem value="86400000">
+                                  {t("24 hours", "24 hours")}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Logs out automatically after inactivity.",
+                                "Logs out automatically after inactivity.",
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
                     )}
                     {settingsSubtab === "topology" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
-                            {t("Topology resolution hops", "Topology resolution hops")}
+                            {t(
+                              "Topology resolution hops",
+                              "Topology resolution hops",
+                            )}
                           </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={String(topologyResolutionMaxHops)}
                               onValueChange={(v) => {
                                 const next = Number(v);
-                                const clamped = Math.max(1, Math.min(15, Number.isNaN(next) ? 15 : next));
+                                const clamped = Math.max(
+                                  1,
+                                  Math.min(15, Number.isNaN(next) ? 15 : next),
+                                );
                                 setTopologyResolutionMaxHops(clamped);
                                 notifySaved(
-                                  t("Topology CNAME resolution hops set to {{count}}.", {
-                                    count: clamped,
-                                    defaultValue: `Topology CNAME resolution hops set to ${clamped}.`,
-                                  }),
+                                  t(
+                                    "Topology CNAME resolution hops set to {{count}}.",
+                                    {
+                                      count: clamped,
+                                      defaultValue: `Topology CNAME resolution hops set to ${clamped}.`,
+                                    },
+                                  ),
                                 );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder={t("Max hops", "Max hops")} />
+                                <SelectValue
+                                  placeholder={t("Max hops", "Max hops")}
+                                />
                               </SelectTrigger>
                               <SelectContent>
                                 {Array.from({ length: 15 }).map((_, idx) => {
                                   const value = idx + 1;
                                   return (
-                                    <SelectItem key={value} value={String(value)}>
+                                    <SelectItem
+                                      key={value}
+                                      value={String(value)}
+                                    >
                                       {value}
                                     </SelectItem>
                                   );
@@ -7206,13 +8351,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
-                            {t("Topology request mode", "Topology request mode")}
+                            {t(
+                              "Topology request mode",
+                              "Topology request mode",
+                            )}
                           </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={topologyResolverMode}
                               onValueChange={(v) => {
-                                const next: TopologyResolverMode = v === "doh" ? "doh" : "dns";
+                                const next: TopologyResolverMode =
+                                  v === "doh" ? "doh" : "dns";
                                 setTopologyResolverMode(next);
                                 notifySaved(
                                   next === "doh"
@@ -7231,9 +8380,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 <SelectValue placeholder={t("Mode", "Mode")} />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="dns">{t("DNS (UDP/TCP)", "DNS (UDP/TCP)")}</SelectItem>
+                                <SelectItem value="dns">
+                                  {t("DNS (UDP/TCP)", "DNS (UDP/TCP)")}
+                                </SelectItem>
                                 <SelectItem value="doh">
-                                  {t("DNS-over-HTTPS (DoH)", "DNS-over-HTTPS (DoH)")}
+                                  {t(
+                                    "DNS-over-HTTPS (DoH)",
+                                    "DNS-over-HTTPS (DoH)",
+                                  )}
                                 </SelectItem>
                               </SelectContent>
                             </Select>
@@ -7246,7 +8400,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("DNS server", "DNS server")}</div>
+                          <div className="font-medium">
+                            {t("DNS server", "DNS server")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={topologyDnsServer.trim()}
@@ -7261,25 +8417,74 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               }}
                             >
                               <SelectTrigger className="w-52">
-                                <SelectValue placeholder={t("DNS server", "DNS server")}>
+                                <SelectValue
+                                  placeholder={t("DNS server", "DNS server")}
+                                >
                                   {t(
-                                    TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim(),
-                                    TOPOLOGY_DNS_SERVER_LABELS[topologyDnsServer.trim()] ?? topologyDnsServer.trim(),
+                                    TOPOLOGY_DNS_SERVER_LABELS[
+                                      topologyDnsServer.trim()
+                                    ] ?? topologyDnsServer.trim(),
+                                    TOPOLOGY_DNS_SERVER_LABELS[
+                                      topologyDnsServer.trim()
+                                    ] ?? topologyDnsServer.trim(),
                                   )}
                                 </SelectValue>
                               </SelectTrigger>
                               <SelectContent className="w-[var(--radix-select-trigger-width)]">
-                                <SelectItem value="1.1.1.1">{t("1.1.1.1 (Cloudflare default)", "1.1.1.1 (Cloudflare default)")}</SelectItem>
-                                <SelectItem value="1.0.0.1">{t("1.0.0.1 (Cloudflare)", "1.0.0.1 (Cloudflare)")}</SelectItem>
-                                <SelectItem value="8.8.8.8">{t("8.8.8.8 (Google)", "8.8.8.8 (Google)")}</SelectItem>
-                                <SelectItem value="8.8.4.4">{t("8.8.4.4 (Google)", "8.8.4.4 (Google)")}</SelectItem>
-                                <SelectItem value="9.9.9.9">{t("9.9.9.9 (Quad9)", "9.9.9.9 (Quad9)")}</SelectItem>
-                                <SelectItem value="149.112.112.112">{t("149.112.112.112 (Quad9)", "149.112.112.112 (Quad9)")}</SelectItem>
-                                <SelectItem value="208.67.222.222">{t("208.67.222.222 (OpenDNS)", "208.67.222.222 (OpenDNS)")}</SelectItem>
-                                <SelectItem value="208.67.220.220">{t("208.67.220.220 (OpenDNS)", "208.67.220.220 (OpenDNS)")}</SelectItem>
-                                <SelectItem value="94.140.14.14">{t("94.140.14.14 (AdGuard)", "94.140.14.14 (AdGuard)")}</SelectItem>
-                                <SelectItem value="76.76.2.0">{t("76.76.2.0 (Control D)", "76.76.2.0 (Control D)")}</SelectItem>
-                                <SelectItem value="custom">{t("Custom", "Custom")}</SelectItem>
+                                <SelectItem value="1.1.1.1">
+                                  {t(
+                                    "1.1.1.1 (Cloudflare default)",
+                                    "1.1.1.1 (Cloudflare default)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="1.0.0.1">
+                                  {t(
+                                    "1.0.0.1 (Cloudflare)",
+                                    "1.0.0.1 (Cloudflare)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="8.8.8.8">
+                                  {t("8.8.8.8 (Google)", "8.8.8.8 (Google)")}
+                                </SelectItem>
+                                <SelectItem value="8.8.4.4">
+                                  {t("8.8.4.4 (Google)", "8.8.4.4 (Google)")}
+                                </SelectItem>
+                                <SelectItem value="9.9.9.9">
+                                  {t("9.9.9.9 (Quad9)", "9.9.9.9 (Quad9)")}
+                                </SelectItem>
+                                <SelectItem value="149.112.112.112">
+                                  {t(
+                                    "149.112.112.112 (Quad9)",
+                                    "149.112.112.112 (Quad9)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="208.67.222.222">
+                                  {t(
+                                    "208.67.222.222 (OpenDNS)",
+                                    "208.67.222.222 (OpenDNS)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="208.67.220.220">
+                                  {t(
+                                    "208.67.220.220 (OpenDNS)",
+                                    "208.67.220.220 (OpenDNS)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="94.140.14.14">
+                                  {t(
+                                    "94.140.14.14 (AdGuard)",
+                                    "94.140.14.14 (AdGuard)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="76.76.2.0">
+                                  {t(
+                                    "76.76.2.0 (Control D)",
+                                    "76.76.2.0 (Control D)",
+                                  )}
+                                </SelectItem>
+                                <SelectItem value="custom">
+                                  {t("Custom", "Custom")}
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
@@ -7292,17 +8497,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         {topologyDnsServer === "custom" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Custom DNS server", "Custom DNS server")}</div>
+                            <div className="font-medium">
+                              {t("Custom DNS server", "Custom DNS server")}
+                            </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Input
                                 value={topologyCustomDnsServer}
-                                onChange={(event) => setTopologyCustomDnsServer(event.target.value)}
+                                onChange={(event) =>
+                                  setTopologyCustomDnsServer(event.target.value)
+                                }
                                 onBlur={() => {
-                                  setTopologyCustomDnsServer((prev) => prev.trim());
-                                  notifySaved(t("Custom DNS server updated.", "Custom DNS server updated."));
+                                  setTopologyCustomDnsServer((prev) =>
+                                    prev.trim(),
+                                  );
+                                  notifySaved(
+                                    t(
+                                      "Custom DNS server updated.",
+                                      "Custom DNS server updated.",
+                                    ),
+                                  );
                                 }}
                                 className="min-w-[320px]"
-                                placeholder={t("e.g. 192.168.1.1", "e.g. 192.168.1.1")}
+                                placeholder={t(
+                                  "e.g. 192.168.1.1",
+                                  "e.g. 192.168.1.1",
+                                )}
                               />
                               <div className="text-xs text-muted-foreground">
                                 {t(
@@ -7315,14 +8534,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         {topologyResolverMode === "doh" && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Custom DoH endpoint", "Custom DoH endpoint")}</div>
+                            <div className="font-medium">
+                              {t("Custom DoH endpoint", "Custom DoH endpoint")}
+                            </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Input
                                 value={topologyDohCustomUrl}
-                                onChange={(event) => setTopologyDohCustomUrl(event.target.value)}
+                                onChange={(event) =>
+                                  setTopologyDohCustomUrl(event.target.value)
+                                }
                                 onBlur={() => {
-                                  setTopologyDohCustomUrl((prev) => prev.trim());
-                                  notifySaved(t("Custom DoH endpoint updated.", "Custom DoH endpoint updated."));
+                                  setTopologyDohCustomUrl((prev) =>
+                                    prev.trim(),
+                                  );
+                                  notifySaved(
+                                    t(
+                                      "Custom DoH endpoint updated.",
+                                      "Custom DoH endpoint updated.",
+                                    ),
+                                  );
                                 }}
                                 className="min-w-[320px]"
                                 placeholder={t(
@@ -7331,41 +8561,75 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 )}
                               />
                               <div className="text-xs text-muted-foreground">
-                                {t("Optional override for DoH mode.", "Optional override for DoH mode.")}
+                                {t(
+                                  "Optional override for DoH mode.",
+                                  "Optional override for DoH mode.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Lookup timeout", "Lookup timeout")}</div>
+                          <div className="font-medium">
+                            {t("Lookup timeout", "Lookup timeout")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <Select
                               value={String(topologyLookupTimeoutMs)}
                               onValueChange={(v) => {
                                 const next = Number(v);
-                                const clamped = Math.max(250, Math.min(10000, Number.isNaN(next) ? 1200 : next));
+                                const clamped = Math.max(
+                                  250,
+                                  Math.min(
+                                    10000,
+                                    Number.isNaN(next) ? 1200 : next,
+                                  ),
+                                );
                                 setTopologyLookupTimeoutMs(clamped);
                                 notifySaved(
-                                  t("Topology lookup timeout set to {{ms}}ms.", {
-                                    ms: clamped,
-                                    defaultValue: `Topology lookup timeout set to ${clamped}ms.`,
-                                  }),
+                                  t(
+                                    "Topology lookup timeout set to {{ms}}ms.",
+                                    {
+                                      ms: clamped,
+                                      defaultValue: `Topology lookup timeout set to ${clamped}ms.`,
+                                    },
+                                  ),
                                 );
                               }}
                             >
                               <SelectTrigger className="w-44">
-                                <SelectValue placeholder={t("Timeout", "Timeout")} />
+                                <SelectValue
+                                  placeholder={t("Timeout", "Timeout")}
+                                />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="250">{t("250 ms", "250 ms")}</SelectItem>
-                                <SelectItem value="500">{t("500 ms", "500 ms")}</SelectItem>
-                                <SelectItem value="800">{t("800 ms", "800 ms")}</SelectItem>
-                                <SelectItem value="1200">{t("1200 ms", "1200 ms")}</SelectItem>
-                                <SelectItem value="2000">{t("2000 ms", "2000 ms")}</SelectItem>
-                                <SelectItem value="3000">{t("3000 ms", "3000 ms")}</SelectItem>
-                                <SelectItem value="5000">{t("5000 ms", "5000 ms")}</SelectItem>
-                                <SelectItem value="8000">{t("8000 ms", "8000 ms")}</SelectItem>
-                                <SelectItem value="10000">{t("10000 ms", "10000 ms")}</SelectItem>
+                                <SelectItem value="250">
+                                  {t("250 ms", "250 ms")}
+                                </SelectItem>
+                                <SelectItem value="500">
+                                  {t("500 ms", "500 ms")}
+                                </SelectItem>
+                                <SelectItem value="800">
+                                  {t("800 ms", "800 ms")}
+                                </SelectItem>
+                                <SelectItem value="1200">
+                                  {t("1200 ms", "1200 ms")}
+                                </SelectItem>
+                                <SelectItem value="2000">
+                                  {t("2000 ms", "2000 ms")}
+                                </SelectItem>
+                                <SelectItem value="3000">
+                                  {t("3000 ms", "3000 ms")}
+                                </SelectItem>
+                                <SelectItem value="5000">
+                                  {t("5000 ms", "5000 ms")}
+                                </SelectItem>
+                                <SelectItem value="8000">
+                                  {t("8000 ms", "8000 ms")}
+                                </SelectItem>
+                                <SelectItem value="10000">
+                                  {t("10000 ms", "10000 ms")}
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
@@ -7378,7 +8642,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
-                            {t("Disable end-node PTR lookups", "Disable end-node PTR lookups")}
+                            {t(
+                              "Disable end-node PTR lookups",
+                              "Disable end-node PTR lookups",
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <Switch
@@ -7408,7 +8675,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
-                            {t("Don't scan resolution chain", "Don't scan resolution chain")}
+                            {t(
+                              "Don't scan resolution chain",
+                              "Don't scan resolution chain",
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <Switch
@@ -7437,7 +8707,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Disable GEO detection", "Disable GEO detection")}</div>
+                          <div className="font-medium">
+                            {t(
+                              "Disable GEO detection",
+                              "Disable GEO detection",
+                            )}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableGeoLookups}
@@ -7466,36 +8741,60 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         {!topologyDisableGeoLookups && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("GEO lookup service", "GEO lookup service")}</div>
+                            <div className="font-medium">
+                              {t("GEO lookup service", "GEO lookup service")}
+                            </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={topologyGeoProvider}
                                 onValueChange={(v) => {
-                                  const next = (v as TopologyGeoProvider) || "auto";
+                                  const next =
+                                    (v as TopologyGeoProvider) || "auto";
                                   setTopologyGeoProvider(next);
                                   notifySaved(
-                                    t("Topology GEO provider set to {{provider}}.", {
-                                      provider: next,
-                                      defaultValue: `Topology GEO provider set to ${next}.`,
-                                    }),
+                                    t(
+                                      "Topology GEO provider set to {{provider}}.",
+                                      {
+                                        provider: next,
+                                        defaultValue: `Topology GEO provider set to ${next}.`,
+                                      },
+                                    ),
                                   );
                                 }}
                               >
                                 <SelectTrigger className="w-56">
-                                <SelectValue placeholder={t("GEO provider", "GEO provider")}>
-                                    {t(
-                                      TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider],
-                                      TOPOLOGY_GEO_PROVIDER_LABELS[topologyGeoProvider],
+                                  <SelectValue
+                                    placeholder={t(
+                                      "GEO provider",
+                                      "GEO provider",
                                     )}
-                                </SelectValue>
+                                  >
+                                    {t(
+                                      TOPOLOGY_GEO_PROVIDER_LABELS[
+                                        topologyGeoProvider
+                                      ],
+                                      TOPOLOGY_GEO_PROVIDER_LABELS[
+                                        topologyGeoProvider
+                                      ],
+                                    )}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent className="w-[var(--radix-select-trigger-width)]">
                                   <SelectItem value="auto">
-                                    {t("Auto (multi-provider fallback)", "Auto (multi-provider fallback)")}
+                                    {t(
+                                      "Auto (multi-provider fallback)",
+                                      "Auto (multi-provider fallback)",
+                                    )}
                                   </SelectItem>
-                                  <SelectItem value="ipwhois">ipwho.is</SelectItem>
-                                  <SelectItem value="ipapi_co">ipapi.co</SelectItem>
-                                  <SelectItem value="ip_api">ip-api.com</SelectItem>
+                                  <SelectItem value="ipwhois">
+                                    ipwho.is
+                                  </SelectItem>
+                                  <SelectItem value="ipapi_co">
+                                    ipapi.co
+                                  </SelectItem>
+                                  <SelectItem value="ip_api">
+                                    ip-api.com
+                                  </SelectItem>
                                   <SelectItem value="internal">
                                     {t(
                                       "Internal only (private/reserved IPs)",
@@ -7515,7 +8814,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
-                            {t("Disable service discovery", "Disable service discovery")}
+                            {t(
+                              "Disable service discovery",
+                              "Disable service discovery",
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <Switch
@@ -7544,11 +8846,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("TCP services to probe", "TCP services to probe")}</div>
+                          <div className="font-medium">
+                            {t(
+                              "TCP services to probe",
+                              "TCP services to probe",
+                            )}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2"
+                                >
                                   {t("{{count}} selected", {
                                     count: topologyTcpServices.length,
                                     defaultValue: `${topologyTcpServices.length} selected`,
@@ -7558,7 +8869,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
                                 {TOPOLOGY_TCP_SERVICE_OPTIONS.map((opt) => {
                                   const value = String(opt.port);
-                                  const checked = topologyTcpServices.includes(value);
+                                  const checked =
+                                    topologyTcpServices.includes(value);
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.port}
@@ -7570,10 +8882,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           if (next) set.add(value);
                                           else set.delete(value);
                                           const out = Array.from(set);
-                                          return out.length ? out : ["80", "443", "22"];
+                                          return out.length
+                                            ? out
+                                            : ["80", "443", "22"];
                                         });
                                       }}
-                                      onSelect={(event) => event.preventDefault()}
+                                      onSelect={(event) =>
+                                        event.preventDefault()
+                                      }
                                     >
                                       {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
@@ -7590,7 +8906,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Disable annotations", "Disable annotations")}</div>
+                          <div className="font-medium">
+                            {t("Disable annotations", "Disable annotations")}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableAnnotations}
@@ -7598,8 +8916,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 setTopologyDisableAnnotations(checked);
                                 notifySaved(
                                   checked
-                                    ? t("Topology annotations disabled.", "Topology annotations disabled.")
-                                    : t("Topology annotations enabled.", "Topology annotations enabled."),
+                                    ? t(
+                                        "Topology annotations disabled.",
+                                        "Topology annotations disabled.",
+                                      )
+                                    : t(
+                                        "Topology annotations enabled.",
+                                        "Topology annotations enabled.",
+                                      ),
                                 );
                               }}
                             />
@@ -7612,7 +8936,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Disable full window", "Disable full window")}</div>
+                          <div className="font-medium">
+                            {t("Disable full window", "Disable full window")}
+                          </div>
                           <div className="flex items-center gap-3">
                             <Switch
                               checked={topologyDisableFullWindow}
@@ -7641,7 +8967,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Confirm path to export", "Confirm path to export")}</div>
+                            <div className="font-medium">
+                              {t(
+                                "Confirm path to export",
+                                "Confirm path to export",
+                              )}
+                            </div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={topologyExportConfirmPath}
@@ -7671,29 +9002,54 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Topology export path", "Topology export path")}</div>
+                            <div className="font-medium">
+                              {t(
+                                "Topology export path",
+                                "Topology export path",
+                              )}
+                            </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={topologyExportFolderPreset}
                                 onValueChange={(v) => {
-                                  setTopologyExportFolderPreset(v as ExportFolderPreset);
+                                  setTopologyExportFolderPreset(
+                                    v as ExportFolderPreset,
+                                  );
                                   notifySaved(
-                                    t("Topology export preset set to {{preset}}.", {
-                                      preset: v,
-                                      defaultValue: `Topology export preset set to ${v}.`,
-                                    }),
+                                    t(
+                                      "Topology export preset set to {{preset}}.",
+                                      {
+                                        preset: v,
+                                        defaultValue: `Topology export preset set to ${v}.`,
+                                      },
+                                    ),
                                   );
                                 }}
                               >
                                 <SelectTrigger className="w-52">
-                                  <SelectValue placeholder={t("Folder preset", "Folder preset")} />
+                                  <SelectValue
+                                    placeholder={t(
+                                      "Folder preset",
+                                      "Folder preset",
+                                    )}
+                                  />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="system">{t("System default", "System default")}</SelectItem>
-                                  <SelectItem value="documents">{t("Documents", "Documents")}</SelectItem>
-                                  <SelectItem value="downloads">{t("Downloads", "Downloads")}</SelectItem>
-                                  <SelectItem value="desktop">{t("Desktop", "Desktop")}</SelectItem>
-                                  <SelectItem value="custom">{t("Custom path", "Custom path")}</SelectItem>
+                                  <SelectItem value="system">
+                                    {t("System default", "System default")}
+                                  </SelectItem>
+                                  <SelectItem value="documents">
+                                    {t("Documents", "Documents")}
+                                  </SelectItem>
+                                  <SelectItem value="downloads">
+                                    {t("Downloads", "Downloads")}
+                                  </SelectItem>
+                                  <SelectItem value="desktop">
+                                    {t("Desktop", "Desktop")}
+                                  </SelectItem>
+                                  <SelectItem value="custom">
+                                    {t("Custom path", "Custom path")}
+                                  </SelectItem>
                                 </SelectContent>
                               </Select>
                               <div className="text-xs text-muted-foreground">
@@ -7705,25 +9061,36 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         )}
-                        {isDesktop() && topologyExportFolderPreset === "custom" && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Custom export path", "Custom export path")}</div>
-                            <Input
-                              value={topologyExportCustomPath}
-                              onChange={(e) => setTopologyExportCustomPath(e.target.value)}
-                              placeholder={t(
-                                "C:\\Users\\You\\Documents\\Topology Exports",
-                                "C:\\Users\\You\\Documents\\Topology Exports",
-                              )}
-                            />
-                          </div>
-                        )}
+                        {isDesktop() &&
+                          topologyExportFolderPreset === "custom" && (
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                              <div className="font-medium">
+                                {t("Custom export path", "Custom export path")}
+                              </div>
+                              <Input
+                                value={topologyExportCustomPath}
+                                onChange={(e) =>
+                                  setTopologyExportCustomPath(e.target.value)
+                                }
+                                placeholder={t(
+                                  "C:\\Users\\You\\Documents\\Topology Exports",
+                                  "C:\\Users\\You\\Documents\\Topology Exports",
+                                )}
+                              />
+                            </div>
+                          )}
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Copy actions", "Copy actions")}</div>
+                          <div className="font-medium">
+                            {t("Copy actions", "Copy actions")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2"
+                                >
                                   {t("{{count}} selected", {
                                     count: topologyCopyActions.length,
                                     defaultValue: `${topologyCopyActions.length} selected`,
@@ -7732,7 +9099,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
                                 {TOPOLOGY_COPY_ACTION_OPTIONS.map((opt) => {
-                                  const checked = topologyCopyActions.includes(opt.value);
+                                  const checked = topologyCopyActions.includes(
+                                    opt.value,
+                                  );
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.value}
@@ -7742,11 +9111,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         setTopologyCopyActions((prev) => {
                                           const set = new Set(prev);
                                           if (next) set.add(opt.value);
-                                          else if (set.size > 1) set.delete(opt.value);
+                                          else if (set.size > 1)
+                                            set.delete(opt.value);
                                           return Array.from(set);
                                         });
                                       }}
-                                      onSelect={(event) => event.preventDefault()}
+                                      onSelect={(event) =>
+                                        event.preventDefault()
+                                      }
                                     >
                                       {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
@@ -7763,11 +9135,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Export actions", "Export actions")}</div>
+                          <div className="font-medium">
+                            {t("Export actions", "Export actions")}
+                          </div>
                           <div className="flex flex-wrap items-center gap-3">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button size="sm" variant="outline" className="h-8 px-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2"
+                                >
                                   {t("{{count}} selected", {
                                     count: topologyExportActions.length,
                                     defaultValue: `${topologyExportActions.length} selected`,
@@ -7776,7 +9154,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
                                 {TOPOLOGY_EXPORT_ACTION_OPTIONS.map((opt) => {
-                                  const checked = topologyExportActions.includes(opt.value);
+                                  const checked =
+                                    topologyExportActions.includes(opt.value);
                                   return (
                                     <DropdownMenuCheckboxItem
                                       key={opt.value}
@@ -7786,11 +9165,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         setTopologyExportActions((prev) => {
                                           const set = new Set(prev);
                                           if (next) set.add(opt.value);
-                                          else if (set.size > 1) set.delete(opt.value);
+                                          else if (set.size > 1)
+                                            set.delete(opt.value);
                                           return Array.from(set);
                                         });
                                       }}
-                                      onSelect={(event) => event.preventDefault()}
+                                      onSelect={(event) =>
+                                        event.preventDefault()
+                                      }
                                     >
                                       {t(opt.label, opt.label)}
                                     </DropdownMenuCheckboxItem>
@@ -7811,7 +9193,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {settingsSubtab === "audit" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                          <div className="font-medium">{t("Audit categories", "Audit categories")}</div>
+                          <div className="font-medium">
+                            {t("Audit categories", "Audit categories")}
+                          </div>
                           <div className="flex flex-wrap gap-4">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <input
@@ -7859,29 +9243,54 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Export folder preset", "Export folder preset")}</div>
+                            <div className="font-medium">
+                              {t(
+                                "Export folder preset",
+                                "Export folder preset",
+                              )}
+                            </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <Select
                                 value={auditExportFolderPreset}
                                 onValueChange={(v) => {
-                                  setAuditExportFolderPreset(v as ExportFolderPreset);
+                                  setAuditExportFolderPreset(
+                                    v as ExportFolderPreset,
+                                  );
                                   notifySaved(
-                                    t("Audit export preset set to {{preset}}.", {
-                                      preset: v,
-                                      defaultValue: `Audit export preset set to ${v}.`,
-                                    }),
+                                    t(
+                                      "Audit export preset set to {{preset}}.",
+                                      {
+                                        preset: v,
+                                        defaultValue: `Audit export preset set to ${v}.`,
+                                      },
+                                    ),
                                   );
                                 }}
                               >
                                 <SelectTrigger className="w-52">
-                                  <SelectValue placeholder={t("Folder preset", "Folder preset")} />
+                                  <SelectValue
+                                    placeholder={t(
+                                      "Folder preset",
+                                      "Folder preset",
+                                    )}
+                                  />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="system">{t("System default", "System default")}</SelectItem>
-                                  <SelectItem value="documents">{t("Documents", "Documents")}</SelectItem>
-                                  <SelectItem value="downloads">{t("Downloads", "Downloads")}</SelectItem>
-                                  <SelectItem value="desktop">{t("Desktop", "Desktop")}</SelectItem>
-                                  <SelectItem value="custom">{t("Custom path", "Custom path")}</SelectItem>
+                                  <SelectItem value="system">
+                                    {t("System default", "System default")}
+                                  </SelectItem>
+                                  <SelectItem value="documents">
+                                    {t("Documents", "Documents")}
+                                  </SelectItem>
+                                  <SelectItem value="downloads">
+                                    {t("Downloads", "Downloads")}
+                                  </SelectItem>
+                                  <SelectItem value="desktop">
+                                    {t("Desktop", "Desktop")}
+                                  </SelectItem>
+                                  <SelectItem value="custom">
+                                    {t("Custom path", "Custom path")}
+                                  </SelectItem>
                                 </SelectContent>
                               </Select>
                               <div className="text-xs text-muted-foreground">
@@ -7895,7 +9304,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Don't confirm destination", "Don't confirm destination")}</div>
+                            <div className="font-medium">
+                              {t(
+                                "Don't confirm destination",
+                                "Don't confirm destination",
+                              )}
+                            </div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={auditExportSkipDestinationConfirm}
@@ -7915,27 +9329,40 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 }}
                               />
                               <div className="text-xs text-muted-foreground">
-                                {t("Enabled by default.", "Enabled by default.")}
+                                {t(
+                                  "Enabled by default.",
+                                  "Enabled by default.",
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
-                        {isDesktop() && auditExportFolderPreset === "custom" && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Custom export path", "Custom export path")}</div>
-                            <Input
-                              value={auditExportCustomPath}
-                              onChange={(e) => setAuditExportCustomPath(e.target.value)}
-                              placeholder={t(
-                                "C:\\Users\\You\\Documents\\Audit Exports",
-                                "C:\\Users\\You\\Documents\\Audit Exports",
-                              )}
-                            />
-                          </div>
-                        )}
+                        {isDesktop() &&
+                          auditExportFolderPreset === "custom" && (
+                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                              <div className="font-medium">
+                                {t("Custom export path", "Custom export path")}
+                              </div>
+                              <Input
+                                value={auditExportCustomPath}
+                                onChange={(e) =>
+                                  setAuditExportCustomPath(e.target.value)
+                                }
+                                placeholder={t(
+                                  "C:\\Users\\You\\Documents\\Audit Exports",
+                                  "C:\\Users\\You\\Documents\\Audit Exports",
+                                )}
+                              />
+                            </div>
+                          )}
                         {isDesktop() && (
                           <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                            <div className="font-medium">{t("Confirm clear audit logs", "Confirm clear audit logs")}</div>
+                            <div className="font-medium">
+                              {t(
+                                "Confirm clear audit logs",
+                                "Confirm clear audit logs",
+                              )}
+                            </div>
                             <div className="flex items-center gap-3">
                               <Switch
                                 checked={confirmClearAuditLogs}
@@ -7977,10 +9404,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         ) : (
                           <>
                             <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                              <div className="font-medium">{t("Server status", "Server status")}</div>
+                              <div className="font-medium">
+                                {t("Server status", "Server status")}
+                              </div>
                               <div className="flex flex-wrap items-center gap-2">
-                                <Tag>{mcpRunning ? t("Running", "Running") : t("Stopped", "Stopped")}</Tag>
-                                <span className="text-xs text-muted-foreground">{mcpUrl}</span>
+                                <Tag>
+                                  {mcpRunning
+                                    ? t("Running", "Running")
+                                    : t("Stopped", "Stopped")}
+                                </Tag>
+                                <span className="text-xs text-muted-foreground">
+                                  {mcpUrl}
+                                </span>
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -7993,7 +9428,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </div>
                             </div>
                             <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                              <div className="font-medium">{t("Enable MCP server", "Enable MCP server")}</div>
+                              <div className="font-medium">
+                                {t("Enable MCP server", "Enable MCP server")}
+                              </div>
                               <div className="flex items-center gap-3">
                                 <Switch
                                   checked={mcpServerEnabled}
@@ -8011,12 +9448,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </div>
                             </div>
                             <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
-                              <div className="font-medium">{t("Bind host", "Bind host")}</div>
+                              <div className="font-medium">
+                                {t("Bind host", "Bind host")}
+                              </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <Input
                                   value={mcpServerHost}
                                   disabled={mcpBusy}
-                                  onChange={(event) => setMcpServerHost(event.target.value)}
+                                  onChange={(event) =>
+                                    setMcpServerHost(event.target.value)
+                                  }
                                   placeholder="127.0.0.1"
                                   className="h-8 w-52"
                                 />
@@ -8029,7 +9470,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     setMcpServerPort(
                                       Number.isNaN(value)
                                         ? 8787
-                                        : Math.max(1, Math.min(65535, Math.round(value))),
+                                        : Math.max(
+                                            1,
+                                            Math.min(65535, Math.round(value)),
+                                          ),
                                     );
                                   }}
                                   className="h-8 w-28"
@@ -8038,7 +9482,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   size="sm"
                                   variant="outline"
                                   className="h-8 px-2"
-                                  onClick={() => void setMcpServerRunning(mcpServerEnabled, mcpServerHost, mcpServerPort)}
+                                  onClick={() =>
+                                    void setMcpServerRunning(
+                                      mcpServerEnabled,
+                                      mcpServerHost,
+                                      mcpServerPort,
+                                    )
+                                  }
                                   disabled={mcpBusy || !mcpServerEnabled}
                                 >
                                   {t("Apply + restart", "Apply + restart")}
@@ -8046,16 +9496,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </div>
                             </div>
                             <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start">
-                              <div className="font-medium">{t("Tool access", "Tool access")}</div>
+                              <div className="font-medium">
+                                {t("Tool access", "Tool access")}
+                              </div>
                               <div className="space-y-2">
                                 <div className="flex flex-wrap gap-2">
                                   <Button
                                     size="sm"
                                     variant="outline"
                                     className="h-7 px-2"
-                                    disabled={mcpBusy || mcpToolCatalog.length === 0}
+                                    disabled={
+                                      mcpBusy || mcpToolCatalog.length === 0
+                                    }
                                     onClick={() => {
-                                      const all = mcpToolCatalog.map((tool) => tool.name);
+                                      const all = mcpToolCatalog.map(
+                                        (tool) => tool.name,
+                                      );
                                       setMcpEnabledTools(all);
                                       void applyMcpEnabledTools(all);
                                     }}
@@ -8066,7 +9522,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                     size="sm"
                                     variant="outline"
                                     className="h-7 px-2"
-                                    disabled={mcpBusy || mcpToolCatalog.length === 0}
+                                    disabled={
+                                      mcpBusy || mcpToolCatalog.length === 0
+                                    }
                                     onClick={() => {
                                       setMcpEnabledTools([]);
                                       void applyMcpEnabledTools([]);
@@ -8077,7 +9535,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 </div>
                                 <div className="grid gap-2">
                                   {mcpToolCatalog.map((tool) => {
-                                    const enabled = mcpEnabledTools.includes(tool.name);
+                                    const enabled = mcpEnabledTools.includes(
+                                      tool.name,
+                                    );
                                     return (
                                       <label
                                         key={tool.name}
@@ -8090,16 +9550,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           disabled={mcpBusy}
                                           onChange={(event) => {
                                             const next = event.target.checked
-                                              ? Array.from(new Set([...mcpEnabledTools, tool.name]))
-                                              : mcpEnabledTools.filter((name) => name !== tool.name);
+                                              ? Array.from(
+                                                  new Set([
+                                                    ...mcpEnabledTools,
+                                                    tool.name,
+                                                  ]),
+                                                )
+                                              : mcpEnabledTools.filter(
+                                                  (name) => name !== tool.name,
+                                                );
                                             setMcpEnabledTools(next);
                                             void applyMcpEnabledTools(next);
                                           }}
                                         />
                                         <div className="space-y-0.5">
-                                          <div className="font-medium">{tool.title || tool.name}</div>
-                                          <div className="text-xs text-muted-foreground">{tool.description}</div>
-                                          <div className="text-[11px] text-muted-foreground/80">{tool.name}</div>
+                                          <div className="font-medium">
+                                            {tool.title || tool.name}
+                                          </div>
+                                          <div className="text-xs text-muted-foreground">
+                                            {tool.description}
+                                          </div>
+                                          <div className="text-[11px] text-muted-foreground/80">
+                                            {tool.name}
+                                          </div>
                                         </div>
                                       </label>
                                     );
@@ -8122,17 +9595,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 text-sm">
                         <div className="text-xs text-muted-foreground">
                           {t("Current session:", "Current session:")}{" "}
-                          <span className="font-medium text-foreground">{currentSessionId}</span>
+                          <span className="font-medium text-foreground">
+                            {currentSessionId}
+                          </span>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={exportSessionSettings}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={exportSessionSettings}
+                          >
                             <FileDown className="mr-2 h-4 w-4" />
                             {t("Export settings", "Export settings")}
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => settingsImportInputRef.current?.click()}
+                            onClick={() =>
+                              settingsImportInputRef.current?.click()
+                            }
                           >
                             <FileUp className="mr-2 h-4 w-4" />
                             {t("Import settings", "Import settings")}
@@ -8147,11 +9628,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
                         <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
                           <div className="space-y-1">
-                            <Label>{t("Clone from session", "Clone from session")}</Label>
-                            <Select value={cloneSourceSessionId} onValueChange={setCloneSourceSessionId}>
+                            <Label>
+                              {t("Clone from session", "Clone from session")}
+                            </Label>
+                            <Select
+                              value={cloneSourceSessionId}
+                              onValueChange={setCloneSourceSessionId}
+                            >
                               <SelectTrigger>
                                 <SelectValue
-                                  placeholder={t("Pick saved session profile", "Pick saved session profile")}
+                                  placeholder={t(
+                                    "Pick saved session profile",
+                                    "Pick saved session profile",
+                                  )}
                                 />
                               </SelectTrigger>
                               <SelectContent>
@@ -8168,7 +9657,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <Button
                             size="sm"
                             disabled={!cloneSourceSessionId}
-                            onClick={() => void cloneSessionSettingsFrom(cloneSourceSessionId)}
+                            onClick={() =>
+                              void cloneSessionSettingsFrom(
+                                cloneSourceSessionId,
+                              )
+                            }
                           >
                             {t("Clone", "Clone")}
                           </Button>
@@ -8190,15 +9683,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ) : (
           <Card className="border-border/60 bg-card/60">
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              {t("Select a zone to open it in a new tab.", "Select a zone to open it in a new tab.")}
+              {t(
+                "Select a zone to open it in a new tab.",
+                "Select a zone to open it in a new tab.",
+              )}
             </CardContent>
           </Card>
         )}
       </div>
-      <Dialog open={showClearAuditConfirm} onOpenChange={setShowClearAuditConfirm}>
+      <Dialog
+        open={showClearAuditConfirm}
+        onOpenChange={setShowClearAuditConfirm}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("Clear audit logs", "Clear audit logs")}</DialogTitle>
+            <DialogTitle>
+              {t("Clear audit logs", "Clear audit logs")}
+            </DialogTitle>
             <DialogDescription>
               {t(
                 "This deletes all audit entries stored on this device. This cannot be undone.",
@@ -8220,14 +9721,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         "Clear-audit confirmation disabled.",
                         "Clear-audit confirmation disabled.",
                       )
-                    : t("Clear-audit confirmation enabled.", "Clear-audit confirmation enabled."),
+                    : t(
+                        "Clear-audit confirmation enabled.",
+                        "Clear-audit confirmation enabled.",
+                      ),
                 );
               }}
             />
             {t("Don't ask again", "Don't ask again")}
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setShowClearAuditConfirm(false)}>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setShowClearAuditConfirm(false)}
+            >
               {t("Cancel", "Cancel")}
             </Button>
             <Button
@@ -8250,7 +9758,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("Purge entire cache?", "Purge entire cache?")}</DialogTitle>
+            <DialogTitle>
+              {t("Purge entire cache?", "Purge entire cache?")}
+            </DialogTitle>
             <DialogDescription>
               {t(
                 "This purges cached content for the active zone. It can temporarily increase origin load.",
@@ -8284,7 +9794,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </div>
         </DialogContent>
       </Dialog>
-      <Dialog open={showPurgeUrlsConfirm} onOpenChange={setShowPurgeUrlsConfirm}>
+      <Dialog
+        open={showPurgeUrlsConfirm}
+        onOpenChange={setShowPurgeUrlsConfirm}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("Purge URLs?", "Purge URLs?")}</DialogTitle>
@@ -8304,7 +9817,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </div>
             {pendingPurgeIssues.length > 0 ? (
               <div className="mt-2 space-y-1">
-                <div className="text-destructive font-medium">{t("Warnings", "Warnings")}</div>
+                <div className="text-destructive font-medium">
+                  {t("Warnings", "Warnings")}
+                </div>
                 <ul className="list-disc pl-4 text-destructive/90">
                   {pendingPurgeIssues.slice(0, 8).map((issue) => (
                     <li key={issue}>{issue}</li>
@@ -8312,7 +9827,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </ul>
                 {pendingPurgeIssues.length > 8 ? (
                   <div className="text-muted-foreground">
-                    +{t("{{count}} more…", {
+                    +
+                    {t("{{count}} more…", {
                       count: pendingPurgeIssues.length - 8,
                       defaultValue: `${pendingPurgeIssues.length - 8} more…`,
                     })}
@@ -8360,8 +9876,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 setConfirmLogout(!disable);
                 notifySaved(
                   disable
-                    ? t("Logout confirmation disabled.", "Logout confirmation disabled.")
-                    : t("Logout confirmation enabled.", "Logout confirmation enabled."),
+                    ? t(
+                        "Logout confirmation disabled.",
+                        "Logout confirmation disabled.",
+                      )
+                    : t(
+                        "Logout confirmation enabled.",
+                        "Logout confirmation enabled.",
+                      ),
                 );
               }}
             />
@@ -8375,7 +9897,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             >
               {t("Cancel", "Cancel")}
             </Button>
-            <Button variant="destructive" className="flex-1" onClick={confirmAndLogout}>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={confirmAndLogout}
+            >
               {t("Log out", "Log out")}
             </Button>
           </div>

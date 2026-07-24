@@ -120,7 +120,12 @@ export function BulkEditBar({
           </>
         )}
         {onBulkExport && (
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onBulkExport}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={onBulkExport}
+          >
             Export
           </Button>
         )}

@@ -23,7 +23,10 @@ const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
 // Minimal surface of the better-sqlite3 synchronous DB used by our code
 type BetterSqlite3Like = {
   prepare: (sql: string) => {
-    run: (...params: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
+    run: (...params: unknown[]) => {
+      changes: number;
+      lastInsertRowid: number | bigint;
+    };
     all: (...params: unknown[]) => unknown[];
     get: (...params: unknown[]) => unknown;
   };
@@ -74,9 +77,24 @@ function mkSyncWrapper(db: BetterSqlite3Like): SqliteWrapper {
 }
 
 type Sqlite3Like = {
-  run(sql: string, params: unknown[], callback?: (this: { lastID: number; changes: number }, err: Error | null) => void): void;
-  all(sql: string, params: unknown[], callback?: (err: Error | null, rows: unknown[]) => void): void;
-  get(sql: string, params: unknown[], callback?: (err: Error | null, row: unknown) => void): void;
+  run(
+    sql: string,
+    params: unknown[],
+    callback?: (
+      this: { lastID: number; changes: number },
+      err: Error | null,
+    ) => void,
+  ): void;
+  all(
+    sql: string,
+    params: unknown[],
+    callback?: (err: Error | null, rows: unknown[]) => void,
+  ): void;
+  get(
+    sql: string,
+    params: unknown[],
+    callback?: (err: Error | null, row: unknown) => void,
+  ): void;
   close(callback?: (err: Error | null) => void): void;
 };
 
@@ -87,14 +105,21 @@ function mkSqlite3Wrapper(db: Sqlite3Like): SqliteWrapper {
     params: unknown[] = [],
   ): Promise<T> {
     return new Promise((resolve, reject) => {
-      db.run(sql, params, function (this: { lastID: number; changes: number }, err: Error | null) {
-        if (err) return reject(err);
-        // mimic better-sqlite3 return with lastInsertRowid & changes
-        return resolve({
-          lastInsertRowid: this.lastID,
-          changes: this.changes,
-        } as unknown as T);
-      });
+      db.run(
+        sql,
+        params,
+        function (
+          this: { lastID: number; changes: number },
+          err: Error | null,
+        ) {
+          if (err) return reject(err);
+          // mimic better-sqlite3 return with lastInsertRowid & changes
+          return resolve({
+            lastInsertRowid: this.lastID,
+            changes: this.changes,
+          } as unknown as T);
+        },
+      );
     });
   };
   const all = function <T = unknown>(
@@ -150,7 +175,9 @@ export function openSqlite(
           // throws when used so callers can handle the absence.
           try {
             // eslint-disable-next-line @typescript-eslint/no-implied-eval
-            const r = eval("typeof require === 'function' ? require : undefined");
+            const r = eval(
+              "typeof require === 'function' ? require : undefined",
+            );
             if (typeof r === "function") return r;
           } catch {}
           return (_name: string) => {

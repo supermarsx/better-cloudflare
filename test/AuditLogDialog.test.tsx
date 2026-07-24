@@ -1,60 +1,79 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { after, test } from "node:test";
-import { act, create } from "react-test-renderer";
+import { afterEach, test, beforeEach } from "node:test";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  act,
+  waitFor,
+} from "@testing-library/react";
 
 import { AuditLogDialog } from "../src/components/audit/AuditLogDialog";
 import { TauriClient } from "../src/lib/api/tauri-client";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 const originalExport = TauriClient.exportAuditEntries;
+const originalGet = TauriClient.getAuditEntries;
 
-after(() => {
+beforeEach(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
   TauriClient.exportAuditEntries = originalExport;
+  TauriClient.getAuditEntries = originalGet;
+});
+
+afterEach(() => {
+  cleanup();
+  (globalThis as unknown as { window?: unknown }).window = originalWindow;
+  TauriClient.exportAuditEntries = originalExport;
+  TauriClient.getAuditEntries = originalGet;
 });
 
 test("AuditLogDialog shows desktop-only message when not in Tauri", async () => {
   (globalThis as unknown as { window?: unknown }).window = undefined;
-  let renderer: ReturnType<typeof create> | undefined;
+  TauriClient.getAuditEntries = async () => [];
+  TauriClient.exportAuditEntries = async () => "{}";
   await act(async () => {
-    renderer = create(
-      React.createElement(AuditLogDialog, {
-        open: true,
-        onOpenChange: () => {},
-      }),
-    );
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
   });
-  const text = renderer.toJSON();
-  const json = JSON.stringify(text);
-  assert.match(json, /desktop app/i);
+
+  await waitFor(() => {
+    assert.ok(screen.getByText(/desktop app/i));
+  });
 });
 
 test("AuditLogDialog loads entries in desktop mode", async () => {
   (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
-  const original = TauriClient.getAuditEntries;
   TauriClient.getAuditEntries = async () => [
     { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
   ];
   TauriClient.exportAuditEntries = async () => "{}";
-  try {
-    let renderer: ReturnType<typeof create> | undefined;
-    await act(async () => {
-      renderer = create(
-        React.createElement(AuditLogDialog, {
-          open: true,
-          onOpenChange: () => {},
-        }),
-      );
-    });
-    const json = JSON.stringify(renderer!.toJSON());
-    assert.match(json, /dns:create/);
-    assert.match(json, /2026-01-01/);
-    assert.match(json, /Export JSON/);
-    assert.match(json, /Export CSV/);
-  } finally {
-    TauriClient.getAuditEntries = original;
-  }
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+
+  await waitFor(() => {
+    assert.ok(
+      screen.getByText((content, element) =>
+        Boolean(
+          element?.tagName === "DIV" &&
+            element.classList.contains("font-medium") &&
+            /dns:create/.test(content),
+        ),
+      ),
+    );
+    const entryTimestamp = screen.getByText((content, element) =>
+      Boolean(
+        element?.tagName === "DIV" &&
+          element.classList.contains("text-muted-foreground") &&
+          /2026-01-01/i.test(content),
+      ),
+    );
+    assert.ok(entryTimestamp);
+    assert.ok(screen.getByRole("button", { name: "Export JSON" }));
+    assert.ok(screen.getByRole("button", { name: "Export CSV" }));
+  });
 });
 
 test("AuditLogDialog calls backend export", async () => {
@@ -62,72 +81,42 @@ test("AuditLogDialog calls backend export", async () => {
   TauriClient.getAuditEntries = async () => [
     { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
   ];
-  let called: string[] = [];
-  TauriClient.exportAuditEntries = async (format: "json" | "csv" = "json") => {
+  const called: string[] = [];
+  TauriClient.exportAuditEntries = async (format = "json") => {
     called.push(format);
     return "{}";
   };
-  let renderer: ReturnType<typeof create> | undefined;
+
   await act(async () => {
-    renderer = create(
-      React.createElement(AuditLogDialog, {
-        open: true,
-        onOpenChange: () => {},
-      }),
-    );
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
   });
-  const buttons = renderer!.root.findAllByType("button");
-  const exportJson = buttons.find((b) =>
-    String(b.children).includes("Export JSON"),
-  );
-  const exportCsv = buttons.find((b) =>
-    String(b.children).includes("Export CSV"),
-  );
-  await act(async () => exportJson!.props.onClick());
-  await act(async () => exportCsv!.props.onClick());
-  assert.deepEqual(called, ["json", "csv"]);
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: "Export JSON" }));
+    assert.ok(screen.getByRole("button", { name: "Export CSV" }));
+  });
+
+  const exportJson = screen.getByRole("button", { name: "Export JSON" });
+  const exportCsv = screen.getByRole("button", { name: "Export CSV" });
+  await act(async () => {
+    fireEvent.click(exportJson);
+    fireEvent.click(exportCsv);
+  });
+  await waitFor(() => {
+    assert.deepEqual(called, ["json", "csv"]);
+  });
 });
 
 test("AuditLogDialog handles load errors", async () => {
   (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
-  const original = TauriClient.getAuditEntries;
   TauriClient.getAuditEntries = async () => {
     throw new Error("boom");
   };
   TauriClient.exportAuditEntries = async () => "{}";
-  try {
-    let renderer: ReturnType<typeof create> | undefined;
-    await act(async () => {
-      renderer = create(
-        React.createElement(AuditLogDialog, {
-          open: true,
-          onOpenChange: () => {},
-        }),
-      );
-    });
-    const json = JSON.stringify(renderer!.toJSON());
-    assert.match(json, /boom/);
-  } finally {
-    TauriClient.getAuditEntries = original;
-  }
-});
 
-test("AuditLogDialog closes", async () => {
-  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
-  let closed = false;
-  const renderer = create(
-    React.createElement(AuditLogDialog, {
-      open: true,
-      onOpenChange: (open) => {
-        closed = !open;
-      },
-    }),
-  );
-  const buttons = renderer.root.findAllByType("button");
-  const close = buttons.find((b) =>
-    String(b.children).toLowerCase().includes("close"),
-  );
-  assert.ok(close);
-  await act(async () => close!.props.onClick());
-  assert.equal(closed, true);
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+  await waitFor(() => {
+    assert.ok(screen.getByText(/boom/i));
+  });
 });

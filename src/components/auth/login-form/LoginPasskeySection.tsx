@@ -34,7 +34,8 @@ export function LoginPasskeySection({
         </Label>
       </div>
       <p className="text-xs text-muted-foreground pl-1 mb-3">
-        Use biometric authentication or security keys for secure, password-free login
+        Use biometric authentication or security keys for secure, password-free
+        login
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Button

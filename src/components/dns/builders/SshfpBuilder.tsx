@@ -104,16 +104,22 @@ export function SshfpBuilder({
     const fpTrimmed = fpRaw.trim();
     const fpNoSpaces = fpTrimmed.replace(/\s+/g, "");
 
-    if (a === undefined) push(issues, "SSHFP: algorithm is required (usually 1–4).");
+    if (a === undefined)
+      push(issues, "SSHFP: algorithm is required (usually 1–4).");
     else if (![1, 2, 3, 4].includes(Number(a)))
       push(issues, "SSHFP: algorithm is usually 1–4.");
 
-    if (f === undefined) push(issues, "SSHFP: fingerprint type is required (usually 1–2).");
-    else if (![1, 2].includes(Number(f))) push(issues, "SSHFP: fingerprint type is usually 1–2.");
+    if (f === undefined)
+      push(issues, "SSHFP: fingerprint type is required (usually 1–2).");
+    else if (![1, 2].includes(Number(f)))
+      push(issues, "SSHFP: fingerprint type is usually 1–2.");
 
     if (!fpTrimmed) push(issues, "SSHFP: fingerprint is required.");
     if (fpTrimmed && /\s/.test(fpTrimmed))
-      push(issues, "SSHFP: fingerprint contains whitespace (usually written as a single hex string).");
+      push(
+        issues,
+        "SSHFP: fingerprint contains whitespace (usually written as a single hex string).",
+      );
 
     if (fpNoSpaces) {
       if (!isHex(fpNoSpaces)) push(issues, "SSHFP: fingerprint should be hex.");
@@ -131,7 +137,10 @@ export function SshfpBuilder({
     const canonical = composeSSHFP(a, f, fpNoSpaces || fpTrimmed);
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "SSHFP: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "SSHFP: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
@@ -142,7 +151,14 @@ export function SshfpBuilder({
       );
 
     return { canonical, issues, nameIssues };
-  }, [algorithm, fingerprint, fptype, record.content, record.name, record.type]);
+  }, [
+    algorithm,
+    fingerprint,
+    fptype,
+    record.content,
+    record.name,
+    record.type,
+  ]);
 
   useEffect(() => {
     if (!onWarningsChange) return;
@@ -193,7 +209,11 @@ export function SshfpBuilder({
                 setAlgorithmMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeSSHFP(val, fptype, fingerprint.trim().replace(/\s+/g, "")),
+                  content: composeSSHFP(
+                    val,
+                    fptype,
+                    fingerprint.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -221,14 +241,18 @@ export function SshfpBuilder({
                   setAlgorithm(val);
                   onRecordChange({
                     ...record,
-                    content: composeSSHFP(val, fptype, fingerprint.trim().replace(/\s+/g, "")),
+                    content: composeSSHFP(
+                      val,
+                      fptype,
+                      fingerprint.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
             )}
             <div className="text-[11px] text-muted-foreground">
-              {SSHFP_ALGORITHMS.find((a) => Number(a.value) === algorithm)?.desc ??
-                "Common: 1 RSA, 3 ECDSA, 4 Ed25519."}
+              {SSHFP_ALGORITHMS.find((a) => Number(a.value) === algorithm)
+                ?.desc ?? "Common: 1 RSA, 3 ECDSA, 4 Ed25519."}
             </div>
           </div>
 
@@ -247,7 +271,11 @@ export function SshfpBuilder({
                 setFptypeMode("preset");
                 onRecordChange({
                   ...record,
-                  content: composeSSHFP(algorithm, val, fingerprint.trim().replace(/\s+/g, "")),
+                  content: composeSSHFP(
+                    algorithm,
+                    val,
+                    fingerprint.trim().replace(/\s+/g, ""),
+                  ),
                 });
               }}
             >
@@ -275,7 +303,11 @@ export function SshfpBuilder({
                   setFptype(val);
                   onRecordChange({
                     ...record,
-                    content: composeSSHFP(algorithm, val, fingerprint.trim().replace(/\s+/g, "")),
+                    content: composeSSHFP(
+                      algorithm,
+                      val,
+                      fingerprint.trim().replace(/\s+/g, ""),
+                    ),
                   });
                 }}
               />
@@ -324,7 +356,9 @@ export function SshfpBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -345,16 +379,22 @@ export function SshfpBuilder({
           </div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>
-              Prefer SHA-256 (<code>fptype=2</code>) unless you must support older clients.
+              Prefer SHA-256 (<code>fptype=2</code>) unless you must support
+              older clients.
             </li>
-            <li>Make sure the fingerprint matches the key actually used by the host.</li>
             <li>
-              SSHFP is most useful with DNSSEC validation; otherwise it can be spoofed.
+              Make sure the fingerprint matches the key actually used by the
+              host.
+            </li>
+            <li>
+              SSHFP is most useful with DNSSEC validation; otherwise it can be
+              spoofed.
             </li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">SSHFP warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -373,4 +413,3 @@ export function SshfpBuilder({
     </div>
   );
 }
-

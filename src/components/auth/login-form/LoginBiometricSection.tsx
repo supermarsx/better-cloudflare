@@ -52,7 +52,8 @@ export function LoginBiometricSection({
         </Label>
       </div>
       <p className="text-xs text-muted-foreground pl-1 mb-3">
-        Use {biometricLabel} to instantly unlock your API key without typing a password
+        Use {biometricLabel} to instantly unlock your API key without typing a
+        password
       </p>
 
       {biometricEnrolled ? (
@@ -88,9 +89,7 @@ export function LoginBiometricSection({
           className="w-full"
         >
           <Fingerprint className="h-4 w-4 mr-1" />
-          {biometricLoading
-            ? "Enrolling…"
-            : `Enable ${biometricLabel} Unlock`}
+          {biometricLoading ? "Enrolling…" : `Enable ${biometricLabel} Unlock`}
         </Button>
       )}
     </div>

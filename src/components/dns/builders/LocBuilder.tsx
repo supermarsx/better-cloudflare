@@ -59,15 +59,13 @@ function parseLocContent(content?: string) {
   const latMin = clampToNumber(parts[1] ?? "");
   const latSec = clampToNumber(parts[2] ?? "");
   const latHemRaw = (parts[3] ?? "").toUpperCase();
-  const latHem: HemisphereNS =
-    latHemRaw === "S" ? "S" : ("N" as HemisphereNS);
+  const latHem: HemisphereNS = latHemRaw === "S" ? "S" : ("N" as HemisphereNS);
 
   const lonDeg = clampToNumber(parts[4] ?? "");
   const lonMin = clampToNumber(parts[5] ?? "");
   const lonSec = clampToNumber(parts[6] ?? "");
   const lonHemRaw = (parts[7] ?? "").toUpperCase();
-  const lonHem: HemisphereEW =
-    lonHemRaw === "W" ? "W" : ("E" as HemisphereEW);
+  const lonHem: HemisphereEW = lonHemRaw === "W" ? "W" : ("E" as HemisphereEW);
 
   const altitudeM = parseMetersToken(parts[8]);
   const sizeM = parseMetersToken(parts[9]);
@@ -172,7 +170,11 @@ export function LocBuilder({
 
   const diagnostics = useMemo(() => {
     if (record.type !== "LOC") {
-      return { canonical: "", issues: [] as string[], nameIssues: [] as string[] };
+      return {
+        canonical: "",
+        issues: [] as string[],
+        nameIssues: [] as string[],
+      };
     }
 
     const issues: string[] = [];
@@ -210,8 +212,10 @@ export function LocBuilder({
       push(issues, "LOC: longitude seconds should be 0–<60.");
 
     if (altitudeM !== undefined) {
-      if (altitudeM < -10000) push(issues, "LOC: altitude is very low (below -10km).");
-      if (altitudeM > 100000) push(issues, "LOC: altitude is very high (above 100km).");
+      if (altitudeM < -10000)
+        push(issues, "LOC: altitude is very low (below -10km).");
+      if (altitudeM > 100000)
+        push(issues, "LOC: altitude is very high (above 100km).");
     }
 
     const positiveOptional = (v: number | undefined, label: string) => {
@@ -243,12 +247,18 @@ export function LocBuilder({
     );
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
-      push(issues, "LOC: content differs from builder settings (Apply canonical to normalize).");
+      push(
+        issues,
+        "LOC: content differs from builder settings (Apply canonical to normalize).",
+      );
     }
 
     const name = (record.name ?? "").trim();
     if (!name)
-      push(nameIssues, "LOC: name is typically a host label (e.g., office or @).");
+      push(
+        nameIssues,
+        "LOC: name is typically a host label (e.g., office or @).",
+      );
 
     return { canonical, issues, nameIssues };
   }, [
@@ -701,7 +711,9 @@ export function LocBuilder({
           </Button>
           <Button
             size="sm"
-            onClick={() => onRecordChange({ ...record, content: diagnostics.canonical })}
+            onClick={() =>
+              onRecordChange({ ...record, content: diagnostics.canonical })
+            }
           >
             Apply canonical to content
           </Button>
@@ -723,13 +735,15 @@ export function LocBuilder({
           <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
             <li>Use DMS coordinates; seconds can be fractional.</li>
             <li>
-              Include size/precision values if accuracy matters; otherwise leave them blank.
+              Include size/precision values if accuracy matters; otherwise leave
+              them blank.
             </li>
             <li>LOC records can reveal sensitive location information.</li>
           </ul>
         </div>
 
-        {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
+        {(diagnostics.nameIssues.length > 0 ||
+          diagnostics.issues.length > 0) && (
           <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <div className="text-sm font-semibold">LOC warnings</div>
             <div className="scrollbar-themed mt-2 max-h-40 overflow-auto pr-2">
@@ -748,4 +762,3 @@ export function LocBuilder({
     </div>
   );
 }
-
