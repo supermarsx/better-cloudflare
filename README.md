@@ -1,74 +1,114 @@
 # Better Cloudflare
 
-Better Cloudflare is a Tauri-powered desktop app for managing DNS records on Cloudflare. It securely stores API tokens using password-based encryption and provides a simple UI for creating, updating, and deleting records.
+Better Cloudflare is a [Next.js](https://nextjs.org/) + [Tauri](https://tauri.app/) desktop app for managing Cloudflare DNS records with secure credentials and passkey support.
 
-For desktop-specific setup and distribution, see `README-TAURI.md`.
+The app includes:
 
-## Requirements
+- Cloudflare zone/DNS management
+- Secure local storage for API credentials
+- Passkey-based authentication flow support
+- Audit logging and bulk editing workflows
+- Offline-friendly local cache behavior
+- Theme and locale support
 
-The project requires **Node 18 or higher**. Use a modern Node version when running
-`npm install`, `npm run dev`, and `npm run build`.
+## What you get
 
-For desktop development, you also need:
-- **Rust toolchain** (latest stable)
-- **Tauri system dependencies** (see `README-TAURI.md` for platform-specific packages)
+- A native desktop experience (Windows, macOS, Linux) via Tauri
+- A fast web UI for day-to-day DNS record operations
+- Stronger security defaults than a simple token-in-config tool
+- CI-validated workflows for format, lint, tests, and build
 
-## Development
+## Prerequisites
 
-Install dependencies and run the desktop app in dev mode:
+- Node.js 18+
+- Optional (for desktop build only):
+  - Rust toolchain (stable)
+  - Platform-specific Tauri dependencies
+- Git
+
+## Quick start
 
 ```bash
+git clone https://github.com/supermarsx/better-cloudflare.git
+cd better-cloudflare
 npm install
-npm run tauri:dev
 ```
 
-For UI-only work (no backend), you can run the Next.js dev server:
+Run web-only development:
 
 ```bash
 npm run dev
 ```
 
-Then open <http://localhost:3000> in your browser. API-driven features require the Tauri backend.
-
-## Building for production
-
-Create an optimized desktop build:
+Run full desktop mode:
 
 ```bash
-npm run tauri:build
+npm run tauri:dev
 ```
 
-For a static export of the frontend only:
+Open <http://localhost:3000> for web mode, or use the Tauri window for desktop mode.
+
+## Build targets
+
+| Target | Command | Output |
+|---|---|---|
+| Web frontend | `npm run build` | `out/` (static export) |
+| Desktop app | `npm run tauri:build` | `src-tauri/target/...` |
+| Package | `npm run build && npm run tauri:build` | app packages and platform artifacts |
+
+## Testing and quality checks
 
 ```bash
-npm run build
-npm run preview
+npm run format:check   # formatting
+npm run lint           # ESLint
+npm run typecheck      # TypeScript type check
+npm run test           # unit tests
+npm run build          # production build (Next export)
 ```
 
-## Developer Documentation (JSDoc / TypeDoc)
-
-This codebase includes TypeScript JSDoc comments and can generate developer
-documentation using TypeDoc. To generate a static site containing the API
-reference and module docs run:
+A full local gate:
 
 ```bash
-npm run docs
+npm run check
 ```
 
-This will output generated docs to the `docs/` directory. Keep JSDoc comments
-focused on describing public APIs, expected parameter types, and return
-values. For React components prefer documenting props and any callbacks.
+## Documentation
+
+- `docs/tauri-migration.md` — migration notes and architecture decisions
+- `docs/passkey-architecture.md` — passkey flow design
+- `docs/spf-naptr.md` — SPF/NAPTR validation notes
+- `LICENSE` in `license.md`
+
+## Project structure
+
+- `app/` — application shell and root routes
+- `src/` — app UI and logic
+- `src-tauri/` — Rust backend and Tauri configuration
+- `test/` — TSX unit tests
+- `e2e/` — Playwright test specs
+- `docs/` — architecture and migration notes
+
+## GitHub Pages
+
+The repository publishes a GitHub Pages preview of the built static frontend on pushes to `main`.
+When you visit the hosted site, you get a rendered README-friendly site and app landing routes from the same production build.
+
+## CI and releases
+
+GitHub Actions currently runs these checks:
+
+- **Format Check** (`npm run format:check`)
+- **Lint** (`npm run lint`)
+- **Test and Package** (`npm test`, `npm run build`, then `npm pack`)
+- **Autopublish** (release packaging) depends on successful upstream checks
+
+## Contributing
+
+1. Create a branch for your change
+2. Run `npm run check` before committing
+3. Commit small, focused changes
+4. Push and open a pull request
 
 ## License
 
-This project is released under the MIT License. See [license.md](license.md) for details.
-
-## CI and Autopublish
-
-The repository runs multiple GitHub Actions workflows for quality checks and packaging:
-
-- Format Check — uses Prettier to ensure consistent formatting
-- Lint — ESLint checks the codebase
-- Test and Package — runs unit tests, builds the app, and creates a package artifact
-
-The Autopublish workflow only runs after the `Test and Package` workflow completes successfully for the same commit and also verifies that `Format Check` and `Lint` passed for that commit. This ensures releases are created only when formatting, linting, tests, build and packaging all succeeded.
+MIT — see [license.md](license.md).
