@@ -50,11 +50,11 @@ Open <http://localhost:3000> for web mode, or use the Tauri window for desktop m
 
 ## Build targets
 
-| Target | Command | Output |
-|---|---|---|
-| Web frontend | `npm run build` | `out/` (static export) |
-| Desktop app | `npm run tauri:build` | `src-tauri/target/...` |
-| Package | `npm run build && npm run tauri:build` | app packages and platform artifacts |
+| Target       | Command                                | Output                              |
+| ------------ | -------------------------------------- | ----------------------------------- |
+| Web frontend | `npm run build`                        | `out/` (static export)              |
+| Desktop app  | `npm run tauri:build`                  | `src-tauri/target/...`              |
+| Package      | `npm run build && npm run tauri:build` | app packages and platform artifacts |
 
 ## Testing and quality checks
 
