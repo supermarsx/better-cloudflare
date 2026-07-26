@@ -11,6 +11,7 @@ import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
 import { LoginBiometricSection } from "./login-form/LoginBiometricSection";
 import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
+import { LoginWindowHandle } from "./login-form/LoginWindowHandle";
 import {
   Dialog,
   DialogContent,
@@ -116,11 +117,12 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   };
 
   return (
-    <div className="h-full w-full flex items-center justify-center bg-background p-4 relative overflow-hidden">
+    <div className="relative flex min-h-full w-full items-center justify-center overflow-x-hidden bg-background p-4">
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
 
-      <Card className="w-full max-w-md relative z-10 border border-border/60 shadow-[0_0_18px_rgba(0,0,0,0.12)] bg-card/80 backdrop-blur-xl">
+      <Card className="relative z-10 w-full max-w-md overflow-hidden border border-border/60 bg-card/80 shadow-[0_0_18px_rgba(0,0,0,0.12)] backdrop-blur-xl">
+        <LoginWindowHandle desktop={desktop} />
         <LoginHeader />
         <CardContent className="space-y-6 pt-4">
           <LoginKeySelector
