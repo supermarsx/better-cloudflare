@@ -12,6 +12,7 @@ dist
 dist-ssr
 out
 *.local
+*.tsbuildinfo
 src/**/*.js
 
 # Editor directories and files
