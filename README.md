@@ -31,7 +31,7 @@ This repo is meant for people who want:
 ```bash
 git clone https://github.com/supermarsx/better-cloudflare.git
 cd better-cloudflare
-npm install
+npm ci
 ```
 
 Run web mode:
@@ -49,12 +49,15 @@ npm run tauri:dev
 ## Commands you’ll use
 
 ```bash
-npm run format:check   # formatting check
-npm run lint           # ESLint
-npm run typecheck      # TS compile check
-npm run test           # unit tests
-npm run build          # Next export
-npm run check          # all local gates above
+npm run format:check   # formatting check (prettier)
+npm run lint           # ESLint for app/ source
+npm run typecheck      # TypeScript compile check
+npm run test           # unit/integration tests
+npm run test:e2e       # Playwright browser checks
+npm run build          # web export to ./out
+npm run build:web      # alias for npm run build
+npm run build:desktop  # web export + desktop bundle
+npm run check          # format + lint + typecheck + test
 ```
 
 ## GitHub Pages (GitHub-hosted preview)
@@ -67,6 +70,7 @@ This repo can publish a Pages site from the web export output (`out/`) on `main`
   - build step: `npm run build`
   - artifact upload using `actions/upload-pages-artifact`
   - deployment using `actions/deploy-pages`
+  - workflow file: `.github/workflows/pages.yml`
 
 If you want to enable Pages for the first time, turn on GitHub Pages from repository settings and then re-push `main`.
 
@@ -77,6 +81,7 @@ Workflow set:
 - `Format Check` (`npm run format:check`)
 - `Lint` (`npm run lint`)
 - `Test and Package` (`npm run test`, `npm run build`)
+- `CI` (`npm run check`)
 - `Deploy GitHub Pages` (conditional)
 - `Autopublish` (release creation + packaged artifact upload)
 
@@ -97,7 +102,9 @@ Releases are generated only when upstream checks pass for the same commit SHA.
 - [Tauri migration notes](docs/tauri-migration.md)
 - [SPF/NAPTR notes](docs/spf-naptr.md)
 - [Design system notes](docs/design-system.md)
+- [Project specification](spec.md)
 - [Future work](docs/future-work.md)
+- [Migration TODOs](TODO-TAURI-MIGRATION.md)
 
 ## Contributing
 

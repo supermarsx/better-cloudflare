@@ -2681,7 +2681,7 @@ See `CONTRIBUTING.md` for guidelines.
 **Documentation:**
 
 - Main README: `README.md`
-- Desktop README: `README-TAURI.md`
+- Main README: `README.md`
 - Migration guide: `docs/tauri-migration.md`
 - TODO list: `TODO-TAURI-MIGRATION.md`
 - Spec: `spec.md`

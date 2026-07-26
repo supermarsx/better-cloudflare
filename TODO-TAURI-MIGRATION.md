@@ -462,7 +462,7 @@
   - [ ] Update screenshots
   - [x] Add system requirements
   - [x] Update development setup instructions
-  - [x] Link to README-TAURI.md for detailed desktop info
+  - [x] Link to README.md for detailed desktop info
 
 - [ ] **Update `spec.md`** ⚠️ **CRITICAL**
   - [ ] Change architecture from web app to desktop app
@@ -804,7 +804,7 @@ These items MUST be completed for the desktop app to be functional:
 ## 🔗 Related Documentation
 
 - [Migration Guide](docs/tauri-migration.md) - Comprehensive API conversion reference
-- [Desktop App README](README-TAURI.md) - Quick start and architecture guide
+- [Main README](README.md) - Project setup, usage, CI, and Pages guidance
 - [Tauri Documentation](https://tauri.app/v2/) - Official Tauri docs
 - [Rust Book](https://doc.rust-lang.org/book/) - Learn Rust
 
