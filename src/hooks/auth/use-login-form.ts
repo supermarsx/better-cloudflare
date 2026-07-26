@@ -5,6 +5,7 @@ import { storageBackend } from "@/lib/storage/storage-util";
 import i18next from "i18next";
 import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
+import { formatRequestError } from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
 import { isDesktop } from "@/lib/environment";
 import { TauriClient } from "@/lib/api/tauri-client";
@@ -40,12 +41,7 @@ export function useLoginForm(
     const client = new ServerClient(key, undefined, email);
     await client.verifyToken(signal);
   };
-  const formatError = (err: unknown) =>
-    err instanceof Error
-      ? err.message
-      : typeof err === "string"
-        ? err
-        : "Unknown error";
+  const formatError = formatRequestError;
   const delay = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 

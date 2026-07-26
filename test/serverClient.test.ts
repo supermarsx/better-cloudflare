@@ -39,6 +39,7 @@ function mockFetch(response: {
   text?: string;
 }) {
   let called: { url: string | URL; init?: RequestInit } | undefined;
+  let bodyReads = 0;
   globalThis.fetch = async (url: string | URL, init?: RequestInit) => {
     called = { url, init };
     return {
@@ -46,13 +47,18 @@ function mockFetch(response: {
       status: response.status,
       statusText: response.statusText ?? "",
       headers: new Headers(response.headers),
-      json: async () => response.body,
-      text: async () => response.text ?? "",
+      text: async () => {
+        bodyReads += 1;
+        return (
+          response.text ??
+          (response.body === undefined ? "" : JSON.stringify(response.body))
+        );
+      },
     } as Response;
   };
   return () => {
     globalThis.fetch = originalFetch;
-    return called!;
+    return { ...called!, bodyReads };
   };
 }
 
@@ -71,7 +77,10 @@ test("verifyToken success and error", async () => {
     statusText: "Forbidden",
     text: "bad token",
   });
-  await assert.rejects(() => client.verifyToken(), /403 Forbidden: bad token/);
+  await assert.rejects(
+    () => client.verifyToken(),
+    /Request failed \(HTTP 403\) at \/verify-token: bad token/,
+  );
   restore();
 });
 
@@ -88,6 +97,7 @@ test("getZones success and error", async () => {
   assert.deepEqual(await client.getZones(), zones);
   const called = restore();
   assert.equal(called.url, "http://example.com/zones");
+  assert.equal(called.bodyReads, 1);
 
   restore = mockFetch({
     ok: false,
@@ -95,7 +105,10 @@ test("getZones success and error", async () => {
     statusText: "Server Error",
     text: "fail",
   });
-  await assert.rejects(() => client.getZones(), /500 Server Error: fail/);
+  await assert.rejects(
+    () => client.getZones(),
+    /Request failed \(HTTP 500\) at \/zones: fail/,
+  );
   restore();
 });
 
@@ -121,7 +134,7 @@ test("getDNSRecords success and error", async () => {
   });
   await assert.rejects(
     () => client.getDNSRecords("zone", undefined),
-    /404 Not Found: no records/,
+    /Request failed \(HTTP 404\).*no records/,
   );
   restore();
 });
@@ -152,7 +165,7 @@ test("createDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.createDNSRecord("zone", record, undefined),
-    /400 Bad Request: bad/,
+    /Request failed \(HTTP 400\).*bad/,
   );
   restore();
 });
@@ -183,7 +196,7 @@ test("updateDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.updateDNSRecord("zone", "1", record, undefined),
-    /404 Not Found: missing/,
+    /Request failed \(HTTP 404\).*missing/,
   );
   restore();
 });
@@ -205,7 +218,7 @@ test("deleteDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.deleteDNSRecord("zone", "1", undefined),
-    /500 Server Error: fail/,
+    /Request failed \(HTTP 500\).*fail/,
   );
   restore();
 });
@@ -221,8 +234,11 @@ test("includes Cloudflare JSON error details", async () => {
       errors: [{ code: 1001, message: "bad request" }],
     },
   });
-  await assert.rejects(() => client.getZones(), /1001: bad request/);
-  restore();
+  await assert.rejects(
+    () => client.getZones(),
+    /Request failed \(HTTP 400, code 1001\) at \/zones: 1001: bad request/,
+  );
+  assert.equal(restore().bodyReads, 1);
 });
 
 test("aborts request after timeout", async () => {
@@ -232,15 +248,62 @@ test("aborts request after timeout", async () => {
     new Promise<never>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
         aborted = true;
-        reject(new Error("aborted"));
+        reject(new DOMException("aborted", "AbortError"));
       });
     });
   try {
-    await assert.rejects(() => client.getZones(), /aborted/);
+    await assert.rejects(() => client.getZones(), /Request timed out/);
     assert.equal(aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("normalizes network failures and explicit cancellation", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  globalThis.fetch = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+  await assert.rejects(
+    () => client.getZones(),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message ===
+        "Unable to reach the server. Check your connection; you may be offline or the request may be blocked by CORS. Then try again. (/zones)",
+  );
+
+  const controller = new AbortController();
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("cancelled", "AbortError"));
+      });
+    });
+  try {
+    const request = client.getZones(controller.signal);
+    controller.abort();
+    await assert.rejects(
+      () => request,
+      /Request was cancelled\. Retry when you are ready\. \(\/zones\)/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects malformed JSON after reading the response body once", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  const restore = mockFetch({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "application/json" },
+    text: "{not-json",
+  });
+  await assert.rejects(
+    () => client.getZones(),
+    /Server returned invalid JSON for a successful response/,
+  );
+  assert.equal(restore().bodyReads, 1);
 });
 
 test("listPasskeys and deletePasskey", async () => {

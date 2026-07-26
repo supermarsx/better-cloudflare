@@ -10,6 +10,11 @@ import { getEnv } from "../env";
 import { isDesktop } from "../environment";
 import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
 import type { TauriDNSRecordInput } from "./tauri-client";
+import {
+  malformedResponseError,
+  normalizeRequestError,
+  requestErrorFromResponse,
+} from "./request-error";
 
 const DEFAULT_BASE = getEnv(
   "SERVER_API_BASE",
@@ -113,9 +118,13 @@ export class ServerClient {
   ): Promise<T> {
     let controller: AbortController | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     if (!signal) {
       controller = new AbortController();
-      timeout = setTimeout(() => controller!.abort(), this.timeoutMs);
+      timeout = setTimeout(() => {
+        timedOut = true;
+        controller!.abort();
+      }, this.timeoutMs);
       signal = controller.signal;
     }
     try {
@@ -129,60 +138,21 @@ export class ServerClient {
         signal,
       });
       const contentType = res.headers.get("content-type");
+      const expectsJson = contentType?.includes("application/json") ?? false;
+      const bodyText = await res.text();
       if (!res.ok) {
-        let detail = "";
-        if (contentType && contentType.includes("application/json")) {
-          try {
-            const data: unknown = await res.json();
-            if (
-              typeof data === "object" &&
-              data !== null &&
-              Array.isArray((data as { errors?: unknown }).errors) &&
-              (data as { errors: unknown[] }).errors.length > 0
-            ) {
-              detail = (
-                data as {
-                  errors: { code?: unknown; message?: unknown }[];
-                }
-              ).errors
-                .map((e: { code?: unknown; message?: unknown }) => {
-                  const code = e.code;
-                  const message = e.message;
-                  return code && message
-                    ? `${code}: ${message}`
-                    : typeof message === "string"
-                      ? message
-                      : code !== undefined
-                        ? String(code)
-                        : "";
-                })
-                .filter((s) => s)
-                .join(", ");
-            } else if (
-              typeof (data as { message?: unknown }).message === "string"
-            ) {
-              detail = (data as { message: string }).message;
-            } else if (
-              typeof (data as { error?: unknown }).error === "string"
-            ) {
-              detail = (data as { error: string }).error;
-            } else {
-              detail = JSON.stringify(data);
-            }
-          } catch {
-            detail = await res.text();
-          }
-        } else {
-          detail = await res.text();
-        }
-        throw new Error(
-          `Request to ${endpoint} failed with ${res.status} ${res.statusText}: ${detail}`,
-        );
+        throw requestErrorFromResponse(res, endpoint, bodyText);
       }
-      if (contentType && contentType.includes("application/json")) {
-        return res.json();
+      if (expectsJson && bodyText) {
+        try {
+          return JSON.parse(bodyText) as T;
+        } catch (error) {
+          throw malformedResponseError(endpoint, error);
+        }
       }
       return undefined as T;
+    } catch (error) {
+      throw normalizeRequestError(error, { endpoint, timedOut });
     } finally {
       if (timeout) clearTimeout(timeout);
     }
