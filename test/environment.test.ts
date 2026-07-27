@@ -17,4 +17,10 @@ test("isDesktop/isWeb reflect tauri presence", () => {
   (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
   assert.equal(isDesktop(), true);
   assert.equal(isWeb(), false);
+
+  (globalThis as unknown as { window?: unknown }).window = {
+    __TAURI_INTERNALS__: {},
+  };
+  assert.equal(isDesktop(), true);
+  assert.equal(isWeb(), false);
 });

@@ -6,6 +6,7 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { isDesktop } from "@/lib/environment";
 
 import { cn } from "@/lib/utils";
 
@@ -18,9 +19,7 @@ const Dialog = ({
   modal,
   ...props
 }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) => {
-  const isTauri =
-    typeof window !== "undefined" &&
-    (window as unknown as { __TAURI__?: unknown }).__TAURI__ != null;
+  const isTauri = isDesktop();
   return <DialogPrimitive.Root modal={modal ?? !isTauri} {...props} />;
 };
 
@@ -56,12 +55,9 @@ const DialogContent = React.forwardRef<
      * dialogs, so we provide our own backdrop here.
      */}
     {(() => {
-      const isTauri =
-        typeof window !== "undefined" &&
-        (window as unknown as { __TAURI__?: unknown }).__TAURI__ != null;
       return (
         <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
-          {isTauri ? (
+          {isDesktop() ? (
             <div className="absolute inset-0 bg-background/70 backdrop-blur-md" />
           ) : (
             <DialogOverlay />

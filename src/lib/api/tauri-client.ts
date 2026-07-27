@@ -6,6 +6,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { isDesktop } from "@/lib/environment";
 
 export interface TauriZone {
   id: string;
@@ -85,7 +86,7 @@ export interface McpServerStatus {
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
-    return typeof window !== "undefined" && "__TAURI__" in window;
+    return isDesktop();
   }
 
   static async restartApp(): Promise<void> {

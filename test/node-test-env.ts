@@ -61,6 +61,16 @@ function setWindowOverride(value: unknown): void {
     } catch {
       // Ignore when descriptor is not configurable.
     }
+    try {
+      delete browserWindow.__TAURI_INTERNALS__;
+    } catch {
+      // Ignore when descriptor is not configurable.
+    }
+    try {
+      delete browserWindow.isTauri;
+    } catch {
+      // Ignore when descriptor is not configurable.
+    }
     return;
   }
 
@@ -71,12 +81,38 @@ function setWindowOverride(value: unknown): void {
   const tauriValue = (value as { __TAURI__?: unknown }).__TAURI__;
   if (tauriValue !== undefined) {
     browserWindow.__TAURI__ = tauriValue;
-    return;
+  } else {
+    try {
+      delete browserWindow.__TAURI__;
+    } catch {
+      // Ignore when descriptor is not configurable.
+    }
   }
-  try {
-    delete browserWindow.__TAURI__;
-  } catch {
-    // Ignore when descriptor is not configurable.
+
+  const tauriInternalsValue = (
+    value as { __TAURI_INTERNALS__?: unknown }
+  ).__TAURI_INTERNALS__;
+  if (tauriInternalsValue !== undefined) {
+    browserWindow.__TAURI_INTERNALS__ = tauriInternalsValue;
+  } else {
+    try {
+      delete browserWindow.__TAURI_INTERNALS__;
+    } catch {
+      // Ignore when descriptor is not configurable.
+    }
+  }
+
+  const isTauriValue = (value as { isTauri?: unknown }).isTauri;
+  if (isTauriValue === true) {
+    browserWindow.isTauri = true;
+  } else if (isTauriValue === false) {
+    browserWindow.isTauri = false;
+  } else {
+    try {
+      delete browserWindow.isTauri;
+    } catch {
+      // Ignore when descriptor is not configurable.
+    }
   }
 }
 
