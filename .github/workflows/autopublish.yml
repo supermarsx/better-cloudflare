@@ -1,9 +1,6 @@
 name: Autopublish Release
 
-# Only run this workflow after the main test/package workflow finishes.
-# This uses the `workflow_run` trigger so autopublish runs for the same commit
-# once `Test and Package` completes — and we verify that Format Check and Lint
-# also succeeded for the same head SHA before publishing.
+# Run only when Test and Package completes on push events.
 on:
   workflow_run:
     workflows:
@@ -12,36 +9,28 @@ on:
       - completed
 
 jobs:
-  publish:
+  prepare-release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.context.outputs.short_sha }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - name: Bail if upstream workflow didn't succeed
-        if: ${{ github.event.workflow_run.conclusion != 'success' }}
-        run: |
-          echo "Upstream workflow did not conclude successfully: ${{ github.event.workflow_run.conclusion }}"
-          exit 1
-      - name: Ensure jq is installed
-        run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y jq
-          else
-            echo jq already available
-          fi
-      - name: Verify Format Check and Lint also passed for this commit
+      - name: Ensure Format Check and Lint also passed for this commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           SHA="${{ github.event.workflow_run.head_sha }}"
           echo "Checking other workflows for commit $SHA"
-          runs_json=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100")
+          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100")
           check_workflow() {
             local name="$1"
-            local c=$(echo "$runs_json" | jq -r --arg name "$name" '.workflow_runs[] | select(.name==$name) | .conclusion' | head -n 1)
+            local c
+            c=$(echo "$runs_json" | jq -r --arg name "$name" '.workflow_runs[] | select(.name==$name) | .conclusion' | head -n 1)
             if [ "$c" != "success" ]; then
               echo "Required workflow '$name' did not succeed for $SHA (conclusion=$c)."
               exit 1
@@ -50,44 +39,172 @@ jobs:
           }
           check_workflow "Format Check"
           check_workflow "Lint"
-      - uses: actions/checkout@v4
-      - name: Setup Node
+
+      - name: Prepare release context
+        id: context
+        run: |
+          echo "short_sha=$(echo '${{ github.event.workflow_run.head_sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "version_year=$(date +%y)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next YY.N version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_YEAR: ${{ steps.context.outputs.version_year }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/releases?per_page=100")
+          max=$(echo "$runs_json" \
+            | jq -r --arg year "$RELEASE_YEAR" '
+              [
+                .[]
+                | select(.name | startswith("Autopublish "))
+                | select(.tag_name | test("^" + $year + "\\.[0-9]+$"))
+                | (.tag_name | split(".")[1] | tonumber)
+              ] | if length == 0 then [0] else . end | max
+            ')
+          version="$RELEASE_YEAR.$((max + 1))"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Delete previous auto releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/releases?per_page=100")
+          echo "$runs_json" \
+            | jq -r '
+              .[]
+              | select(.name | startswith("Autopublish"))
+              | "\(.id) \(.tag_name)"
+            ' \
+            | while read -r id tag; do
+                echo "Deleting previous release $id ($tag)"
+                curl -fsSL -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/$REPO/releases/$id" || true
+                curl -fsSL -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/$REPO/git/refs/tags/$tag" || true
+              done
+
+      - name: Create GitHub release
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.context.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          response=$(curl -fsSL -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/releases" \
+            -d "{\"tag_name\":\"$VERSION\",\"name\":\"Autopublish $VERSION\",\"body\":\"Automated release for commit $SHORT_SHA\",\"draft\":false,\"prerelease\":false}")
+          upload_url=$(echo "$response" | jq -r '.upload_url')
+          if [ -z "$upload_url" ] || [ "$upload_url" = "null" ]; then
+            echo "$response"
+            exit 1
+          fi
+          echo "upload_url=$upload_url" >> "$GITHUB_OUTPUT"
+
+  build-and-publish:
+    needs: prepare-release
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - os: macos-13
+            platform: macos
+            target: x86_64-apple-darwin
+            arch: x64
+          - os: macos-14
+            platform: macos
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: windows-latest
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            arch: x64
+          - os: windows-latest
+            platform: windows
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
-      - name: Install dependencies
-        run: npm ci
-      - name: Build
-        run: npm run build
-      - name: Create package
-        run: npm pack
-      - name: Resolve artifact path
-        id: artifact
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
         run: |
-          pkg_file="$(ls *.tgz | head -n1)"
-          if [ -z "$pkg_file" ]; then
-            echo "No package artifact found."
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            pkg-config \
+            libglib2.0-dev \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+      - name: Configure Linux ARM64 linker
+        if: matrix.platform == 'linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build Tauri target
+        run: npm run tauri -- build --target "${{ matrix.target }}"
+      - name: Upload binary artifacts to release
+        env:
+          UPLOAD_URL: ${{ needs.prepare-release.outputs.upload_url }}
+          TARGET: ${{ matrix.target }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/${TARGET}/release/bundle"
+          if [ ! -d "$bundle_dir" ]; then
+            echo "Bundle directory missing: $bundle_dir"
             exit 1
           fi
-          echo "path=$pkg_file" >> "$GITHUB_OUTPUT"
-          echo "name=$pkg_file" >> "$GITHUB_OUTPUT"
-      - name: Get short SHA
-        run: echo "SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
-      - name: Create GitHub release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: "autopublish-${{ env.SHORT_SHA }}"
-          release_name: "Autopublish - ${{ env.SHORT_SHA }}"
-          body: "Automated release for commit ${{ env.SHORT_SHA }}"
-          draft: false
-          prerelease: false
-      - name: Upload package to release
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.artifact.outputs.path }}
-          asset_name: ${{ steps.artifact.outputs.name }}
-          asset_content_type: application/gzip
+          artifacts="$(find "$bundle_dir" -type f \( -name '*.AppImage' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.msi' -o -name '*.exe' -o -name '*.app' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.pkg' \))"
+          if [ -z "$artifacts" ]; then
+            echo "No release artifacts found under $bundle_dir"
+            exit 1
+          fi
+          base_upload_url="${UPLOAD_URL%\{*}"
+          while IFS= read -r artifact; do
+            filename="$(basename "$artifact")"
+            encoded_name="$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$filename")"
+            echo "Uploading $filename"
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$artifact" \
+              "${base_upload_url}?name=${encoded_name}&label=${encoded_name}"
+          done <<< "$artifacts"

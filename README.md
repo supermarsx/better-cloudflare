@@ -83,9 +83,15 @@ Workflow set:
 - `Test and Package` (`npm run test`, `npm run build`)
 - `CI` (`npm run check`)
 - `Deploy GitHub Pages` (conditional)
-- `Autopublish` (release creation + packaged artifact upload)
+- `Autopublish` (release creation + multi-platform desktop package upload)
 
 Releases are generated only when upstream checks pass for the same commit SHA.
+Autopublish uses an incremental `YY.N` release naming scheme and keeps the latest
+release only; old auto-releases are removed automatically.
+Current target set is:
+- linux x64 and arm64 (`.AppImage`, `.deb`, `.rpm`)
+- macOS x64 and arm64 (`.dmg`, `.app`)
+- windows x64 and arm64 (`.msi`, `.exe`)
 
 ## Repository map
 
