@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai_commands;
 mod cloudflare_api;
 mod commands;
 mod crypto;

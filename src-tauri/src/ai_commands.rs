@@ -18,7 +18,11 @@ pub async fn ai_list_providers(
     agent: State<'_, AgentManager>,
 ) -> Result<Vec<ProviderStatus>, String> {
     let configured = agent.configured_providers().await;
-    let all = vec![ProviderKind::OpenAi, ProviderKind::Anthropic, ProviderKind::Ollama];
+    let all = vec![
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::Ollama,
+    ];
     let statuses = all
         .into_iter()
         .map(|kind| ProviderStatus {
@@ -88,9 +92,7 @@ pub async fn ai_list_models(
 
 /// Get current agent configuration.
 #[tauri::command]
-pub async fn ai_get_config(
-    agent: State<'_, AgentManager>,
-) -> Result<AgentConfig, String> {
+pub async fn ai_get_config(agent: State<'_, AgentManager>) -> Result<AgentConfig, String> {
     Ok(agent.agent_config().await)
 }
 
@@ -225,8 +227,7 @@ pub async fn ai_list_presets() -> Result<Vec<bc_ai_agent::presets::Preset>, Stri
 /// Get a specific preset by ID.
 #[tauri::command]
 pub async fn ai_get_preset(id: String) -> Result<bc_ai_agent::presets::Preset, String> {
-    bc_ai_agent::presets::get_preset(&id)
-        .ok_or_else(|| format!("Preset '{}' not found", id))
+    bc_ai_agent::presets::get_preset(&id).ok_or_else(|| format!("Preset '{}' not found", id))
 }
 
 // ─── Export ────────────────────────────────────────────────────────────────
