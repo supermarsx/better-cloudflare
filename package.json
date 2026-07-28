@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev --turbo",
     "build": "next build",
+    "build:pages:ci": "cross-env GITHUB_PAGES_BASE_PATH=better-cloudflare npm run build",
     "start": "next start",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -25,6 +26,7 @@
     "test:all": "npm run test && npm run test:e2e",
     "test:e2e": "playwright test",
     "test:e2e:reliability": "playwright test e2e/home.spec.ts e2e/login-key-management.spec.ts test/ci-playwright-runtime.spec.ts --project=chromium",
+    "test:e2e:pages": "cross-env CI=true PLAYWRIGHT_STATIC_BASE_PATH=/better-cloudflare playwright test test/ci-pages-base-path.spec.ts --project=chromium",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:web": "npm run build",
     "build:desktop": "npm run build && npm run tauri:build",
