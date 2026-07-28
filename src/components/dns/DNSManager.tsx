@@ -98,6 +98,14 @@ import {
   cacheZoneRecords,
   getCachedZoneRecords,
 } from "@/lib/storage/offline-cache";
+import {
+  reportRuntimeError,
+  sanitizeRuntimeText,
+} from "@/lib/errors/runtime-reporting";
+
+function reportDnsManagerFailure(error: unknown, label: string) {
+  return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
+}
 
 type ActionTab =
   | "records"
@@ -693,6 +701,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpActionError, setMcpActionError] = useState<string | null>(null);
   const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
     storageManager.getLoadingOverlayTimeoutMs(),
   );
@@ -847,8 +856,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     push: pushUndo,
     undo,
     redo,
-    canUndo,
-    canRedo,
   } = useUndoRedo<DNSOp>({
     onUndo: async (reverse) => {
       switch (reverse.kind) {
@@ -1333,6 +1340,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setDomainAuditItems([]);
       return;
     }
+    let active = true;
     const zone = activeTab.zoneName.trim().toLowerCase();
     const registrarExpiry =
       registrarDomainResult &&
@@ -1362,8 +1370,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const records =
         activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
       TauriClient.runDomainAudit(activeTab.zoneName, records, opts)
-        .then(setDomainAuditItems)
-        .catch(() => {
+        .then((items) => {
+          if (active) setDomainAuditItems(items);
+        })
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Run desktop DNS audit");
+          if (!active) return;
           // Fallback to frontend implementation on error
           setDomainAuditItems(
             runDomainAudit(activeTab.zoneName, activeTab.records, opts),
@@ -1374,6 +1386,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         runDomainAudit(activeTab.zoneName, activeTab.records, opts),
       );
     }
+    return () => {
+      active = false;
+    };
   }, [activeTab, domainAuditCategories, rdapResult, registrarDomainResult]);
 
   const domainAuditItemsWithOverrides = useMemo(() => {
@@ -1753,6 +1768,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const refreshMcpStatus = useCallback(async () => {
     if (!isDesktop()) return;
+    setMcpActionError(null);
     try {
       const status = await TauriClient.getMcpServerStatus();
       setMcpStatus(status);
@@ -1761,29 +1777,49 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setMcpEnabledTools(tools);
       }
     } catch (error) {
-      toast({
-        title: t("MCP error", "MCP error"),
-        description: (error as Error).message,
-        variant: "destructive",
-      });
+      const diagnostic = reportDnsManagerFailure(
+        error,
+        "Refresh MCP server status",
+      );
+      setMcpActionError(diagnostic.message);
     }
-  }, [t, toast]);
-
-  const applyMcpEnabledTools = useCallback(async (tools: string[]) => {
-    if (!isDesktop()) return;
-    const normalized = Array.from(
-      new Set(tools.map((v) => String(v).trim()).filter(Boolean)),
-    );
-    const status = await TauriClient.setMcpEnabledTools(normalized);
-    setMcpStatus(status);
-    const fromStatus = extractMcpEnabledTools(status);
-    setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
   }, []);
+
+  const applyMcpEnabledTools = useCallback(
+    async (tools: string[]) => {
+      if (!isDesktop()) return;
+      const previousTools = mcpEnabledTools;
+      const normalized = Array.from(
+        new Set(tools.map((v) => String(v).trim()).filter(Boolean)),
+      );
+      setMcpBusy(true);
+      setMcpActionError(null);
+      try {
+        const status = await TauriClient.setMcpEnabledTools(normalized);
+        setMcpStatus(status);
+        const fromStatus = extractMcpEnabledTools(status);
+        setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
+      } catch (error) {
+        setMcpEnabledTools(previousTools);
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          "Update MCP tool access",
+        );
+        setMcpActionError(diagnostic.message);
+      } finally {
+        setMcpBusy(false);
+      }
+    },
+    [mcpEnabledTools],
+  );
 
   const setMcpServerRunning = useCallback(
     async (enabled: boolean, host?: string, port?: number) => {
       if (!isDesktop()) return;
+      const previousEnabled = mcpServerEnabled;
+      const previousStatus = mcpStatus;
       setMcpBusy(true);
+      setMcpActionError(null);
       try {
         const nextHost = (host ?? mcpServerHost).trim() || "127.0.0.1";
         const nextPort = Math.max(
@@ -1801,11 +1837,25 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         const tools = extractMcpEnabledTools(status);
         if (tools.length) setMcpEnabledTools(tools);
         setMcpServerEnabled(enabled);
+      } catch (error) {
+        setMcpServerEnabled(previousEnabled);
+        setMcpStatus(previousStatus);
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          enabled ? "Start MCP server" : "Stop MCP server",
+        );
+        setMcpActionError(diagnostic.message);
       } finally {
         setMcpBusy(false);
       }
     },
-    [mcpEnabledTools, mcpServerHost, mcpServerPort],
+    [
+      mcpEnabledTools,
+      mcpServerEnabled,
+      mcpServerHost,
+      mcpServerPort,
+      mcpStatus,
+    ],
   );
 
   useEffect(() => {
@@ -1932,9 +1982,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [refreshMcpStatus, settingsSubtab]);
 
   useEffect(() => {
+    let active = true;
     if (isDesktop()) {
       TauriClient.getPreferences()
         .then((prefs) => {
+          if (!active) return;
           const prefObj = prefs as {
             last_zone?: string;
             last_active_tab?: string;
@@ -2230,9 +2282,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setSessionSettingsProfiles(prefObj.session_settings_profiles);
           }
         })
-        .catch(() => {})
-        .finally(() => setPrefsReady(true));
-      return;
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Load desktop DNS preferences");
+        })
+        .finally(() => {
+          if (active) setPrefsReady(true);
+        });
+      return () => {
+        active = false;
+      };
     }
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
@@ -2305,13 +2363,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
     setSessionSettingsProfiles(storageManager.getSessionSettingsProfiles());
     setPrefsReady(true);
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
     if (!prefsReady || !isDesktop()) return;
     let active = true;
     setMcpBusy(true);
-    (async () => {
+    setMcpActionError(null);
+    void (async () => {
       try {
         await TauriClient.setMcpEnabledTools(mcpEnabledTools);
         if (mcpServerEnabled) {
@@ -2328,8 +2390,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setMcpStatus(status);
         const tools = extractMcpEnabledTools(status);
         if (tools.length) setMcpEnabledTools(tools);
-      } catch {
-        // best-effort sync; UI will still allow manual refresh/retry
+      } catch (error) {
+        if (!active) return;
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          "Synchronize MCP server preferences",
+        );
+        setMcpActionError(diagnostic.message);
       } finally {
         if (active) setMcpBusy(false);
       }
@@ -2363,7 +2430,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               activeTab?.kind === "zone" ? activeTab.zoneId : undefined,
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Persist desktop DNS tab state");
+        });
     }
   }, [actionTab, activeTab, tabs]);
 
@@ -2377,7 +2446,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_zone: activeTab.zoneId,
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Persist last desktop DNS zone");
+        });
     } else {
       storageManager.setLastZone(activeTab.zoneId);
     }
@@ -2402,7 +2473,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_active_tab: encoded,
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Persist active desktop DNS tab");
+        });
     }
   }, [actionTab, activeTab, prefsReady, reopenLastTabs, restoredTabs]);
 
@@ -2415,7 +2488,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             auto_refresh_interval: autoRefreshInterval ?? undefined,
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(
+            error,
+            "Persist desktop DNS auto-refresh preference",
+          );
+        });
     } else {
       storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
     }
@@ -2544,7 +2622,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             },
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Persist desktop DNS preferences");
+        });
     }
   }, [
     globalPerPage,
@@ -2702,7 +2782,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_open_tabs: openTabIds,
           }),
         )
-        .catch(() => {});
+        .catch((error) => {
+          reportDnsManagerFailure(error, "Persist open desktop DNS tabs");
+        });
       return;
     }
     storageManager.setLastOpenTabs(openTabIds);
@@ -3203,8 +3285,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const clearAuditEntriesNow = useCallback(async () => {
     if (!isDesktop()) return;
-    await TauriClient.clearAuditEntries();
-    setAuditEntries([]);
+    try {
+      await TauriClient.clearAuditEntries();
+      setAuditEntries([]);
+      setAuditError(null);
+    } catch (error) {
+      const diagnostic = reportDnsManagerFailure(
+        error,
+        "Clear desktop DNS audit entries",
+      );
+      setAuditError(diagnostic.message);
+    }
   }, []);
 
   const createAuditFilterRule = useCallback(
@@ -4344,9 +4435,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpRunning = mcpStatus?.running === true;
   const mcpUrl =
     mcpStatus?.url ?? `http://${mcpServerHost}:${mcpServerPort}/mcp`;
-  const mcpLastError =
+  const rawMcpLastError =
     (typeof mcpStatus?.lastError === "string" ? mcpStatus.lastError : null) ??
     (typeof mcpStatus?.last_error === "string" ? mcpStatus.last_error : null);
+  const mcpLastError =
+    mcpActionError ??
+    (rawMcpLastError ? sanitizeRuntimeText(rawMcpLastError) : null);
   const mcpToolCatalog = Array.isArray(mcpStatus?.tools) ? mcpStatus.tools : [];
 
   return (

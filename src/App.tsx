@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { DNSManager } from "@/components/dns/DNSManager";
 import { Toaster } from "@/components/ui/toaster";
@@ -12,6 +12,60 @@ import { TauriClient } from "@/lib/api/tauri-client";
 import { cn } from "@/lib/utils";
 import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
+import { RuntimeDiagnosticDetails } from "@/components/layout/RuntimeDiagnosticDetails";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+
+function reportAppFailure(error: unknown, label: string): void {
+  reportRuntimeError(error, { source: "runtime", label });
+}
+
+export function DnsWorkspaceSection({
+  children,
+  onReturnToLogin,
+}: {
+  children: ReactNode;
+  onReturnToLogin: () => void;
+}) {
+  return (
+    <ErrorBoundary
+      label="DNS workspace"
+      fallback={({ diagnostic, reset }) => (
+        <div
+          role="alert"
+          data-testid="dns-workspace-recovery"
+          className="m-4 flex min-h-64 flex-col items-center justify-center gap-3 rounded-xl border border-destructive/50 bg-destructive/5 p-6 text-center"
+        >
+          <div>
+            <h2 className="text-base font-semibold text-destructive">
+              DNS workspace stopped unexpectedly
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Your app shell is still available. Retry the workspace or return
+              to login.
+            </p>
+          </div>
+          <RuntimeDiagnosticDetails diagnostic={diagnostic} compact />
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button type="button" size="sm" onClick={reset}>
+              Retry DNS workspace
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onReturnToLogin}
+            >
+              Return to login
+            </Button>
+          </div>
+        </div>
+      )}
+    >
+      {children}
+    </ErrorBoundary>
+  );
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -27,10 +81,14 @@ function App() {
 
   useEffect(() => {
     // Check if there's an active session
-    const currentSession = storageManager.getCurrentSession();
-    if (currentSession) {
-      // We have a session but need the password to decrypt the key
-      // For now, we'll require login each time for security
+    try {
+      const currentSession = storageManager.getCurrentSession();
+      if (currentSession) {
+        // We have a session but need the password to decrypt the key
+        // For now, we'll require login each time for security
+      }
+    } catch (error) {
+      reportAppFailure(error, "Read current login session");
     }
   }, []);
 
@@ -40,23 +98,44 @@ function App() {
 
   useEffect(() => {
     if (!isDesktop()) return;
-    TauriClient.getPreferences()
-      .then((prefs) => {
+    let active = true;
+    void (async () => {
+      try {
+        const prefs = await TauriClient.getPreferences();
+        if (!active) return;
         const pref = prefs as { theme?: string; locale?: string };
         if (pref.theme && typeof document !== "undefined") {
           document.documentElement.dataset.theme = pref.theme;
           if (typeof window !== "undefined") {
-            window.localStorage.setItem("theme", pref.theme);
+            try {
+              window.localStorage.setItem("theme", pref.theme);
+            } catch (error) {
+              reportAppFailure(error, "Cache desktop theme preference");
+            }
           }
         }
         if (pref.locale) {
-          void i18n.changeLanguage(pref.locale);
+          try {
+            await i18n.changeLanguage(pref.locale);
+          } catch (error) {
+            reportAppFailure(error, "Apply desktop language preference");
+          }
+          if (!active) return;
           if (typeof window !== "undefined") {
-            window.localStorage.setItem("locale", pref.locale);
+            try {
+              window.localStorage.setItem("locale", pref.locale);
+            } catch (error) {
+              reportAppFailure(error, "Cache desktop language preference");
+            }
           }
         }
-      })
-      .catch(() => {});
+      } catch (error) {
+        reportAppFailure(error, "Load desktop application preferences");
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -171,7 +250,13 @@ function App() {
           }`}
         >
           {activeView === "app" && isAuthenticated ? (
-            <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
+            <DnsWorkspaceSection onReturnToLogin={handleLogout}>
+              <DNSManager
+                apiKey={apiKey}
+                email={email}
+                onLogout={handleLogout}
+              />
+            </DnsWorkspaceSection>
           ) : (
             <LoginForm onLogin={handleLogin} desktop={isDesktopEnv} />
           )}
