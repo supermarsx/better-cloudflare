@@ -89,9 +89,8 @@ function setWindowOverride(value: unknown): void {
     }
   }
 
-  const tauriInternalsValue = (
-    value as { __TAURI_INTERNALS__?: unknown }
-  ).__TAURI_INTERNALS__;
+  const tauriInternalsValue = (value as { __TAURI_INTERNALS__?: unknown })
+    .__TAURI_INTERNALS__;
   if (tauriInternalsValue !== undefined) {
     browserWindow.__TAURI_INTERNALS__ = tauriInternalsValue;
   } else {
