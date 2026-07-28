@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import App from "../src/App";
+import { RuntimeRootBoundary } from "@/components/layout/RuntimeRootBoundary";
 
 export default function Page() {
   const [mounted, setMounted] = useState(false);
@@ -12,5 +13,9 @@ export default function Page() {
 
   if (!mounted) return null;
 
-  return <App />;
+  return (
+    <RuntimeRootBoundary>
+      <App />
+    </RuntimeRootBoundary>
+  );
 }
