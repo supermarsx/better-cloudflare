@@ -10,18 +10,68 @@ import { isDesktop } from "@/lib/environment";
 
 import { cn } from "@/lib/utils";
 
+type TitlebarPointerOverride = {
+  count: number;
+  priority: string;
+  value: string;
+};
+
+const titlebarPointerOverrides = new Map<
+  HTMLElement,
+  TitlebarPointerOverride
+>();
+
+function allowDesktopTitlebarPointerInteraction() {
+  const titlebars = document.querySelectorAll<HTMLElement>(".titlebar.fixed");
+
+  titlebars.forEach((titlebar) => {
+    const existing = titlebarPointerOverrides.get(titlebar);
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+
+    titlebarPointerOverrides.set(titlebar, {
+      count: 1,
+      priority: titlebar.style.getPropertyPriority("pointer-events"),
+      value: titlebar.style.getPropertyValue("pointer-events"),
+    });
+    titlebar.style.setProperty("pointer-events", "auto", "important");
+  });
+
+  return () => {
+    titlebars.forEach((titlebar) => {
+      const existing = titlebarPointerOverrides.get(titlebar);
+      if (!existing) return;
+
+      existing.count -= 1;
+      if (existing.count > 0) return;
+
+      if (existing.value) {
+        titlebar.style.setProperty(
+          "pointer-events",
+          existing.value,
+          existing.priority,
+        );
+      } else {
+        titlebar.style.removeProperty("pointer-events");
+      }
+      titlebarPointerOverrides.delete(titlebar);
+    });
+  };
+}
+
 /**
  * Dialog primitives exposing a styled Radix dialog. The exported set of
  * components should be used together to provide consistent styling and
  * accessible markup for modal dialogs in the app.
  */
 const Dialog = ({
-  modal,
+  modal = true,
   ...props
-}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) => {
-  const isTauri = isDesktop();
-  return <DialogPrimitive.Root modal={modal ?? !isTauri} {...props} />;
-};
+}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) => (
+  <DialogPrimitive.Root modal={modal} {...props} />
+);
 
 const DialogTrigger = DialogPrimitive.Trigger;
 
@@ -60,28 +110,29 @@ const DialogContent = React.forwardRef<
     ref,
   ) => {
     const desktop = isDesktop();
+    React.useEffect(() => {
+      if (!desktop) return;
+      return allowDesktopTitlebarPointerInteraction();
+    }, [desktop]);
+
     const isTitlebarPointer = (originalEvent: Event) => {
-      if (!(originalEvent instanceof PointerEvent)) return false;
-      const insetStr = getComputedStyle(
-        document.documentElement,
-      ).getPropertyValue("--app-top-inset");
-      const insetPx = Number.parseFloat(insetStr) || 0;
-      return originalEvent.clientY <= insetPx;
+      const target = originalEvent.target;
+      return (
+        desktop &&
+        target instanceof Element &&
+        target.closest(".titlebar.fixed") !== null
+      );
     };
 
     return (
       <DialogPortal>
         {/**
-         * In Tauri we render dialogs as non-modal so the native titlebar / drag region
-         * stays interactive. Radix only renders Overlay/scroll-lock behavior for modal
-         * dialogs, so we provide our own backdrop here.
+         * The desktop shell keeps the native titlebar above this layer. Radix remains
+         * modal so focus stays trapped in the dialog; only pointer interaction with
+         * that titlebar is narrowly restored while the content is mounted.
          */}
         <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
-          {desktop ? (
-            <div className="absolute inset-0 bg-background/70 backdrop-blur-md" />
-          ) : (
-            <DialogOverlay />
-          )}
+          <DialogOverlay />
           <div className="absolute inset-0 overflow-y-auto">
             <div className="flex min-h-full items-center justify-center p-4 pt-4">
               <DialogPrimitive.Content

@@ -87,6 +87,34 @@ test("PasskeyManagerDialog revokes passkeys", async () => {
   await waitFor(() => assert.equal(deleted, "cred1"));
 });
 
+test("PasskeyManagerDialog prevents duplicate in-flight removals", async () => {
+  ServerClient.prototype.listPasskeys = async () => [
+    { id: "cred1", counter: 1, label: "cred1", requiresReregistration: true },
+  ];
+  let deleteCalls = 0;
+  ServerClient.prototype.deletePasskey = async () => {
+    deleteCalls += 1;
+    await new Promise<void>(() => {});
+  };
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={unavailableStatus}
+    />,
+  );
+
+  const remove = await screen.findByRole("button", { name: /remove/i });
+  fireEvent.click(remove);
+  fireEvent.click(remove);
+
+  assert.equal(deleteCalls, 1);
+  assert.equal(remove.hasAttribute("disabled"), true);
+  assert.match(remove.textContent ?? "", /removing/i);
+});
+
 test("PasskeyManagerDialog handles list error", async () => {
   ServerClient.prototype.listPasskeys = async () => {
     throw new Error("fail");
@@ -134,6 +162,7 @@ test("PasskeyManagerDialog preserves structured backend errors during legacy rem
 });
 
 test("PasskeyManagerDialog ignores a stale list after the key changes", async () => {
+  const signals: AbortSignal[] = [];
   let resolveFirst: (
     items: Awaited<ReturnType<ServerClient["listPasskeys"]>>,
   ) => void = () => {};
@@ -151,7 +180,9 @@ test("PasskeyManagerDialog ignores a stale list after the key changes", async ()
     },
   );
 
-  ServerClient.prototype.listPasskeys = async function (id) {
+  ServerClient.prototype.listPasskeys = async function (id, signal) {
+    assert.ok(signal);
+    signals.push(signal);
     return id === "key-1" ? first : second;
   };
 
@@ -173,6 +204,9 @@ test("PasskeyManagerDialog ignores a stale list after the key changes", async ()
       status={unavailableStatus}
     />,
   );
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0].aborted, true);
+  assert.equal(signals[1].aborted, false);
 
   resolveSecond([
     {
@@ -197,6 +231,8 @@ test("PasskeyManagerDialog ignores a stale list after the key changes", async ()
 });
 
 test("PasskeyManagerDialog aborts a pending list when closed and clears stale content", async () => {
+  let observedSignal: AbortSignal | undefined;
+  let abortCalls = 0;
   let resolveList: (
     items: Awaited<ReturnType<ServerClient["listPasskeys"]>>,
   ) => void = () => {};
@@ -205,7 +241,13 @@ test("PasskeyManagerDialog aborts a pending list when closed and clears stale co
   >((resolve) => {
     resolveList = resolve;
   });
-  ServerClient.prototype.listPasskeys = async () => pending;
+  ServerClient.prototype.listPasskeys = async (_id, signal) => {
+    observedSignal = signal;
+    signal?.addEventListener("abort", () => {
+      abortCalls += 1;
+    });
+    return pending;
+  };
 
   const view = render(
     <PasskeyManagerDialog
@@ -230,6 +272,9 @@ test("PasskeyManagerDialog aborts a pending list when closed and clears stale co
       status={unavailableStatus}
     />,
   );
+  assert.ok(observedSignal);
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(abortCalls, 1);
   resolveList([
     {
       id: "late",

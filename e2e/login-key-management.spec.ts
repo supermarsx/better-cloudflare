@@ -28,6 +28,11 @@ async function installDesktopMock(page: Page) {
     const callbacks = new Map<number, Callback>();
     let callbackId = 0;
     let passkeyListCalls = 0;
+    const windowCommands: string[] = [];
+    Object.defineProperty(window, "__windowCommands", {
+      configurable: true,
+      value: windowCommands,
+    });
 
     const internals: TauriInternals = {
       callbacks,
@@ -111,7 +116,10 @@ async function installDesktopMock(page: Page) {
           case "plugin:event|unlisten":
             return undefined;
           default:
-            if (command.startsWith("plugin:window|")) return undefined;
+            if (command.startsWith("plugin:window|")) {
+              windowCommands.push(command);
+              return undefined;
+            }
             throw new Error(`Unexpected Tauri command: ${command}`);
         }
       },
@@ -209,8 +217,36 @@ test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
     await expect(dialog).toBeVisible();
     await expect(page.getByRole("dialog")).toHaveCount(1);
 
-    await page.getByRole("button", { name: "Manage Key" }).focus();
+    await expect(page.getByRole("button", { name: "Manage Key" })).toHaveCount(
+      0,
+    );
+    const backgroundManageButton = page
+      .locator("button")
+      .filter({ hasText: /^Manage Key$/ })
+      .first();
+    await backgroundManageButton.evaluate((button) => button.focus());
     await expect(dialog).toBeVisible();
+    await expect(backgroundManageButton).not.toBeFocused();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Boolean(document.activeElement?.closest("[role=dialog]")),
+        ),
+      )
+      .toBe(true);
+
+    const minimize = page.locator('button[aria-label="Minimize window"]');
+    await minimize.click();
+    await expect(dialog).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as Window & { __windowCommands?: string[] }
+          ).__windowCommands?.includes("plugin:window|minimize"),
+        ),
+      )
+      .toBe(true);
 
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
@@ -232,7 +268,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   const runtime = monitorRuntime(page);
   await page.goto("/");
   await selectDesktopKey(page);
-  await page.getByLabel("Password").fill("password");
+  await page.locator("#password").fill("password");
 
   const review = page.getByRole("button", {
     name: "Review legacy passkeys",
@@ -249,8 +285,21 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
     "Loading legacy passkeys",
   );
 
-  await page.getByRole("button", { name: "Manage Key" }).focus();
+  await expect(page.getByRole("button", { name: "Manage Key" })).toHaveCount(0);
+  const backgroundManageButton = page
+    .locator("button")
+    .filter({ hasText: /^Manage Key$/ })
+    .first();
+  await backgroundManageButton.evaluate((button) => button.focus());
   await expect(dialog).toBeVisible();
+  await expect(backgroundManageButton).not.toBeFocused();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(document.activeElement?.closest("[role=dialog]")),
+      ),
+    )
+    .toBe(true);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 

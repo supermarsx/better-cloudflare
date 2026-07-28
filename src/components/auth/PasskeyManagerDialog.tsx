@@ -48,8 +48,18 @@ export function PasskeyManagerDialog({
   const [items, setItems] = useState<PasskeyItem[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [revokingIds, setRevokingIds] = useState<Set<string>>(() => new Set());
   const loadSequence = useRef(0);
+  const revokeInFlight = useRef(new Set<string>());
+  const mounted = useRef(true);
   const { toast } = useToast();
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const sequence = ++loadSequence.current;
@@ -69,7 +79,7 @@ export function PasskeyManagerDialog({
 
     (async () => {
       try {
-        const list = await sc.listPasskeys(id);
+        const list = await sc.listPasskeys(id, controller.signal);
         if (controller.signal.aborted || sequence !== loadSequence.current) {
           return;
         }
@@ -97,6 +107,15 @@ export function PasskeyManagerDialog({
   }, [open, id, apiKey, email, toast]);
 
   const handleRevoke = async (cid: string) => {
+    if (revokeInFlight.current.has(cid)) return;
+
+    revokeInFlight.current.add(cid);
+    setRevokingIds((current) => {
+      const next = new Set(current);
+      next.add(cid);
+      return next;
+    });
+
     const sequence = loadSequence.current;
     const sc = new ServerClient(apiKey, undefined, email);
     try {
@@ -115,6 +134,15 @@ export function PasskeyManagerDialog({
         description: message,
         variant: "destructive",
       });
+    } finally {
+      revokeInFlight.current.delete(cid);
+      if (mounted.current) {
+        setRevokingIds((current) => {
+          const next = new Set(current);
+          next.delete(cid);
+          return next;
+        });
+      }
     }
   };
 
@@ -194,41 +222,45 @@ export function PasskeyManagerDialog({
                   </p>
                 </div>
               ) : (
-                items.map((it) => (
-                  <div
-                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent/50 transition-colors"
-                    key={it.id}
-                  >
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <div className="p-2 rounded-full bg-primary/10 text-primary">
-                        {getDeviceIcon(it.label)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm">
-                          {it.label || "Legacy credential"}
-                        </div>
-                        <div className="font-mono text-xs text-muted-foreground truncate">
-                          ID: {it.id.substring(0, 32)}...
-                        </div>
-                        <div className="text-xs text-destructive mt-1">
-                          {it.requiresReregistration !== false
-                            ? "Re-enrollment required"
-                            : "Cannot authenticate"}
-                        </div>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleRevoke(it.id)}
-                      className="ml-4"
+                items.map((it) => {
+                  const isRevoking = revokingIds.has(it.id);
+                  return (
+                    <div
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent/50 transition-colors"
+                      key={it.id}
                     >
-                      <Trash2 className="h-4 w-4 mr-1" />
-                      Remove
-                    </Button>
-                  </div>
-                ))
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className="p-2 rounded-full bg-primary/10 text-primary">
+                          {getDeviceIcon(it.label)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm">
+                            {it.label || "Legacy credential"}
+                          </div>
+                          <div className="font-mono text-xs text-muted-foreground truncate">
+                            ID: {it.id.substring(0, 32)}...
+                          </div>
+                          <div className="text-xs text-destructive mt-1">
+                            {it.requiresReregistration !== false
+                              ? "Re-enrollment required"
+                              : "Cannot authenticate"}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleRevoke(it.id)}
+                        className="ml-4"
+                        disabled={isRevoking}
+                      >
+                        <Trash2 className="h-4 w-4 mr-1" />
+                        {isRevoking ? "Removing…" : "Remove"}
+                      </Button>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
