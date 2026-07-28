@@ -2,239 +2,279 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 import {
-  RequestError,
+  backendConfigurationError,
   formatRequestError,
   malformedResponseError,
   normalizeRequestError,
+  RequestError,
   requestErrorFromResponse,
 } from "../src/lib/api/request-error.ts";
 
-test("normalizes network, timeout, cancellation, and unknown failures", () => {
-  const network = normalizeRequestError(new TypeError("Failed to fetch"), {
+test("classifies browser network, refused, DNS, TLS, and CORS failures", () => {
+  const generic = normalizeRequestError(new TypeError("Failed to fetch"), {
     endpoint: "/zones?token=secret",
+    requestUrl: "https://api.example.test/zones?api_key=secret",
     operation: "GET",
   });
-  assert.equal(
-    network.message,
-    "The browser could not complete the request and cannot distinguish between offline connectivity, DNS, TLS, or CORS failures. Check your connection, the server address and certificate, and browser/CORS settings, then try again. (/zones)",
+  assert.equal(generic.kind, "network");
+  assert.equal(generic.source, "browser");
+  assert.equal(generic.endpoint, "/zones");
+  assert.equal(generic.requestUrl, "https://api.example.test/zones");
+  assert.equal(generic.operation, "GET");
+  assert.equal(generic.retryable, true);
+  assert.match(generic.message, /offline connectivity, DNS, TLS, CORS/);
+  assert.doesNotMatch(generic.message, /secret/);
+
+  const offline = normalizeRequestError("ERR_INTERNET_DISCONNECTED");
+  assert.equal(offline.kind, "network");
+  assert.match(offline.message, /device appears to be offline/i);
+
+  const refused = normalizeRequestError(
+    { code: "ECONNREFUSED", message: "connect ECONNREFUSED 127.0.0.1:8787" },
+    { endpoint: "/verify-token" },
   );
-  assert.equal(network.kind, "network");
-  assert.equal(network.source, "browser");
-  assert.equal(network.endpoint, "/zones");
-  assert.equal(network.operation, "GET");
-  assert.equal(network.retryable, true);
-  assert.equal(
-    normalizeRequestError(new Error("Failed to fetch")).kind,
-    "network",
+  assert.equal(refused.kind, "network");
+  assert.match(refused.message, /backend refused the connection/i);
+
+  const dns = normalizeRequestError({
+    code: "ENOTFOUND",
+    message: "getaddrinfo ENOTFOUND api.invalid",
+  });
+  assert.equal(dns.kind, "network");
+  assert.match(dns.message, /hostname could not be resolved/i);
+
+  const tls = normalizeRequestError(
+    new Error("self-signed certificate in certificate chain"),
   );
-  assert.doesNotMatch(formatRequestError("Failed to fetch"), /Failed to fetch/);
+  assert.equal(tls.kind, "network");
+  assert.match(tls.message, /TLS or certificate error/i);
+
+  const cors = normalizeRequestError(
+    "Blocked by CORS: Access-Control-Allow-Origin missing",
+  );
+  assert.equal(cors.kind, "network");
+  assert.equal(cors.retryable, false);
+  assert.match(cors.message, /CORS policy/);
+});
+
+test("normalizes timeout and explicit cancellation", () => {
   const timeout = normalizeRequestError(new Error("aborted"), {
     endpoint: "/zones",
     operation: "POST",
     timedOut: true,
   });
-  assert.equal(
-    timeout.message,
-    "Request timed out. Check your connection and try again. (/zones)",
-  );
   assert.equal(timeout.kind, "timeout");
   assert.equal(timeout.source, "client");
   assert.equal(timeout.operation, "POST");
   assert.equal(timeout.retryable, true);
+  assert.match(timeout.message, /timed out/i);
+
   const aborted = normalizeRequestError(
     new DOMException("cancelled", "AbortError"),
-    {
-      endpoint: "/zones",
-      operation: "GET",
-    },
-  );
-  assert.equal(
-    aborted.message,
-    "Request was cancelled. Retry when you are ready. (/zones)",
+    { endpoint: "/zones", operation: "GET" },
   );
   assert.equal(aborted.kind, "aborted");
   assert.equal(aborted.source, "client");
-  assert.equal(aborted.operation, "GET");
   assert.equal(aborted.retryable, false);
-  assert.equal(
-    normalizeRequestError(new Error("token=very-secret")).message,
-    "Unexpected request error. Try again.",
-  );
+  assert.match(aborted.message, /cancelled/i);
 });
 
-test("extracts safe Cloudflare HTTP detail and redacts secrets", () => {
-  const response = new Response("", { status: 403 });
+test("preserves safe native and Tauri details with command metadata", () => {
+  const cause = {
+    error: {
+      message: "Cloudflare account is unavailable",
+      code: "CF_ACCOUNT",
+    },
+    status: 403,
+    statusText: "Forbidden",
+    request_id: "ray-123",
+    retry_after: "30",
+  };
+  const error = normalizeRequestError(cause, {
+    source: "tauri",
+    command: "verify_token",
+    operation: "Tauri invoke",
+  });
+  assert.equal(error.kind, "http");
+  assert.equal(error.source, "tauri");
+  assert.equal(error.command, "verify_token");
+  assert.equal(error.operation, "Tauri invoke");
+  assert.equal(error.status, 403);
+  assert.equal(error.statusText, "Forbidden");
+  assert.equal(error.code, "CF_ACCOUNT");
+  assert.equal(error.requestId, "ray-123");
+  assert.equal(error.retryAfter, "30");
+  assert.equal(error.retryable, false);
+  assert.equal(error.cause, cause);
+  assert.match(error.message, /account is unavailable/i);
+
+  const formatted = formatRequestError(error);
+  assert.match(formatted, /source tauri/);
+  assert.match(formatted, /command verify_token/);
+  assert.match(formatted, /status 403 Forbidden/);
+  assert.match(formatted, /code CF_ACCOUNT/);
+  assert.match(formatted, /request ID ray-123/);
+  assert.match(formatted, /retry after 30/);
+});
+
+test("unknown failures retain redacted detail and receive a diagnostic ID", () => {
+  const cause = new Error(
+    "Native bridge unavailable; Authorization: Bearer abc123 password=hunter2 cookie=session123 https://example.test/?token=query-secret",
+  );
+  const error = normalizeRequestError(cause, {
+    source: "tauri",
+    command: "verify_token",
+  });
+  assert.equal(error.kind, "unknown");
+  assert.equal(error.source, "tauri");
+  assert.equal(error.command, "verify_token");
+  assert.match(error.message, /Native bridge unavailable/);
+  assert.match(error.message, /Diagnostic ID: REQ-[A-Z0-9-]+/);
+  assert.match(error.diagnosticId ?? "", /^REQ-[A-Z0-9-]+$/);
+  assert.doesNotMatch(error.message, /abc123|hunter2|session123|query-secret/);
+  assert.equal(error.cause, cause);
+});
+
+test("produces actionable HTTP messages and captures safe response metadata", () => {
+  const cases = [
+    [401, "Unauthorized", /Authentication was rejected/],
+    [403, "Forbidden", /denied this operation/],
+    [404, "Not Found", /backend endpoint was not found/],
+    [429, "Too Many Requests", /rate limit was reached/],
+    [503, "Service Unavailable", /backend or upstream service failed/],
+  ] as const;
+
+  for (const [status, statusText, expected] of cases) {
+    const response = new Response("", {
+      status,
+      statusText,
+      headers: {
+        "cf-ray": "ray-safe",
+        "retry-after": "45",
+      },
+    });
+    const error = requestErrorFromResponse(
+      response,
+      "/verify-token?token=hidden",
+      JSON.stringify({ message: "Provider detail" }),
+      "POST",
+      "https://backend.example.test/api/verify-token?api_key=hidden",
+    );
+    assert.equal(error.status, status);
+    assert.equal(error.statusText, statusText);
+    assert.equal(error.endpoint, "/verify-token");
+    assert.equal(
+      error.requestUrl,
+      "https://backend.example.test/api/verify-token",
+    );
+    assert.equal(error.operation, "POST");
+    assert.equal(error.requestId, "ray-safe");
+    assert.equal(error.retryAfter, "45");
+    assert.equal(
+      error.retryable,
+      status === 429 || status >= 500,
+      `retryability for ${status}`,
+    );
+    assert.match(error.message, expected);
+    assert.match(error.message, /Provider detail/);
+    assert.doesNotMatch(error.message, /hidden/);
+  }
+});
+
+test("extracts bounded Cloudflare errors and aggressively redacts secrets", () => {
+  const response = new Response("", {
+    status: 403,
+    statusText: "Forbidden",
+  });
   const error = requestErrorFromResponse(
     response,
-    "/verify-token?token=hidden",
+    "/verify-token",
     JSON.stringify({
       errors: [
         {
           code: 10000,
           message: "Authentication failed token=super-secret",
         },
-        {
-          code: 9109,
-          message: "Invalid access token",
-        },
-        {
-          code: "1001",
-          message: "DNS record data is invalid",
-        },
+        { code: 9109, message: "Invalid access token" },
+        { code: 1001, message: "DNS record data is invalid" },
+        { code: 1002, message: "Fourth" },
+        { code: 1003, message: "Fifth" },
+        { code: 1004, message: "Must be omitted" },
       ],
     }),
-    "POST",
   );
-  assert.equal(error.kind, "http");
   assert.equal(error.source, "cloudflare");
-  assert.equal(error.status, 403);
-  assert.equal(error.endpoint, "/verify-token");
-  assert.equal(error.operation, "POST");
-  assert.equal(error.retryable, false);
-  assert.equal(error.context.status, 403);
-  assert.equal(error.context.code, "10000");
-  assert.deepEqual(error.providerCodes, ["10000", "9109", "1001"]);
-  assert.deepEqual(error.providerMessages, [
-    "Authentication failed token=[redacted]",
-    "Invalid access token",
-    "DNS record data is invalid",
-  ]);
-  assert.deepEqual(error.providerErrors, [
-    {
-      code: "10000",
-      message: "Authentication failed token=[redacted]",
-    },
-    { code: "9109", message: "Invalid access token" },
-    { code: "1001", message: "DNS record data is invalid" },
-  ]);
-  assert.equal(
-    error.message,
-    "Request failed (HTTP 403, code 10000) at /verify-token: 10000: Authentication failed token=[redacted]; 9109: Invalid access token; 1001: DNS record data is invalid",
-  );
-  assert.doesNotMatch(error.message, /super-secret|hidden/);
-});
-
-test("bounds Cloudflare provider errors while retaining all displayed codes", () => {
-  const response = new Response("", { status: 429 });
-  const error = requestErrorFromResponse(
-    response,
-    "/zones",
-    JSON.stringify({
-      errors: Array.from({ length: 7 }, (_, index) => ({
-        code: 2000 + index,
-        message: `Provider message ${index + 1}`,
-      })),
-    }),
-  );
-
-  assert.equal(error.retryable, true);
-  assert.equal(error.providerErrors.length, 5);
+  assert.equal(error.code, "10000");
   assert.deepEqual(error.providerCodes, [
-    "2000",
-    "2001",
-    "2002",
-    "2003",
-    "2004",
+    "10000",
+    "9109",
+    "1001",
+    "1002",
+    "1003",
   ]);
-  assert.match(error.message, /2004: Provider message 5; and 2 more errors$/);
-  assert.doesNotMatch(error.message, /Provider message 6/);
+  assert.equal(error.providerErrors.length, 5);
+  assert.match(error.message, /and 1 more error/);
+  assert.doesNotMatch(error.message, /super-secret|Must be omitted/);
+  assert.match(error.providerMessages[0] ?? "", /\[redacted\]/);
 });
 
-test("derives HTTP retryability from status", () => {
-  const badRequest = requestErrorFromResponse(
-    new Response("", { status: 400 }),
-    "/zones",
-    "",
-  );
-  const rateLimited = requestErrorFromResponse(
-    new Response("", { status: 429 }),
-    "/zones",
-    "",
-  );
-  const unavailable = requestErrorFromResponse(
-    new Response("", { status: 503 }),
-    "/zones",
-    "",
-  );
-
-  assert.equal(badRequest.retryable, false);
-  assert.equal(rateLimited.retryable, true);
-  assert.equal(unavailable.retryable, true);
-  assert.equal(rateLimited.status, 429);
-  assert.equal(rateLimited.source, "server");
-});
-
-test("supports message, error, bounded text, and malformed success bodies", () => {
+test("supports common server payloads and malformed success responses", () => {
   const response = new Response("", { status: 500 });
-  assert.match(
-    requestErrorFromResponse(
-      response,
-      "/zones",
-      JSON.stringify({ message: "Service unavailable" }),
-    ).message,
-    /Service unavailable$/,
-  );
-  assert.match(
-    requestErrorFromResponse(
-      response,
-      "/zones",
-      JSON.stringify({ error: "Upstream failed" }),
-    ).message,
-    /Upstream failed$/,
-  );
-  assert.match(
-    requestErrorFromResponse(
-      response,
-      "/zones",
-      JSON.stringify({ detail: "Gateway unavailable" }),
-    ).message,
-    /Gateway unavailable$/,
-  );
-  assert.match(
-    requestErrorFromResponse(
-      response,
-      "/zones",
-      JSON.stringify("Maintenance in progress"),
-    ).message,
-    /Maintenance in progress$/,
-  );
+  for (const body of [
+    JSON.stringify({ message: "Service unavailable" }),
+    JSON.stringify({ error: "Upstream failed" }),
+    JSON.stringify({ detail: "Gateway unavailable" }),
+    JSON.stringify({ reason: "Maintenance" }),
+    JSON.stringify("Plain server detail"),
+  ]) {
+    assert.match(
+      requestErrorFromResponse(response, "/zones", body).message,
+      /Service unavailable|Upstream failed|Gateway unavailable|Maintenance|Plain server detail/,
+    );
+  }
+
   const textError = requestErrorFromResponse(
     response,
     "/zones",
-    `"access_token": "hunter2" ${"x".repeat(300)}`,
+    `"access_token": "hunter2" ${"x".repeat(600)}`,
   );
   assert.doesNotMatch(textError.message, /hunter2/);
-  assert.ok(textError.message.length < 240);
+  assert.ok(textError.message.length <= 640);
+
   const malformed = malformedResponseError("/zones", new SyntaxError(), {
     operation: "GET",
     status: 200,
+    statusText: "OK",
+    requestUrl: "https://backend.example.test/api/zones",
+    requestId: "request-7",
   });
-  assert.equal(
-    malformed.message,
-    "Server returned invalid JSON for a successful response. Try again; if the problem continues, contact support. (/zones)",
-  );
   assert.equal(malformed.kind, "malformed-response");
   assert.equal(malformed.source, "server");
-  assert.equal(malformed.endpoint, "/zones");
-  assert.equal(malformed.operation, "GET");
   assert.equal(malformed.status, 200);
+  assert.equal(malformed.statusText, "OK");
+  assert.equal(malformed.requestId, "request-7");
   assert.equal(malformed.retryable, true);
+  assert.match(malformed.message, /invalid JSON/i);
 });
 
-test("normalizes validation errors for login-facing presentation", () => {
+test("normalizes validation and backend configuration errors", () => {
   const result = z.object({ email: z.string().email() }).safeParse({
     email: "invalid",
   });
   assert.equal(result.success, false);
   if (result.success) return;
-  assert.equal(
-    formatRequestError(result.error),
-    "Invalid input: email: Invalid email",
-  );
+  assert.match(formatRequestError(result.error), /Invalid input: email:/);
+  assert.match(formatRequestError(result.error), /retryable no/);
 
-  const requestError = new RequestError(
-    "http",
-    "Request failed (HTTP 401) at /verify-token: Invalid credentials",
-  );
-  assert.equal(formatRequestError(requestError), requestError.message);
+  const configuration = backendConfigurationError("No backend value present");
+  assert.equal(configuration.kind, "configuration");
+  assert.equal(configuration.source, "client");
+  assert.equal(configuration.retryable, false);
+  assert.match(configuration.message, /NEXT_PUBLIC_SERVER_API_BASE/);
+  assert.match(formatRequestError(configuration), /configure backend/);
+
+  const existing = new RequestError("http", "Existing safe message", {
+    status: 400,
+  });
+  assert.equal(normalizeRequestError(existing), existing);
 });

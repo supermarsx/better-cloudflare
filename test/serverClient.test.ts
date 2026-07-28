@@ -31,6 +31,56 @@ test("generates email and key headers", () => {
   });
 });
 
+test("fails fast when the static web backend is not configured", () => {
+  const previous = process.env.NEXT_PUBLIC_SERVER_API_BASE;
+  delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
+  try {
+    assert.throws(
+      () => new ServerClient("token"),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "configuration");
+        assert.equal(error.retryable, false);
+        assert.match(error.message, /NEXT_PUBLIC_SERVER_API_BASE/);
+        assert.match(error.message, /will not guess a localhost proxy/i);
+        return true;
+      },
+    );
+    assert.throws(
+      () => new ServerClient("token", "file:///unsafe"),
+      /absolute HTTP\(S\) URL/,
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
+    } else {
+      process.env.NEXT_PUBLIC_SERVER_API_BASE = previous;
+    }
+  }
+});
+
+test("uses an explicitly configured Next public backend", async () => {
+  const previous = process.env.NEXT_PUBLIC_SERVER_API_BASE;
+  process.env.NEXT_PUBLIC_SERVER_API_BASE =
+    "https://configured.example.test/api/";
+  const restore = mockFetch({ ok: true, status: 204 });
+  try {
+    const client = new ServerClient("token");
+    await client.verifyToken();
+    assert.equal(
+      restore().url,
+      "https://configured.example.test/api/verify-token",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
+    } else {
+      process.env.NEXT_PUBLIC_SERVER_API_BASE = previous;
+    }
+  }
+});
+
 function mockFetch(response: {
   ok: boolean;
   status: number;
@@ -76,11 +126,25 @@ test("verifyToken success and error", async () => {
     ok: false,
     status: 403,
     statusText: "Forbidden",
+    headers: {
+      "cf-ray": "ray-login",
+      "retry-after": "30",
+    },
     text: "bad token",
   });
   await assert.rejects(
     () => client.verifyToken(),
-    /Request failed \(HTTP 403\) at \/verify-token: bad token/,
+    (error: unknown) => {
+      assert.ok(error instanceof RequestError);
+      assert.equal(error.status, 403);
+      assert.equal(error.statusText, "Forbidden");
+      assert.equal(error.requestId, "ray-login");
+      assert.equal(error.retryAfter, "30");
+      assert.equal(error.requestUrl, "http://example.com/verify-token");
+      assert.match(error.message, /denied this operation/i);
+      assert.match(error.message, /bad token/);
+      return true;
+    },
   );
   restore();
 });
@@ -108,7 +172,7 @@ test("getZones success and error", async () => {
   });
   await assert.rejects(
     () => client.getZones(),
-    /Request failed \(HTTP 500\) at \/zones: fail/,
+    /backend or upstream service failed.*HTTP 500 Server Error.*fail/i,
   );
   restore();
 });
@@ -135,7 +199,7 @@ test("getDNSRecords success and error", async () => {
   });
   await assert.rejects(
     () => client.getDNSRecords("zone", undefined),
-    /Request failed \(HTTP 404\).*no records/,
+    /backend endpoint was not found.*HTTP 404 Not Found.*no records/i,
   );
   restore();
 });
@@ -166,7 +230,7 @@ test("createDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.createDNSRecord("zone", record, undefined),
-    /Request failed \(HTTP 400\).*bad/,
+    /Request failed \(HTTP 400 Bad Request\).*bad/,
   );
   restore();
 });
@@ -197,7 +261,7 @@ test("updateDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.updateDNSRecord("zone", "1", record, undefined),
-    /Request failed \(HTTP 404\).*missing/,
+    /backend endpoint was not found.*HTTP 404 Not Found.*missing/i,
   );
   restore();
 });
@@ -219,7 +283,7 @@ test("deleteDNSRecord success and error", async () => {
   });
   await assert.rejects(
     () => client.deleteDNSRecord("zone", "1", undefined),
-    /Request failed \(HTTP 500\).*fail/,
+    /backend or upstream service failed.*HTTP 500 Server Error.*fail/i,
   );
   restore();
 });
@@ -309,11 +373,7 @@ test("normalizes network failures and explicit cancellation", async () => {
         assert.equal(error.retryable, true);
         assert.match(
           error.message,
-          /cannot distinguish between offline connectivity, DNS, TLS, or CORS failures/,
-        );
-        assert.match(
-          error.message,
-          /Check your connection, the server address and certificate, and browser\/CORS settings/,
+          /offline connectivity, DNS, TLS, CORS, or a stopped backend/,
         );
         return true;
       },
@@ -369,7 +429,7 @@ test("rejects malformed JSON after reading the response body once", async () => 
       assert.equal(error.retryable, true);
       assert.match(
         error.message,
-        /Server returned invalid JSON for a successful response/,
+        /server returned invalid JSON for a successful response/i,
       );
       return true;
     },

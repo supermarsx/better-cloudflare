@@ -5,7 +5,7 @@ import { storageBackend } from "@/lib/storage/storage-util";
 import i18next from "i18next";
 import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
-import { formatRequestError } from "@/lib/api/request-error";
+import { formatRequestError, RequestError } from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
 import { TauriClient } from "@/lib/api/tauri-client";
 import {
@@ -38,7 +38,16 @@ export function useLoginForm(
     if (desktop) {
       const ok = await TauriClient.verifyToken(key, email);
       if (!ok) {
-        throw new Error("Invalid API key");
+        throw new RequestError(
+          "http",
+          "Cloudflare rejected the supplied credentials. Check the token or key, required permissions, and email for global-key authentication.",
+          {
+            source: "cloudflare",
+            operation: "verify credentials",
+            command: "verify_token",
+            retryable: false,
+          },
+        );
       }
       return;
     }

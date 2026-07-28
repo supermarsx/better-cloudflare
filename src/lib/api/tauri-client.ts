@@ -5,8 +5,34 @@
  * It replaces the HTTP-based ServerClient for desktop app usage.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { isDesktop } from "@/lib/environment";
+import {
+  normalizeRequestError,
+  type RequestError,
+} from "@/lib/api/request-error";
+
+export function normalizeTauriInvokeError(
+  error: unknown,
+  command: string,
+): RequestError {
+  return normalizeRequestError(error, {
+    source: "tauri",
+    operation: "Tauri invoke",
+    command,
+  });
+}
+
+async function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await tauriInvoke<T>(command, args);
+  } catch (error) {
+    throw normalizeTauriInvokeError(error, command);
+  }
+}
 
 export interface TauriZone {
   id: string;

@@ -6,22 +6,67 @@
  * JSON parsing with reasonable defaults.
  */
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
-import { getEnv } from "../env";
 import { isDesktop } from "../environment";
 import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
 import type { TauriDNSRecordInput } from "./tauri-client";
 import {
+  backendConfigurationError,
   malformedResponseError,
   normalizeRequestError,
   requestErrorFromResponse,
 } from "./request-error";
 
-const DEFAULT_BASE = getEnv(
-  "SERVER_API_BASE",
-  "VITE_SERVER_API_BASE",
-  "http://localhost:8787/api",
-)!;
 const DEFAULT_TIMEOUT = 10_000;
+
+function configuredServerApiBase(): string | undefined {
+  const nextPublic =
+    typeof process !== "undefined"
+      ? process.env.NEXT_PUBLIC_SERVER_API_BASE
+      : undefined;
+  const viteLegacy =
+    typeof import.meta !== "undefined"
+      ? import.meta.env?.VITE_SERVER_API_BASE
+      : undefined;
+  const nodeLegacy =
+    typeof window === "undefined" && typeof process !== "undefined"
+      ? process.env.SERVER_API_BASE
+      : undefined;
+  return [nextPublic, viteLegacy, nodeLegacy].find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
+function normalizeServerApiBase(value: string | undefined): string {
+  const base = value?.trim();
+  if (!base) {
+    throw backendConfigurationError(
+      "No public server API base was supplied; the app will not guess a localhost proxy.",
+    );
+  }
+  if (base.startsWith("/")) {
+    return base.replace(/\/+$/, "");
+  }
+  try {
+    const url = new URL(base);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      throw new Error("unsupported protocol");
+    }
+    if (url.username || url.password) {
+      throw new Error("credentials are not allowed in the URL");
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    throw backendConfigurationError(
+      "NEXT_PUBLIC_SERVER_API_BASE must be an absolute HTTP(S) URL or an explicitly configured same-origin path.",
+    );
+  }
+}
+
+function joinRequestUrl(baseUrl: string, endpoint: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/${endpoint.replace(/^\/+/, "")}`;
+}
 
 function normalizeTauriRecordInput(
   record: Partial<DNSRecord>,
@@ -74,12 +119,21 @@ function authHeaders(key: string, email?: string): HeadersInit {
  * @param timeoutMs - request timeout in milliseconds
  */
 export class ServerClient {
+  private readonly baseUrl: string;
+
   constructor(
     private apiKey: string,
-    private baseUrl: string = DEFAULT_BASE,
+    baseUrl?: string,
     private email?: string,
     private timeoutMs: number = DEFAULT_TIMEOUT,
-  ) {}
+  ) {
+    this.baseUrl =
+      baseUrl === undefined && isDesktop()
+        ? ""
+        : normalizeServerApiBase(
+            baseUrl === undefined ? configuredServerApiBase() : baseUrl,
+          );
+  }
 
   /**
    * Build headers for requests using the instance apiKey/email.
@@ -116,6 +170,11 @@ export class ServerClient {
       signal?: AbortSignal;
     } = {},
   ): Promise<T> {
+    if (!this.baseUrl) {
+      throw backendConfigurationError(
+        "This operation unexpectedly reached the web transport without a configured public API backend.",
+      );
+    }
     let controller: AbortController | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
@@ -128,7 +187,8 @@ export class ServerClient {
       signal = controller.signal;
     }
     try {
-      const res = await fetch(`${this.baseUrl}${endpoint}`, {
+      const requestUrl = joinRequestUrl(this.baseUrl, endpoint);
+      const res = await fetch(requestUrl, {
         method,
         headers: {
           ...(this.headers() as Record<string, string>),
@@ -141,7 +201,13 @@ export class ServerClient {
       const expectsJson = contentType?.includes("application/json") ?? false;
       const bodyText = await res.text();
       if (!res.ok) {
-        throw requestErrorFromResponse(res, endpoint, bodyText, method);
+        throw requestErrorFromResponse(
+          res,
+          endpoint,
+          bodyText,
+          method,
+          requestUrl,
+        );
       }
       if (expectsJson && bodyText) {
         try {
@@ -150,6 +216,12 @@ export class ServerClient {
           throw malformedResponseError(endpoint, error, {
             operation: method,
             status: res.status,
+            statusText: res.statusText,
+            requestUrl,
+            requestId:
+              res.headers.get("cf-ray") ??
+              res.headers.get("x-request-id") ??
+              undefined,
           });
         }
       }
@@ -157,6 +229,7 @@ export class ServerClient {
     } catch (error) {
       throw normalizeRequestError(error, {
         endpoint,
+        requestUrl: joinRequestUrl(this.baseUrl, endpoint),
         operation: method,
         timedOut,
       });
