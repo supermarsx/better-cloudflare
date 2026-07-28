@@ -34,7 +34,7 @@ const sampleKey: ApiKey = {
 
 test("LoginKeySelector disables inputs when no keys", () => {
   render(<LoginKeySelector {...noKeySelected} />);
-  const keySelector = screen.getByRole("combobox");
+  const keySelector = screen.getByRole("combobox", { name: "API Key" });
   const passwordInput = document.getElementById("password") as HTMLInputElement;
   const loginButton = screen
     .getAllByRole("button")
@@ -43,6 +43,8 @@ test("LoginKeySelector disables inputs when no keys", () => {
         btn.className.includes("h-12") && btn.className.includes("text-lg"),
     );
   assert.equal(keySelector.hasAttribute("disabled"), true);
+  assert.equal(keySelector.id, "api-key");
+  assert.equal(keySelector.getAttribute("aria-labelledby"), "api-key-label");
   assert.equal(passwordInput?.hasAttribute("disabled"), true);
   assert.ok(loginButton);
   const login = loginButton as HTMLButtonElement;
@@ -61,6 +63,10 @@ test("LoginKeySelector enables login when key + password set", () => {
       isLoading={false}
     />,
   );
+  const keySelector = screen.getByRole("combobox", { name: "API Key" });
   const login = screen.getByRole("button", { name: /login/i });
+  assert.equal(keySelector.hasAttribute("disabled"), false);
+  assert.equal(keySelector.id, "api-key");
+  assert.equal(keySelector.getAttribute("aria-labelledby"), "api-key-label");
   assert.equal(login.hasAttribute("disabled"), false);
 });

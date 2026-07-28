@@ -153,14 +153,15 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Tooltip
-          tip={t("Theme: {{name}}", {
-            name: t(themeLabels[theme], themeLabels[theme]),
-          })}
-          side="bottom"
-        >
+      <Tooltip
+        tip={t("Theme: {{name}}", {
+          name: t(themeLabels[theme], themeLabels[theme]),
+        })}
+        side="bottom"
+      >
+        <DropdownMenuTrigger asChild>
           <Button
+            type="button"
             variant="ghost"
             size="icon"
             className={
@@ -170,8 +171,8 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
           >
             {icons[theme]}
           </Button>
-        </Tooltip>
-      </DropdownMenuTrigger>
+        </DropdownMenuTrigger>
+      </Tooltip>
       <DropdownMenuContent
         align="end"
         className="bg-popover/70 text-foreground"

@@ -198,6 +198,13 @@ async function openManageAction(page: Page, action: "Edit" | "Delete") {
   await page.getByRole("menuitem", { name: action }).click();
 }
 
+async function dismissViaBackdrop(page: Page) {
+  const backdrop = page.getByTestId("dialog-backdrop");
+  await expect(backdrop).toBeVisible();
+  await expect(backdrop).toHaveAttribute("data-state", "open");
+  await backdrop.click({ position: { x: 8, y: 8 } });
+}
+
 test.beforeEach(async ({ page }) => {
   await installDesktopMock(page);
 });
@@ -255,7 +262,7 @@ test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
     await expect(dialog).toBeVisible();
     await expect(page.getByRole("dialog")).toHaveCount(1);
 
-    await page.mouse.click(1100, 150);
+    await dismissViaBackdrop(page);
     await expect(dialog).toBeHidden();
   }
 
@@ -316,7 +323,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   await review.click();
   await expect(dialog).toBeVisible();
   await expect(page.getByText("Credential 3")).toBeVisible();
-  await page.mouse.click(1100, 150);
+  await dismissViaBackdrop(page);
   await expect(dialog).toBeHidden();
 
   runtime.assertClean();

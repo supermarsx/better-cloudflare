@@ -35,24 +35,31 @@ export function LoginKeySelector({
   const { t } = useI18n();
   const hasKeys = apiKeys.length > 0;
   const [showPassword, setShowPassword] = useState(false);
+  const apiKeyLabel = t("API Key", "API Key") || "API Key";
 
   return (
     <>
       <div className="space-y-2">
         <Label
+          id="api-key-label"
           htmlFor="api-key"
           className={
             hasKeys ? "text-foreground/80" : "text-muted-foreground/60"
           }
         >
-          {t("API Key", "API Key")}
+          {apiKeyLabel}
         </Label>
         <Select
           value={selectedKeyId}
           onValueChange={onSelectKey}
           disabled={!hasKeys}
         >
-          <SelectTrigger className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/70 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
+          <SelectTrigger
+            id="api-key"
+            aria-labelledby="api-key-label"
+            aria-label={apiKeyLabel}
+            className="bg-card/70 border-border text-foreground h-11 transition-colors hover:bg-accent/70 hover:border-primary/30 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             <SelectValue placeholder={t("Select an API key")} />
           </SelectTrigger>
           <SelectContent className="bg-popover/95 border border-border text-foreground">

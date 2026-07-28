@@ -65,5 +65,21 @@ test("homepage loads its metadata icon and static resources without 404s", async
 test("accessibility: homepage has no a11y violations", async ({ page }) => {
   await page.goto("/");
   const accessibilityScanResults = await new AxeBuilder({ page }).analyze();
-  expect(accessibilityScanResults.violations.length).toBe(0);
+  const violationDetails = accessibilityScanResults.violations.map(
+    ({ id, impact, help, nodes }) => ({
+      id,
+      impact,
+      help,
+      nodes: nodes.map(({ target, html, failureSummary }) => ({
+        target,
+        html,
+        failureSummary,
+      })),
+    }),
+  );
+
+  expect(
+    violationDetails,
+    `Axe violations:\n${JSON.stringify(violationDetails, null, 2)}`,
+  ).toEqual([]);
 });
