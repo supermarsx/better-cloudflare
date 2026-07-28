@@ -7,13 +7,43 @@ export type RequestErrorKind =
   | "validation"
   | "unknown";
 
+export type RequestErrorSource =
+  | "browser"
+  | "client"
+  | "server"
+  | "cloudflare"
+  | "unknown";
+
 export interface RequestErrorContext {
   endpoint?: string;
+  operation?: string;
   timedOut?: boolean;
 }
 
+export interface ProviderErrorDetail {
+  code?: string;
+  message?: string;
+}
+
+export interface RequestErrorMetadata {
+  source?: RequestErrorSource;
+  endpoint?: string;
+  operation?: string;
+  status?: number;
+  /**
+   * The first provider code, retained for compatibility with existing callers.
+   * Use `providerCodes` when every Cloudflare code is needed.
+   */
+  code?: string;
+  retryable?: boolean;
+  providerErrors?: readonly ProviderErrorDetail[];
+}
+
 const MAX_DETAIL_LENGTH = 180;
+const MAX_PROVIDER_DETAIL_LENGTH = 240;
+const MAX_PROVIDER_ERRORS = 5;
 const MAX_ENDPOINT_LENGTH = 120;
+const MAX_OPERATION_LENGTH = 80;
 
 function safeEndpoint(endpoint?: string): string | undefined {
   if (!endpoint) return undefined;
@@ -21,7 +51,13 @@ function safeEndpoint(endpoint?: string): string | undefined {
   return withoutQuery.slice(0, MAX_ENDPOINT_LENGTH);
 }
 
-function redact(value: string): string {
+function safeOperation(operation?: string): string | undefined {
+  if (!operation) return undefined;
+  const normalized = operation.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, MAX_OPERATION_LENGTH) : undefined;
+}
+
+function redact(value: string, maxLength = MAX_DETAIL_LENGTH): string {
   return value
     .replace(
       /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
@@ -30,7 +66,7 @@ function redact(value: string): string {
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, MAX_DETAIL_LENGTH);
+    .slice(0, maxLength);
 }
 
 function endpointSuffix(endpoint?: string): string {
@@ -46,6 +82,27 @@ function safeCode(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function retryableFor(kind: RequestErrorKind, status?: number): boolean {
+  if (
+    kind === "network" ||
+    kind === "timeout" ||
+    kind === "malformed-response"
+  ) {
+    return true;
+  }
+  if (kind !== "http" || status === undefined) return false;
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function sourceFor(kind: RequestErrorKind): RequestErrorSource {
+  if (kind === "network") return "browser";
+  if (kind === "timeout" || kind === "aborted" || kind === "validation") {
+    return "client";
+  }
+  if (kind === "http" || kind === "malformed-response") return "server";
+  return "unknown";
 }
 
 function validationDetail(error: unknown): string | undefined {
@@ -70,18 +127,63 @@ function validationDetail(error: unknown): string | undefined {
 
 export class RequestError extends Error {
   readonly name = "RequestError";
+  readonly source: RequestErrorSource;
+  readonly endpoint?: string;
+  readonly operation?: string;
+  readonly status?: number;
+  readonly code?: string;
+  readonly retryable: boolean;
+  readonly providerErrors: readonly Readonly<ProviderErrorDetail>[];
+  readonly providerCodes: readonly string[];
+  readonly providerMessages: readonly string[];
+  readonly context: Readonly<RequestErrorMetadata>;
 
   constructor(
     readonly kind: RequestErrorKind,
     message: string,
-    readonly context: {
-      endpoint?: string;
-      status?: number;
-      code?: string;
-    } = {},
+    context: RequestErrorMetadata = {},
     options?: ErrorOptions,
   ) {
     super(message, options);
+    this.source = context.source ?? sourceFor(kind);
+    this.endpoint = safeEndpoint(context.endpoint);
+    this.operation = safeOperation(context.operation);
+    this.status = context.status;
+    this.providerErrors = Object.freeze(
+      (context.providerErrors ?? []).slice(0, MAX_PROVIDER_ERRORS).map((item) =>
+        Object.freeze({
+          ...(safeCode(item.code) ? { code: safeCode(item.code) } : {}),
+          ...(typeof item.message === "string" && item.message
+            ? {
+                message: redact(item.message, MAX_PROVIDER_DETAIL_LENGTH),
+              }
+            : {}),
+        }),
+      ),
+    );
+    this.code =
+      safeCode(context.code) ??
+      this.providerErrors.find((item) => item.code)?.code;
+    this.retryable = context.retryable ?? retryableFor(this.kind, this.status);
+    this.providerCodes = Object.freeze(
+      this.providerErrors.flatMap((item) => (item.code ? [item.code] : [])),
+    );
+    this.providerMessages = Object.freeze(
+      this.providerErrors.flatMap((item) =>
+        item.message ? [item.message] : [],
+      ),
+    );
+    this.context = Object.freeze({
+      source: this.source,
+      ...(this.endpoint ? { endpoint: this.endpoint } : {}),
+      ...(this.operation ? { operation: this.operation } : {}),
+      ...(this.status !== undefined ? { status: this.status } : {}),
+      ...(this.code ? { code: this.code } : {}),
+      retryable: this.retryable,
+      ...(this.providerErrors.length
+        ? { providerErrors: this.providerErrors }
+        : {}),
+    });
   }
 }
 
@@ -92,11 +194,12 @@ export function normalizeRequestError(
   if (error instanceof RequestError) return error;
 
   const endpoint = safeEndpoint(context.endpoint);
+  const operation = safeOperation(context.operation);
   if (context.timedOut) {
     return new RequestError(
       "timeout",
       `Request timed out. Check your connection and try again.${endpointSuffix(endpoint)}`,
-      { endpoint },
+      { source: "client", endpoint, operation, retryable: true },
       { cause: error },
     );
   }
@@ -109,7 +212,7 @@ export function normalizeRequestError(
     return new RequestError(
       "timeout",
       `Request timed out. Check your connection and try again.${endpointSuffix(endpoint)}`,
-      { endpoint },
+      { source: "client", endpoint, operation, retryable: true },
       { cause: error },
     );
   }
@@ -123,7 +226,7 @@ export function normalizeRequestError(
     return new RequestError(
       "aborted",
       `Request was cancelled. Retry when you are ready.${endpointSuffix(endpoint)}`,
-      { endpoint },
+      { source: "client", endpoint, operation, retryable: false },
       { cause: error },
     );
   }
@@ -146,8 +249,8 @@ export function normalizeRequestError(
   ) {
     return new RequestError(
       "network",
-      `Unable to reach the server. Check your connection; you may be offline or the request may be blocked by CORS. Then try again.${endpointSuffix(endpoint)}`,
-      { endpoint },
+      `The browser could not complete the request and cannot distinguish between offline connectivity, DNS, TLS, or CORS failures. Check your connection, the server address and certificate, and browser/CORS settings, then try again.${endpointSuffix(endpoint)}`,
+      { source: "browser", endpoint, operation, retryable: true },
       { cause: error },
     );
   }
@@ -157,7 +260,7 @@ export function normalizeRequestError(
     return new RequestError(
       "validation",
       `Invalid input: ${invalid}`,
-      { endpoint },
+      { source: "client", endpoint, operation, retryable: false },
       { cause: error },
     );
   }
@@ -165,53 +268,99 @@ export function normalizeRequestError(
   return new RequestError(
     "unknown",
     `Unexpected request error. Try again.${endpointSuffix(endpoint)}`,
-    { endpoint },
+    { source: "unknown", endpoint, operation, retryable: false },
     { cause: error },
   );
 }
 
-function errorDetail(payload: unknown): { detail?: string; code?: string } {
-  if (typeof payload === "string") return { detail: redact(payload) };
-  if (!isRecord(payload)) return {};
+interface ErrorPayloadDetail {
+  detail?: string;
+  code?: string;
+  source: RequestErrorSource;
+  providerErrors: ProviderErrorDetail[];
+}
+
+function errorDetail(payload: unknown): ErrorPayloadDetail {
+  if (typeof payload === "string") {
+    return { detail: redact(payload), source: "server", providerErrors: [] };
+  }
+  if (!isRecord(payload)) {
+    return { source: "server", providerErrors: [] };
+  }
   if (Array.isArray(payload.errors)) {
-    const parts: string[] = [];
-    let firstCode: string | undefined;
-    for (const item of payload.errors.slice(0, 3)) {
+    const providerErrors: ProviderErrorDetail[] = [];
+    for (const item of payload.errors.slice(0, MAX_PROVIDER_ERRORS)) {
       if (!isRecord(item)) continue;
       const code = safeCode(item.code);
       const message =
-        typeof item.message === "string" ? redact(item.message) : "";
-      firstCode ??= code;
-      if (code && message) parts.push(`${code}: ${message}`);
-      else if (message) parts.push(message);
-      else if (code) parts.push(code);
+        typeof item.message === "string"
+          ? redact(item.message, MAX_PROVIDER_DETAIL_LENGTH)
+          : undefined;
+      if (code || message) providerErrors.push({ code, message });
     }
-    if (parts.length)
-      return { detail: redact(parts.join(", ")), code: firstCode };
+    if (providerErrors.length) {
+      const parts = providerErrors.map(({ code, message }) => {
+        if (code && message) return `${code}: ${message}`;
+        return message ?? code!;
+      });
+      const omitted = Math.max(0, payload.errors.length - MAX_PROVIDER_ERRORS);
+      if (omitted)
+        parts.push(`and ${omitted} more error${omitted === 1 ? "" : "s"}`);
+      return {
+        detail: parts.join("; "),
+        code: providerErrors.find((item) => item.code)?.code,
+        source: "cloudflare",
+        providerErrors,
+      };
+    }
   }
   if (typeof payload.message === "string") {
-    return { detail: redact(payload.message), code: safeCode(payload.code) };
+    return {
+      detail: redact(payload.message),
+      code: safeCode(payload.code),
+      source: "server",
+      providerErrors: [],
+    };
   }
   if (typeof payload.error === "string") {
-    return { detail: redact(payload.error), code: safeCode(payload.code) };
+    return {
+      detail: redact(payload.error),
+      code: safeCode(payload.code),
+      source: "server",
+      providerErrors: [],
+    };
   }
   if (typeof payload.detail === "string") {
-    return { detail: redact(payload.detail), code: safeCode(payload.code) };
+    return {
+      detail: redact(payload.detail),
+      code: safeCode(payload.code),
+      source: "server",
+      providerErrors: [],
+    };
   }
-  return { code: safeCode(payload.code) };
+  return {
+    code: safeCode(payload.code),
+    source: Array.isArray(payload.errors) ? "cloudflare" : "server",
+    providerErrors: [],
+  };
 }
 
 export function requestErrorFromResponse(
   response: Response,
   endpoint: string,
   bodyText: string,
+  operation?: string,
 ): RequestError {
   const safePath = safeEndpoint(endpoint);
   let detail: string | undefined;
   let code: string | undefined;
+  let source: RequestErrorSource = "server";
+  let providerErrors: ProviderErrorDetail[] = [];
   if (bodyText) {
     try {
-      ({ detail, code } = errorDetail(JSON.parse(bodyText)));
+      ({ detail, code, source, providerErrors } = errorDetail(
+        JSON.parse(bodyText),
+      ));
     } catch {
       detail = redact(bodyText);
     }
@@ -222,21 +371,32 @@ export function requestErrorFromResponse(
   ].filter(Boolean);
   const message = `Request failed (${context.join(", ")})${safePath ? ` at ${safePath}` : ""}${detail ? `: ${detail}` : "."}`;
   return new RequestError("http", message, {
+    source,
     endpoint: safePath,
+    operation,
     status: response.status,
     code,
+    retryable: retryableFor("http", response.status),
+    providerErrors,
   });
 }
 
 export function malformedResponseError(
   endpoint: string,
   cause: unknown,
+  context: { operation?: string; status?: number } = {},
 ): RequestError {
   const safePath = safeEndpoint(endpoint);
   return new RequestError(
     "malformed-response",
     `Server returned invalid JSON for a successful response. Try again; if the problem continues, contact support.${endpointSuffix(safePath)}`,
-    { endpoint: safePath },
+    {
+      source: "server",
+      endpoint: safePath,
+      operation: context.operation,
+      status: context.status,
+      retryable: true,
+    },
     { cause },
   );
 }

@@ -141,18 +141,25 @@ export class ServerClient {
       const expectsJson = contentType?.includes("application/json") ?? false;
       const bodyText = await res.text();
       if (!res.ok) {
-        throw requestErrorFromResponse(res, endpoint, bodyText);
+        throw requestErrorFromResponse(res, endpoint, bodyText, method);
       }
       if (expectsJson && bodyText) {
         try {
           return JSON.parse(bodyText) as T;
         } catch (error) {
-          throw malformedResponseError(endpoint, error);
+          throw malformedResponseError(endpoint, error, {
+            operation: method,
+            status: res.status,
+          });
         }
       }
       return undefined as T;
     } catch (error) {
-      throw normalizeRequestError(error, { endpoint, timedOut });
+      throw normalizeRequestError(error, {
+        endpoint,
+        operation: method,
+        timedOut,
+      });
     } finally {
       if (timeout) clearTimeout(timeout);
     }

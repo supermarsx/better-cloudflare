@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { RequestError } from "../src/lib/api/request-error.ts";
 import { ServerClient } from "../src/lib/api/server-client.ts";
 
 // Ensure web fetch shims are loaded if needed
@@ -231,12 +232,33 @@ test("includes Cloudflare JSON error details", async () => {
     statusText: "Bad Request",
     headers: { "content-type": "application/json" },
     body: {
-      errors: [{ code: 1001, message: "bad request" }],
+      errors: [
+        { code: 1001, message: "bad request" },
+        { code: 1002, message: "second provider detail" },
+      ],
     },
   });
   await assert.rejects(
     () => client.getZones(),
-    /Request failed \(HTTP 400, code 1001\) at \/zones: 1001: bad request/,
+    (error: unknown) => {
+      assert.ok(error instanceof RequestError);
+      assert.equal(error.kind, "http");
+      assert.equal(error.source, "cloudflare");
+      assert.equal(error.status, 400);
+      assert.equal(error.endpoint, "/zones");
+      assert.equal(error.operation, "GET");
+      assert.equal(error.retryable, false);
+      assert.deepEqual(error.providerCodes, ["1001", "1002"]);
+      assert.deepEqual(error.providerMessages, [
+        "bad request",
+        "second provider detail",
+      ]);
+      assert.match(
+        error.message,
+        /1001: bad request; 1002: second provider detail$/,
+      );
+      return true;
+    },
   );
   assert.equal(restore().bodyReads, 1);
 });
@@ -252,7 +274,19 @@ test("aborts request after timeout", async () => {
       });
     });
   try {
-    await assert.rejects(() => client.getZones(), /Request timed out/);
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "timeout");
+        assert.equal(error.source, "client");
+        assert.equal(error.endpoint, "/zones");
+        assert.equal(error.operation, "GET");
+        assert.equal(error.retryable, true);
+        assert.match(error.message, /Request timed out/);
+        return true;
+      },
+    );
     assert.equal(aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
@@ -261,30 +295,54 @@ test("aborts request after timeout", async () => {
 
 test("normalizes network failures and explicit cancellation", async () => {
   const client = new ServerClient("key", "http://example.com");
-  globalThis.fetch = async () => {
-    throw new TypeError("Failed to fetch");
-  };
-  await assert.rejects(
-    () => client.getZones(),
-    (error: unknown) =>
-      error instanceof Error &&
-      error.message ===
-        "Unable to reach the server. Check your connection; you may be offline or the request may be blocked by CORS. Then try again. (/zones)",
-  );
-
-  const controller = new AbortController();
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
-    new Promise<never>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => {
-        reject(new DOMException("cancelled", "AbortError"));
-      });
-    });
   try {
+    globalThis.fetch = async () => {
+      throw new TypeError("Failed to fetch");
+    };
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "network");
+        assert.equal(error.source, "browser");
+        assert.equal(error.operation, "GET");
+        assert.equal(error.retryable, true);
+        assert.match(
+          error.message,
+          /cannot distinguish between offline connectivity, DNS, TLS, or CORS failures/,
+        );
+        assert.match(
+          error.message,
+          /Check your connection, the server address and certificate, and browser\/CORS settings/,
+        );
+        return true;
+      },
+    );
+
+    const controller = new AbortController();
+    globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+      new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("cancelled", "AbortError"));
+        });
+      });
     const request = client.getZones(controller.signal);
     controller.abort();
     await assert.rejects(
       () => request,
-      /Request was cancelled\. Retry when you are ready\. \(\/zones\)/,
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "aborted");
+        assert.equal(error.source, "client");
+        assert.equal(error.endpoint, "/zones");
+        assert.equal(error.operation, "GET");
+        assert.equal(error.retryable, false);
+        assert.match(
+          error.message,
+          /Request was cancelled\. Retry when you are ready\. \(\/zones\)/,
+        );
+        return true;
+      },
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -301,7 +359,20 @@ test("rejects malformed JSON after reading the response body once", async () => 
   });
   await assert.rejects(
     () => client.getZones(),
-    /Server returned invalid JSON for a successful response/,
+    (error: unknown) => {
+      assert.ok(error instanceof RequestError);
+      assert.equal(error.kind, "malformed-response");
+      assert.equal(error.source, "server");
+      assert.equal(error.status, 200);
+      assert.equal(error.endpoint, "/zones");
+      assert.equal(error.operation, "GET");
+      assert.equal(error.retryable, true);
+      assert.match(
+        error.message,
+        /Server returned invalid JSON for a successful response/,
+      );
+      return true;
+    },
   );
   assert.equal(restore().bodyReads, 1);
 });
