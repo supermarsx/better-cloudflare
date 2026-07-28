@@ -6,6 +6,8 @@ Better Cloudflare is a secure native desktop application for managing DNS record
 
 The application stores Cloudflare credentials locally in the operating system's secure keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux) with AES-256-GCM encryption. Users unlock keys with a password or passkey authentication. Key features include: listing zones, browsing DNS records, adding/updating/deleting records, importing/exporting records (JSON/CSV/BIND), secure OS-level credential storage, and platform-native passkey support.
 
+> **Implementation-status note (2026-07):** This specification is the target product contract; it is not a claim that every feature below is released or verified. The current biometric runtime is Touch ID on macOS only; Windows Hello is not implemented. The passkey material describes target behavior, while `docs/passkey-architecture.md` is a legacy server-mode design rather than the desktop contract. The Tauri updater is disabled. Code signing and macOS notarization are unconfigured, and package-manager channels are aspirational until automated and verified. These annotations do not change the product requirements in this specification.
+
 **Key Advantages of Desktop Architecture:**
 
 - Native OS keychain integration for maximum security
@@ -39,9 +41,9 @@ The application stores Cloudflare credentials locally in the operating system's 
 **Key Architecture Features:**
 
 - **OS Keychain Integration**: Credentials are stored in the operating system's native secure storage using the `keyring` Rust crate (macOS Keychain, Windows Credential Manager, Linux Secret Service). Fallback to encrypted in-memory storage when OS keychain is unavailable.
-- **Passkeys (WebAuthn)**: Full platform authenticator support for passwordless authentication. Passkey credentials are managed in the Rust backend with challenge generation, challenge validation, and credential storage in secure storage (attestation/assertion verification planned).
+- **Passkeys (WebAuthn) — target contract**: Full platform authenticator support for passwordless authentication. Passkey credentials are intended to be managed in the Rust backend with challenge generation, challenge validation, and credential storage in secure storage (attestation/assertion verification planned).
   - Multiple credentials: Supports multiple passkey credentials per stored key with device naming and management UI
-  - Platform integration: Uses native platform authenticators (Touch ID, Windows Hello, etc.)
+  - Platform integration target: native platform authenticators (Touch ID, Windows Hello, etc.). Current runtime support is Touch ID on macOS only; Windows Hello is not implemented.
   - Registration/Authentication: Rust backend handles WebAuthn challenge generation and validation (full verification planned)
 - **Tauri IPC**: All communication between frontend (Next.js/React) and backend (Rust) uses Tauri's secure IPC mechanism instead of HTTP
 - **Rust Backend**: Complete rewrite of backend logic in Rust for performance, security, and native compilation
@@ -58,7 +60,7 @@ Scope:
 - Support three authentication modes: bearer token, global API key + email, or stored keys unlocked with password/passkey
 - Native desktop application with no server dependency - fully offline capable
 - Cross-platform support: macOS, Windows, Linux
-- Platform-native passkey support (Touch ID, Windows Hello, etc.)
+- Platform-native passkey support (Touch ID, Windows Hello, etc.) as a target requirement; current runtime support is Touch ID on macOS only.
 
 Out-of-scope (explicit):
 
@@ -1263,6 +1265,8 @@ interface AuditLog {
 
 ### Code Signing
 
+> **Current status:** Signing and notarization are target delivery requirements. They are not configured in the current repository.
+
 **Purpose:**
 
 - Verify app authenticity
@@ -2109,6 +2113,8 @@ cargo bench
 
 ## 18. Distribution & deployment
 
+> **Current status:** This section defines the intended delivery contract. The updater is disabled; code signing and macOS notarization are unconfigured. Homebrew, Chocolatey, WinGet, AUR, Flathub, Snap, and similar package-manager channels are not current distribution methods unless an automated, verified release path is added.
+
 ### Build Process
 
 **Development Build:**
@@ -2287,6 +2293,8 @@ gh release create v1.1.0 \
 - Flathub: Update manifest
 
 ### Auto-Update System
+
+> **Current status:** Disabled in `src-tauri/tauri.conf.json`. The configuration and flow below are target design, not active behavior.
 
 **Configuration** (in `tauri.conf.json`):
 
@@ -2681,7 +2689,7 @@ See `CONTRIBUTING.md` for guidelines.
 **Documentation:**
 
 - Main README: `README.md`
-- Main README: `README.md`
+- Documentation hub: `docs/index.md`
 - Migration guide: `docs/tauri-migration.md`
 - TODO list: `TODO-TAURI-MIGRATION.md`
 - Spec: `spec.md`

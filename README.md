@@ -1,32 +1,10 @@
 # Better Cloudflare
 
-Better Cloudflare is a [Next.js](https://nextjs.org/) + [Tauri](https://tauri.app/) desktop and web app for managing Cloudflare DNS securely with local credentials and passkey-ready auth flows.
+Better Cloudflare is a Next.js and Tauri application for managing Cloudflare DNS records. It can be exported as a static web preview and built as a desktop application.
 
-## Why this project
+## Start here
 
-This repo is meant for people who want:
-
-- quick DNS record and zone operations from one app
-- local-first data flow (no cloud secrets storage in the app)
-- a CI pipeline that keeps quality gates reproducible
-- a deployable web build that can be published as GitHub Pages
-
-## What’s included
-
-- Cloudflare DNS and zone management workflows
-- secure local credential storage for API tokens
-- passkey auth scaffolding
-- audit trails and bulk-edit utilities
-- locale + theme support
-- desktop packaging through Tauri
-
-## Prerequisites
-
-- Node.js 18+
-- Git
-- For desktop builds only: Rust + platform-specific Tauri prerequisites
-
-## Quick start
+CI uses Node.js 24.x. Install Node.js 24 locally, then clone and install the locked dependency set:
 
 ```bash
 git clone https://github.com/supermarsx/better-cloudflare.git
@@ -34,90 +12,71 @@ cd better-cloudflare
 npm ci
 ```
 
-Run web mode:
+Run the web app:
 
 ```bash
 npm run dev
 ```
 
-Run desktop mode:
+Run the Tauri desktop app (Rust and the platform's Tauri prerequisites are also required):
 
 ```bash
 npm run tauri:dev
 ```
 
-## Commands you’ll use
+## Everyday commands
 
 ```bash
-npm run format:check   # formatting check (prettier)
-npm run lint           # ESLint for app/ source
-npm run typecheck      # TypeScript compile check
-npm run test           # unit/integration tests
-npm run test:e2e       # Playwright browser checks
-npm run build          # web export to ./out
-npm run build:web      # alias for npm run build
-npm run build:desktop  # web export + desktop bundle
-npm run check          # format + lint + typecheck + test
+npm run format:check # Prettier check for source, config, and Markdown
+npm run lint         # ESLint for app/ (the current lint scope)
+npm run typecheck    # TypeScript check
+npm run test         # Node test suite
+npm run test:e2e     # Playwright suite
+npm run build        # Static Next.js export in out/
+npm run check        # format:check + lint + typecheck + test
+npm run docs         # API reference in docs/api/
 ```
 
-## GitHub Pages (GitHub-hosted preview)
+## Current support
 
-This repo can publish a Pages site from the web export output (`out/`) on `main`.
+| Surface                  | Current status                                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Web and GitHub Pages     | Static export is supported. It is a preview build, not a replacement for the desktop security model.                                                                                                                           |
+| macOS desktop            | Tauri desktop build is configured. The only implemented biometric runtime is Touch ID on macOS.                                                                                                                                |
+| Windows desktop          | Tauri desktop build is configured, but Windows Hello biometric authentication is not implemented.                                                                                                                              |
+| Linux desktop            | Tauri desktop build is configured; biometric authentication is unavailable.                                                                                                                                                    |
+| Passkeys                 | The legacy server-mode architecture is documented for historical reference; do not treat it as the current desktop implementation contract.                                                                                    |
+| Updates and distribution | The Tauri updater is disabled. Code signing and macOS notarization are not configured. Homebrew, Chocolatey, WinGet, Flathub, Snap, and similar channels are future distribution work unless automation is added and verified. |
 
-- Pages setup is currently guarded in CI: deployment only runs when the repository already has Pages configured.
-- If Pages is not configured yet, CI skips deployment instead of failing the build.
-- When enabled, the site is published via:
-  - build step: `npm run build`
-  - artifact upload using `actions/upload-pages-artifact`
-  - deployment using `actions/deploy-pages`
-  - workflow file: `.github/workflows/pages.yml`
+See [the documentation hub](docs/index.md) and [the target specification](spec.md) for the distinction between current behavior and planned product requirements.
 
-If you want to enable Pages for the first time, turn on GitHub Pages from repository settings and then re-push `main`.
+## GitHub Pages
 
-## CI and release pipeline
+The Pages build is the static export in `out/`. The repository Pages workflow supplies `GITHUB_PAGES_BASE_PATH` so Next.js emits repository-relative links and assets correctly. For a local repository Pages build in PowerShell:
 
-Workflow set:
+```powershell
+$env:GITHUB_PAGES_BASE_PATH = "better-cloudflare"
+npm run build
+npm run preview
+```
 
-- `Format Check` (`npm run format:check`)
-- `Lint` (`npm run lint`)
-- `Test and Package` (`npm run test`, `npm run build`)
-- `CI` (`npm run check`)
-- `Deploy GitHub Pages` (conditional)
-- `Autopublish` (release creation + multi-platform desktop package upload)
+Use an empty `GITHUB_PAGES_BASE_PATH` for a root-hosted site. The project source and curated documentation remain available at [github.com/supermarsx/better-cloudflare](https://github.com/supermarsx/better-cloudflare) and [`docs/`](docs/index.md).
 
-Releases are generated only when upstream checks pass for the same commit SHA.
-Autopublish uses an incremental `YY.N` release naming scheme and keeps the latest
-release only; old auto-releases are removed automatically.
-Current target set is:
-- linux x64 and arm64 (`.AppImage`, `.deb`, `.rpm`)
-- macOS x64 and arm64 (`.dmg`, `.app`)
-- windows x64 and arm64 (`.msi`, `.exe`)
+## Releases
+
+Build a local desktop bundle with `npm run tauri:build` (or `npm run build:desktop`). Release artifacts must not be represented as signed, notarized, auto-updating, or package-manager-installable until those delivery steps are configured and verified.
 
 ## Repository map
 
-- `app/` — app shell and routes
-- `src/` — domain and component logic
-- `src-tauri/` — desktop backend + packaging config
-- `test/` — unit tests
-- `docs/` — deeper notes and architecture details
-- `e2e/` — browser test specs
-
-## Documentation
-
-- [Passkey architecture](docs/passkey-architecture.md)
-- [Tauri migration notes](docs/tauri-migration.md)
-- [SPF/NAPTR notes](docs/spf-naptr.md)
-- [Design system notes](docs/design-system.md)
-- [Project specification](spec.md)
-- [Future work](docs/future-work.md)
-- [Migration TODOs](TODO-TAURI-MIGRATION.md)
+- `app/` — Next.js routes and metadata
+- `src/` — application logic and UI
+- `src-tauri/` — Tauri desktop backend and packaging configuration
+- `docs/` — curated project documentation; generated API reference is `docs/api/`
+- `test/` and `e2e/` — automated tests
 
 ## Contributing
 
-1. Create a branch
-2. Run `npm run check`
-3. Commit focused changes
-4. Push and open a PR
+Create a focused branch, run `npm run check`, and include any relevant documentation or test changes with the implementation.
 
 ## License
 

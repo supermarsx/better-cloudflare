@@ -1,6 +1,6 @@
 # Passkey & Credential Management Architecture
 
-> **Status**: Legacy server-mode design. The current desktop app uses Tauri IPC and Rust storage instead of an HTTP server. This document remains for historical reference; desktop passkey verification is tracked separately.
+> **Status — legacy architecture, not a current implementation guide:** This document describes the retired server-mode design. The desktop application uses Tauri IPC rather than these HTTP endpoints, and its passkey behavior must not be inferred from this document. See the implementation-status note in [the specification](../spec.md) for the target-versus-current distinction.
 
 This document outlines the design and implementation details for passkey support, credential storage, RBAC, audit logging, attestation policy enforcement, migration approach, and testing for the Better Cloudflare project.
 

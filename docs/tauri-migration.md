@@ -2,6 +2,8 @@
 
 This guide explains the conversion of Better Cloudflare from a web application to a Tauri-based desktop application with Rust backend.
 
+> **Current-status note:** This is a migration and target-architecture guide, not a release-support statement. Touch ID on macOS is the only implemented biometric runtime; Windows Hello is not implemented. The updater is disabled, and code signing and macOS notarization are not configured.
+
 ## Architecture Overview
 
 ### Before (Web App)
@@ -233,8 +235,8 @@ if (TauriClient.isTauri()) {
 1. **No Network Exposure**: Backend runs locally, no server to attack
 2. **Native OS Integration**: Uses system keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux)
 3. **Sandboxed**: Tauri security model restricts file system and network access
-4. **Code Signing**: Can sign the app for distribution
-5. **Auto-Updates**: Built-in updater plugin available
+4. **Code Signing**: Tauri supports signing, but this repository has no signing or notarization configuration.
+5. **Auto-Updates**: Tauri has an updater plugin, but it is disabled in this repository.
 
 ### Encryption
 
@@ -299,11 +301,13 @@ npm run build
 
 **WebAuthn not working**
 
-- Passkeys require HTTPS or localhost
-- Desktop app runs on localhost internally
-- Ensure system supports WebAuthn (biometric/security keys)
+- The legacy server-mode passkey design required HTTPS or localhost; it is not the desktop implementation contract.
+- The desktop app uses Tauri IPC rather than a local HTTP server.
+- Biometric runtime support is currently Touch ID on macOS only; Windows Hello is not implemented.
 
 ## Distribution
+
+> **Status:** The commands below describe local bundle output and future delivery work. Do not present artifacts as signed, notarized, automatically updated, or available through package managers unless that delivery path has been configured and verified.
 
 ### macOS
 

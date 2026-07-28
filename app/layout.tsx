@@ -2,8 +2,12 @@ import type { Metadata } from "next";
 import "../src/index.css";
 
 export const metadata: Metadata = {
-  title: "Cloudflare DNS Manager",
-  description: "Manage your Cloudflare DNS records securely",
+  title: {
+    default: "Better Cloudflare",
+    template: "%s | Better Cloudflare",
+  },
+  applicationName: "Better Cloudflare",
+  description: "Cloudflare DNS management for the web and Tauri desktop app.",
 };
 
 export default function RootLayout({

@@ -30,7 +30,7 @@
     "ci": "npm run check",
     "clean:src": "tsx ./scripts/cleanup-src-js.ts",
     "check-spf": "tsx ./scripts/check-spf.ts",
-    "docs": "typedoc --out docs src --excludePrivate --excludeExternals"
+    "docs": "typedoc"
   },
   "dependencies": {
     "@radix-ui/react-context-menu": "^2.2.6",
