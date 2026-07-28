@@ -29,6 +29,8 @@ import { useLoginForm } from "@/hooks/auth/use-login-form";
 interface LoginFormProps {
   /** Callback invoked on successful login with the decrypted apiKey. May return a promise. */
   onLogin: (apiKey: string, email?: string) => void | Promise<void>;
+  /** Authoritative desktop runtime state owned by App. */
+  desktop: boolean;
 }
 
 /**
@@ -36,7 +38,7 @@ interface LoginFormProps {
  * verifying them with the server. On success the decrypted key is passed
  * via `onLogin` for the parent to use.
  */
-export function LoginForm({ onLogin }: LoginFormProps) {
+export function LoginForm({ onLogin, desktop }: LoginFormProps) {
   const {
     apiKeys,
     selectedKeyId,
@@ -94,11 +96,10 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     biometricLabel,
     biometricEnrolled,
     biometricLoading,
-    desktop,
     handleBiometricLogin,
     handleBiometricEnroll,
     handleBiometricRemove,
-  } = useLoginForm(onLogin);
+  } = useLoginForm(onLogin, desktop);
   const selectedKey = apiKeys.find((key) => key.id === selectedKeyId) ?? null;
   const [deleteTarget, setDeleteTarget] = useState<typeof selectedKey>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -121,7 +122,10 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
 
-      <Card className="relative z-10 w-full max-w-md overflow-hidden border border-border/60 bg-card/80 shadow-[0_0_18px_rgba(0,0,0,0.12)] backdrop-blur-xl">
+      <Card
+        className="relative z-10 w-full max-w-md overflow-hidden border border-border/60 bg-card/80 shadow-[0_0_18px_rgba(0,0,0,0.12)] backdrop-blur-xl"
+        data-testid="auth-card"
+      >
         <LoginWindowHandle desktop={desktop} />
         <LoginHeader />
         <CardContent className="space-y-6 pt-4">

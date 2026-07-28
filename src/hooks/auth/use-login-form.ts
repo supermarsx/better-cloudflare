@@ -7,7 +7,6 @@ import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
 import { formatRequestError } from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
-import { isDesktop } from "@/lib/environment";
 import { TauriClient } from "@/lib/api/tauri-client";
 import {
   serializeAuthenticationCredential,
@@ -18,11 +17,11 @@ import {
 
 export function useLoginForm(
   onLogin: (apiKey: string, email?: string) => void | Promise<void>,
+  desktop: boolean,
 ) {
   const t = i18next.t.bind(i18next);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const backend = storageBackend();
-  const desktop = isDesktop();
   const verifyToken = async (
     key: string,
     email?: string,

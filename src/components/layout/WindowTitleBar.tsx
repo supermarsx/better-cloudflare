@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PointerEvent } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
@@ -20,36 +19,17 @@ import { Button } from "@/components/ui/button";
 import { storageManager } from "@/lib/storage/storage";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { useI18n } from "@/hooks/use-i18n";
+import {
+  executeWindowAction,
+  reportWindowActionError,
+  WindowControls,
+  useWindowDragRegion,
+} from "./WindowControls";
 
 const TITLEBAR_HEIGHT_PX = 36;
 
-type WindowAction = "close" | "minimize" | "toggle-maximize" | "start-dragging";
-
-async function withWindow(action: WindowAction) {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const appWindow = getCurrentWindow();
-
-  switch (action) {
-    case "close":
-      await appWindow.close();
-      break;
-    case "minimize":
-      await appWindow.minimize();
-      break;
-    case "toggle-maximize":
-      await appWindow.toggleMaximize();
-      break;
-    case "start-dragging":
-      await appWindow.startDragging();
-      break;
-    default:
-      break;
-  }
-}
-
 export function WindowTitleBar() {
   const { t } = useI18n();
-  const [isDragging, setIsDragging] = useState(false);
   const [isTopmost, setIsTopmost] = useState(false);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const [windowMenuPos, setWindowMenuPos] = useState<{ x: number; y: number }>({
@@ -63,6 +43,7 @@ export function WindowTitleBar() {
     storageManager.getConfirmWindowClose(),
   );
   const allowCloseRef = useRef(false);
+  const dragRegion = useWindowDragRegion();
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -93,7 +74,8 @@ export function WindowTitleBar() {
     const enabled = confirmWindowClose;
     if (!enabled) {
       allowCloseRef.current = true;
-      await withWindow("close");
+      const closed = await executeWindowAction("close");
+      if (!closed) allowCloseRef.current = false;
       return;
     }
     setDontAskAgain(false);
@@ -137,20 +119,6 @@ export function WindowTitleBar() {
     };
   }, [requestClose]);
 
-  const handleDragStart = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      if (isDragging) return;
-      setIsDragging(true);
-      void withWindow("start-dragging").finally(() => setIsDragging(false));
-    },
-    [isDragging],
-  );
-
-  const handleToggleMaximize = useCallback(() => {
-    void withWindow("toggle-maximize");
-  }, []);
-
   const handleWindowContextMenu = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       event.preventDefault();
@@ -178,8 +146,9 @@ export function WindowTitleBar() {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
           const appWindow = getCurrentWindow();
           await (appWindow as any).setAlwaysOnTop?.(next);
-        } catch {
+        } catch (error) {
           setIsTopmost(prev);
+          reportWindowActionError("toggle-always-on-top", error);
         }
       })();
       return next;
@@ -188,40 +157,23 @@ export function WindowTitleBar() {
 
   const handleCenterWindow = useCallback(async () => {
     if (!TauriClient.isTauri()) return;
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-      await (appWindow as any).center?.();
-    } catch {
-      // ignore
-    }
+    await executeWindowAction("center");
   }, []);
 
   const handleMaximize = useCallback(async () => {
     if (!TauriClient.isTauri()) return;
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-      await appWindow.maximize();
-    } catch {
-      // ignore
-    }
+    await executeWindowAction("maximize");
   }, []);
 
   const handleMinimize = useCallback(() => {
-    void withWindow("minimize");
+    void executeWindowAction("minimize");
   }, []);
 
   const handleForceClose = useCallback(async () => {
     if (!TauriClient.isTauri()) return;
-    try {
-      allowCloseRef.current = true;
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
-      await appWindow.destroy();
-    } catch {
-      // ignore
-    }
+    allowCloseRef.current = true;
+    const closed = await executeWindowAction("destroy");
+    if (!closed) allowCloseRef.current = false;
   }, []);
 
   const handleRestart = useCallback(() => {
@@ -235,7 +187,8 @@ export function WindowTitleBar() {
     } catch {
       // Fallback: just close and let user manually restart
       allowCloseRef.current = true;
-      await withWindow("close");
+      const closed = await executeWindowAction("close");
+      if (!closed) allowCloseRef.current = false;
     }
   }, []);
 
@@ -290,7 +243,7 @@ export function WindowTitleBar() {
           <DropdownMenuItem
             onSelect={() => {
               setWindowMenuOpen(false);
-              void withWindow("start-dragging");
+              void executeWindowAction("start-dragging");
             }}
           >
             {t("Move Window", "Move Window")}
@@ -344,13 +297,12 @@ export function WindowTitleBar() {
       <div
         className="titlebar-title flex h-full flex-1 items-center px-4 text-[11px] font-semibold uppercase text-muted-foreground/90 select-none cursor-default"
         data-tauri-drag-region
-        onPointerDown={handleDragStart}
-        onDoubleClick={handleToggleMaximize}
+        {...dragRegion}
         onContextMenu={handleWindowContextMenu}
       >
         {t("Better Cloudflare Console", "Better Cloudflare Console")}
       </div>
-      <div className="titlebar-actions flex h-full items-center gap-1 pr-2 text-[10px] uppercase">
+      <div className="titlebar-actions flex h-full items-center gap-1 pr-2">
         <Tooltip
           tip={
             isTopmost
@@ -378,42 +330,7 @@ export function WindowTitleBar() {
             T
           </Button>
         </Tooltip>
-        <Tooltip tip={t("Minimize", "Minimize")} side="bottom">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
-            onClick={() => void withWindow("minimize")}
-            aria-label={t("Minimize window", "Minimize window")}
-          >
-            -
-          </Button>
-        </Tooltip>
-        <Tooltip tip={t("Toggle maximize", "Toggle maximize")} side="bottom">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 w-9 px-0 text-[10px] text-muted-foreground/80"
-            onClick={() => void withWindow("toggle-maximize")}
-            aria-label={t("Toggle maximize", "Toggle maximize")}
-          >
-            []
-          </Button>
-        </Tooltip>
-        <Tooltip tip={t("Close", "Close")} side="bottom">
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            className="h-7 w-9 px-0 text-[10px]"
-            onClick={() => void requestClose()}
-            aria-label={t("Close window", "Close window")}
-          >
-            X
-          </Button>
-        </Tooltip>
+        <WindowControls onClose={requestClose} />
       </div>
       <Dialog open={confirmCloseOpen} onOpenChange={setConfirmCloseOpen}>
         <DialogContent className="max-w-md">
@@ -452,7 +369,8 @@ export function WindowTitleBar() {
                     await persistConfirmWindowClose(false);
                   }
                   allowCloseRef.current = true;
-                  await withWindow("close");
+                  const closed = await executeWindowAction("close");
+                  if (!closed) allowCloseRef.current = false;
                 })();
               }}
             >

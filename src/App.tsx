@@ -173,7 +173,7 @@ function App() {
           {activeView === "app" && isAuthenticated ? (
             <DNSManager apiKey={apiKey} email={email} onLogout={handleLogout} />
           ) : (
-            <LoginForm onLogin={handleLogin} />
+            <LoginForm onLogin={handleLogin} desktop={isDesktopEnv} />
           )}
         </div>
       </main>
