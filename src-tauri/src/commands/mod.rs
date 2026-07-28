@@ -2,13 +2,13 @@ use chrono::Utc;
 
 use crate::storage::Storage;
 
-pub mod auth;
 pub mod audit;
+pub mod auth;
 pub mod dns;
 pub mod services;
 
-pub use auth::*;
 pub use audit::*;
+pub use auth::*;
 pub use dns::*;
 pub use services::*;
 
@@ -26,8 +26,14 @@ pub(crate) fn serialize_audit_entries(
         let mut rows = Vec::new();
         rows.push(headers.join(","));
         for entry in entries {
-            let timestamp = entry.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-            let operation = entry.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+            let timestamp = entry
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let operation = entry
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let resource = entry.get("resource").and_then(|v| v.as_str()).unwrap_or("");
             let mut details = entry.clone();
             if let serde_json::Value::Object(ref mut map) = details {
@@ -38,8 +44,13 @@ pub(crate) fn serialize_audit_entries(
             let detail_str = serde_json::to_string(&details).unwrap_or_else(|_| "{}".to_string());
             let escape = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
             rows.push(
-                [escape(timestamp), escape(operation), escape(resource), escape(&detail_str)]
-                    .join(","),
+                [
+                    escape(timestamp),
+                    escape(operation),
+                    escape(resource),
+                    escape(&detail_str),
+                ]
+                .join(","),
             );
         }
         return Ok(rows.join("\n"));

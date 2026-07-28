@@ -26,10 +26,7 @@ pub enum ExecutionResult {
     /// Tool executed successfully.
     Success(ToolResult),
     /// Tool requires user approval first.
-    NeedsApproval {
-        tool_call: ToolCall,
-        reason: String,
-    },
+    NeedsApproval { tool_call: ToolCall, reason: String },
     /// Tool execution failed.
     Error(ToolResult),
 }

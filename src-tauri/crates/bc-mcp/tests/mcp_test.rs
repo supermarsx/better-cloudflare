@@ -6,9 +6,8 @@
 
 #[allow(unused_imports)]
 use bc_mcp::{
-    available_tool_definitions, build_status, default_enabled_tool_set,
-    sanitize_enabled_tools,
-    McpToolDescriptor, McpPrompt, McpResource, McpResourceTemplate,
+    available_tool_definitions, build_status, default_enabled_tool_set, sanitize_enabled_tools,
+    McpPrompt, McpResource, McpResourceTemplate, McpToolDescriptor,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -32,7 +31,11 @@ fn all_tool_names_are_unique() {
 #[test]
 fn all_tools_have_descriptions() {
     for tool in available_tool_definitions() {
-        assert!(!tool.description.is_empty(), "Tool {} has no description", tool.name);
+        assert!(
+            !tool.description.is_empty(),
+            "Tool {} has no description",
+            tool.name
+        );
     }
 }
 
@@ -75,11 +78,7 @@ fn default_tool_set_matches_definitions() {
 #[test]
 fn has_at_least_50_tools() {
     let defs = available_tool_definitions();
-    assert!(
-        defs.len() >= 50,
-        "Expected >= 50 tools, got {}",
-        defs.len(),
-    );
+    assert!(defs.len() >= 50, "Expected >= 50 tools, got {}", defs.len(),);
 }
 
 #[test]
@@ -120,10 +119,7 @@ fn sanitize_preserves_all_valid() {
 
 #[test]
 fn sanitize_deduplicates() {
-    let input = vec![
-        "cf_verify_token".to_string(),
-        "cf_verify_token".to_string(),
-    ];
+    let input = vec!["cf_verify_token".to_string(), "cf_verify_token".to_string()];
     let result = sanitize_enabled_tools(&input);
     assert_eq!(result.len(), 1);
 }
@@ -161,8 +157,16 @@ fn status_includes_tool_count() {
 fn status_includes_resource_and_prompt_counts() {
     let enabled = default_enabled_tool_set();
     let status = build_status(true, "localhost".to_string(), 8787, &enabled, None, None);
-    assert!(status.resource_count >= 8, "Expected >= 8 resources, got {}", status.resource_count);
-    assert!(status.prompt_count >= 8, "Expected >= 8 prompts, got {}", status.prompt_count);
+    assert!(
+        status.resource_count >= 8,
+        "Expected >= 8 resources, got {}",
+        status.resource_count
+    );
+    assert!(
+        status.prompt_count >= 8,
+        "Expected >= 8 prompts, got {}",
+        status.prompt_count
+    );
 }
 
 #[test]
@@ -199,7 +203,9 @@ fn all_tool_names_have_valid_prefix() {
 fn tool_names_are_snake_case() {
     for tool in available_tool_definitions() {
         assert!(
-            tool.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            tool.name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_'),
             "Tool name '{}' is not snake_case",
             tool.name,
         );
@@ -260,7 +266,12 @@ fn schema_standalone_function() {
     assert!(schema.is_object());
     let obj = schema.as_object().unwrap();
     assert_eq!(obj.get("type").unwrap().as_str().unwrap(), "object");
-    assert!(obj.get("properties").unwrap().as_object().unwrap().contains_key("api_key"));
+    assert!(obj
+        .get("properties")
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("api_key"));
 }
 
 #[test]
@@ -277,7 +288,11 @@ fn unknown_tool_schema_is_empty_object() {
 #[test]
 fn resources_are_non_empty() {
     let resources = bc_mcp::resources::list_resources();
-    assert!(resources.len() >= 8, "Expected >= 8 resources, got {}", resources.len());
+    assert!(
+        resources.len() >= 8,
+        "Expected >= 8 resources, got {}",
+        resources.len()
+    );
 }
 
 #[test]
@@ -291,14 +306,22 @@ fn resource_uris_are_unique() {
 #[test]
 fn all_resources_have_descriptions() {
     for resource in bc_mcp::resources::list_resources() {
-        assert!(!resource.description.is_empty(), "Resource '{}' has no description", resource.uri);
+        assert!(
+            !resource.description.is_empty(),
+            "Resource '{}' has no description",
+            resource.uri
+        );
     }
 }
 
 #[test]
 fn all_resources_have_mime_type() {
     for resource in bc_mcp::resources::list_resources() {
-        assert!(!resource.mime_type.is_empty(), "Resource '{}' has no mime_type", resource.uri);
+        assert!(
+            !resource.mime_type.is_empty(),
+            "Resource '{}' has no mime_type",
+            resource.uri
+        );
     }
 }
 
@@ -331,7 +354,10 @@ fn reading_unknown_resource_returns_err() {
 #[test]
 fn resource_templates_non_empty() {
     let templates = bc_mcp::resources::list_resource_templates();
-    assert!(!templates.is_empty(), "Expected at least one resource template");
+    assert!(
+        !templates.is_empty(),
+        "Expected at least one resource template"
+    );
 }
 
 #[test]
@@ -354,7 +380,11 @@ fn resource_template_uris_are_valid() {
 #[test]
 fn prompts_are_non_empty() {
     let prompts = bc_mcp::prompts::list_prompts();
-    assert!(prompts.len() >= 8, "Expected >= 8 prompts, got {}", prompts.len());
+    assert!(
+        prompts.len() >= 8,
+        "Expected >= 8 prompts, got {}",
+        prompts.len()
+    );
 }
 
 #[test]
@@ -368,18 +398,38 @@ fn prompt_names_are_unique() {
 #[test]
 fn all_prompts_have_descriptions() {
     for prompt in bc_mcp::prompts::list_prompts() {
-        assert!(!prompt.description.is_empty(), "Prompt '{}' has no description", prompt.name);
+        assert!(
+            !prompt.description.is_empty(),
+            "Prompt '{}' has no description",
+            prompt.name
+        );
     }
 }
 
 #[test]
 fn all_prompts_have_arguments() {
     for prompt in bc_mcp::prompts::list_prompts() {
-        let args = prompt.arguments.as_ref().expect(&format!("Prompt '{}' has no arguments", prompt.name));
-        assert!(!args.is_empty(), "Prompt '{}' has empty arguments", prompt.name);
+        let args = prompt
+            .arguments
+            .as_ref()
+            .expect(&format!("Prompt '{}' has no arguments", prompt.name));
+        assert!(
+            !args.is_empty(),
+            "Prompt '{}' has empty arguments",
+            prompt.name
+        );
         for arg in args {
-            assert!(!arg.name.is_empty(), "Prompt '{}' has args with no name", prompt.name);
-            assert!(!arg.description.is_empty(), "Prompt '{}' arg '{}' has no description", prompt.name, arg.name);
+            assert!(
+                !arg.name.is_empty(),
+                "Prompt '{}' has args with no name",
+                prompt.name
+            );
+            assert!(
+                !arg.description.is_empty(),
+                "Prompt '{}' arg '{}' has no description",
+                prompt.name,
+                arg.name
+            );
         }
     }
 }
@@ -406,13 +456,13 @@ fn can_get_known_prompts() {
             messages.err(),
         );
         let msgs = messages.unwrap();
-        assert!(
-            !msgs.is_empty(),
-            "Prompt '{}' returned no messages",
-            name,
-        );
+        assert!(!msgs.is_empty(), "Prompt '{}' returned no messages", name,);
         for msg in &msgs {
-            assert!(!msg.role.is_empty(), "Message in prompt '{}' has no role", name);
+            assert!(
+                !msg.role.is_empty(),
+                "Message in prompt '{}' has no role",
+                name
+            );
         }
     }
 }
@@ -430,10 +480,8 @@ fn unknown_prompt_returns_err() {
 
 #[test]
 fn success_response_format() {
-    let resp = bc_mcp::protocol::success_response(
-        serde_json::json!(42),
-        serde_json::json!("hello"),
-    );
+    let resp =
+        bc_mcp::protocol::success_response(serde_json::json!(42), serde_json::json!("hello"));
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 42);
     assert_eq!(resp["result"], "hello");
@@ -471,10 +519,7 @@ fn error_response_with_data() {
 
 #[test]
 fn null_id_response() {
-    let resp = bc_mcp::protocol::success_response(
-        serde_json::Value::Null,
-        serde_json::json!("ok"),
-    );
+    let resp = bc_mcp::protocol::success_response(serde_json::Value::Null, serde_json::json!("ok"));
     assert!(resp["id"].is_null());
 }
 
@@ -564,7 +609,10 @@ fn get_optional_string() {
 #[test]
 fn get_optional_bool() {
     let args = serde_json::json!({"flag": true});
-    assert_eq!(bc_mcp::protocol::get_optional_bool(&args, "flag"), Some(true));
+    assert_eq!(
+        bc_mcp::protocol::get_optional_bool(&args, "flag"),
+        Some(true)
+    );
     assert_eq!(bc_mcp::protocol::get_optional_bool(&args, "nope"), None);
 }
 
@@ -579,7 +627,10 @@ fn get_optional_u32() {
 fn get_string_array() {
     let args = serde_json::json!({"items": ["a", "b", "c"]});
     let arr = bc_mcp::protocol::get_string_array(&args, "items");
-    assert_eq!(arr, Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]));
+    assert_eq!(
+        arr,
+        Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+    );
     let empty = bc_mcp::protocol::get_string_array(&args, "missing");
     assert!(empty.is_none());
 }
@@ -614,9 +665,14 @@ fn cloudflare_category_has_most_tools() {
 fn key_cloudflare_tools_exist() {
     let names = bc_mcp::tools::all_tool_names();
     let required = [
-        "cf_verify_token", "cf_list_zones", "cf_list_dns_records",
-        "cf_create_dns_record", "cf_update_dns_record", "cf_delete_dns_record",
-        "cf_get_zone_setting", "cf_update_zone_setting",
+        "cf_verify_token",
+        "cf_list_zones",
+        "cf_list_dns_records",
+        "cf_create_dns_record",
+        "cf_update_dns_record",
+        "cf_delete_dns_record",
+        "cf_get_zone_setting",
+        "cf_update_zone_setting",
     ];
     for name in &required {
         assert!(names.contains(&name.to_string()), "Missing tool: {}", name);
@@ -627,9 +683,12 @@ fn key_cloudflare_tools_exist() {
 fn key_dns_tools_exist() {
     let names = bc_mcp::tools::all_tool_names();
     let required = [
-        "dns_validate_record", "dns_check_propagation",
-        "dns_parse_csv", "dns_export_csv",
-        "dns_parse_srv", "dns_compose_srv",
+        "dns_validate_record",
+        "dns_check_propagation",
+        "dns_parse_csv",
+        "dns_export_csv",
+        "dns_parse_srv",
+        "dns_compose_srv",
     ];
     for name in &required {
         assert!(names.contains(&name.to_string()), "Missing tool: {}", name);

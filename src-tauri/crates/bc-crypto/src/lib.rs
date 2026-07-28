@@ -85,12 +85,7 @@ impl CryptoManager {
         OsRng.fill(&mut salt);
 
         let mut key = vec![0u8; self.config.key_length];
-        pbkdf2_hmac::<Sha256>(
-            password.as_bytes(),
-            &salt,
-            self.config.iterations,
-            &mut key,
-        );
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, self.config.iterations, &mut key);
 
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill(&mut nonce_bytes);

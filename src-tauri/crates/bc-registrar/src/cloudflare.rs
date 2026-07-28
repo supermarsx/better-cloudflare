@@ -1,9 +1,8 @@
-/// Cloudflare Registrar API client.
-
-use reqwest::Client;
-use serde_json::Value;
 use crate::types::*;
 use crate::RegistrarClient;
+/// Cloudflare Registrar API client.
+use reqwest::Client;
+use serde_json::Value;
 
 pub struct CloudflareRegistrarClient {
     client: Client,
@@ -36,11 +35,18 @@ impl CloudflareRegistrarClient {
             return Ok(id.clone());
         }
         let req = self.apply_auth(
-            self.client.get("https://api.cloudflare.com/client/v4/accounts?per_page=1"),
+            self.client
+                .get("https://api.cloudflare.com/client/v4/accounts?per_page=1"),
         );
-        let resp: Value = req.send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
-        resp["result"].as_array()
+        let resp: Value = req
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        resp["result"]
+            .as_array()
             .and_then(|arr| arr.first())
             .and_then(|a| a["id"].as_str())
             .map(|s| s.to_string())
@@ -59,8 +65,13 @@ impl CloudflareRegistrarClient {
             _ => DomainStatus::Unknown,
         };
 
-        let ns: Vec<String> = d["name_servers"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        let ns: Vec<String> = d["name_servers"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         DomainInfo {
@@ -70,12 +81,18 @@ impl CloudflareRegistrarClient {
             created_at: d["created_at"].as_str().unwrap_or("").to_string(),
             expires_at: d["expires_at"].as_str().unwrap_or("").to_string(),
             updated_at: d["updated_at"].as_str().map(String::from),
-            nameservers: Nameservers { current: ns, is_custom: false },
+            nameservers: Nameservers {
+                current: ns,
+                is_custom: false,
+            },
             locks: DomainLocks {
                 transfer_lock: d["locked"].as_bool().unwrap_or(false),
                 auto_renew: d["auto_renew"].as_bool().unwrap_or(false),
             },
-            dnssec: DNSSECStatus { enabled: false, ds_records: None },
+            dnssec: DNSSECStatus {
+                enabled: false,
+                ds_records: None,
+            },
             privacy: PrivacyStatus {
                 enabled: d["privacy"].as_bool().unwrap_or(false),
                 service_name: None,
@@ -94,18 +111,25 @@ impl RegistrarClient for CloudflareRegistrarClient {
             account_id
         );
         let req = self.apply_auth(self.client.get(&url));
-        let resp: Value = req.send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+        let resp: Value = req
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         if resp["success"].as_bool() != Some(true) {
-            let msg = resp["errors"].as_array()
+            let msg = resp["errors"]
+                .as_array()
                 .and_then(|arr| arr.first())
                 .and_then(|e| e["message"].as_str())
                 .unwrap_or("Unknown Cloudflare Registrar error");
             return Err(msg.to_string());
         }
 
-        let domains = resp["result"].as_array()
+        let domains = resp["result"]
+            .as_array()
             .map(|arr| arr.iter().map(Self::parse_domain).collect())
             .unwrap_or_default();
         Ok(domains)
@@ -118,11 +142,17 @@ impl RegistrarClient for CloudflareRegistrarClient {
             account_id, domain
         );
         let req = self.apply_auth(self.client.get(&url));
-        let resp: Value = req.send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+        let resp: Value = req
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         if resp["success"].as_bool() != Some(true) {
-            let msg = resp["errors"].as_array()
+            let msg = resp["errors"]
+                .as_array()
                 .and_then(|arr| arr.first())
                 .and_then(|e| e["message"].as_str())
                 .unwrap_or("Unknown error");

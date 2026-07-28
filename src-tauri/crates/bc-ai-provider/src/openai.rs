@@ -165,7 +165,10 @@ impl OpenAiProvider {
             total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
         });
 
-        let model = body["model"].as_str().unwrap_or(&self.config.model).to_string();
+        let model = body["model"]
+            .as_str()
+            .unwrap_or(&self.config.model)
+            .to_string();
 
         Ok(CompletionResponse {
             message,
@@ -239,7 +242,8 @@ impl AiProvider for OpenAiProvider {
         if !status.is_success() {
             let status_code = status.as_u16();
             let text = resp.text().await.unwrap_or_default();
-            let parsed: ApiErrorBody = serde_json::from_str(&text).unwrap_or(ApiErrorBody { error: None });
+            let parsed: ApiErrorBody =
+                serde_json::from_str(&text).unwrap_or(ApiErrorBody { error: None });
             let message = parsed
                 .error
                 .as_ref()
@@ -354,10 +358,8 @@ impl AiProvider for OpenAiProvider {
                                     let idx = tc["index"].as_u64().unwrap_or(0) as usize;
                                     if let Some(func) = tc.get("function") {
                                         if let Some(name) = func["name"].as_str() {
-                                            let id = tc["id"]
-                                                .as_str()
-                                                .unwrap_or_default()
-                                                .to_string();
+                                            let id =
+                                                tc["id"].as_str().unwrap_or_default().to_string();
                                             // Expand tool_calls vec
                                             while tool_calls.len() <= idx {
                                                 tool_calls.push(ToolCall {
@@ -404,9 +406,7 @@ impl AiProvider for OpenAiProvider {
                         if let Some(u) = chunk_json.get("usage") {
                             let u = Usage {
                                 prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                                completion_tokens: u["completion_tokens"]
-                                    .as_u64()
-                                    .unwrap_or(0)
+                                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0)
                                     as u32,
                                 total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
                             };
@@ -462,11 +462,16 @@ impl AiProvider for OpenAiProvider {
             });
         }
 
-        let body: ModelsResponse = resp.json().await.map_err(|e| AiProviderError::Parse(e.to_string()))?;
+        let body: ModelsResponse = resp
+            .json()
+            .await
+            .map_err(|e| AiProviderError::Parse(e.to_string()))?;
         let models = body
             .data
             .into_iter()
-            .filter(|m| m.id.starts_with("gpt-") || m.id.starts_with("o1") || m.id.starts_with("o3"))
+            .filter(|m| {
+                m.id.starts_with("gpt-") || m.id.starts_with("o1") || m.id.starts_with("o3")
+            })
             .map(|m| {
                 let supports_tools = !m.id.contains("instruct");
                 Model {

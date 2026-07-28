@@ -24,8 +24,8 @@ use core_foundation::data::CFData;
 use core_foundation::string::CFString;
 use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease, CFTypeRef, OSStatus};
 use core_foundation_sys::dictionary::{
-    CFDictionaryCreateMutable, CFDictionarySetValue, CFMutableDictionaryRef,
-    kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+    kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks, CFDictionaryCreateMutable,
+    CFDictionarySetValue, CFMutableDictionaryRef,
 };
 use core_foundation_sys::error::CFErrorRef;
 use core_foundation_sys::string::CFStringRef;
@@ -34,8 +34,8 @@ use security_framework_sys::access_control::{
 };
 use security_framework_sys::base::{errSecSuccess, SecAccessControlRef};
 use security_framework_sys::item::{
-    kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass,
-    kSecClassGenericPassword, kSecMatchLimit, kSecReturnAttributes, kSecReturnData, kSecValueData,
+    kSecAttrAccessControl, kSecAttrAccount, kSecAttrService, kSecClass, kSecClassGenericPassword,
+    kSecMatchLimit, kSecReturnAttributes, kSecReturnData, kSecValueData,
 };
 use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
 
@@ -270,7 +270,7 @@ pub fn has_protected_secret(service: &str, account: &str) -> Result<bool, Biomet
         match status {
             s if s == errSecSuccess => Ok(true),
             ERR_SEC_INTERACTION_NOT_ALLOWED => Ok(true), // exists but needs auth
-            ERR_SEC_AUTH_FAILED => Ok(true),              // exists but auth denied
+            ERR_SEC_AUTH_FAILED => Ok(true),             // exists but auth denied
             ERR_SEC_ITEM_NOT_FOUND => Ok(false),
             other => Err(BiometricError::StoreError(format!(
                 "SecItemCopyMatching failed (OSStatus {})",

@@ -80,7 +80,10 @@ impl CloudflareClient {
 
     /// Execute a request-building closure with retry on 429 and 5xx responses.
     /// Uses exponential backoff with jitter, respecting Retry-After headers.
-    async fn request_with_retry<F>(&self, build_request: F) -> Result<reqwest::Response, CloudflareError>
+    async fn request_with_retry<F>(
+        &self,
+        build_request: F,
+    ) -> Result<reqwest::Response, CloudflareError>
     where
         F: Fn(&Self) -> reqwest::RequestBuilder,
     {
@@ -216,9 +219,7 @@ impl CloudflareClient {
 
         let url_owned = url.clone();
         let response = self
-            .request_with_retry(move |s| {
-                s.apply_auth(s.client.get(&url_owned))
-            })
+            .request_with_retry(move |s| s.apply_auth(s.client.get(&url_owned)))
             .await?;
 
         let json: Value = response
@@ -249,9 +250,7 @@ impl CloudflareClient {
         );
 
         let response = self
-            .request_with_retry(|s| {
-                s.apply_auth(s.client.post(&url).json(&record))
-            })
+            .request_with_retry(|s| s.apply_auth(s.client.post(&url).json(&record)))
             .await?;
 
         let json: Value = response
@@ -275,9 +274,7 @@ impl CloudflareClient {
         );
 
         let response = self
-            .request_with_retry(|s| {
-                s.apply_auth(s.client.put(&url).json(&record))
-            })
+            .request_with_retry(|s| s.apply_auth(s.client.put(&url).json(&record)))
             .await?;
 
         let json: Value = response
@@ -299,10 +296,8 @@ impl CloudflareClient {
             zone_id, record_id
         );
 
-        self.request_with_retry(|s| {
-            s.apply_auth(s.client.delete(&url))
-        })
-        .await?;
+        self.request_with_retry(|s| s.apply_auth(s.client.delete(&url)))
+            .await?;
         Ok(())
     }
 
@@ -577,10 +572,20 @@ impl CloudflareClient {
             url.push_str("&continuous=true");
         }
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         if json["success"].as_bool() != Some(true) {
-            let err = json["errors"].as_array().and_then(|a| a.first()).and_then(|e| e["message"].as_str()).unwrap_or("Analytics error");
+            let err = json["errors"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Analytics error");
             return Err(CloudflareError::ApiError(err.to_string()));
         }
         Ok(json["result"].clone())
@@ -606,10 +611,20 @@ impl CloudflareClient {
             url.push_str(&format!("&metrics={}", mets.join(",")));
         }
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         if json["success"].as_bool() != Some(true) {
-            let err = json["errors"].as_array().and_then(|a| a.first()).and_then(|e| e["message"].as_str()).unwrap_or("DNS analytics error");
+            let err = json["errors"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("DNS analytics error");
             return Err(CloudflareError::ApiError(err.to_string()));
         }
         Ok(json["result"].clone())
@@ -617,86 +632,185 @@ impl CloudflareClient {
 
     // ── Firewall / WAF ─────────────────────────────────────────────────
 
-    pub async fn get_firewall_rules(&self, zone_id: &str) -> Result<Vec<FirewallRule>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/rules", zone_id);
+    pub async fn get_firewall_rules(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<FirewallRule>, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/rules",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rules: Vec<FirewallRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
     }
 
-    pub async fn create_firewall_rule(&self, zone_id: &str, rule: FirewallRuleInput) -> Result<FirewallRule, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/rules", zone_id);
+    pub async fn create_firewall_rule(
+        &self,
+        zone_id: &str,
+        rule: FirewallRuleInput,
+    ) -> Result<FirewallRule, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/rules",
+            zone_id
+        );
         let body = json!([{
             "paused": rule.paused, "description": rule.description, "action": rule.action,
             "priority": rule.priority,
             "filter": { "expression": rule.filter.expression, "paused": rule.filter.paused, "description": rule.filter.description }
         }]);
         let req = self.apply_auth(self.client.post(&url).json(&body));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rules: Vec<FirewallRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
-        rules.into_iter().next().ok_or_else(|| CloudflareError::ApiError("No rule returned".to_string()))
+        rules
+            .into_iter()
+            .next()
+            .ok_or_else(|| CloudflareError::ApiError("No rule returned".to_string()))
     }
 
-    pub async fn update_firewall_rule(&self, zone_id: &str, rule_id: &str, rule: FirewallRuleInput) -> Result<FirewallRule, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/rules/{}", zone_id, rule_id);
+    pub async fn update_firewall_rule(
+        &self,
+        zone_id: &str,
+        rule_id: &str,
+        rule: FirewallRuleInput,
+    ) -> Result<FirewallRule, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/rules/{}",
+            zone_id, rule_id
+        );
         let body = json!({
             "paused": rule.paused, "description": rule.description, "action": rule.action,
             "priority": rule.priority,
             "filter": { "expression": rule.filter.expression, "paused": rule.filter.paused, "description": rule.filter.description }
         });
         let req = self.apply_auth(self.client.put(&url).json(&body));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rule: FirewallRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rule)
     }
 
-    pub async fn delete_firewall_rule(&self, zone_id: &str, rule_id: &str) -> Result<(), CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/rules/{}", zone_id, rule_id);
+    pub async fn delete_firewall_rule(
+        &self,
+        zone_id: &str,
+        rule_id: &str,
+    ) -> Result<(), CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/rules/{}",
+            zone_id, rule_id
+        );
         let req = self.apply_auth(self.client.delete(&url));
-        req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        req.send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         Ok(())
     }
 
-    pub async fn get_ip_access_rules(&self, zone_id: &str) -> Result<Vec<IpAccessRule>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules", zone_id);
+    pub async fn get_ip_access_rules(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<IpAccessRule>, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rules: Vec<IpAccessRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
     }
 
-    pub async fn create_ip_access_rule(&self, zone_id: &str, mode: &str, value: &str, notes: &str) -> Result<IpAccessRule, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules", zone_id);
+    pub async fn create_ip_access_rule(
+        &self,
+        zone_id: &str,
+        mode: &str,
+        value: &str,
+        notes: &str,
+    ) -> Result<IpAccessRule, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules",
+            zone_id
+        );
         let body = json!({ "mode": mode, "configuration": { "target": "ip", "value": value }, "notes": notes });
         let req = self.apply_auth(self.client.post(&url).json(&body));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rule: IpAccessRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rule)
     }
 
-    pub async fn delete_ip_access_rule(&self, zone_id: &str, rule_id: &str) -> Result<(), CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules/{}", zone_id, rule_id);
+    pub async fn delete_ip_access_rule(
+        &self,
+        zone_id: &str,
+        rule_id: &str,
+    ) -> Result<(), CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/firewall/access_rules/rules/{}",
+            zone_id, rule_id
+        );
         let req = self.apply_auth(self.client.delete(&url));
-        req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        req.send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         Ok(())
     }
 
-    pub async fn get_waf_rulesets(&self, zone_id: &str) -> Result<Vec<WafRuleset>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/rulesets", zone_id);
+    pub async fn get_waf_rulesets(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<WafRuleset>, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/rulesets",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rulesets: Vec<WafRuleset> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rulesets)
@@ -704,81 +818,172 @@ impl CloudflareClient {
 
     // ── Workers ─────────────────────────────────────────────────────────
 
-    pub async fn get_worker_routes(&self, zone_id: &str) -> Result<Vec<WorkerRoute>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/workers/routes", zone_id);
+    pub async fn get_worker_routes(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<WorkerRoute>, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/workers/routes",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let routes: Vec<WorkerRoute> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(routes)
     }
 
-    pub async fn create_worker_route(&self, zone_id: &str, pattern: &str, script: &str) -> Result<WorkerRoute, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/workers/routes", zone_id);
+    pub async fn create_worker_route(
+        &self,
+        zone_id: &str,
+        pattern: &str,
+        script: &str,
+    ) -> Result<WorkerRoute, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/workers/routes",
+            zone_id
+        );
         let body = json!({ "pattern": pattern, "script": script });
         let req = self.apply_auth(self.client.post(&url).json(&body));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let route: WorkerRoute = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(route)
     }
 
-    pub async fn delete_worker_route(&self, zone_id: &str, route_id: &str) -> Result<(), CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/workers/routes/{}", zone_id, route_id);
+    pub async fn delete_worker_route(
+        &self,
+        zone_id: &str,
+        route_id: &str,
+    ) -> Result<(), CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/workers/routes/{}",
+            zone_id, route_id
+        );
         let req = self.apply_auth(self.client.delete(&url));
-        req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        req.send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         Ok(())
     }
 
     // ── Email Routing ───────────────────────────────────────────────────
 
-    pub async fn get_email_routing_settings(&self, zone_id: &str) -> Result<EmailRoutingSettings, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/email/routing", zone_id);
+    pub async fn get_email_routing_settings(
+        &self,
+        zone_id: &str,
+    ) -> Result<EmailRoutingSettings, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/email/routing",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let settings: EmailRoutingSettings = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(settings)
     }
 
-    pub async fn get_email_routing_rules(&self, zone_id: &str) -> Result<Vec<EmailRoutingRule>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules", zone_id);
+    pub async fn get_email_routing_rules(
+        &self,
+        zone_id: &str,
+    ) -> Result<Vec<EmailRoutingRule>, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rules: Vec<EmailRoutingRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
     }
 
-    pub async fn create_email_routing_rule(&self, zone_id: &str, rule: &EmailRoutingRule) -> Result<EmailRoutingRule, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules", zone_id);
-        let body = serde_json::to_value(rule).map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+    pub async fn create_email_routing_rule(
+        &self,
+        zone_id: &str,
+        rule: &EmailRoutingRule,
+    ) -> Result<EmailRoutingRule, CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules",
+            zone_id
+        );
+        let body =
+            serde_json::to_value(rule).map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let req = self.apply_auth(self.client.post(&url).json(&body));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let created: EmailRoutingRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(created)
     }
 
-    pub async fn delete_email_routing_rule(&self, zone_id: &str, rule_id: &str) -> Result<(), CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules/{}", zone_id, rule_id);
+    pub async fn delete_email_routing_rule(
+        &self,
+        zone_id: &str,
+        rule_id: &str,
+    ) -> Result<(), CloudflareError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules/{}",
+            zone_id, rule_id
+        );
         let req = self.apply_auth(self.client.delete(&url));
-        req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        req.send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         Ok(())
     }
 
     // ── Page Rules ──────────────────────────────────────────────────────
 
     pub async fn get_page_rules(&self, zone_id: &str) -> Result<Vec<PageRule>, CloudflareError> {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{}/pagerules", zone_id);
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/pagerules",
+            zone_id
+        );
         let req = self.apply_auth(self.client.get(&url));
-        let response = req.send().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response.json().await.map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
         let rules: Vec<PageRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
@@ -786,7 +991,11 @@ impl CloudflareClient {
 
     // ── Bulk deletion ───────────────────────────────────────────────────
 
-    pub async fn delete_bulk_dns_records(&self, zone_id: &str, record_ids: &[String]) -> Result<Value, CloudflareError> {
+    pub async fn delete_bulk_dns_records(
+        &self,
+        zone_id: &str,
+        record_ids: &[String],
+    ) -> Result<Value, CloudflareError> {
         let mut deleted = Vec::new();
         let mut failed = Vec::new();
         for id in record_ids {

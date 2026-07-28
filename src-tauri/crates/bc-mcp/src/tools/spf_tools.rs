@@ -24,7 +24,9 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             let content = get_required_string(args, "content")?;
             match bc_spf::parse_spf(&content) {
                 Some(record) => serde_json::to_value(record).map_err(|e| e.to_string()),
-                None => Err("Failed to parse SPF record. Ensure it starts with 'v=spf1'.".to_string()),
+                None => {
+                    Err("Failed to parse SPF record. Ensure it starts with 'v=spf1'.".to_string())
+                }
             }
         }
 

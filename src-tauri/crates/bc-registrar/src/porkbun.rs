@@ -1,9 +1,8 @@
-/// Porkbun API client.
-
-use reqwest::Client;
-use serde_json::{json, Value};
 use crate::types::*;
 use crate::RegistrarClient;
+/// Porkbun API client.
+use reqwest::Client;
+use serde_json::{json, Value};
 
 const PORKBUN_API: &str = "https://api.porkbun.com/api/json/v3";
 
@@ -39,16 +38,23 @@ impl PorkbunClient {
             DomainStatus::Unknown
         };
 
-        let ns: Vec<String> = d["nameservers"].as_array()
+        let ns: Vec<String> = d["nameservers"]
+            .as_array()
             .or_else(|| d["ns"].as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let auto_renew = d["autoRenew"].as_bool()
+        let auto_renew = d["autoRenew"]
+            .as_bool()
             .or_else(|| d["auto_renew"].as_bool())
             .unwrap_or(false);
 
-        let whois_privacy = d["whoisPrivacy"].as_bool()
+        let whois_privacy = d["whoisPrivacy"]
+            .as_bool()
             .or_else(|| d["whois_privacy"].as_bool())
             .unwrap_or(false);
 
@@ -56,19 +62,29 @@ impl PorkbunClient {
             domain: d["domain"].as_str().unwrap_or("").to_string(),
             registrar: RegistrarProvider::Porkbun,
             status,
-            created_at: d["createDate"].as_str()
+            created_at: d["createDate"]
+                .as_str()
                 .or_else(|| d["create_date"].as_str())
-                .unwrap_or("").to_string(),
-            expires_at: d["expireDate"].as_str()
+                .unwrap_or("")
+                .to_string(),
+            expires_at: d["expireDate"]
+                .as_str()
                 .or_else(|| d["expire_date"].as_str())
-                .unwrap_or("").to_string(),
+                .unwrap_or("")
+                .to_string(),
             updated_at: None,
-            nameservers: Nameservers { current: ns, is_custom: false },
+            nameservers: Nameservers {
+                current: ns,
+                is_custom: false,
+            },
             locks: DomainLocks {
                 transfer_lock: d["locked"].as_bool().unwrap_or(false),
                 auto_renew,
             },
-            dnssec: DNSSECStatus { enabled: false, ds_records: None },
+            dnssec: DNSSECStatus {
+                enabled: false,
+                ds_records: None,
+            },
             privacy: PrivacyStatus {
                 enabled: whois_privacy,
                 service_name: Some("Porkbun WHOIS Privacy".to_string()),
@@ -82,18 +98,24 @@ impl PorkbunClient {
 impl RegistrarClient for PorkbunClient {
     async fn list_domains(&self) -> Result<Vec<DomainInfo>, String> {
         let url = format!("{}/domain/listAll", PORKBUN_API);
-        let resp: Value = self.client
+        let resp: Value = self
+            .client
             .post(&url)
             .json(&self.auth_body())
-            .send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         if resp["status"].as_str() != Some("SUCCESS") {
             let msg = resp["message"].as_str().unwrap_or("Porkbun API error");
             return Err(msg.to_string());
         }
 
-        let domains = resp["domains"].as_array()
+        let domains = resp["domains"]
+            .as_array()
             .map(|arr| arr.iter().map(Self::parse_domain).collect())
             .unwrap_or_default();
         Ok(domains)
@@ -108,11 +130,16 @@ impl RegistrarClient for PorkbunClient {
 
     async fn verify_credentials(&self) -> Result<bool, String> {
         let url = format!("{}/ping", PORKBUN_API);
-        let resp: Value = self.client
+        let resp: Value = self
+            .client
             .post(&url)
             .json(&self.auth_body())
-            .send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         Ok(resp["status"].as_str() == Some("SUCCESS"))
     }

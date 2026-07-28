@@ -101,7 +101,10 @@ pub async fn run_turn(
                 full_text
             });
 
-            let result = provider.stream(request, tx).await.map_err(|e| e.to_string())?;
+            let result = provider
+                .stream(request, tx)
+                .await
+                .map_err(|e| e.to_string())?;
             let _full_text = stream_handle.await.unwrap_or_default();
 
             // Update the assistant message
@@ -171,7 +174,10 @@ pub async fn run_turn(
             }
         } else {
             // Non-streaming
-            let response = provider.complete(request).await.map_err(|e| e.to_string())?;
+            let response = provider
+                .complete(request)
+                .await
+                .map_err(|e| e.to_string())?;
 
             chat.update_last_assistant_message(conversation_id, |msg| {
                 msg.message = response.message.clone();

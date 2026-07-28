@@ -42,7 +42,12 @@ pub fn parse_srv(content: &str) -> SRVFields {
 }
 
 /// Compose an SRV content string from fields.
-pub fn compose_srv(priority: Option<u16>, weight: Option<u16>, port: Option<u16>, target: &str) -> String {
+pub fn compose_srv(
+    priority: Option<u16>,
+    weight: Option<u16>,
+    port: Option<u16>,
+    target: &str,
+) -> String {
     format!(
         "{} {} {} {}",
         priority.unwrap_or(0),
@@ -92,7 +97,12 @@ pub fn parse_tlsa(content: &str) -> TLSAFields {
 }
 
 /// Compose a TLSA content string from fields.
-pub fn compose_tlsa(usage: Option<u8>, selector: Option<u8>, matching_type: Option<u8>, data: &str) -> String {
+pub fn compose_tlsa(
+    usage: Option<u8>,
+    selector: Option<u8>,
+    matching_type: Option<u8>,
+    data: &str,
+) -> String {
     format!(
         "{} {} {} {}",
         usage.unwrap_or(0),

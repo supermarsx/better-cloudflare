@@ -1,9 +1,8 @@
 use tauri::State;
 
 use crate::cloudflare_api::{
-    CloudflareClient,
-    FirewallRule, FirewallRuleInput, IpAccessRule, WafRuleset,
-    WorkerRoute, EmailRoutingRule, EmailRoutingSettings, PageRule,
+    CloudflareClient, EmailRoutingRule, EmailRoutingSettings, FirewallRule, FirewallRuleInput,
+    IpAccessRule, PageRule, WafRuleset, WorkerRoute,
 };
 use crate::storage::Storage;
 

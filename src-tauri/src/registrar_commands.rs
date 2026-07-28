@@ -6,11 +6,11 @@
 use chrono::Utc;
 use tauri::State;
 
-use bc_registrar::{
-    compute_health_check, DomainHealthCheck, DomainInfo,
-    RegistrarClient, RegistrarCredential, RegistrarProvider,
-};
 use crate::storage::Storage;
+use bc_registrar::{
+    compute_health_check, DomainHealthCheck, DomainInfo, RegistrarClient, RegistrarCredential,
+    RegistrarProvider,
+};
 
 /// Build the appropriate registrar client from a credential ID.
 async fn build_client_from_id(

@@ -39,7 +39,9 @@ pub fn list_resources() -> Vec<McpResource> {
         McpResource {
             uri: "dns://record-types".to_string(),
             name: "DNS Record Types".to_string(),
-            description: "Reference of all supported DNS record types with descriptions and examples.".to_string(),
+            description:
+                "Reference of all supported DNS record types with descriptions and examples."
+                    .to_string(),
             mime_type: "application/json".to_string(),
         },
         McpResource {
@@ -51,25 +53,31 @@ pub fn list_resources() -> Vec<McpResource> {
         McpResource {
             uri: "spf://syntax".to_string(),
             name: "SPF Syntax Reference".to_string(),
-            description: "Complete SPF record syntax guide with mechanisms, qualifiers, and modifiers.".to_string(),
+            description:
+                "Complete SPF record syntax guide with mechanisms, qualifiers, and modifiers."
+                    .to_string(),
             mime_type: "application/json".to_string(),
         },
         McpResource {
             uri: "cloudflare://zone-settings".to_string(),
             name: "Cloudflare Zone Settings".to_string(),
-            description: "Reference of Cloudflare zone setting IDs and their descriptions.".to_string(),
+            description: "Reference of Cloudflare zone setting IDs and their descriptions."
+                .to_string(),
             mime_type: "application/json".to_string(),
         },
         McpResource {
             uri: "cloudflare://firewall-expressions".to_string(),
             name: "Firewall Expression Syntax".to_string(),
-            description: "Cloudflare firewall expression language reference with fields and operators.".to_string(),
+            description:
+                "Cloudflare firewall expression language reference with fields and operators."
+                    .to_string(),
             mime_type: "application/json".to_string(),
         },
         McpResource {
             uri: "dns://validation-rules".to_string(),
             name: "DNS Validation Rules".to_string(),
-            description: "Record validation rules applied by the dns_validate_record tool.".to_string(),
+            description: "Record validation rules applied by the dns_validate_record tool."
+                .to_string(),
             mime_type: "application/json".to_string(),
         },
         McpResource {
@@ -81,7 +89,8 @@ pub fn list_resources() -> Vec<McpResource> {
         McpResource {
             uri: "dns://global-resolvers".to_string(),
             name: "Global DNS Resolvers".to_string(),
-            description: "List of global DNS resolvers used by the propagation checker.".to_string(),
+            description: "List of global DNS resolvers used by the propagation checker."
+                .to_string(),
             mime_type: "application/json".to_string(),
         },
     ]
@@ -89,14 +98,12 @@ pub fn list_resources() -> Vec<McpResource> {
 
 /// URI templates for dynamic/parameterised resources.
 pub fn list_resource_templates() -> Vec<McpResourceTemplate> {
-    vec![
-        McpResourceTemplate {
-            uri_template: "cloudflare://zone/{zone_id}/summary".to_string(),
-            name: "Zone Summary".to_string(),
-            description: "Summary information for a specific Cloudflare zone.".to_string(),
-            mime_type: "application/json".to_string(),
-        },
-    ]
+    vec![McpResourceTemplate {
+        uri_template: "cloudflare://zone/{zone_id}/summary".to_string(),
+        name: "Zone Summary".to_string(),
+        description: "Summary information for a specific Cloudflare zone.".to_string(),
+        mime_type: "application/json".to_string(),
+    }]
 }
 
 // ─── Resource content ──────────────────────────────────────────────────────

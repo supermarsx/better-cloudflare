@@ -1,9 +1,8 @@
-/// GoDaddy API client.
-
-use reqwest::Client;
-use serde_json::Value;
 use crate::types::*;
 use crate::RegistrarClient;
+/// GoDaddy API client.
+use reqwest::Client;
+use serde_json::Value;
 
 const GODADDY_API: &str = "https://api.godaddy.com/v1";
 
@@ -36,8 +35,13 @@ impl GoDaddyClient {
             _ => DomainStatus::Unknown,
         };
 
-        let ns: Vec<String> = d["nameServers"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        let ns: Vec<String> = d["nameServers"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let locked = d["locked"].as_bool().unwrap_or(false);
@@ -51,9 +55,18 @@ impl GoDaddyClient {
                 organization: c["organization"].as_str().map(String::from),
                 email: c["email"].as_str().map(String::from),
                 phone: c["phone"].as_str().map(String::from),
-                city: c["addressMailing"].get("city").and_then(|v| v.as_str()).map(String::from),
-                state: c["addressMailing"].get("state").and_then(|v| v.as_str()).map(String::from),
-                country: c["addressMailing"].get("country").and_then(|v| v.as_str()).map(String::from),
+                city: c["addressMailing"]
+                    .get("city")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                state: c["addressMailing"]
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                country: c["addressMailing"]
+                    .get("country")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             })
         });
 
@@ -64,10 +77,22 @@ impl GoDaddyClient {
             created_at: d["createdAt"].as_str().unwrap_or("").to_string(),
             expires_at: d["expires"].as_str().unwrap_or("").to_string(),
             updated_at: d["modifiedAt"].as_str().map(String::from),
-            nameservers: Nameservers { current: ns, is_custom: false },
-            locks: DomainLocks { transfer_lock: locked, auto_renew },
-            dnssec: DNSSECStatus { enabled: false, ds_records: None },
-            privacy: PrivacyStatus { enabled: privacy, service_name: None },
+            nameservers: Nameservers {
+                current: ns,
+                is_custom: false,
+            },
+            locks: DomainLocks {
+                transfer_lock: locked,
+                auto_renew,
+            },
+            dnssec: DNSSECStatus {
+                enabled: false,
+                ds_records: None,
+            },
+            privacy: PrivacyStatus {
+                enabled: privacy,
+                service_name: None,
+            },
             contact,
         }
     }
@@ -76,11 +101,16 @@ impl GoDaddyClient {
 #[async_trait::async_trait]
 impl RegistrarClient for GoDaddyClient {
     async fn list_domains(&self) -> Result<Vec<DomainInfo>, String> {
-        let resp: Value = self.client
+        let resp: Value = self
+            .client
             .get(format!("{}/domains", GODADDY_API))
             .header("Authorization", self.auth_header())
-            .send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         if let Some(arr) = resp.as_array() {
             Ok(arr.iter().map(Self::parse_domain).collect())
@@ -92,11 +122,16 @@ impl RegistrarClient for GoDaddyClient {
     }
 
     async fn get_domain(&self, domain: &str) -> Result<DomainInfo, String> {
-        let resp: Value = self.client
+        let resp: Value = self
+            .client
             .get(format!("{}/domains/{}", GODADDY_API, domain))
             .header("Authorization", self.auth_header())
-            .send().await.map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
 
         if resp["domain"].as_str().is_some() {
             Ok(Self::parse_domain(&resp))
@@ -107,10 +142,13 @@ impl RegistrarClient for GoDaddyClient {
     }
 
     async fn verify_credentials(&self) -> Result<bool, String> {
-        let resp = self.client
+        let resp = self
+            .client
             .get(format!("{}/domains?limit=1", GODADDY_API))
             .header("Authorization", self.auth_header())
-            .send().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(resp.status().is_success())
     }
 }

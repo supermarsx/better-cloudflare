@@ -103,16 +103,13 @@ impl AnthropicProvider {
         });
 
         // System message
-        let sys = request
-            .system
-            .as_deref()
-            .or_else(|| {
-                request
-                    .messages
-                    .iter()
-                    .find(|m| m.role == Role::System)
-                    .map(|m| m.content.as_text())
-            });
+        let sys = request.system.as_deref().or_else(|| {
+            request
+                .messages
+                .iter()
+                .find(|m| m.role == Role::System)
+                .map(|m| m.content.as_text())
+        });
         if let Some(system_text) = sys {
             body["system"] = json!(system_text);
         }
@@ -157,8 +154,7 @@ impl AnthropicProvider {
                     }
                 }
                 Some("tool_use") => {
-                    if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str())
-                    {
+                    if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
                         tool_calls.push(ToolCall {
                             id: id.to_string(),
                             name: name.to_string(),
@@ -230,7 +226,10 @@ impl AiProvider for AnthropicProvider {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", self.config.api_key.as_deref().unwrap_or_default())
+            .header(
+                "x-api-key",
+                self.config.api_key.as_deref().unwrap_or_default(),
+            )
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .json(&body)
@@ -242,11 +241,17 @@ impl AiProvider for AnthropicProvider {
             let code = status.as_u16();
             let text = resp.text().await.unwrap_or_default();
             let parsed: ApiError = serde_json::from_str(&text).unwrap_or(ApiError { error: None });
-            let message = parsed.error.as_ref().and_then(|e| e.message.clone()).unwrap_or(text);
+            let message = parsed
+                .error
+                .as_ref()
+                .and_then(|e| e.message.clone())
+                .unwrap_or(text);
             let provider_code = parsed.error.and_then(|e| e.error_type);
 
             if code == 429 {
-                return Err(AiProviderError::RateLimited { retry_after_ms: None });
+                return Err(AiProviderError::RateLimited {
+                    retry_after_ms: None,
+                });
             }
             if code == 401 {
                 return Err(AiProviderError::AuthFailed(message));
@@ -274,7 +279,10 @@ impl AiProvider for AnthropicProvider {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", self.config.api_key.as_deref().unwrap_or_default())
+            .header(
+                "x-api-key",
+                self.config.api_key.as_deref().unwrap_or_default(),
+            )
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .json(&body)
@@ -319,15 +327,14 @@ impl AiProvider for AnthropicProvider {
                                 let block = &event["content_block"];
                                 if block["type"].as_str() == Some("tool_use") {
                                     let id = block["id"].as_str().unwrap_or_default().to_string();
-                                    let name = block["name"].as_str().unwrap_or_default().to_string();
+                                    let name =
+                                        block["name"].as_str().unwrap_or_default().to_string();
                                     tool_calls.push(ToolCall {
                                         id: id.clone(),
                                         name: name.clone(),
                                         arguments: json!({}),
                                     });
-                                    let _ = tx
-                                        .send(StreamDelta::ToolCallStart { id, name })
-                                        .await;
+                                    let _ = tx.send(StreamDelta::ToolCallStart { id, name }).await;
                                 }
                             }
                             Some("content_block_delta") => {
@@ -370,7 +377,8 @@ impl AiProvider for AnthropicProvider {
                                     finish_reason = Some(fr.to_string());
                                 }
                                 if let Some(u) = event.get("usage") {
-                                    let delta_output = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+                                    let delta_output =
+                                        u["output_tokens"].as_u64().unwrap_or(0) as u32;
                                     usage = Some(Usage {
                                         prompt_tokens: 0,
                                         completion_tokens: delta_output,
@@ -383,9 +391,7 @@ impl AiProvider for AnthropicProvider {
                                     usage = Some(Usage {
                                         prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0)
                                             as u32,
-                                        completion_tokens: u["output_tokens"]
-                                            .as_u64()
-                                            .unwrap_or(0)
+                                        completion_tokens: u["output_tokens"].as_u64().unwrap_or(0)
                                             as u32,
                                         total_tokens: (u["input_tokens"].as_u64().unwrap_or(0)
                                             + u["output_tokens"].as_u64().unwrap_or(0))
@@ -463,7 +469,10 @@ impl AiProvider for AnthropicProvider {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", self.config.api_key.as_deref().unwrap_or_default())
+            .header(
+                "x-api-key",
+                self.config.api_key.as_deref().unwrap_or_default(),
+            )
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .json(&body)

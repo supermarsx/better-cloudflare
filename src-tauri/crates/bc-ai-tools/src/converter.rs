@@ -22,10 +22,7 @@ pub fn all_enabled_tools(descriptors: &[McpToolDescriptor]) -> Vec<ToolDefinitio
 }
 
 /// Filter tools by category.
-pub fn tools_by_category(
-    descriptors: &[McpToolDescriptor],
-    category: &str,
-) -> Vec<ToolDefinition> {
+pub fn tools_by_category(descriptors: &[McpToolDescriptor], category: &str) -> Vec<ToolDefinition> {
     descriptors
         .iter()
         .filter(|d| d.enabled && d.category == category)

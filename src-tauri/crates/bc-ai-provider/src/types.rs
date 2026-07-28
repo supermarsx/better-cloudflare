@@ -85,7 +85,11 @@ impl Message {
     }
 
     /// Convenience: create a tool result message.
-    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Self {
             role: Role::Tool,
             content: MessageContent::ToolResult {

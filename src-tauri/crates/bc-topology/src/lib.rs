@@ -363,7 +363,10 @@ async fn resolve_chain_for_host(
                 }
             }
             if !names.is_empty() {
-                reverse_hostnames.push(ReverseHostnameResult { ip, hostnames: names });
+                reverse_hostnames.push(ReverseHostnameResult {
+                    ip,
+                    hostnames: names,
+                });
             }
         }
     }
@@ -641,8 +644,13 @@ async fn resolve_geo_for_ips(
             set.spawn(async move {
                 (
                     ip_owned.clone(),
-                    fetch_ip_geo(&client_cloned, &ip_owned, lookup_timeout_ms, &geo_provider_owned)
-                        .await,
+                    fetch_ip_geo(
+                        &client_cloned,
+                        &ip_owned,
+                        lookup_timeout_ms,
+                        &geo_provider_owned,
+                    )
+                    .await,
                 )
             });
         }
@@ -660,7 +668,13 @@ async fn resolve_geo_for_ips(
             let mut cache = topology_ip_geo_cache().write().await;
             for (ip, value) in cache_updates {
                 let key = format!("{}|{}", geo_provider, ip);
-                cache.insert(key, TopologyIpGeoCacheEntry { ts_ms: write_ts, value });
+                cache.insert(
+                    key,
+                    TopologyIpGeoCacheEntry {
+                        ts_ms: write_ts,
+                        value,
+                    },
+                );
             }
             cache.retain(|_, entry| write_ts - entry.ts_ms <= TOPOLOGY_IP_GEO_CACHE_TTL_MS);
             if cache.len() > TOPOLOGY_IP_GEO_CACHE_MAX_ENTRIES {
@@ -984,8 +998,13 @@ pub async fn resolve_topology_batch(
     let geo_by_ip = if disable_geo_lookups {
         HashMap::new()
     } else {
-        resolve_geo_for_ips(&resolver_http_client, &all_ips, lookup_timeout_ms, &geo_provider)
-            .await
+        resolve_geo_for_ips(
+            &resolver_http_client,
+            &all_ips,
+            lookup_timeout_ms,
+            &geo_provider,
+        )
+        .await
     };
     if !disable_geo_lookups && !geo_by_ip.is_empty() {
         for result in &mut resolutions {
@@ -1218,10 +1237,7 @@ async fn query_single_resolver(
     opts.timeout = Duration::from_secs(3);
     opts.attempts = 1;
     let group = NameServerConfigGroup::from_ips_clear(&[parsed_ip], 53, true);
-    let resolver = TokioAsyncResolver::tokio(
-        ResolverConfig::from_parts(None, vec![], group),
-        opts,
-    );
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::from_parts(None, vec![], group), opts);
 
     let timeout_result = tokio::time::timeout(Duration::from_secs(5), async {
         match record_type.to_uppercase().as_str() {
@@ -1268,10 +1284,7 @@ async fn query_single_resolver(
                 let lookup = resolver.txt_lookup(domain).await;
                 match lookup {
                     Ok(l) => {
-                        let answers: Vec<String> = l
-                            .iter()
-                            .map(|txt| txt.to_string())
-                            .collect();
+                        let answers: Vec<String> = l.iter().map(|txt| txt.to_string()).collect();
                         (answers, "NOERROR".to_string(), None)
                     }
                     Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
@@ -1291,10 +1304,9 @@ async fn query_single_resolver(
                 }
             }
             "CNAME" => {
-                let lookup = resolver.lookup(
-                    domain,
-                    trust_dns_resolver::proto::rr::RecordType::CNAME,
-                ).await;
+                let lookup = resolver
+                    .lookup(domain, trust_dns_resolver::proto::rr::RecordType::CNAME)
+                    .await;
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
@@ -1309,10 +1321,12 @@ async fn query_single_resolver(
             }
             _ => {
                 // Generic lookup
-                let lookup = resolver.lookup(
-                    domain,
-                    trust_dns_resolver::proto::rr::RecordType::Unknown(0),
-                ).await;
+                let lookup = resolver
+                    .lookup(
+                        domain,
+                        trust_dns_resolver::proto::rr::RecordType::Unknown(0),
+                    )
+                    .await;
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
@@ -1393,10 +1407,7 @@ mod tests {
     #[test]
     fn dns_server_resolution() {
         assert_eq!(resolve_dns_server(None, None, None), "1.1.1.1");
-        assert_eq!(
-            resolve_dns_server(Some("8.8.8.8"), None, None),
-            "8.8.8.8"
-        );
+        assert_eq!(resolve_dns_server(Some("8.8.8.8"), None, None), "8.8.8.8");
         assert_eq!(
             resolve_dns_server(Some("custom"), Some("9.9.9.9"), None),
             "9.9.9.9"

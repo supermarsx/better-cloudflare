@@ -218,7 +218,11 @@ fn dns_troubleshoot_messages(args: &Value) -> Vec<PromptMessage> {
     let record_type = get_arg(args, "record_type");
     let issue = get_arg(args, "issue");
 
-    let rt = if record_type.is_empty() { "A".to_string() } else { record_type };
+    let rt = if record_type.is_empty() {
+        "A".to_string()
+    } else {
+        record_type
+    };
     let issue_ctx = if issue.is_empty() {
         String::new()
     } else {
@@ -273,8 +277,9 @@ fn domain_audit_messages(args: &Value) -> Vec<PromptMessage> {
         format!("1. Use `cf_list_dns_records` with zone_id='{zone_id}' to fetch all records.")
     };
 
-    vec![
-        msg("user", &format!(
+    vec![msg(
+        "user",
+        &format!(
             "Run a comprehensive security and configuration audit for '{domain}'.\n\n\
             Steps:\n\
             {fetch_step}\n\
@@ -283,8 +288,8 @@ fn domain_audit_messages(args: &Value) -> Vec<PromptMessage> {
             4. For any Fail or Warn items, explain the risk and how to fix it.\n\
             5. Check SPF, DKIM, DMARC, DNSSEC, CAA, HTTPS redirect, and record hygiene.\n\
             6. Provide a scorecard summary and prioritized action items."
-        )),
-    ]
+        ),
+    )]
 }
 
 fn zone_migration_messages(args: &Value) -> Vec<PromptMessage> {
@@ -292,9 +297,14 @@ fn zone_migration_messages(args: &Value) -> Vec<PromptMessage> {
     let source_format = get_arg(args, "source_format");
 
     let import_step = if source_format.is_empty() {
-        "2. Parse the records using `dns_parse_csv` or `dns_parse_bind` depending on format.".to_string()
+        "2. Parse the records using `dns_parse_csv` or `dns_parse_bind` depending on format."
+            .to_string()
     } else {
-        let tool = if source_format == "bind" { "dns_parse_bind" } else { "dns_parse_csv" };
+        let tool = if source_format == "bind" {
+            "dns_parse_bind"
+        } else {
+            "dns_parse_csv"
+        };
         format!("2. Parse the records using `{tool}`.")
     };
 
@@ -352,8 +362,9 @@ fn email_setup_messages(args: &Value) -> Vec<PromptMessage> {
         format!("\nEmail provider: {}", provider)
     };
 
-    vec![
-        msg("user", &format!(
+    vec![msg(
+        "user",
+        &format!(
             "Set up complete email authentication for '{domain}'.{provider_ctx}\n\n\
             Steps:\n\
             1. Check existing email records: MX, SPF (TXT), DKIM (TXT), DMARC (TXT).\n\
@@ -367,8 +378,8 @@ fn email_setup_messages(args: &Value) -> Vec<PromptMessage> {
             6. Optionally configure Cloudflare Email Routing with `cf_create_email_routing_rule`.\n\
             7. Run `audit_run_domain` to verify the complete setup.\n\
             8. Test with `spf_simulate` from the mail server IP."
-        )),
-    ]
+        ),
+    )]
 }
 
 fn ssl_setup_messages(args: &Value) -> Vec<PromptMessage> {
@@ -381,8 +392,9 @@ fn ssl_setup_messages(args: &Value) -> Vec<PromptMessage> {
         format!("\nCurrent SSL mode: {}", current_ssl)
     };
 
-    vec![
-        msg("user", &format!(
+    vec![msg(
+        "user",
+        &format!(
             "Configure SSL/TLS for zone '{zone_id}'.{current_ctx}\n\n\
             Steps:\n\
             1. Use `cf_get_zone_setting` with setting_id='ssl' to check current SSL mode.\n\
@@ -396,8 +408,8 @@ fn ssl_setup_messages(args: &Value) -> Vec<PromptMessage> {
             4. Apply each setting with `cf_update_zone_setting`.\n\
             5. Check HSTS headers if applicable.\n\
             6. Verify DNSSEC with `cf_get_dnssec`."
-        )),
-    ]
+        ),
+    )]
 }
 
 fn performance_optimize_messages(args: &Value) -> Vec<PromptMessage> {
@@ -410,8 +422,9 @@ fn performance_optimize_messages(args: &Value) -> Vec<PromptMessage> {
         format!("\nSite type: {}", site_type)
     };
 
-    vec![
-        msg("user", &format!(
+    vec![msg(
+        "user",
+        &format!(
             "Optimize performance settings for zone '{zone_id}'.{type_ctx}\n\n\
             Steps:\n\
             1. Check current zone analytics with `cf_get_zone_analytics` (last 24h).\n\
@@ -427,6 +440,6 @@ fn performance_optimize_messages(args: &Value) -> Vec<PromptMessage> {
             4. Apply optimizations with `cf_update_zone_setting`.\n\
             5. Suggest Worker routes for advanced caching if applicable.\n\
             6. Review after changes with analytics."
-        )),
-    ]
+        ),
+    )]
 }

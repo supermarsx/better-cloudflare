@@ -11,7 +11,10 @@ use bc_error::AppError;
 fn error_codes_are_stable() {
     assert_eq!(AppError::SessionExpired.code(), "SESSION_EXPIRED");
     assert_eq!(AppError::NoSession.code(), "NO_SESSION");
-    assert_eq!(AppError::PlatformNotSupported.code(), "PLATFORM_NOT_SUPPORTED");
+    assert_eq!(
+        AppError::PlatformNotSupported.code(),
+        "PLATFORM_NOT_SUPPORTED"
+    );
     assert_eq!(
         AppError::CloudflareApi {
             message: "x".into(),
@@ -39,20 +42,41 @@ fn error_codes_are_stable() {
 #[test]
 fn all_variants_have_unique_codes() {
     let variants: Vec<AppError> = vec![
-        AppError::AuthFailed { message: "a".into() },
+        AppError::AuthFailed {
+            message: "a".into(),
+        },
         AppError::SessionExpired,
         AppError::NoSession,
-        AppError::Validation { message: "b".into() },
+        AppError::Validation {
+            message: "b".into(),
+        },
         AppError::MissingField { field: "c".into() },
-        AppError::CloudflareApi { message: "d".into(), status: None },
-        AppError::RateLimited { retry_after_secs: 1 },
-        AppError::Storage { message: "e".into() },
-        AppError::NotFound { resource: "f".into() },
-        AppError::Crypto { message: "g".into() },
-        AppError::Biometric { message: "h".into() },
+        AppError::CloudflareApi {
+            message: "d".into(),
+            status: None,
+        },
+        AppError::RateLimited {
+            retry_after_secs: 1,
+        },
+        AppError::Storage {
+            message: "e".into(),
+        },
+        AppError::NotFound {
+            resource: "f".into(),
+        },
+        AppError::Crypto {
+            message: "g".into(),
+        },
+        AppError::Biometric {
+            message: "h".into(),
+        },
         AppError::PlatformNotSupported,
-        AppError::Internal { message: "i".into() },
-        AppError::Other { message: "j".into() },
+        AppError::Internal {
+            message: "i".into(),
+        },
+        AppError::Other {
+            message: "j".into(),
+        },
     ];
     let codes: Vec<&str> = variants.iter().map(|v| v.code()).collect();
     let unique: std::collections::HashSet<&&str> = codes.iter().collect();

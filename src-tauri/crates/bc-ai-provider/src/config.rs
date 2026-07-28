@@ -76,7 +76,9 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     /// Effective base URL (custom or provider default).
     pub fn effective_base_url(&self) -> &str {
-        self.base_url.as_deref().unwrap_or(self.kind.default_base_url())
+        self.base_url
+            .as_deref()
+            .unwrap_or(self.kind.default_base_url())
     }
 }
 

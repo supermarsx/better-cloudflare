@@ -9,8 +9,8 @@
 //! The server manages its own lifecycle (start/stop), tool enable/disable,
 //! bearer-token auth, and graceful shutdown.
 
-pub mod protocol;
 pub mod prompts;
+pub mod protocol;
 pub mod resources;
 pub mod schemas;
 pub mod tools;
@@ -138,7 +138,11 @@ fn normalize_host(host: Option<String>) -> String {
 
 fn normalize_port(port: Option<u16>) -> u16 {
     let next = port.unwrap_or(DEFAULT_MCP_PORT);
-    if next == 0 { DEFAULT_MCP_PORT } else { next }
+    if next == 0 {
+        DEFAULT_MCP_PORT
+    } else {
+        next
+    }
 }
 
 /// Generate a cryptographically random 64-character hex bearer token.
@@ -189,7 +193,14 @@ impl McpServerManager {
         if let Some(runtime) = runtime_ref.as_ref() {
             let enabled = runtime.enabled_tools.read().await.clone();
             let token = runtime.auth_token.read().await.clone();
-            return build_status(true, runtime.host.clone(), runtime.port, &enabled, last_error, token);
+            return build_status(
+                true,
+                runtime.host.clone(),
+                runtime.port,
+                &enabled,
+                last_error,
+                token,
+            );
         }
         drop(runtime_ref);
         let host = self.config_host.read().await.clone();
@@ -418,7 +429,10 @@ async fn handle_mcp_rpc(
                         Ok(tool_disabled(&name))
                     } else {
                         drop(enabled);
-                        let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                        let args = params
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
                         match tools::execute_tool(&name, &args).await {
                             Ok(value) => Ok(tool_success(&value)),
                             Err(err) => Ok(tool_error(&err)),
@@ -465,10 +479,7 @@ async fn handle_mcp_rpc(
         }
 
         "resources/read" => {
-            let uri = params
-                .get("uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
             match resources::read_resource(uri) {
                 Ok(content) => {
                     let text = serde_json::to_string_pretty(&content).unwrap_or_default();
@@ -518,11 +529,11 @@ async fn handle_mcp_rpc(
         }
 
         "prompts/get" => {
-            let prompt_name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let prompt_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             match prompts::get_prompt(prompt_name, &args) {
                 Ok(messages) => {
                     let msgs: Vec<Value> = messages

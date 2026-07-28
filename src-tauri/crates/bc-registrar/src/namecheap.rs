@@ -1,8 +1,7 @@
-/// Namecheap API client (XML-based).
-
-use reqwest::Client;
 use crate::types::*;
 use crate::RegistrarClient;
+/// Namecheap API client (XML-based).
+use reqwest::Client;
 
 const NAMECHEAP_API: &str = "https://api.namecheap.com/xml.response";
 const NAMECHEAP_SANDBOX: &str = "https://api.sandbox.namecheap.com/xml.response";
@@ -27,7 +26,11 @@ impl NamecheapClient {
     }
 
     fn base_url(&self) -> &str {
-        if self.sandbox { NAMECHEAP_SANDBOX } else { NAMECHEAP_API }
+        if self.sandbox {
+            NAMECHEAP_SANDBOX
+        } else {
+            NAMECHEAP_API
+        }
     }
 
     fn base_params(&self, command: &str) -> Vec<(&str, String)> {
@@ -112,12 +115,18 @@ impl NamecheapClient {
                 created_at: created,
                 expires_at: expires,
                 updated_at: None,
-                nameservers: Nameservers { current: vec![], is_custom: false },
+                nameservers: Nameservers {
+                    current: vec![],
+                    is_custom: false,
+                },
                 locks: DomainLocks {
                     transfer_lock: is_locked,
                     auto_renew,
                 },
-                dnssec: DNSSECStatus { enabled: false, ds_records: None },
+                dnssec: DNSSECStatus {
+                    enabled: false,
+                    ds_records: None,
+                },
                 privacy: PrivacyStatus {
                     enabled: whois_guard,
                     service_name: Some("WhoisGuard".to_string()),
@@ -136,10 +145,13 @@ impl NamecheapClient {
 impl RegistrarClient for NamecheapClient {
     async fn list_domains(&self) -> Result<Vec<DomainInfo>, String> {
         let params = self.base_params("namecheap.domains.getList");
-        let resp = self.client
+        let resp = self
+            .client
             .get(self.base_url())
             .query(&params)
-            .send().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let xml = resp.text().await.map_err(|e| e.to_string())?;
 
         if xml.contains("Status=\"ERROR\"") {
@@ -158,10 +170,13 @@ impl RegistrarClient for NamecheapClient {
         }
         let mut params = self.base_params("namecheap.domains.getInfo");
         params.push(("DomainName", domain.to_string()));
-        let resp = self.client
+        let resp = self
+            .client
             .get(self.base_url())
             .query(&params)
-            .send().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let xml = resp.text().await.map_err(|e| e.to_string())?;
 
         if xml.contains("Status=\"ERROR\"") {
@@ -188,10 +203,22 @@ impl RegistrarClient for NamecheapClient {
             created_at: created,
             expires_at: expires,
             updated_at: None,
-            nameservers: Nameservers { current: vec![], is_custom: false },
-            locks: DomainLocks { transfer_lock: false, auto_renew: false },
-            dnssec: DNSSECStatus { enabled: false, ds_records: None },
-            privacy: PrivacyStatus { enabled: false, service_name: None },
+            nameservers: Nameservers {
+                current: vec![],
+                is_custom: false,
+            },
+            locks: DomainLocks {
+                transfer_lock: false,
+                auto_renew: false,
+            },
+            dnssec: DNSSECStatus {
+                enabled: false,
+                ds_records: None,
+            },
+            privacy: PrivacyStatus {
+                enabled: false,
+                service_name: None,
+            },
             contact: None,
         })
     }
@@ -199,10 +226,13 @@ impl RegistrarClient for NamecheapClient {
     async fn verify_credentials(&self) -> Result<bool, String> {
         let mut params = self.base_params("namecheap.domains.getList");
         params.push(("PageSize", "1".to_string()));
-        let resp = self.client
+        let resp = self
+            .client
             .get(self.base_url())
             .query(&params)
-            .send().await.map_err(|e| e.to_string())?;
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let xml = resp.text().await.map_err(|e| e.to_string())?;
         Ok(!xml.contains("Status=\"ERROR\""))
     }

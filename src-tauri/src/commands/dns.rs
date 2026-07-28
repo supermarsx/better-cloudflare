@@ -1,8 +1,6 @@
 use tauri::State;
 
-use crate::cloudflare_api::{
-    CloudflareClient, DNSRecord, DNSRecordInput, Zone,
-};
+use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput, Zone};
 use crate::storage::Storage;
 
 use super::log_audit;
@@ -300,10 +298,7 @@ pub async fn delete_bulk_dns_records(
 // ─── SPF ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn simulate_spf(
-    domain: String,
-    ip: String,
-) -> Result<bc_spf::SPFSimulation, String> {
+pub async fn simulate_spf(domain: String, ip: String) -> Result<bc_spf::SPFSimulation, String> {
     bc_spf::simulate_spf(&domain, &ip).await
 }
 

@@ -127,12 +127,7 @@ impl AiProvider for OllamaProvider {
             body["tools"] = json!(tools);
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -164,9 +159,7 @@ impl AiProvider for OllamaProvider {
                 })
                 .collect();
             if calls.is_empty() {
-                Message::assistant(
-                    msg_body["content"].as_str().unwrap_or_default().to_string(),
-                )
+                Message::assistant(msg_body["content"].as_str().unwrap_or_default().to_string())
             } else {
                 Message {
                     role: Role::Assistant,
@@ -218,12 +211,7 @@ impl AiProvider for OllamaProvider {
             body["tools"] = json!(tools);
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         let status_code = resp.status();
         if !status_code.is_success() {
@@ -261,8 +249,7 @@ impl AiProvider for OllamaProvider {
                     let done = event["done"].as_bool().unwrap_or(false);
 
                     if done {
-                        let prompt_tokens =
-                            event["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
+                        let prompt_tokens = event["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
                         let completion_tokens = event["eval_count"].as_u64().unwrap_or(0) as u32;
                         usage = Some(Usage {
                             prompt_tokens,
@@ -300,11 +287,7 @@ impl AiProvider for OllamaProvider {
 
     async fn list_models(&self) -> Result<Vec<Model>, AiProviderError> {
         let url = format!("{}/api/tags", self.base_url());
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await?;
+        let resp = self.client.get(&url).send().await?;
 
         if !resp.status().is_success() {
             return Err(AiProviderError::Api {
@@ -339,11 +322,7 @@ impl AiProvider for OllamaProvider {
 
     async fn health_check(&self) -> Result<(), AiProviderError> {
         let url = format!("{}/api/tags", self.base_url());
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await?;
+        let resp = self.client.get(&url).send().await?;
         if resp.status().is_success() {
             Ok(())
         } else {

@@ -4,21 +4,21 @@
 //! Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, and
 //! Name.com. Includes domain health-check evaluation.
 
-pub mod types;
 pub mod cloudflare;
-pub mod porkbun;
-pub mod namecheap;
 pub mod godaddy;
 pub mod google;
+pub mod namecheap;
 pub mod namecom;
+pub mod porkbun;
+pub mod types;
 
-pub use types::*;
 pub use cloudflare::CloudflareRegistrarClient;
-pub use porkbun::PorkbunClient;
-pub use namecheap::NamecheapClient;
 pub use godaddy::GoDaddyClient;
 pub use google::GoogleDomainsClient;
+pub use namecheap::NamecheapClient;
 pub use namecom::NameComClient;
+pub use porkbun::PorkbunClient;
+pub use types::*;
 
 use chrono::Utc;
 use std::collections::HashMap;
@@ -56,22 +56,25 @@ pub fn build_client(
                 account_id,
             )))
         }
-        RegistrarProvider::Porkbun => {
-            Ok(Box::new(PorkbunClient::new(&api_key, &api_secret)))
-        }
+        RegistrarProvider::Porkbun => Ok(Box::new(PorkbunClient::new(&api_key, &api_secret))),
         RegistrarProvider::Namecheap => {
             let username = cred.username.as_deref().unwrap_or("");
-            let client_ip = secrets.get("client_ip").map(|s| s.as_str()).unwrap_or("127.0.0.1");
+            let client_ip = secrets
+                .get("client_ip")
+                .map(|s| s.as_str())
+                .unwrap_or("127.0.0.1");
             let sandbox = secrets.get("sandbox").map(|s| s == "true").unwrap_or(false);
-            Ok(Box::new(NamecheapClient::new(username, &api_key, client_ip, sandbox)))
+            Ok(Box::new(NamecheapClient::new(
+                username, &api_key, client_ip, sandbox,
+            )))
         }
-        RegistrarProvider::GoDaddy => {
-            Ok(Box::new(GoDaddyClient::new(&api_key, &api_secret)))
-        }
+        RegistrarProvider::GoDaddy => Ok(Box::new(GoDaddyClient::new(&api_key, &api_secret))),
         RegistrarProvider::Google => {
             let project = secrets.get("project").cloned().unwrap_or_default();
             let location = secrets.get("location").cloned().unwrap_or_default();
-            Ok(Box::new(GoogleDomainsClient::new(&api_key, &project, &location)))
+            Ok(Box::new(GoogleDomainsClient::new(
+                &api_key, &project, &location,
+            )))
         }
         RegistrarProvider::NameCom => {
             let username = cred.username.as_deref().unwrap_or("");
@@ -117,7 +120,11 @@ pub fn compute_health_check(info: &DomainInfo) -> DomainHealthCheck {
     checks.push(DomainCheck {
         name: "auto_renew".to_string(),
         passed: info.locks.auto_renew,
-        severity: if info.locks.auto_renew { CheckSeverity::Info } else { CheckSeverity::Warning },
+        severity: if info.locks.auto_renew {
+            CheckSeverity::Info
+        } else {
+            CheckSeverity::Warning
+        },
         message: if info.locks.auto_renew {
             "Auto-renew is enabled".to_string()
         } else {
@@ -129,7 +136,11 @@ pub fn compute_health_check(info: &DomainInfo) -> DomainHealthCheck {
     checks.push(DomainCheck {
         name: "transfer_lock".to_string(),
         passed: info.locks.transfer_lock,
-        severity: if info.locks.transfer_lock { CheckSeverity::Info } else { CheckSeverity::Warning },
+        severity: if info.locks.transfer_lock {
+            CheckSeverity::Info
+        } else {
+            CheckSeverity::Warning
+        },
         message: if info.locks.transfer_lock {
             "Transfer lock is enabled".to_string()
         } else {
@@ -166,7 +177,11 @@ pub fn compute_health_check(info: &DomainInfo) -> DomainHealthCheck {
     checks.push(DomainCheck {
         name: "nameservers".to_string(),
         passed: has_ns,
-        severity: if has_ns { CheckSeverity::Info } else { CheckSeverity::Warning },
+        severity: if has_ns {
+            CheckSeverity::Info
+        } else {
+            CheckSeverity::Warning
+        },
         message: if has_ns {
             format!("Using {} nameservers", info.nameservers.current.len())
         } else {
@@ -175,8 +190,12 @@ pub fn compute_health_check(info: &DomainInfo) -> DomainHealthCheck {
     });
 
     // Determine overall status
-    let has_critical = checks.iter().any(|c| !c.passed && matches!(c.severity, CheckSeverity::Critical));
-    let has_warning = checks.iter().any(|c| !c.passed && matches!(c.severity, CheckSeverity::Warning));
+    let has_critical = checks
+        .iter()
+        .any(|c| !c.passed && matches!(c.severity, CheckSeverity::Critical));
+    let has_warning = checks
+        .iter()
+        .any(|c| !c.passed && matches!(c.severity, CheckSeverity::Warning));
     let overall = if has_critical {
         HealthStatus::Critical
     } else if has_warning {
@@ -206,10 +225,22 @@ mod tests {
             created_at: "2020-01-01T00:00:00Z".to_string(),
             expires_at: "2030-01-01T00:00:00Z".to_string(),
             updated_at: None,
-            nameservers: Nameservers { current: vec!["ns1.example.com".to_string()], is_custom: false },
-            locks: DomainLocks { transfer_lock: true, auto_renew: true },
-            dnssec: DNSSECStatus { enabled: true, ds_records: None },
-            privacy: PrivacyStatus { enabled: true, service_name: None },
+            nameservers: Nameservers {
+                current: vec!["ns1.example.com".to_string()],
+                is_custom: false,
+            },
+            locks: DomainLocks {
+                transfer_lock: true,
+                auto_renew: true,
+            },
+            dnssec: DNSSECStatus {
+                enabled: true,
+                ds_records: None,
+            },
+            privacy: PrivacyStatus {
+                enabled: true,
+                service_name: None,
+            },
             contact: None,
         };
         let hc = compute_health_check(&info);
@@ -226,10 +257,22 @@ mod tests {
             created_at: "2020-01-01T00:00:00Z".to_string(),
             expires_at: "2020-06-01T00:00:00Z".to_string(),
             updated_at: None,
-            nameservers: Nameservers { current: vec![], is_custom: false },
-            locks: DomainLocks { transfer_lock: false, auto_renew: false },
-            dnssec: DNSSECStatus { enabled: false, ds_records: None },
-            privacy: PrivacyStatus { enabled: false, service_name: None },
+            nameservers: Nameservers {
+                current: vec![],
+                is_custom: false,
+            },
+            locks: DomainLocks {
+                transfer_lock: false,
+                auto_renew: false,
+            },
+            dnssec: DNSSECStatus {
+                enabled: false,
+                ds_records: None,
+            },
+            privacy: PrivacyStatus {
+                enabled: false,
+                service_name: None,
+            },
             contact: None,
         };
         let hc = compute_health_check(&info);

@@ -9,8 +9,8 @@
 //! This is a pure-computation crate — no network or filesystem I/O.
 
 use bc_cloudflare_api::DNSRecord;
-use bc_spf::{ip_matches_cidr, parse_spf};
 use bc_dns_tools::parse_srv;
+use bc_spf::{ip_matches_cidr, parse_spf};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -241,9 +241,7 @@ fn get_spf_all_qualifier(spf: &str) -> Option<char> {
     let bytes = s.as_bytes();
     // Match pattern: space + qualifier + "all" + (space or end)
     for (i, ch) in s.char_indices() {
-        if i > 0
-            && matches!(ch, '~' | '-' | '+' | '?')
-            && s[i + ch.len_utf8()..].starts_with("all")
+        if i > 0 && matches!(ch, '~' | '-' | '+' | '?') && s[i + ch.len_utf8()..].starts_with("all")
         {
             let after = i + ch.len_utf8() + 3;
             if after >= s.len() || bytes[after] == b' ' {
@@ -363,7 +361,13 @@ fn parse_mx_record(record: &DNSRecord, zone_name: &str) -> (Option<u16>, Option<
     }
 }
 
-fn item(id: &str, cat: AuditCategory, sev: AuditSeverity, title: &str, details: impl Into<String>) -> AuditItem {
+fn item(
+    id: &str,
+    cat: AuditCategory,
+    sev: AuditSeverity,
+    title: &str,
+    details: impl Into<String>,
+) -> AuditItem {
     AuditItem {
         id: id.to_string(),
         category: cat,
@@ -552,7 +556,10 @@ fn audit_hygiene(
                     AuditCategory::Hygiene,
                     AuditSeverity::Fail,
                     "Domain expiry critical (<15 days)",
-                    format!("Expiry date: {} ({} days remaining). Renew now.", full, days),
+                    format!(
+                        "Expiry date: {} ({} days remaining). Renew now.",
+                        full, days
+                    ),
                 ));
             } else if days < 30 {
                 items.push(item(
@@ -607,7 +614,10 @@ fn audit_hygiene(
         } else if ttl < 60 {
             ttl_issues.push(format!("{} {}: TTL {}s is very low", r.r#type, r.name, ttl));
         } else if r.r#type == "SOA" && ttl < 3600 {
-            ttl_issues.push(format!("SOA {}: TTL {}s is low (often 3600+).", r.name, ttl));
+            ttl_issues.push(format!(
+                "SOA {}: TTL {}s is low (often 3600+).",
+                r.name, ttl
+            ));
         } else if (r.r#type == "NS" || r.r#type == "MX") && ttl < 300 {
             ttl_issues.push(format!(
                 "{} {}: TTL {}s is low (often 300+).",
@@ -623,7 +633,12 @@ fn audit_hygiene(
     if !ttl_critical.is_empty() {
         let detail = format!(
             "{}\n\nTTL <30s should only be used temporarily before DNS changes.",
-            ttl_critical.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+            ttl_critical
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         items.push(item(
             "ttl-critical",
@@ -645,7 +660,12 @@ fn audit_hygiene(
         if ttl_issues.is_empty() {
             "No obvious TTL outliers detected.".to_string()
         } else {
-            ttl_issues.iter().take(12).cloned().collect::<Vec<_>>().join("\n")
+            ttl_issues
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         },
     ));
 
@@ -740,7 +760,12 @@ fn audit_hygiene(
             AuditCategory::Hygiene,
             AuditSeverity::Fail,
             "CNAME chains or cycles",
-            chain_issues.iter().take(8).cloned().collect::<Vec<_>>().join("\n"),
+            chain_issues
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
         ));
     }
     if !chain_warnings.is_empty() {
@@ -749,7 +774,12 @@ fn audit_hygiene(
             AuditCategory::Hygiene,
             AuditSeverity::Warn,
             "CNAME chains exceed best practice",
-            chain_warnings.iter().take(8).cloned().collect::<Vec<_>>().join("\n"),
+            chain_warnings
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
         ));
     }
     if chain_issues.is_empty() && chain_warnings.is_empty() {
@@ -827,7 +857,12 @@ fn audit_hygiene(
         if bad_aaaa.is_empty() {
             "No obvious special-use/bogon IPv6 addresses detected in AAAA records.".to_string()
         } else {
-            bad_aaaa.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+            bad_aaaa
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         },
     ));
 
@@ -940,9 +975,7 @@ fn audit_hygiene(
                 );
             }
             if serial.len() < 6 || !serial.chars().all(|c| c.is_ascii_digit()) {
-                issues.push(
-                    "SOA serial should be numeric (often YYYYMMDDnn).".to_string(),
-                );
+                issues.push("SOA serial should be numeric (often YYYYMMDDnn).".to_string());
             }
             if let Some(r) = refresh {
                 if r < 3600 {
@@ -956,9 +989,7 @@ fn audit_hygiene(
             }
             if let Some(r) = retry {
                 if !(600..=900).contains(&r) {
-                    issues.push(
-                        "SOA retry outside recommended range 600-900s.".to_string(),
-                    );
+                    issues.push("SOA retry outside recommended range 600-900s.".to_string());
                 }
             }
             if let Some(e) = expire {
@@ -1048,7 +1079,10 @@ fn audit_hygiene(
         let mut issues = Vec::new();
         for r in srv_records.iter().take(50) {
             let name = r.name.trim();
-            if !name.starts_with('_') || (!name.to_lowercase().contains("._tcp") && !name.to_lowercase().contains("._udp")) {
+            if !name.starts_with('_')
+                || (!name.to_lowercase().contains("._tcp")
+                    && !name.to_lowercase().contains("._udp"))
+            {
                 issues.push(format!(
                     "SRV {}: name should be like _service._tcp (or _udp).",
                     name
@@ -1085,7 +1119,12 @@ fn audit_hygiene(
             if issues.is_empty() {
                 "No obvious SRV issues detected.".to_string()
             } else {
-                issues.iter().take(12).cloned().collect::<Vec<_>>().join("\n")
+                issues
+                    .iter()
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
             },
         ));
     }
@@ -1228,7 +1267,10 @@ fn audit_email(
             AuditCategory::Email,
             AuditSeverity::Pass,
             "MX redundancy",
-            format!("Multiple MX records detected at apex ({}).", mx_at_apex.len()),
+            format!(
+                "Multiple MX records detected at apex ({}).",
+                mx_at_apex.len()
+            ),
         ));
     }
 
@@ -1283,7 +1325,9 @@ fn audit_email(
             .iter()
             .filter_map(|(_, t)| t.as_ref())
             .filter(|t| !t.is_empty())
-            .filter(|t| !a_by_name.contains_key(t.as_str()) && !aaaa_by_name.contains_key(t.as_str()))
+            .filter(|t| {
+                !a_by_name.contains_key(t.as_str()) && !aaaa_by_name.contains_key(t.as_str())
+            })
             .cloned()
             .collect();
         if !unresolved.is_empty() {
@@ -1481,7 +1525,10 @@ fn audit_email(
                 AuditCategory::Email,
                 AuditSeverity::Pass,
                 "DMARC present",
-                format!("DMARC is configured with p={}.", if p.is_empty() { "?" } else { &p }),
+                format!(
+                    "DMARC is configured with p={}.",
+                    if p.is_empty() { "?" } else { &p }
+                ),
             ));
         }
     }

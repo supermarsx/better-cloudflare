@@ -40,10 +40,7 @@ pub enum AgentEvent {
         is_error: bool,
     },
     /// Token usage update.
-    UsageUpdate {
-        conversation_id: Uuid,
-        usage: Usage,
-    },
+    UsageUpdate { conversation_id: Uuid, usage: Usage },
     /// Agent turn completed.
     TurnComplete {
         conversation_id: Uuid,
@@ -55,23 +52,37 @@ pub enum AgentEvent {
         error: String,
     },
     /// Generation was cancelled.
-    Cancelled {
-        conversation_id: Uuid,
-    },
+    Cancelled { conversation_id: Uuid },
 }
 
 impl AgentEvent {
     /// Get the conversation ID for any event variant.
     pub fn conversation_id(&self) -> Uuid {
         match self {
-            Self::TextDelta { conversation_id, .. }
-            | Self::ToolCallStart { conversation_id, .. }
-            | Self::ToolApprovalRequired { conversation_id, .. }
-            | Self::ToolCallComplete { conversation_id, .. }
-            | Self::UsageUpdate { conversation_id, .. }
-            | Self::TurnComplete { conversation_id, .. }
-            | Self::Error { conversation_id, .. }
-            | Self::Cancelled { conversation_id, .. } => *conversation_id,
+            Self::TextDelta {
+                conversation_id, ..
+            }
+            | Self::ToolCallStart {
+                conversation_id, ..
+            }
+            | Self::ToolApprovalRequired {
+                conversation_id, ..
+            }
+            | Self::ToolCallComplete {
+                conversation_id, ..
+            }
+            | Self::UsageUpdate {
+                conversation_id, ..
+            }
+            | Self::TurnComplete {
+                conversation_id, ..
+            }
+            | Self::Error {
+                conversation_id, ..
+            }
+            | Self::Cancelled {
+                conversation_id, ..
+            } => *conversation_id,
         }
     }
 }

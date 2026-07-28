@@ -92,11 +92,11 @@ async fn resolve_a_aaaa(
     Ok(lookup.iter().collect())
 }
 
-async fn resolve_mx(
-    resolver: &TokioAsyncResolver,
-    domain: &str,
-) -> Result<Vec<String>, String> {
-    let lookup = resolver.mx_lookup(domain).await.map_err(|e| e.to_string())?;
+async fn resolve_mx(resolver: &TokioAsyncResolver, domain: &str) -> Result<Vec<String>, String> {
+    let lookup = resolver
+        .mx_lookup(domain)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for record in lookup.iter() {
         out.push(record.exchange().to_utf8());
@@ -104,10 +104,7 @@ async fn resolve_mx(
     Ok(out)
 }
 
-async fn resolve_ptr(
-    resolver: &TokioAsyncResolver,
-    ip: IpAddr,
-) -> Result<Vec<String>, String> {
+async fn resolve_ptr(resolver: &TokioAsyncResolver, ip: IpAddr) -> Result<Vec<String>, String> {
     let lookup = resolver
         .reverse_lookup(ip)
         .await
@@ -146,7 +143,11 @@ pub fn parse_spf(content: &str) -> Option<SPFRecord> {
             } else {
                 None
             };
-            let core = if qualifier.is_some() { &part[1..] } else { part };
+            let core = if qualifier.is_some() {
+                &part[1..]
+            } else {
+                part
+            };
             let mut mech_split = core.splitn(2, ':');
             let mechanism = mech_split.next().unwrap_or("").to_lowercase();
             let value = mech_split.next().map(|s| s.to_string());
@@ -292,7 +293,16 @@ pub async fn simulate_spf(domain: &str, ip: &str) -> Result<SPFSimulation, Strin
     }
 
     for m in &parsed.mechanisms {
-        match eval_mechanism(&resolver, domain, ip_addr, m, &mut lookups, &mut max_lookups).await {
+        match eval_mechanism(
+            &resolver,
+            domain,
+            ip_addr,
+            m,
+            &mut lookups,
+            &mut max_lookups,
+        )
+        .await
+        {
             Ok(Some(true)) => {
                 let qualifier = m.qualifier.clone().unwrap_or_else(|| "+".to_string());
                 let result = match qualifier.as_str() {
@@ -386,8 +396,15 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
                             edge_type: "include".to_string(),
                         });
                         Box::pin(walk(
-                            resolver, target, nodes, edges, lookups, visited, cyclic,
-                            depth + 1, max_depth,
+                            resolver,
+                            target,
+                            nodes,
+                            edges,
+                            lookups,
+                            visited,
+                            cyclic,
+                            depth + 1,
+                            max_depth,
                         ))
                         .await?;
                     }

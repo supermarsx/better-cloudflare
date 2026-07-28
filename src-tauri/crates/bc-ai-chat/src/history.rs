@@ -28,7 +28,9 @@ pub trait ConversationStore: Send + Sync {
     /// Export a conversation as JSON.
     async fn export(&self, id: Uuid) -> Result<Option<String>, String> {
         if let Some(conv) = self.load(id).await? {
-            serde_json::to_string_pretty(&conv).map(Some).map_err(|e| e.to_string())
+            serde_json::to_string_pretty(&conv)
+                .map(Some)
+                .map_err(|e| e.to_string())
         } else {
             Ok(None)
         }

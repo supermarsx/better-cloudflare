@@ -31,10 +31,41 @@ pub struct ValidationResult {
 
 /// Supported DNS record types.
 const VALID_TYPES: &[&str] = &[
-    "A", "AAAA", "CNAME", "MX", "TXT", "SRV", "NS", "PTR", "CAA", "DS",
-    "DNSKEY", "NAPTR", "SSHFP", "TLSA", "HINFO", "LOC", "SPF", "RP", "DNAME",
-    "CERT", "SMIMEA", "OPENPGPKEY", "CDNSKEY", "AFSDB", "APL", "DCHID", "HIP",
-    "IPSECKEY", "NSEC", "RRSIG", "SOA", "SVCB", "HTTPS", "URI", "ALIAS",
+    "A",
+    "AAAA",
+    "CNAME",
+    "MX",
+    "TXT",
+    "SRV",
+    "NS",
+    "PTR",
+    "CAA",
+    "DS",
+    "DNSKEY",
+    "NAPTR",
+    "SSHFP",
+    "TLSA",
+    "HINFO",
+    "LOC",
+    "SPF",
+    "RP",
+    "DNAME",
+    "CERT",
+    "SMIMEA",
+    "OPENPGPKEY",
+    "CDNSKEY",
+    "AFSDB",
+    "APL",
+    "DCHID",
+    "HIP",
+    "IPSECKEY",
+    "NSEC",
+    "RRSIG",
+    "SOA",
+    "SVCB",
+    "HTTPS",
+    "URI",
+    "ALIAS",
     "ANAME",
 ];
 
@@ -112,7 +143,10 @@ pub fn validate_dns_record(input: &DNSRecordValidationInput) -> ValidationResult
     if input.r#type == "NAPTR" {
         let tokens = split_naptr_tokens(input.content.trim());
         if tokens.len() < 6 {
-            issues.push("NAPTR content must be: \"order preference flags service regexp replacement\"".to_string());
+            issues.push(
+                "NAPTR content must be: \"order preference flags service regexp replacement\""
+                    .to_string(),
+            );
         } else {
             if tokens[0].parse::<u16>().is_err() {
                 issues.push("NAPTR order must be an integer".to_string());
@@ -137,8 +171,10 @@ pub fn validate_dns_record(input: &DNSRecordValidationInput) -> ValidationResult
     }
 
     // Hostname-like records: CNAME, NS, PTR, ALIAS, ANAME
-    if matches!(input.r#type.as_str(), "CNAME" | "NS" | "PTR" | "ALIAS" | "ANAME")
-        && !is_valid_hostname(&input.content)
+    if matches!(
+        input.r#type.as_str(),
+        "CNAME" | "NS" | "PTR" | "ALIAS" | "ANAME"
+    ) && !is_valid_hostname(&input.content)
     {
         issues.push(format!("{} content must be a valid hostname", input.r#type));
     }
@@ -172,10 +208,7 @@ fn is_valid_hostname(s: &str) -> bool {
         if label.starts_with('-') || label.ends_with('-') {
             return false;
         }
-        if !label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return false;
         }
     }

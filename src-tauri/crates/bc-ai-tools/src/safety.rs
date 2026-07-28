@@ -49,10 +49,7 @@ impl SafetyPolicy {
 
         if is_destructive(tool_name) {
             return ToolApproval::RequiresApproval {
-                reason: format!(
-                    "Tool '{}' performs a write/delete operation",
-                    tool_name
-                ),
+                reason: format!("Tool '{}' performs a write/delete operation", tool_name),
             };
         }
 
@@ -104,7 +101,10 @@ mod tests {
     fn test_read_only_auto_approved() {
         let policy = SafetyPolicy::default();
         assert_eq!(policy.check("cf_list_zones"), ToolApproval::AutoApprove);
-        assert_eq!(policy.check("dns_validate_record"), ToolApproval::AutoApprove);
+        assert_eq!(
+            policy.check("dns_validate_record"),
+            ToolApproval::AutoApprove
+        );
         assert_eq!(policy.check("spf_parse"), ToolApproval::AutoApprove);
     }
 

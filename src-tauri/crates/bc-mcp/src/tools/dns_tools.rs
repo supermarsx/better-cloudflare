@@ -168,8 +168,14 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             let service = get_required_string(args, "service")?;
             let regexp = get_optional_string(args, "regexp").unwrap_or_default();
             let replacement = get_required_string(args, "replacement")?;
-            let content =
-                bc_dns_tools::compose_naptr(order, preference, &flags, &service, &regexp, &replacement);
+            let content = bc_dns_tools::compose_naptr(
+                order,
+                preference,
+                &flags,
+                &service,
+                &regexp,
+                &replacement,
+            );
             Ok(json!({ "content": content }))
         }
 

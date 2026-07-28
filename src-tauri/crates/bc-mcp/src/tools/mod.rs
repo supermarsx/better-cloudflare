@@ -114,7 +114,10 @@ pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
 
 /// All tool names in the catalogue.
 pub fn all_tool_names() -> Vec<String> {
-    TOOL_CATALOGUE.iter().map(|(n, _, _, _)| n.to_string()).collect()
+    TOOL_CATALOGUE
+        .iter()
+        .map(|(n, _, _, _)| n.to_string())
+        .collect()
 }
 
 /// Number of tools in the catalogue.

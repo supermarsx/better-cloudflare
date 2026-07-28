@@ -71,7 +71,10 @@ pub async fn export_audit_entries(
     storage: State<'_, Storage>,
     format: Option<String>,
 ) -> Result<String, String> {
-    let entries = storage.get_audit_entries().await.map_err(|e| e.to_string())?;
+    let entries = storage
+        .get_audit_entries()
+        .await
+        .map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string());
     serialize_audit_entries(entries, &fmt)
 }
@@ -84,7 +87,10 @@ pub async fn save_audit_entries(
     custom_path: Option<String>,
     skip_destination_confirm: Option<bool>,
 ) -> Result<String, String> {
-    let entries = storage.get_audit_entries().await.map_err(|e| e.to_string())?;
+    let entries = storage
+        .get_audit_entries()
+        .await
+        .map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string()).to_lowercase();
     let payload = serialize_audit_entries(entries, &fmt)?;
     let extension = if fmt == "csv" { "csv" } else { "json" };
@@ -142,7 +148,10 @@ pub async fn save_topology_asset(
     let fallback_name = format!("zone-topology.{}", extension);
     let name = if base_name.is_empty() {
         fallback_name
-    } else if base_name.to_lowercase().ends_with(&format!(".{}", extension)) {
+    } else if base_name
+        .to_lowercase()
+        .ends_with(&format!(".{}", extension))
+    {
         base_name.to_string()
     } else {
         format!("{}.{}", base_name, extension)

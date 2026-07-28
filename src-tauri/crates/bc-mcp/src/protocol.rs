@@ -67,7 +67,12 @@ pub fn error_response(id: Option<Value>, code: i64, message: String) -> Value {
 }
 
 /// Build an error with optional data field.
-pub fn error_response_with_data(id: Option<Value>, code: i64, message: String, data: Value) -> Value {
+pub fn error_response_with_data(
+    id: Option<Value>,
+    code: i64,
+    message: String,
+    data: Value,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id.unwrap_or(Value::Null),
@@ -125,7 +130,9 @@ impl Default for ServerCapabilities {
                 subscribe: false,
                 list_changed: false,
             },
-            prompts: PromptsCapability { list_changed: false },
+            prompts: PromptsCapability {
+                list_changed: false,
+            },
             logging: LoggingCapability {},
         }
     }
@@ -151,9 +158,7 @@ pub fn initialize_response() -> Value {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
-    Text {
-        text: String,
-    },
+    Text { text: String },
     #[serde(rename = "image")]
     Image {
         data: String,
@@ -161,9 +166,7 @@ pub enum ContentBlock {
         mime_type: String,
     },
     #[serde(rename = "resource")]
-    Resource {
-        resource: ResourceContent,
-    },
+    Resource { resource: ResourceContent },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

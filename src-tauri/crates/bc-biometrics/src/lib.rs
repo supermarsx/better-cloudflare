@@ -108,19 +108,13 @@ impl BiometricAuth {
     }
 
     /// Delete a biometric-protected secret from the OS keychain.
-    pub fn delete_protected_secret(
-        service: &str,
-        account: &str,
-    ) -> Result<(), BiometricError> {
+    pub fn delete_protected_secret(service: &str, account: &str) -> Result<(), BiometricError> {
         platform::delete_protected_secret(service, account)
     }
 
     /// Check if a biometric-protected secret exists without triggering
     /// the biometric prompt.
-    pub fn has_protected_secret(
-        service: &str,
-        account: &str,
-    ) -> Result<bool, BiometricError> {
+    pub fn has_protected_secret(service: &str, account: &str) -> Result<bool, BiometricError> {
         platform::has_protected_secret(service, account)
     }
 }
@@ -187,10 +181,7 @@ mod tests {
             BiometricError::PlatformNotSupported.to_string(),
             "Platform not supported for biometric authentication"
         );
-        assert_eq!(
-            BiometricError::NotFound.to_string(),
-            "Secret not found"
-        );
+        assert_eq!(BiometricError::NotFound.to_string(), "Secret not found");
     }
 
     #[test]

@@ -7,9 +7,9 @@ use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
 use bc_ai_chat::ChatManager;
-use bc_ai_provider::openai::OpenAiProvider;
 use bc_ai_provider::anthropic::AnthropicProvider;
 use bc_ai_provider::ollama::OllamaProvider;
+use bc_ai_provider::openai::OpenAiProvider;
 use bc_ai_provider::{AiProvider, ProviderConfig, ProviderKind};
 use bc_ai_tools::executor::ToolExecutor;
 use bc_ai_tools::ToolRegistry;
@@ -55,12 +55,12 @@ impl AgentManager {
     pub async fn configure_provider(&self, config: ProviderConfig) -> Result<(), String> {
         let kind = config.kind.clone();
         let provider: Arc<dyn AiProvider + Send + Sync> = match kind {
-            ProviderKind::OpenAi => Arc::new(
-                OpenAiProvider::new(config.clone()).map_err(|e| e.to_string())?,
-            ),
-            ProviderKind::Anthropic => Arc::new(
-                AnthropicProvider::new(config.clone()).map_err(|e| e.to_string())?,
-            ),
+            ProviderKind::OpenAi => {
+                Arc::new(OpenAiProvider::new(config.clone()).map_err(|e| e.to_string())?)
+            }
+            ProviderKind::Anthropic => {
+                Arc::new(AnthropicProvider::new(config.clone()).map_err(|e| e.to_string())?)
+            }
             ProviderKind::Ollama => Arc::new(OllamaProvider::new(config.clone())),
         };
 
@@ -76,10 +76,7 @@ impl AgentManager {
     }
 
     /// Get the active provider for a kind.
-    pub async fn provider(
-        &self,
-        kind: &ProviderKind,
-    ) -> Option<Arc<dyn AiProvider + Send + Sync>> {
+    pub async fn provider(&self, kind: &ProviderKind) -> Option<Arc<dyn AiProvider + Send + Sync>> {
         self.providers.read().await.get(kind).cloned()
     }
 

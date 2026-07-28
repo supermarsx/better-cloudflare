@@ -109,9 +109,7 @@ impl ChatManager {
     /// Get conversation system prompt.
     pub async fn system_prompt(&self, id: Uuid) -> Option<String> {
         let convs = self.conversations.read().await;
-        convs
-            .get(&id)
-            .and_then(|c| c.system_prompt.clone())
+        convs.get(&id).and_then(|c| c.system_prompt.clone())
     }
 
     /// Count total conversations.

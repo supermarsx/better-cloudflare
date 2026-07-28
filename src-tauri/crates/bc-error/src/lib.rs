@@ -33,7 +33,10 @@ pub enum AppError {
 
     // ── Cloudflare API ──────────────────────────────────────────────────
     #[error("Cloudflare API error: {message}")]
-    CloudflareApi { message: String, status: Option<u16> },
+    CloudflareApi {
+        message: String,
+        status: Option<u16>,
+    },
 
     #[error("Rate limited — try again in {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },

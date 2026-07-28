@@ -80,17 +80,9 @@ pub fn parse_csv_records(text: &str) -> Vec<PartialDNSRecord> {
                 .filter(|s| !s.is_empty())
         };
 
-        let ttl = get(idx_ttl).and_then(|s| {
-            if s == "auto" {
-                None
-            } else {
-                s.parse().ok()
-            }
-        });
+        let ttl = get(idx_ttl).and_then(|s| if s == "auto" { None } else { s.parse().ok() });
         let priority = get(idx_priority).and_then(|s| s.parse().ok());
-        let proxied = get(idx_proxied).map(|s| {
-            matches!(s.to_lowercase().as_str(), "true" | "1")
-        });
+        let proxied = get(idx_proxied).map(|s| matches!(s.to_lowercase().as_str(), "true" | "1"));
 
         records.push(PartialDNSRecord {
             r#type: get(idx_type),

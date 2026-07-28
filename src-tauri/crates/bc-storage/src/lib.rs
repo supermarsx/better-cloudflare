@@ -243,8 +243,7 @@ impl Storage {
     // ── Low-level keyring helpers ───────────────────────────────────────
 
     fn get_entry(&self, key: &str) -> Result<Entry, StorageError> {
-        Entry::new(SERVICE_NAME, key)
-            .map_err(|e| StorageError::KeyringError(e.to_string()))
+        Entry::new(SERVICE_NAME, key).map_err(|e| StorageError::KeyringError(e.to_string()))
     }
 
     fn chunk_key(key: &str, index: usize) -> String {
@@ -398,8 +397,7 @@ impl Storage {
             algorithm: config.algorithm,
         });
 
-        let json =
-            serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("api_keys_list", &json).await?;
         Ok(id)
     }
@@ -454,8 +452,7 @@ impl Storage {
             return Err(StorageError::NotFound);
         }
 
-        let json =
-            serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("api_keys_list", &json).await?;
         Ok(())
     }
@@ -464,8 +461,7 @@ impl Storage {
         let mut keys = self.get_api_keys().await?;
         keys.retain(|k| k.id != id);
 
-        let json =
-            serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("api_keys_list", &json).await?;
         Ok(())
     }
@@ -492,9 +488,7 @@ impl Storage {
     pub async fn get_passkeys(&self, id: &str) -> Result<Vec<Value>, StorageError> {
         let key = format!("passkeys:{}", id);
         match self.get_secret(&key).await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -504,8 +498,7 @@ impl Storage {
         let mut list = self.get_passkeys(id).await?;
         list.push(credential);
         let key = format!("passkeys:{}", id);
-        let json =
-            serde_json::to_string(&list).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&list).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret(&key, &json).await
     }
 
@@ -534,9 +527,7 @@ impl Storage {
         key: &str,
     ) -> Result<Vec<T>, StorageError> {
         match self.get_secret(key).await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -548,8 +539,7 @@ impl Storage {
         key: &str,
         list: &[T],
     ) -> Result<(), StorageError> {
-        let json =
-            serde_json::to_string(list).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(list).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret(key, &json).await
     }
 
@@ -559,9 +549,7 @@ impl Storage {
         key: &str,
     ) -> Result<HashMap<String, T>, StorageError> {
         match self.get_secret(key).await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(HashMap::new()),
             Err(e) => Err(e),
         }
@@ -573,8 +561,7 @@ impl Storage {
         key: &str,
         map: &HashMap<String, T>,
     ) -> Result<(), StorageError> {
-        let json =
-            serde_json::to_string(map).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(map).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret(key, &json).await
     }
 
@@ -596,8 +583,7 @@ impl Storage {
         let mut creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
         let val = serde_json::to_value(cred).map_err(|e| StorageError::Error(e.to_string()))?;
         creds.push(val);
-        let json =
-            serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("registrar_credentials", &json).await
     }
 
@@ -617,8 +603,7 @@ impl Storage {
     pub async fn delete_registrar_credential(&self, id: &str) -> Result<(), StorageError> {
         let mut creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
         creds.retain(|c| c.get("id").and_then(|v| v.as_str()) != Some(id));
-        let json =
-            serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("registrar_credentials", &json).await
     }
 
@@ -639,9 +624,7 @@ impl Storage {
     ) -> Result<HashMap<String, String>, StorageError> {
         let key = format!("registrar_secrets:{}", credential_id);
         match self.get_secret(&key).await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(HashMap::new()),
             Err(e) => Err(e),
         }
@@ -656,9 +639,7 @@ impl Storage {
 
     pub async fn get_audit_entries(&self) -> Result<Vec<Value>, StorageError> {
         match self.get_secret("audit_log").await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -687,9 +668,7 @@ impl Storage {
 
     pub async fn get_encryption_settings(&self) -> Result<EncryptionConfig, StorageError> {
         match self.get_secret("encryption_settings").await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Err(StorageError::NotFound),
             Err(e) => Err(e),
         }
@@ -699,8 +678,7 @@ impl Storage {
         &self,
         config: &EncryptionConfig,
     ) -> Result<(), StorageError> {
-        let json =
-            serde_json::to_string(config).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(config).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("encryption_settings", &json).await
     }
 
@@ -708,17 +686,14 @@ impl Storage {
 
     pub async fn get_preferences(&self) -> Result<Preferences, StorageError> {
         match self.get_secret("preferences").await {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string()))
-            }
+            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
             Err(StorageError::NotFound) => Ok(Preferences::default()),
             Err(e) => Err(e),
         }
     }
 
     pub async fn set_preferences(&self, prefs: &Preferences) -> Result<(), StorageError> {
-        let json =
-            serde_json::to_string(prefs).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serde_json::to_string(prefs).map_err(|e| StorageError::Error(e.to_string()))?;
         self.store_secret("preferences", &json).await
     }
 }
@@ -827,10 +802,7 @@ mod tests {
             key_length: 16,
             algorithm: "AES-256-GCM".to_string(),
         };
-        storage
-            .set_encryption_settings(&config)
-            .await
-            .expect("set");
+        storage.set_encryption_settings(&config).await.expect("set");
         let loaded = storage.get_encryption_settings().await.expect("get");
         assert_eq!(loaded.iterations, 42);
     }

@@ -1,7 +1,6 @@
 /// Shared types for the registrar monitoring feature.
 ///
 /// Every registrar client normalises its API responses into `DomainInfo`.
-
 use serde::{Deserialize, Serialize};
 
 /// Supported registrar providers.

@@ -65,7 +65,9 @@ pub async fn add_api_key(
         Err(e) => return Err(e.to_string()),
     };
     let crypto = CryptoManager::new(config.clone());
-    let encrypted = crypto.encrypt(&api_key, &password).map_err(|e| e.to_string())?;
+    let encrypted = crypto
+        .encrypt(&api_key, &password)
+        .map_err(|e| e.to_string())?;
 
     let id = storage
         .add_api_key(label.clone(), encrypted, email.clone(), config)
@@ -270,9 +272,7 @@ pub async fn delete_vault_secret(storage: State<'_, Storage>, id: String) -> Res
 // ─── Passkey Operations ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_passkey_status(
-    passkey_mgr: State<'_, PasskeyManager>,
-) -> bc_passkey::PasskeyStatus {
+pub fn get_passkey_status(passkey_mgr: State<'_, PasskeyManager>) -> bc_passkey::PasskeyStatus {
     passkey_mgr.status()
 }
 
@@ -435,7 +435,10 @@ pub async fn update_encryption_settings(
 #[tauri::command]
 pub async fn benchmark_encryption(iterations: u32) -> Result<f64, String> {
     let crypto = CryptoManager::default();
-    crypto.benchmark(iterations).await.map_err(|e| e.to_string())
+    crypto
+        .benchmark(iterations)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ─── Biometric Authentication ───────────────────────────────────────────────
@@ -577,9 +580,7 @@ pub async fn session_status(
 }
 
 #[tauri::command]
-pub async fn session_touch(
-    session: State<'_, SessionManager>,
-) -> Result<(), String> {
+pub async fn session_touch(session: State<'_, SessionManager>) -> Result<(), String> {
     session.touch().await;
     Ok(())
 }

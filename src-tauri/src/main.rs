@@ -1,20 +1,20 @@
 // Prevents additional console window on Windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cloudflare_api;
 mod commands;
 mod crypto;
-mod storage;
-mod cloudflare_api;
+mod mcp_server;
 mod passkey;
 mod registrar_commands;
-mod mcp_server;
 mod session;
+mod storage;
 
-use tauri::Manager;
-use crate::storage::Storage;
-use crate::passkey::PasskeyManager;
 use crate::mcp_server::McpServerManager;
+use crate::passkey::PasskeyManager;
 use crate::session::SessionManager;
+use crate::storage::Storage;
+use tauri::Manager;
 
 use bc_ai_agent::AgentManager;
 
@@ -37,7 +37,6 @@ fn main() {
             commands::update_api_key,
             commands::delete_api_key,
             commands::decrypt_api_key,
-            
             // DNS Operations
             commands::get_zones,
             commands::get_dns_records,
@@ -51,12 +50,10 @@ fn main() {
             commands::update_zone_setting,
             commands::get_dnssec,
             commands::update_dnssec,
-            
             // Vault Operations
             commands::store_vault_secret,
             commands::get_vault_secret,
             commands::delete_vault_secret,
-            
             // Passkey Operations
             commands::get_passkey_status,
             commands::get_passkey_registration_options,
@@ -65,12 +62,10 @@ fn main() {
             commands::authenticate_passkey,
             commands::list_passkeys,
             commands::delete_passkey,
-            
             // Encryption Settings
             commands::get_encryption_settings,
             commands::update_encryption_settings,
             commands::benchmark_encryption,
-            
             // Audit
             commands::get_audit_entries,
             commands::export_audit_entries,
@@ -179,7 +174,7 @@ fn main() {
             // Initialize storage
             let app_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_dir)?;
-            
+
             Ok(())
         })
         .run(tauri::generate_context!())
