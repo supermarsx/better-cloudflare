@@ -7,65 +7,164 @@
 //! frontend as a JSON object with `code`, `message`, and optional `details`.
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+
+const MAX_ERROR_TEXT_LENGTH: usize = 512;
+const MAX_PROVIDER_ERRORS: usize = 5;
+
+/// High-level failure class for a structured authentication request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestFailureKind {
+    Authentication,
+    RateLimited,
+    Provider,
+    Network,
+    Timeout,
+    MalformedResponse,
+}
+
+/// Origin of a structured request failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestErrorSource {
+    Client,
+    Network,
+    Cloudflare,
+}
+
+/// One safe provider error returned by Cloudflare.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderErrorDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub message: String,
+}
+
+/// Additional structured context for a request failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RequestErrorDetails {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_errors: Vec<ProviderErrorDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_codes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_messages: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+    pub remediation: String,
+}
 
 /// Top-level error kind.  Each variant maps to a stable string `code`
 /// that the frontend can match on deterministically.
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "code", content = "details")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AppError {
     // ── Authentication ──────────────────────────────────────────────────
-    #[error("Authentication failed: {message}")]
-    AuthFailed { message: String },
+    AuthFailed {
+        message: String,
+    },
 
-    #[error("Session expired")]
     SessionExpired,
 
-    #[error("No active session")]
     NoSession,
 
     // ── Validation ──────────────────────────────────────────────────────
-    #[error("Validation error: {message}")]
-    Validation { message: String },
+    Validation {
+        message: String,
+    },
 
-    #[error("Missing required field: {field}")]
-    MissingField { field: String },
+    MissingField {
+        field: String,
+    },
 
     // ── Cloudflare API ──────────────────────────────────────────────────
-    #[error("Cloudflare API error: {message}")]
     CloudflareApi {
         message: String,
         status: Option<u16>,
     },
 
-    #[error("Rate limited — try again in {retry_after_secs}s")]
-    RateLimited { retry_after_secs: u64 },
+    RateLimited {
+        retry_after_secs: u64,
+    },
+
+    /// Structured authentication/provider failure returned across Tauri IPC.
+    AuthRequestFailed {
+        kind: RequestFailureKind,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        source: RequestErrorSource,
+        operation: String,
+        retryable: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after: Option<String>,
+        details: RequestErrorDetails,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
 
     // ── Storage ─────────────────────────────────────────────────────────
-    #[error("Storage error: {message}")]
-    Storage { message: String },
+    Storage {
+        message: String,
+    },
 
-    #[error("Resource not found: {resource}")]
-    NotFound { resource: String },
+    NotFound {
+        resource: String,
+    },
 
     // ── Crypto ──────────────────────────────────────────────────────────
-    #[error("Encryption/decryption error: {message}")]
-    Crypto { message: String },
+    Crypto {
+        message: String,
+    },
 
     // ── Platform ────────────────────────────────────────────────────────
-    #[error("Biometric error: {message}")]
-    Biometric { message: String },
+    Biometric {
+        message: String,
+    },
 
-    #[error("Platform not supported")]
     PlatformNotSupported,
 
     // ── Generic ─────────────────────────────────────────────────────────
-    #[error("Internal error: {message}")]
-    Internal { message: String },
+    Internal {
+        message: String,
+    },
 
-    #[error("{message}")]
-    Other { message: String },
+    Other {
+        message: String,
+    },
 }
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthFailed { message } => write!(formatter, "Authentication failed: {message}"),
+            Self::SessionExpired => formatter.write_str("Session expired"),
+            Self::NoSession => formatter.write_str("No active session"),
+            Self::Validation { message } => write!(formatter, "Validation error: {message}"),
+            Self::MissingField { field } => {
+                write!(formatter, "Missing required field: {field}")
+            }
+            Self::CloudflareApi { message, .. } => {
+                write!(formatter, "Cloudflare API error: {message}")
+            }
+            Self::RateLimited { retry_after_secs } => {
+                write!(formatter, "Rate limited — try again in {retry_after_secs}s")
+            }
+            Self::AuthRequestFailed { message, .. } => formatter.write_str(message),
+            Self::Storage { message } => write!(formatter, "Storage error: {message}"),
+            Self::NotFound { resource } => write!(formatter, "Resource not found: {resource}"),
+            Self::Crypto { message } => {
+                write!(formatter, "Encryption/decryption error: {message}")
+            }
+            Self::Biometric { message } => write!(formatter, "Biometric error: {message}"),
+            Self::PlatformNotSupported => formatter.write_str("Platform not supported"),
+            Self::Internal { message } => write!(formatter, "Internal error: {message}"),
+            Self::Other { message } => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AppError {}
 
 impl AppError {
     /// Stable string code for frontend matching.
@@ -78,6 +177,7 @@ impl AppError {
             Self::MissingField { .. } => "MISSING_FIELD",
             Self::CloudflareApi { .. } => "CLOUDFLARE_API",
             Self::RateLimited { .. } => "RATE_LIMITED",
+            Self::AuthRequestFailed { .. } => "AUTH_REQUEST_FAILED",
             Self::Storage { .. } => "STORAGE",
             Self::NotFound { .. } => "NOT_FOUND",
             Self::Crypto { .. } => "CRYPTO",
@@ -112,6 +212,152 @@ impl AppError {
             resource: resource.into(),
         }
     }
+
+    /// Construct a secret-safe authentication/provider request error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn auth_request_failed(
+        kind: RequestFailureKind,
+        message: impl AsRef<str>,
+        status: Option<u16>,
+        source: RequestErrorSource,
+        operation: impl AsRef<str>,
+        retryable: bool,
+        provider_errors: Vec<ProviderErrorDetail>,
+        retry_after_secs: Option<u64>,
+        remediation: impl AsRef<str>,
+        request_id: Option<String>,
+    ) -> Self {
+        let provider_errors = provider_errors
+            .into_iter()
+            .take(MAX_PROVIDER_ERRORS)
+            .map(|detail| ProviderErrorDetail {
+                code: detail.code.and_then(sanitize_code),
+                message: sanitize_error_text(&detail.message),
+            })
+            .collect::<Vec<_>>();
+        let provider_codes = provider_errors
+            .iter()
+            .filter_map(|detail| detail.code.clone())
+            .collect();
+        let provider_messages = provider_errors
+            .iter()
+            .map(|detail| detail.message.clone())
+            .collect();
+
+        Self::AuthRequestFailed {
+            kind,
+            message: sanitize_error_text(message.as_ref()),
+            status,
+            source,
+            operation: sanitize_operation(operation.as_ref()),
+            retryable,
+            retry_after: retry_after_secs.map(|seconds| seconds.to_string()),
+            details: RequestErrorDetails {
+                provider_errors,
+                provider_codes,
+                provider_messages,
+                retry_after_secs,
+                remediation: sanitize_error_text(remediation.as_ref()),
+            },
+            request_id: request_id.and_then(sanitize_request_id),
+        }
+    }
+}
+
+fn sanitize_code(code: String) -> Option<String> {
+    let code = code.trim();
+    if code.is_empty()
+        || code.len() > 32
+        || !code
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+    {
+        return None;
+    }
+    Some(code.to_string())
+}
+
+fn sanitize_operation(operation: &str) -> String {
+    operation
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, ':' | '-' | '_' | '.')
+        })
+        .take(80)
+        .collect()
+}
+
+fn sanitize_request_id(request_id: String) -> Option<String> {
+    let request_id = request_id.trim();
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !request_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+    {
+        return None;
+    }
+    Some(request_id.to_string())
+}
+
+/// Redact common credential forms before an error crosses an IPC or log boundary.
+pub fn sanitize_error_text(value: &str) -> String {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut words = collapsed.split(' ').peekable();
+    let mut sanitized = Vec::new();
+    let sensitive_names = [
+        "authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "api_token",
+        "api-token",
+        "token",
+        "secret",
+        "password",
+        "cookie",
+        "set-cookie",
+        "x-auth-key",
+    ];
+
+    while let Some(word) = words.next() {
+        let lowercase = word.to_ascii_lowercase();
+        if lowercase == "bearer" {
+            sanitized.push("Bearer".to_string());
+            if words.peek().is_some() {
+                let _ = words.next();
+                sanitized.push("[redacted]".to_string());
+            }
+            continue;
+        }
+
+        let sensitive_assignment = sensitive_names.iter().any(|name| {
+            lowercase == *name
+                || lowercase.starts_with(&format!("{name}="))
+                || lowercase.starts_with(&format!("{name}:"))
+        });
+        if sensitive_assignment {
+            if let Some((name, _)) = word.split_once('=') {
+                sanitized.push(format!("{name}=[redacted]"));
+            } else if let Some((name, _)) = word.split_once(':') {
+                sanitized.push(format!("{name}=[redacted]"));
+            } else {
+                sanitized.push(word.to_string());
+                if words.peek().is_some() {
+                    let _ = words.next();
+                    sanitized.push("[redacted]".to_string());
+                }
+            }
+            continue;
+        }
+        sanitized.push(word.to_string());
+    }
+
+    sanitized
+        .join(" ")
+        .chars()
+        .take(MAX_ERROR_TEXT_LENGTH)
+        .collect()
 }
 
 /// Implement `Into<String>` so existing `.map_err(|e| e.to_string())`

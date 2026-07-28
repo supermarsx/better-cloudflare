@@ -8,6 +8,7 @@ mod types;
 pub use types::*;
 
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use thiserror::Error;
@@ -17,8 +18,62 @@ use thiserror::Error;
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 30_000;
+const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
+const AUTH_OPERATION: &str = "auth:verify_token";
+const MAX_PROVIDER_ERRORS: usize = 5;
+const MAX_PROVIDER_MESSAGE_LENGTH: usize = 240;
 
 // ── Error ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationFailureKind {
+    Authentication,
+    RateLimited,
+    Provider,
+    Network,
+    Timeout,
+    MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VerificationErrorSource {
+    Network,
+    Cloudflare,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudflareProviderError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub message: String,
+}
+
+/// Secret-safe structured failure from Cloudflare token verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudflareRequestError {
+    pub kind: VerificationFailureKind,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    pub source: VerificationErrorSource,
+    pub operation: String,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_errors: Vec<CloudflareProviderError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+    pub remediation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+impl std::fmt::Display for CloudflareRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum CloudflareError {
@@ -30,6 +85,8 @@ pub enum CloudflareError {
     AuthFailed,
     #[error("Rate limited after {0} retries")]
     RateLimited(u32),
+    #[error("{0}")]
+    Verification(Box<CloudflareRequestError>),
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -39,6 +96,7 @@ pub struct CloudflareClient {
     api_key: String,
     email: Option<String>,
     max_retries: u32,
+    api_base: String,
 }
 
 impl CloudflareClient {
@@ -48,6 +106,7 @@ impl CloudflareClient {
             api_key: api_key.to_string(),
             email: email.map(|s| s.to_string()),
             max_retries: MAX_RETRIES,
+            api_base: CLOUDFLARE_API_BASE.to_string(),
         }
     }
 
@@ -58,12 +117,19 @@ impl CloudflareClient {
             api_key: api_key.to_string(),
             email: email.map(|s| s.to_string()),
             max_retries: MAX_RETRIES,
+            api_base: CLOUDFLARE_API_BASE.to_string(),
         }
     }
 
     /// Set the maximum number of retries for rate-limited or server-error responses.
     pub fn with_max_retries(mut self, retries: u32) -> Self {
         self.max_retries = retries;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_api_base(mut self, api_base: impl Into<String>) -> Self {
+        self.api_base = api_base.into().trim_end_matches('/').to_string();
         self
     }
 
@@ -135,18 +201,238 @@ impl CloudflareClient {
 
     pub async fn verify_token(&self) -> Result<bool, CloudflareError> {
         let use_email = self.email.is_some();
-        let response = self
-            .request_with_retry(|s| {
-                let url = if use_email {
-                    "https://api.cloudflare.com/client/v4/user"
-                } else {
-                    "https://api.cloudflare.com/client/v4/user/tokens/verify"
-                };
-                s.apply_auth(s.client.get(url))
-            })
-            .await?;
+        let endpoint = if use_email {
+            "/user"
+        } else {
+            "/user/tokens/verify"
+        };
+        let url = format!("{}{}", self.api_base, endpoint);
+        let mut attempt = 0u32;
 
-        Ok(response.status().is_success())
+        loop {
+            let response = self
+                .apply_auth(self.client.get(&url))
+                .send()
+                .await
+                .map_err(|error| {
+                    CloudflareError::Verification(Box::new(self.transport_error(&error)))
+                })?;
+            let status = response.status().as_u16();
+            let retry_after_secs = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            let request_id = response
+                .headers()
+                .get("cf-ray")
+                .and_then(|value| value.to_str().ok())
+                .and_then(sanitize_request_id);
+            let retryable_status = status == 429 || status >= 500;
+
+            if retryable_status && attempt < self.max_retries {
+                attempt += 1;
+                let backoff_ms = retry_after_secs
+                    .map(|seconds| seconds.saturating_mul(1000))
+                    .unwrap_or_else(|| {
+                        let base = INITIAL_BACKOFF_MS.saturating_mul(2u64.pow(attempt - 1));
+                        base.min(MAX_BACKOFF_MS)
+                    });
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                continue;
+            }
+
+            let body = response.text().await.map_err(|error| {
+                CloudflareError::Verification(Box::new(self.transport_error(&error)))
+            })?;
+            return self.parse_verification_response(status, &body, retry_after_secs, request_id);
+        }
+    }
+
+    fn parse_verification_response(
+        &self,
+        status: u16,
+        body: &str,
+        retry_after_secs: Option<u64>,
+        request_id: Option<String>,
+    ) -> Result<bool, CloudflareError> {
+        let payload = serde_json::from_str::<Value>(body);
+        if status < 400 {
+            let payload = payload.map_err(|_| {
+                CloudflareError::Verification(Box::new(CloudflareRequestError {
+                    kind: VerificationFailureKind::MalformedResponse,
+                    message: "Cloudflare returned an unreadable token verification response."
+                        .to_string(),
+                    status: Some(status),
+                    source: VerificationErrorSource::Cloudflare,
+                    operation: AUTH_OPERATION.to_string(),
+                    retryable: true,
+                    provider_errors: Vec::new(),
+                    retry_after_secs,
+                    remediation:
+                        "Retry the request. If it continues, check Cloudflare service status."
+                            .to_string(),
+                    request_id: request_id.clone(),
+                }))
+            })?;
+            match payload.get("success").and_then(Value::as_bool) {
+                Some(true) => return Ok(true),
+                Some(false) => {
+                    return Err(CloudflareError::Verification(Box::new(
+                        self.response_error(
+                            VerificationFailureKind::Authentication,
+                            status,
+                            &payload,
+                            retry_after_secs,
+                            request_id,
+                        ),
+                    )));
+                }
+                None => {
+                    return Err(CloudflareError::Verification(Box::new(
+                        CloudflareRequestError {
+                        kind: VerificationFailureKind::MalformedResponse,
+                        message:
+                            "Cloudflare token verification omitted the required success result."
+                                .to_string(),
+                        status: Some(status),
+                        source: VerificationErrorSource::Cloudflare,
+                        operation: AUTH_OPERATION.to_string(),
+                        retryable: true,
+                        provider_errors: Vec::new(),
+                        retry_after_secs,
+                        remediation:
+                            "Retry the request. If it continues, check Cloudflare service status."
+                                .to_string(),
+                            request_id,
+                        },
+                    )));
+                }
+            }
+        }
+
+        let kind = if status == 429 {
+            VerificationFailureKind::RateLimited
+        } else if status >= 500 {
+            VerificationFailureKind::Provider
+        } else {
+            VerificationFailureKind::Authentication
+        };
+        let payload = payload.unwrap_or(Value::Null);
+        Err(CloudflareError::Verification(Box::new(
+            self.response_error(kind, status, &payload, retry_after_secs, request_id),
+        )))
+    }
+
+    fn response_error(
+        &self,
+        kind: VerificationFailureKind,
+        status: u16,
+        payload: &Value,
+        retry_after_secs: Option<u64>,
+        request_id: Option<String>,
+    ) -> CloudflareRequestError {
+        let provider_errors = self.provider_errors(payload);
+        let (message, retryable, remediation) = match kind {
+            VerificationFailureKind::Authentication => (
+                format!("Cloudflare rejected the supplied credentials (HTTP {status})."),
+                false,
+                "Check the API token or global API key, the account email when required, and the credential permissions.",
+            ),
+            VerificationFailureKind::RateLimited => (
+                "Cloudflare rate-limited token verification.".to_string(),
+                true,
+                "Wait for the retry interval before trying again.",
+            ),
+            VerificationFailureKind::Provider => (
+                format!("Cloudflare could not verify the credentials (HTTP {status})."),
+                true,
+                "Retry shortly and check Cloudflare service status if the failure continues.",
+            ),
+            _ => unreachable!("response errors are classified before construction"),
+        };
+
+        CloudflareRequestError {
+            kind,
+            message,
+            status: Some(status),
+            source: VerificationErrorSource::Cloudflare,
+            operation: AUTH_OPERATION.to_string(),
+            retryable,
+            provider_errors,
+            retry_after_secs,
+            remediation: remediation.to_string(),
+            request_id,
+        }
+    }
+
+    fn provider_errors(&self, payload: &Value) -> Vec<CloudflareProviderError> {
+        ["errors", "messages"]
+            .into_iter()
+            .filter_map(|field| payload.get(field).and_then(Value::as_array))
+            .flatten()
+            .filter_map(|item| {
+                let code = item.get("code").and_then(|value| match value {
+                    Value::Number(number) => Some(number.to_string()),
+                    Value::String(string) => sanitize_provider_code(string),
+                    _ => None,
+                });
+                let message = item
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(|message| self.sanitize_provider_message(message));
+                if code.is_none() && message.is_none() {
+                    return None;
+                }
+                Some(CloudflareProviderError {
+                    code,
+                    message: message.unwrap_or_else(|| "Cloudflare reported an error.".to_string()),
+                })
+            })
+            .take(MAX_PROVIDER_ERRORS)
+            .collect()
+    }
+
+    fn sanitize_provider_message(&self, message: &str) -> String {
+        let mut sanitized = sanitize_error_text(message);
+        for secret in std::iter::once(self.api_key.as_str()).chain(self.email.as_deref()) {
+            if secret.is_empty() {
+                continue;
+            }
+            sanitized = sanitized.replace(secret, "[redacted]");
+        }
+        sanitized
+            .chars()
+            .take(MAX_PROVIDER_MESSAGE_LENGTH)
+            .collect()
+    }
+
+    fn transport_error(&self, error: &reqwest::Error) -> CloudflareRequestError {
+        let (kind, message, remediation) = if error.is_timeout() {
+            (
+                VerificationFailureKind::Timeout,
+                "Cloudflare token verification timed out.",
+                "Check the connection, proxy, DNS, and TLS settings, then retry.",
+            )
+        } else {
+            (
+                VerificationFailureKind::Network,
+                "Could not reach Cloudflare to verify the credentials.",
+                "Check the internet connection, proxy, DNS, and TLS settings, then retry.",
+            )
+        };
+        CloudflareRequestError {
+            kind,
+            message: message.to_string(),
+            status: error.status().map(|status| status.as_u16()),
+            source: VerificationErrorSource::Network,
+            operation: AUTH_OPERATION.to_string(),
+            retryable: true,
+            provider_errors: Vec::new(),
+            retry_after_secs: None,
+            remediation: remediation.to_string(),
+            request_id: None,
+        }
     }
 
     // ── Zones ───────────────────────────────────────────────────────────
@@ -1008,6 +1294,85 @@ impl CloudflareClient {
     }
 }
 
+fn sanitize_provider_code(code: &str) -> Option<String> {
+    let code = code.trim();
+    if code.is_empty()
+        || code.len() > 32
+        || !code
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+    {
+        return None;
+    }
+    Some(code.to_string())
+}
+
+fn sanitize_request_id(request_id: &str) -> Option<String> {
+    let request_id = request_id.trim();
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !request_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+    {
+        return None;
+    }
+    Some(request_id.to_string())
+}
+
+fn sanitize_error_text(value: &str) -> String {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut words = collapsed.split(' ').peekable();
+    let mut sanitized = Vec::new();
+    let sensitive_names = [
+        "authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "api_token",
+        "api-token",
+        "token",
+        "secret",
+        "password",
+        "cookie",
+        "set-cookie",
+        "x-auth-key",
+    ];
+
+    while let Some(word) = words.next() {
+        let lowercase = word.to_ascii_lowercase();
+        if lowercase == "bearer" {
+            sanitized.push("Bearer".to_string());
+            if words.peek().is_some() {
+                let _ = words.next();
+                sanitized.push("[redacted]".to_string());
+            }
+            continue;
+        }
+        let sensitive_assignment = sensitive_names.iter().any(|name| {
+            lowercase == *name
+                || lowercase.starts_with(&format!("{name}="))
+                || lowercase.starts_with(&format!("{name}:"))
+        });
+        if sensitive_assignment {
+            if let Some((name, _)) = word.split_once('=') {
+                sanitized.push(format!("{name}=[redacted]"));
+            } else if let Some((name, _)) = word.split_once(':') {
+                sanitized.push(format!("{name}=[redacted]"));
+            } else {
+                sanitized.push(word.to_string());
+                if words.peek().is_some() {
+                    let _ = words.next();
+                    sanitized.push("[redacted]".to_string());
+                }
+            }
+            continue;
+        }
+        sanitized.push(word.to_string());
+    }
+    sanitized.join(" ")
+}
+
 // ── Parsing helper ──────────────────────────────────────────────────────────
 
 fn parse_dns_record(value: &Value) -> Option<DNSRecord> {
@@ -1025,4 +1390,223 @@ fn parse_dns_record(value: &Value) -> Option<DNSRecord> {
         created_on: value["created_on"].as_str().unwrap_or("").to_string(),
         modified_on: value["modified_on"].as_str().unwrap_or("").to_string(),
     })
+}
+
+#[cfg(test)]
+mod auth_verification_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn spawn_response(
+        status: u16,
+        extra_headers: &[(&str, &str)],
+        body: &str,
+        delay: Duration,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let reason = match status {
+            200 => "OK",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            _ => "Test Response",
+        };
+        let body = body.as_bytes().to_vec();
+        let headers = extra_headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept test request");
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                body.len(),
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        format!("http://{address}")
+    }
+
+    fn test_client(base: String, api_key: &str) -> CloudflareClient {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("test reqwest client");
+        CloudflareClient::with_client(client, api_key, None)
+            .with_max_retries(0)
+            .with_api_base(base)
+    }
+
+    fn request_context(error: &CloudflareError) -> &CloudflareRequestError {
+        match error {
+            CloudflareError::Verification(context) => context,
+            other => panic!("expected structured verification error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verification_success_returns_true() {
+        let base = spawn_response(
+            200,
+            &[],
+            r#"{"success":true,"result":{"status":"active"}}"#,
+            Duration::ZERO,
+        );
+        assert!(test_client(base, "valid-token")
+            .verify_token()
+            .await
+            .expect("verification succeeds"));
+    }
+
+    #[tokio::test]
+    async fn rejected_credentials_preserve_401_and_403_provider_details() {
+        for status in [401, 403] {
+            let base = spawn_response(
+                status,
+                &[("cf-ray", "abc123-LHR")],
+                r#"{"success":false,"errors":[{"code":9109,"message":"Invalid access token"},{"code":10000,"message":"Authentication error"}]}"#,
+                Duration::ZERO,
+            );
+            let error = test_client(base, "rejected-token")
+                .verify_token()
+                .await
+                .expect_err("credentials must be rejected");
+            let context = request_context(&error);
+            assert_eq!(context.kind, VerificationFailureKind::Authentication);
+            assert_eq!(context.status, Some(status));
+            assert_eq!(context.source, VerificationErrorSource::Cloudflare);
+            assert_eq!(context.operation, AUTH_OPERATION);
+            assert!(!context.retryable);
+            assert_eq!(context.request_id.as_deref(), Some("abc123-LHR"));
+            assert_eq!(
+                context
+                    .provider_errors
+                    .iter()
+                    .filter_map(|detail| detail.code.as_deref())
+                    .collect::<Vec<_>>(),
+                ["9109", "10000"]
+            );
+            assert_eq!(
+                context
+                    .provider_errors
+                    .iter()
+                    .map(|detail| detail.message.as_str())
+                    .collect::<Vec<_>>(),
+                ["Invalid access token", "Authentication error"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_preserves_retry_after_and_request_id() {
+        let base = spawn_response(
+            429,
+            &[("retry-after", "17"), ("cf-ray", "rate123-LHR")],
+            r#"{"success":false,"errors":[{"code":1015,"message":"Rate limited"}]}"#,
+            Duration::ZERO,
+        );
+        let error = test_client(base, "rate-limited-token")
+            .verify_token()
+            .await
+            .expect_err("rate limit must not become false");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::RateLimited);
+        assert_eq!(context.status, Some(429));
+        assert!(context.retryable);
+        assert_eq!(context.retry_after_secs, Some(17));
+        assert_eq!(context.request_id.as_deref(), Some("rate123-LHR"));
+        assert_eq!(context.provider_errors[0].code.as_deref(), Some("1015"));
+    }
+
+    #[tokio::test]
+    async fn provider_failure_preserves_status_and_safe_detail() {
+        let base = spawn_response(
+            500,
+            &[("cf-ray", "provider123-LHR")],
+            r#"{"success":false,"errors":[{"code":1001,"message":"Provider unavailable"}]}"#,
+            Duration::ZERO,
+        );
+        let error = test_client(base, "provider-token")
+            .verify_token()
+            .await
+            .expect_err("provider error must not become false");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::Provider);
+        assert_eq!(context.status, Some(500));
+        assert!(context.retryable);
+        assert_eq!(context.provider_errors[0].message, "Provider unavailable");
+    }
+
+    #[tokio::test]
+    async fn malformed_success_body_is_not_treated_as_verified() {
+        let base = spawn_response(200, &[], "not-json", Duration::ZERO);
+        let error = test_client(base, "malformed-token")
+            .verify_token()
+            .await
+            .expect_err("malformed success must fail closed");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::MalformedResponse);
+        assert_eq!(context.status, Some(200));
+        assert!(context.retryable);
+        assert!(context.provider_errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn network_and_timeout_failures_are_distinct() {
+        let network_error = test_client("not-a-valid-url".to_string(), "network-token")
+            .verify_token()
+            .await
+            .expect_err("invalid provider address must fail");
+        let network = request_context(&network_error);
+        assert_eq!(network.kind, VerificationFailureKind::Network);
+        assert_eq!(network.source, VerificationErrorSource::Network);
+        assert!(network.retryable);
+
+        let base = spawn_response(200, &[], r#"{"success":true}"#, Duration::from_millis(250));
+        let timeout_client = Client::builder()
+            .timeout(Duration::from_millis(30))
+            .build()
+            .expect("timeout client");
+        let timeout_error = CloudflareClient::with_client(timeout_client, "timeout-token", None)
+            .with_max_retries(0)
+            .with_api_base(base)
+            .verify_token()
+            .await
+            .expect_err("slow response must time out");
+        let timeout = request_context(&timeout_error);
+        assert_eq!(timeout.kind, VerificationFailureKind::Timeout);
+        assert_eq!(timeout.source, VerificationErrorSource::Network);
+        assert!(timeout.retryable);
+    }
+
+    #[tokio::test]
+    async fn provider_errors_redact_exact_credentials_from_all_outputs() {
+        let secret = "secret-token-value";
+        let body = format!(
+            r#"{{"success":false,"errors":[{{"code":9109,"message":"Provided {secret} via Authorization: Bearer {secret} token={secret}"}}]}}"#
+        );
+        let base = spawn_response(401, &[], &body, Duration::ZERO);
+        let error = test_client(base, secret)
+            .verify_token()
+            .await
+            .expect_err("secret-bearing rejection must fail");
+        let context = request_context(&error);
+        let serialized = serde_json::to_string(context).expect("serialize context");
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        for output in [serialized, display, debug] {
+            assert!(!output.contains(secret), "secret leaked in {output}");
+        }
+        assert!(context.provider_errors[0].message.contains("[redacted]"));
+    }
 }

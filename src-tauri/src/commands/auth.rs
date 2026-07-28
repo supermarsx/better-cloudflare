@@ -5,6 +5,8 @@ use crate::crypto::{CryptoManager, EncryptionConfig};
 use crate::passkey::PasskeyManager;
 use crate::session::SessionManager;
 use crate::storage::{ApiKey, Storage};
+use bc_cloudflare_api::{CloudflareError, VerificationErrorSource, VerificationFailureKind};
+use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind};
 
 use super::log_audit;
 
@@ -15,33 +17,138 @@ pub async fn verify_token(
     storage: State<'_, Storage>,
     api_key: String,
     email: Option<String>,
-) -> Result<bool, String> {
+) -> Result<bool, AppError> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     match client.verify_token().await {
-        Ok(ok) => {
+        Ok(true) => {
             log_audit(
                 &storage,
                 serde_json::json!({
                     "operation": "auth:verify_token",
                     "resource": "api_token",
-                    "success": ok
+                    "success": true
                 }),
             )
             .await;
-            Ok(ok)
+            Ok(true)
         }
-        Err(err) => {
-            log_audit(
-                &storage,
-                serde_json::json!({
-                    "operation": "auth:verify_token",
-                    "resource": "api_token",
-                    "success": false,
-                    "error": err.to_string()
-                }),
+        Ok(false) => {
+            let error = AppError::auth_request_failed(
+                RequestFailureKind::MalformedResponse,
+                "Token verification returned an invalid result.",
+                None,
+                RequestErrorSource::Client,
+                "auth:verify_token",
+                true,
+                vec![],
+                None,
+                "Retry the request. If it continues, restart the application.",
+                None,
+            );
+            log_auth_failure(&storage, &error).await;
+            Err(error)
+        }
+        Err(error) => {
+            let error = map_verification_error(error);
+            log_auth_failure(&storage, &error).await;
+            Err(error)
+        }
+    }
+}
+
+async fn log_auth_failure(storage: &Storage, error: &AppError) {
+    let (code, status, request_id) = match error {
+        AppError::AuthRequestFailed {
+            status, request_id, ..
+        } => (error.code(), *status, request_id.as_deref()),
+        _ => (error.code(), None, None),
+    };
+    log_audit(
+        storage,
+        serde_json::json!({
+            "operation": "auth:verify_token",
+            "resource": "api_token",
+            "success": false,
+            "error_code": code,
+            "status": status,
+            "request_id": request_id,
+        }),
+    )
+    .await;
+}
+
+fn map_verification_error(error: CloudflareError) -> AppError {
+    match error {
+        CloudflareError::Verification(context) => {
+            let kind = match context.kind {
+                VerificationFailureKind::Authentication => RequestFailureKind::Authentication,
+                VerificationFailureKind::RateLimited => RequestFailureKind::RateLimited,
+                VerificationFailureKind::Provider => RequestFailureKind::Provider,
+                VerificationFailureKind::Network => RequestFailureKind::Network,
+                VerificationFailureKind::Timeout => RequestFailureKind::Timeout,
+                VerificationFailureKind::MalformedResponse => RequestFailureKind::MalformedResponse,
+            };
+            let source = match context.source {
+                VerificationErrorSource::Network => RequestErrorSource::Network,
+                VerificationErrorSource::Cloudflare => RequestErrorSource::Cloudflare,
+            };
+            AppError::auth_request_failed(
+                kind,
+                context.message,
+                context.status,
+                source,
+                context.operation,
+                context.retryable,
+                context
+                    .provider_errors
+                    .into_iter()
+                    .map(|detail| ProviderErrorDetail {
+                        code: detail.code,
+                        message: detail.message,
+                    })
+                    .collect(),
+                context.retry_after_secs,
+                context.remediation,
+                context.request_id,
             )
-            .await;
-            Err(err.to_string())
+        }
+        CloudflareError::AuthFailed => AppError::auth_request_failed(
+            RequestFailureKind::Authentication,
+            "Cloudflare rejected the supplied credentials.",
+            None,
+            RequestErrorSource::Cloudflare,
+            "auth:verify_token",
+            false,
+            vec![],
+            None,
+            "Check the API token or global API key, account email, and permissions.",
+            None,
+        ),
+        CloudflareError::RateLimited(_) => AppError::auth_request_failed(
+            RequestFailureKind::RateLimited,
+            "Cloudflare rate-limited token verification.",
+            Some(429),
+            RequestErrorSource::Cloudflare,
+            "auth:verify_token",
+            true,
+            vec![],
+            None,
+            "Wait before trying again.",
+            None,
+        ),
+        CloudflareError::HttpError(_) | CloudflareError::ApiError(_) => {
+            AppError::auth_request_failed(
+                RequestFailureKind::Provider,
+                "Cloudflare could not complete token verification.",
+                None,
+                RequestErrorSource::Cloudflare,
+                "auth:verify_token",
+                true,
+                vec![],
+                None,
+                "Retry shortly and check Cloudflare service status if the failure continues.",
+                None,
+            )
         }
     }
 }

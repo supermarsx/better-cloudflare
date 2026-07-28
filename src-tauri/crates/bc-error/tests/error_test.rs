@@ -3,7 +3,9 @@
 //! Verifies error codes, serialisation round-trips, Display impls, and
 //! conversion traits without any external dependencies.
 
-use bc_error::AppError;
+use bc_error::{
+    sanitize_error_text, AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind,
+};
 
 // ── Error codes ────────────────────────────────────────────────────────────
 
@@ -45,6 +47,18 @@ fn all_variants_have_unique_codes() {
         AppError::AuthFailed {
             message: "a".into(),
         },
+        AppError::auth_request_failed(
+            RequestFailureKind::Authentication,
+            "Credentials rejected.",
+            Some(401),
+            RequestErrorSource::Cloudflare,
+            "auth:verify_token",
+            false,
+            vec![],
+            None,
+            "Check the credential.",
+            None,
+        ),
         AppError::SessionExpired,
         AppError::NoSession,
         AppError::Validation {
@@ -91,8 +105,8 @@ fn serializes_to_json_with_code_tag() {
         retry_after_secs: 30,
     };
     let json = serde_json::to_value(&err).unwrap();
-    assert_eq!(json["code"], "RateLimited");
-    assert_eq!(json["details"]["retry_after_secs"], 30);
+    assert_eq!(json["code"], "RATE_LIMITED");
+    assert_eq!(json["retry_after_secs"], 30);
 }
 
 #[test]
@@ -102,16 +116,16 @@ fn cloudflare_api_error_serialises_status() {
         status: Some(403),
     };
     let json = serde_json::to_value(&err).unwrap();
-    assert_eq!(json["code"], "CloudflareApi");
-    assert_eq!(json["details"]["message"], "forbidden");
-    assert_eq!(json["details"]["status"], 403);
+    assert_eq!(json["code"], "CLOUDFLARE_API");
+    assert_eq!(json["message"], "forbidden");
+    assert_eq!(json["status"], 403);
 }
 
 #[test]
 fn session_expired_serialises_without_details() {
     let err = AppError::SessionExpired;
     let json = serde_json::to_value(&err).unwrap();
-    assert_eq!(json["code"], "SessionExpired");
+    assert_eq!(json["code"], "SESSION_EXPIRED");
 }
 
 #[test]
@@ -173,7 +187,76 @@ fn into_string_returns_json() {
     // Should be JSON (starts with {)
     assert!(s.starts_with('{'), "Expected JSON, got: {s}");
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
-    assert_eq!(parsed["code"], "NotFound");
+    assert_eq!(parsed["code"], "NOT_FOUND");
+}
+
+#[test]
+fn auth_request_error_serializes_flat_safe_context() {
+    let err = AppError::auth_request_failed(
+        RequestFailureKind::Authentication,
+        "Cloudflare rejected token=super-secret",
+        Some(403),
+        RequestErrorSource::Cloudflare,
+        "auth:verify_token",
+        false,
+        vec![
+            ProviderErrorDetail {
+                code: Some("9109".into()),
+                message: "Authorization: Bearer super-secret".into(),
+            },
+            ProviderErrorDetail {
+                code: Some("bad code!".into()),
+                message: "password=hunter2".into(),
+            },
+        ],
+        Some(30),
+        "Replace api_key=super-secret and retry.",
+        Some("abc123-LHR".into()),
+    );
+
+    let json = serde_json::to_value(&err).unwrap();
+    assert_eq!(json["code"], "AUTH_REQUEST_FAILED");
+    assert_eq!(json["kind"], "authentication");
+    assert_eq!(json["status"], 403);
+    assert_eq!(json["source"], "cloudflare");
+    assert_eq!(json["operation"], "auth:verify_token");
+    assert_eq!(json["retryable"], false);
+    assert_eq!(json["retry_after"], "30");
+    assert_eq!(json["request_id"], "abc123-LHR");
+    assert_eq!(json["details"]["retry_after_secs"], 30);
+    assert_eq!(
+        json["details"]["provider_codes"],
+        serde_json::json!(["9109"])
+    );
+    assert_eq!(
+        json["details"]["provider_messages"],
+        serde_json::json!([
+            "Authorization=[redacted] Bearer [redacted]",
+            "password=[redacted]"
+        ])
+    );
+    assert_eq!(
+        json["details"]["remediation"],
+        "Replace api_key=[redacted] and retry."
+    );
+
+    let serialized = serde_json::to_string(&err).unwrap();
+    let display = err.to_string();
+    let debug = format!("{err:?}");
+    for output in [serialized, display, debug] {
+        assert!(!output.contains("super-secret"));
+        assert!(!output.contains("hunter2"));
+    }
+}
+
+#[test]
+fn sanitizer_redacts_common_secret_forms() {
+    let sanitized =
+        sanitize_error_text("Bearer abc token=def password:ghi x-auth-key jkl ordinary detail");
+    assert_eq!(
+        sanitized,
+        "Bearer [redacted] token=[redacted] password=[redacted] x-auth-key [redacted] ordinary detail"
+    );
 }
 
 // ── Convenience constructors ───────────────────────────────────────────────
