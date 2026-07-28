@@ -73,6 +73,21 @@ test("redacts URL credentials and JWT-shaped tokens", () => {
   assert.match(sanitized, /\[redacted-jwt\]/);
 });
 
+test("redacts authentication query parameters consistently", () => {
+  const sanitized = sanitizeRuntimeText(
+    "https://example.test/callback?auth=auth-secret&authorization=authorization-secret&cookie=cookie-secret",
+  );
+
+  assert.equal(
+    sanitized,
+    "https://example.test/callback?auth=[redacted]&authorization=[redacted]&cookie=[redacted]",
+  );
+  assert.doesNotMatch(
+    sanitized,
+    /auth-secret|authorization-secret|cookie-secret/,
+  );
+});
+
 test("bounds recent fingerprint history by evicting old unique failures", () => {
   const stableError = (message: string) => {
     const error = new Error(message);

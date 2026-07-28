@@ -113,11 +113,11 @@ export function sanitizeRuntimeText(
     )
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(
-      /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
       "$2=[redacted]",
     )
     .replace(
-      /([?&](?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|token|secret|password)=)[^&#\s]+/gi,
+      /([?&](?:api[_-]?key|api[_-]?token|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|auth|cookie)=)[^&#\s]+/gi,
       "$1[redacted]",
     )
     .replace(/\s+$/g, "")

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 type RuntimeFailures = {
   console: string[];
@@ -176,6 +177,25 @@ function monitorRuntime(page: Page): {
   };
 }
 
+async function expectNoAccessibilityViolations(page: Page, context: string) {
+  const results = await new AxeBuilder({ page }).analyze();
+  const violations = results.violations.map(({ id, impact, help, nodes }) => ({
+    id,
+    impact,
+    help,
+    nodes: nodes.map(({ target, html, failureSummary }) => ({
+      target,
+      html,
+      failureSummary,
+    })),
+  }));
+
+  expect(
+    violations,
+    `${context} accessibility violations:\n${JSON.stringify(violations, null, 2)}`,
+  ).toEqual([]);
+}
+
 async function selectDesktopKey(page: Page) {
   const keySelect = page.getByRole("combobox").first();
   await expect(keySelect).toBeEnabled();
@@ -241,6 +261,7 @@ test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
         ),
       )
       .toBe(true);
+    await expectNoAccessibilityViolations(page, `${dialogName} dialog`);
 
     const minimize = page.locator('button[aria-label="Minimize window"]');
     await minimize.click();
@@ -317,6 +338,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   await expect(dialog).toBeVisible();
   await expect(page.getByText("Credential 2")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
+  await expectNoAccessibilityViolations(page, "Legacy passkey recovery dialog");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
