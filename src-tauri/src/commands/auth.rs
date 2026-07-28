@@ -271,12 +271,12 @@ pub async fn delete_vault_secret(storage: State<'_, Storage>, id: String) -> Res
 
 #[tauri::command]
 pub async fn get_passkey_registration_options(
-    _storage: State<'_, Storage>,
+    storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     passkey_mgr
-        .get_registration_options(&id)
+        .get_registration_options(&storage, &id)
         .await
         .map_err(|e| e.to_string())
 }
