@@ -11,15 +11,14 @@ import {
 
 import PasskeyManagerDialog from "../src/components/auth/PasskeyManagerDialog";
 import { ServerClient } from "../src/lib/api/server-client";
-import type { PasskeyStatus } from "../src/lib/api/tauri-client";
+import type { PasskeyStatusState } from "../src/lib/auth/passkey-status";
 
 const originalList = ServerClient.prototype.listPasskeys;
 const originalDelete = ServerClient.prototype.deletePasskey;
-const unavailableStatus: PasskeyStatus = {
-  registrationAvailable: false,
-  authenticationAvailable: false,
-  legacyCredentialsRequireReregistration: true,
-  unavailableReason:
+const unavailableStatus: PasskeyStatusState = {
+  kind: "unavailable",
+  legacyRecoveryAvailable: true,
+  reason:
     "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
 };
 

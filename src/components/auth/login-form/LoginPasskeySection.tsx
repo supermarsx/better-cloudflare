@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import type { PasskeyStatus } from "@/lib/api/tauri-client";
+import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { AlertTriangle, Shield } from "lucide-react";
 
 interface LoginPasskeySectionProps {
@@ -8,7 +8,7 @@ interface LoginPasskeySectionProps {
   selectedKeyId: string;
   password?: string;
   hasKeys: boolean;
-  status: PasskeyStatus | null;
+  status: PasskeyStatusState | null;
 }
 
 export function LoginPasskeySection({
@@ -20,7 +20,7 @@ export function LoginPasskeySection({
 }: LoginPasskeySectionProps) {
   if (!hasKeys || !status) return null;
 
-  const legacyRecoveryAvailable = status.legacyCredentialsRequireReregistration;
+  const legacyRecoveryAvailable = status.legacyRecoveryAvailable;
 
   return (
     <div className="space-y-2 pt-4 border-t border-border">
@@ -38,9 +38,7 @@ export function LoginPasskeySection({
           <AlertTriangle className="h-4 w-4" />
           Passkeys temporarily unavailable
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {status.unavailableReason}
-        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{status.reason}</p>
       </div>
       {legacyRecoveryAvailable && (
         <Button

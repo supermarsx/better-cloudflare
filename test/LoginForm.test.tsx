@@ -89,6 +89,42 @@ test("LoginForm derives the unavailable passkey UI from the desktop capability",
   });
 });
 
+test("LoginForm shows the passkey security notice and recovery path when status IPC fails", async () => {
+  mock.method(console, "error", () => {});
+  mock.method(TauriClient, "getEncryptionSettings", async () => ({
+    iterations: 100000,
+    keyLength: 256,
+    algorithm: "AES-GCM",
+  }));
+  mock.method(TauriClient, "getPreferences", async () => ({}));
+  mock.method(TauriClient, "getApiKeys", async () => [
+    { id: "desktop-key", label: "Desktop key", encrypted_key: "ciphertext" },
+  ]);
+  mock.method(TauriClient, "getPasskeyStatus", async () => {
+    throw new Error(
+      "get_passkey_status unavailable: use legacy passkey recovery until the desktop service is restored.",
+    );
+  });
+
+  render(<LoginForm onLogin={() => {}} desktop />);
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("Desktop key"));
+    assert.ok(screen.getByRole("alert"));
+    assert.ok(
+      screen.getByText(
+        /use legacy passkey recovery until the desktop service is restored/i,
+      ),
+    );
+    assert.ok(screen.getByRole("button", { name: /review legacy passkeys/i }));
+    assert.equal(
+      screen.queryByRole("button", { name: /register passkey/i }),
+      null,
+    );
+    assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
+  });
+});
+
 test("LoginForm hides native window controls on the web", () => {
   render(<LoginForm onLogin={() => {}} desktop={false} />);
 

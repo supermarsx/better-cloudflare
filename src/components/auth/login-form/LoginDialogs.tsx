@@ -1,7 +1,7 @@
 import { AddKeyDialog } from "../AddKeyDialog";
 import { EncryptionSettingsDialog } from "../EncryptionSettingsDialog";
 import PasskeyManagerDialog from "../PasskeyManagerDialog";
-import type { PasskeyStatus } from "@/lib/api/tauri-client";
+import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { EditKeyDialog } from "../EditKeyDialog";
 import type { EncryptionConfig } from "@/types/dns";
 
@@ -35,7 +35,7 @@ interface LoginDialogsProps {
   passkeyViewEmail: string | undefined;
   setPasskeyViewKey: (val: string) => void;
   setPasskeyViewEmail: (val: string | undefined) => void;
-  passkeyStatus: PasskeyStatus | null;
+  passkeyStatus: PasskeyStatusState | null;
 
   showEditKey: boolean;
   setShowEditKey: (open: boolean) => void;

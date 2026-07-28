@@ -4,13 +4,12 @@ import { afterEach, test } from "node:test";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { LoginPasskeySection } from "../src/components/auth/login-form/LoginPasskeySection";
-import type { PasskeyStatus } from "../src/lib/api/tauri-client";
+import type { PasskeyStatusState } from "../src/lib/auth/passkey-status";
 
-const unavailableStatus: PasskeyStatus = {
-  registrationAvailable: false,
-  authenticationAvailable: false,
-  legacyCredentialsRequireReregistration: true,
-  unavailableReason:
+const unavailableStatus: PasskeyStatusState = {
+  kind: "unavailable",
+  legacyRecoveryAvailable: true,
+  reason:
     "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
 };
 
@@ -69,6 +68,35 @@ test("LoginPasskeySection keeps legacy recovery reachable when a key is selected
       status={unavailableStatus}
     />,
   );
+  const recovery = screen.getByRole("button", {
+    name: /review legacy passkeys/i,
+  });
+  assert.equal(recovery.hasAttribute("disabled"), false);
+  recovery.click();
+  assert.equal(managed, true);
+});
+
+test("LoginPasskeySection keeps legacy management available after status IPC failure", () => {
+  let managed = false;
+  render(
+    <LoginPasskeySection
+      onManagePasskeys={() => {
+        managed = true;
+      }}
+      selectedKeyId="key1"
+      password="pw"
+      hasKeys={true}
+      status={{
+        kind: "error",
+        legacyRecoveryAvailable: true,
+        reason:
+          "get_passkey_status failed: legacy credential recovery remains available.",
+      }}
+    />,
+  );
+
+  assert.ok(screen.getByRole("alert"));
+  assert.ok(screen.getByText(/legacy credential recovery remains available/i));
   const recovery = screen.getByRole("button", {
     name: /review legacy passkeys/i,
   });

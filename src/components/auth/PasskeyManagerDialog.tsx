@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { ServerClient } from "@/lib/api/server-client";
-import type { PasskeyStatus } from "@/lib/api/tauri-client";
+import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { passkeyErrorMessage } from "@/lib/auth/passkey-error";
 import {
   Fingerprint,
@@ -27,7 +27,7 @@ interface PasskeyManagerDialogProps {
   id: string; // key id for which we list passkeys
   apiKey: string; // decrypted key token
   email?: string;
-  status: PasskeyStatus | null;
+  status: PasskeyStatusState | null;
 }
 
 type PasskeyItem = {
@@ -135,7 +135,7 @@ export function PasskeyManagerDialog({
               Passkeys temporarily unavailable
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {status?.unavailableReason ??
+              {status?.reason ??
                 "Existing credentials require removal and future re-enrollment."}
             </p>
           </div>
