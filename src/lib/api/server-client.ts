@@ -119,7 +119,7 @@ function authHeaders(key: string, email?: string): HeadersInit {
  * @param timeoutMs - request timeout in milliseconds
  */
 export class ServerClient {
-  private readonly baseUrl: string;
+  private readonly baseUrl?: string;
 
   constructor(
     private apiKey: string,
@@ -127,12 +127,14 @@ export class ServerClient {
     private email?: string,
     private timeoutMs: number = DEFAULT_TIMEOUT,
   ) {
+    const configuredBase =
+      baseUrl === undefined ? configuredServerApiBase() : baseUrl;
     this.baseUrl =
       baseUrl === undefined && isDesktop()
-        ? ""
-        : normalizeServerApiBase(
-            baseUrl === undefined ? configuredServerApiBase() : baseUrl,
-          );
+        ? undefined
+        : configuredBase === undefined
+          ? undefined
+          : normalizeServerApiBase(configuredBase);
   }
 
   /**
@@ -170,9 +172,10 @@ export class ServerClient {
       signal?: AbortSignal;
     } = {},
   ): Promise<T> {
-    if (!this.baseUrl) {
+    const baseUrl = this.baseUrl;
+    if (!baseUrl) {
       throw backendConfigurationError(
-        "This operation unexpectedly reached the web transport without a configured public API backend.",
+        "No public server API base was supplied; the app will not guess a localhost proxy.",
       );
     }
     let controller: AbortController | undefined;
@@ -187,7 +190,7 @@ export class ServerClient {
       signal = controller.signal;
     }
     try {
-      const requestUrl = joinRequestUrl(this.baseUrl, endpoint);
+      const requestUrl = joinRequestUrl(baseUrl, endpoint);
       const res = await fetch(requestUrl, {
         method,
         headers: {
@@ -229,7 +232,7 @@ export class ServerClient {
     } catch (error) {
       throw normalizeRequestError(error, {
         endpoint,
-        requestUrl: joinRequestUrl(this.baseUrl, endpoint),
+        requestUrl: joinRequestUrl(baseUrl, endpoint),
         operation: method,
         timedOut,
       });
@@ -534,13 +537,16 @@ export class ServerClient {
     });
   }
 
-  async listPasskeys(id: string): Promise<{ id: string; counter?: number }[]> {
+  async listPasskeys(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{ id: string; counter?: number }[]> {
     if (isDesktop()) {
       return TauriClient.listPasskeys(id) as Promise<
         { id: string; counter?: number }[]
       >;
     }
-    return this.request(`/passkeys/${id}`, { method: "GET" });
+    return this.request(`/passkeys/${id}`, { method: "GET", signal });
   }
 
   async deletePasskey(id: string, cid: string): Promise<void> {

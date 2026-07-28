@@ -31,12 +31,18 @@ test("generates email and key headers", () => {
   });
 });
 
-test("fails fast when the static web backend is not configured", () => {
+test("constructs without a static web backend and fails before fetch", async () => {
   const previous = process.env.NEXT_PUBLIC_SERVER_API_BASE;
   delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("fetch must not be called");
+  };
   try {
-    assert.throws(
-      () => new ServerClient("token"),
+    const client = new ServerClient("token");
+    await assert.rejects(
+      () => client.getZones(),
       (error: unknown) => {
         assert.ok(error instanceof RequestError);
         assert.equal(error.kind, "configuration");
@@ -46,11 +52,13 @@ test("fails fast when the static web backend is not configured", () => {
         return true;
       },
     );
+    assert.equal(fetchCalls, 0);
     assert.throws(
       () => new ServerClient("token", "file:///unsafe"),
       /absolute HTTP\(S\) URL/,
     );
   } finally {
+    globalThis.fetch = originalFetch;
     if (previous === undefined) {
       delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
     } else {
@@ -459,6 +467,38 @@ test("listPasskeys and deletePasskey", async () => {
   const called2 = restore();
   assert.equal(called2.url, "http://example.com/passkeys/keyid/cid1");
   assert.equal(called2.init?.method, "DELETE");
+});
+
+test("listPasskeys forwards cancellation to fetch", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | null | undefined;
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      receivedSignal = init?.signal;
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("cancelled", "AbortError"));
+      });
+    });
+
+  try {
+    const request = client.listPasskeys("keyid", controller.signal);
+    controller.abort();
+    await assert.rejects(
+      () => request,
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "aborted");
+        assert.equal(error.endpoint, "/passkeys/keyid");
+        assert.equal(error.operation, "GET");
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+    assert.equal(receivedSignal, controller.signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("getVaultSecret sends passkey token when provided", async () => {
