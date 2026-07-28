@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, mock, test } from "node:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 import App from "../src/App";
 import { TauriClient } from "../src/lib/api/tauri-client";
@@ -15,7 +15,7 @@ afterEach(() => {
   (globalThis as { window?: unknown }).window = originalWindow;
 });
 
-test("App starts the login form in desktop mode when the Tauri bridge exists", async () => {
+test("App renders one global titlebar and no embedded chrome during desktop auth", async () => {
   (globalThis as { window?: unknown }).window = {
     __TAURI_INTERNALS__: {},
   };
@@ -32,10 +32,17 @@ test("App starts the login form in desktop mode when the Tauri bridge exists", a
     algorithm: "AES-GCM",
   }));
   mock.method(TauriClient, "getPreferences", async () => ({}));
+  mock.method(TauriClient, "getPasskeyStatus", async () => ({
+    registrationAvailable: false,
+    authenticationAvailable: false,
+    legacyCredentialsRequireReregistration: true,
+    unavailableReason: "Passkeys are temporarily unavailable.",
+  }));
   mock.method(TauriClient, "getApiKeys", async () => {
     desktopKeyLoads += 1;
     return [];
   });
+  mock.method(TauriClient, "isTauri", () => false);
   mock.method(TauriClient, "biometricStatus", async () => ({
     available: false,
     biometricType: "none",
@@ -47,4 +54,12 @@ test("App starts the login form in desktop mode when the Tauri bridge exists", a
     assert.equal(desktopKeyLoads, 1);
   });
   assert.equal(webKeyLoads, 0);
+  const titlebar = document.querySelector(".titlebar");
+  assert.ok(titlebar);
+  assert.equal(document.querySelectorAll(".titlebar").length, 1);
+  assert.equal(titlebar.querySelectorAll("[data-tauri-drag-region]").length, 1);
+  assert.equal(screen.queryByTestId("auth-window-handle"), null);
+  assert.equal(titlebar.querySelectorAll(".lucide-minus").length, 1);
+  assert.equal(titlebar.querySelectorAll(".lucide-square").length, 1);
+  assert.equal(titlebar.querySelectorAll(".lucide-x").length, 1);
 });

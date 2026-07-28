@@ -11,7 +11,6 @@ import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
 import { LoginBiometricSection } from "./login-form/LoginBiometricSection";
 import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
-import { LoginWindowHandle } from "./login-form/LoginWindowHandle";
 import {
   Dialog,
   DialogContent,
@@ -123,7 +122,6 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
         className="relative z-10 w-full max-w-md overflow-hidden border border-border/60 bg-card/80 shadow-[0_0_18px_rgba(0,0,0,0.12)] backdrop-blur-xl"
         data-testid="auth-card"
       >
-        <LoginWindowHandle desktop={desktop} />
         <LoginHeader />
         <CardContent className="space-y-6 pt-4">
           <LoginKeySelector

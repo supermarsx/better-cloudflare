@@ -12,7 +12,7 @@ afterEach(() => {
   mock.restoreAll();
 });
 
-test("LoginForm renders login button", async () => {
+test("LoginForm renders web login without embedded window chrome", async () => {
   render(<LoginForm onLogin={() => {}} desktop={false} />);
   const loginButton = screen
     .getAllByRole("button")
@@ -21,38 +21,7 @@ test("LoginForm renders login button", async () => {
         btn.className.includes("h-12") && btn.className.includes("text-lg"),
     );
   assert.ok(loginButton);
-  await act(async () => {
-    await Promise.resolve();
-  });
-});
-
-test("LoginForm places visible window controls inside the desktop auth card", async () => {
-  mock.method(TauriClient, "getEncryptionSettings", async () => ({
-    iterations: 100000,
-    keyLength: 256,
-    algorithm: "AES-GCM",
-  }));
-  mock.method(TauriClient, "getPreferences", async () => ({}));
-  mock.method(TauriClient, "getApiKeys", async () => []);
-  mock.method(TauriClient, "getPasskeyStatus", async () => ({
-    registrationAvailable: false,
-    authenticationAvailable: false,
-    legacyCredentialsRequireReregistration: true,
-    unavailableReason: "Passkeys are temporarily unavailable.",
-  }));
-
-  render(<LoginForm onLogin={() => {}} desktop />);
-
-  await waitFor(() => {
-    const card = screen.getByTestId("auth-card");
-    const handle = screen.getByTestId("auth-window-handle");
-
-    assert.equal(handle.parentElement, card);
-    assert.equal(card.firstElementChild, handle);
-    assert.ok(screen.getByRole("button", { name: "Minimize window" }));
-    assert.ok(screen.getByRole("button", { name: "Toggle maximize" }));
-    assert.ok(screen.getByRole("button", { name: "Close window" }));
-  });
+  assert.equal(screen.queryByTestId("auth-window-handle"), null);
   await act(async () => {
     await Promise.resolve();
   });
@@ -123,15 +92,6 @@ test("LoginForm shows the passkey security notice and recovery path when status 
     );
     assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
   });
-});
-
-test("LoginForm hides native window controls on the web", () => {
-  render(<LoginForm onLogin={() => {}} desktop={false} />);
-
-  assert.equal(screen.queryByTestId("auth-window-handle"), null);
-  assert.equal(screen.queryByRole("button", { name: "Minimize window" }), null);
-  assert.equal(screen.queryByRole("button", { name: "Toggle maximize" }), null);
-  assert.equal(screen.queryByRole("button", { name: "Close window" }), null);
 });
 
 test("LoginForm ignores a stale web key load after switching to desktop", async () => {
