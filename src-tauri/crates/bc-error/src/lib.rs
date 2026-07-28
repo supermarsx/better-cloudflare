@@ -3,8 +3,9 @@
 //! Structured, serialisable error types shared across all Better Cloudflare
 //! backend crates and the Tauri IPC boundary.
 //!
-//! Every command returns `Result<T, AppError>`, which is serialised to the
-//! frontend as a JSON object with `code`, `message`, and optional `details`.
+//! Commands that adopt `AppError` serialise it to the frontend as a JSON object
+//! with `code`, `message`, and optional `details`. Some legacy commands still
+//! return string errors while their IPC contracts are migrated incrementally.
 
 use serde::{Deserialize, Serialize};
 

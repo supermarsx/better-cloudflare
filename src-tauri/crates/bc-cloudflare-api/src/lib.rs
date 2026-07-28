@@ -17,7 +17,8 @@ use thiserror::Error;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
-const MAX_BACKOFF_MS: u64 = 30_000;
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const AUTH_OPERATION: &str = "auth:verify_token";
 const MAX_PROVIDER_ERRORS: usize = 5;
@@ -97,6 +98,7 @@ pub struct CloudflareClient {
     email: Option<String>,
     max_retries: u32,
     api_base: String,
+    request_timeout: Duration,
 }
 
 impl CloudflareClient {
@@ -107,6 +109,7 @@ impl CloudflareClient {
             email: email.map(|s| s.to_string()),
             max_retries: MAX_RETRIES,
             api_base: CLOUDFLARE_API_BASE.to_string(),
+            request_timeout: REQUEST_TIMEOUT,
         }
     }
 
@@ -118,6 +121,7 @@ impl CloudflareClient {
             email: email.map(|s| s.to_string()),
             max_retries: MAX_RETRIES,
             api_base: CLOUDFLARE_API_BASE.to_string(),
+            request_timeout: REQUEST_TIMEOUT,
         }
     }
 
@@ -133,7 +137,14 @@ impl CloudflareClient {
         self
     }
 
+    #[cfg(test)]
+    fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let req = req.timeout(self.request_timeout);
         if let Some(email) = &self.email {
             req.header("X-Auth-Email", email)
                 .header("X-Auth-Key", &self.api_key)
@@ -145,7 +156,7 @@ impl CloudflareClient {
     // ── Retry with exponential backoff ──────────────────────────────────
 
     /// Execute a request-building closure with retry on 429 and 5xx responses.
-    /// Uses exponential backoff with jitter, respecting Retry-After headers.
+    /// Uses capped exponential backoff, respecting bounded Retry-After headers.
     async fn request_with_retry<F>(
         &self,
         build_request: F,
@@ -182,18 +193,8 @@ impl CloudflareClient {
             }
 
             // Calculate backoff: prefer Retry-After header, else exponential
-            let backoff_ms = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .map(|secs| secs * 1000)
-                .unwrap_or_else(|| {
-                    let base = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
-                    base.min(MAX_BACKOFF_MS)
-                });
-
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            let retry_after_secs = parse_retry_after_secs(response.headers());
+            tokio::time::sleep(retry_delay(attempt, retry_after_secs)).await;
         }
     }
 
@@ -218,27 +219,17 @@ impl CloudflareClient {
                     CloudflareError::Verification(Box::new(self.transport_error(&error)))
                 })?;
             let status = response.status().as_u16();
-            let retry_after_secs = response
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok());
+            let retry_after_secs = parse_retry_after_secs(response.headers());
             let request_id = response
                 .headers()
                 .get("cf-ray")
                 .and_then(|value| value.to_str().ok())
                 .and_then(sanitize_request_id);
-            let retryable_status = status == 429 || status >= 500;
+            let retryable_status = status == 408 || status == 429 || status >= 500;
 
             if retryable_status && attempt < self.max_retries {
                 attempt += 1;
-                let backoff_ms = retry_after_secs
-                    .map(|seconds| seconds.saturating_mul(1000))
-                    .unwrap_or_else(|| {
-                        let base = INITIAL_BACKOFF_MS.saturating_mul(2u64.pow(attempt - 1));
-                        base.min(MAX_BACKOFF_MS)
-                    });
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                tokio::time::sleep(retry_delay(attempt, retry_after_secs)).await;
                 continue;
             }
 
@@ -311,12 +302,12 @@ impl CloudflareClient {
             }
         }
 
-        let kind = if status == 429 {
-            VerificationFailureKind::RateLimited
-        } else if status >= 500 {
-            VerificationFailureKind::Provider
-        } else {
-            VerificationFailureKind::Authentication
+        let kind = match status {
+            401 | 403 => VerificationFailureKind::Authentication,
+            408 => VerificationFailureKind::Timeout,
+            429 => VerificationFailureKind::RateLimited,
+            500..=599 => VerificationFailureKind::Provider,
+            _ => VerificationFailureKind::MalformedResponse,
         };
         let payload = payload.unwrap_or(Value::Null);
         Err(CloudflareError::Verification(Box::new(
@@ -333,21 +324,44 @@ impl CloudflareClient {
         request_id: Option<String>,
     ) -> CloudflareRequestError {
         let provider_errors = self.provider_errors(payload);
-        let (message, retryable, remediation) = match kind {
-            VerificationFailureKind::Authentication => (
+        let (message, retryable, remediation) = match (kind, status) {
+            (VerificationFailureKind::Authentication, _) => (
                 format!("Cloudflare rejected the supplied credentials (HTTP {status})."),
                 false,
                 "Check the API token or global API key, the account email when required, and the credential permissions.",
             ),
-            VerificationFailureKind::RateLimited => (
+            (VerificationFailureKind::RateLimited, _) => (
                 "Cloudflare rate-limited token verification.".to_string(),
                 true,
                 "Wait for the retry interval before trying again.",
             ),
-            VerificationFailureKind::Provider => (
+            (VerificationFailureKind::Provider, _) => (
                 format!("Cloudflare could not verify the credentials (HTTP {status})."),
                 true,
                 "Retry shortly and check Cloudflare service status if the failure continues.",
+            ),
+            (VerificationFailureKind::Timeout, 408) => (
+                "Cloudflare timed out while processing token verification (HTTP 408).".to_string(),
+                true,
+                "Retry the request. If it continues, check the connection and Cloudflare service status.",
+            ),
+            (VerificationFailureKind::MalformedResponse, 400) => (
+                "Cloudflare rejected token verification as an invalid request (HTTP 400)."
+                    .to_string(),
+                false,
+                "Check that the selected credential type and account email match the supplied credential.",
+            ),
+            (VerificationFailureKind::MalformedResponse, 404 | 405) => (
+                format!(
+                    "Cloudflare did not accept the token verification endpoint or method (HTTP {status})."
+                ),
+                false,
+                "Check for a Cloudflare API compatibility change and update the application before retrying.",
+            ),
+            (VerificationFailureKind::MalformedResponse, _) => (
+                format!("Cloudflare rejected token verification (HTTP {status})."),
+                false,
+                "Check the request details and Cloudflare API compatibility before retrying.",
             ),
             _ => unreachable!("response errors are classified before construction"),
         };
@@ -1294,6 +1308,27 @@ impl CloudflareClient {
     }
 }
 
+fn parse_retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.min(MAX_RETRY_DELAY.as_secs()))
+}
+
+fn retry_delay(attempt: u32, retry_after_secs: Option<u64>) -> Duration {
+    let maximum_ms = MAX_RETRY_DELAY.as_millis() as u64;
+    let delay_ms = retry_after_secs
+        .map(|seconds| seconds.saturating_mul(1000))
+        .unwrap_or_else(|| {
+            2u64.checked_pow(attempt.saturating_sub(1))
+                .and_then(|multiplier| INITIAL_BACKOFF_MS.checked_mul(multiplier))
+                .unwrap_or(u64::MAX)
+        })
+        .min(maximum_ms);
+    Duration::from_millis(delay_ms)
+}
+
 fn sanitize_provider_code(code: &str) -> Option<String> {
     let code = code.trim();
     if code.is_empty()
@@ -1409,8 +1444,12 @@ mod auth_verification_tests {
         let address = listener.local_addr().expect("test server address");
         let reason = match status {
             200 => "OK",
+            400 => "Bad Request",
             401 => "Unauthorized",
             403 => "Forbidden",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            408 => "Request Timeout",
             429 => "Too Many Requests",
             500 => "Internal Server Error",
             _ => "Test Response",
@@ -1452,6 +1491,36 @@ mod auth_verification_tests {
             CloudflareError::Verification(context) => context,
             other => panic!("expected structured verification error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn production_clients_have_an_explicit_request_timeout() {
+        assert!(!REQUEST_TIMEOUT.is_zero());
+        assert_eq!(
+            CloudflareClient::new("token", None).request_timeout,
+            REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            CloudflareClient::with_client(Client::new(), "token", None).request_timeout,
+            REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn retry_delays_and_retry_after_values_are_capped() {
+        assert_eq!(retry_delay(1, Some(u64::MAX)), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(62, None), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(u32::MAX, None), MAX_RETRY_DELAY);
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("999999"),
+        );
+        assert_eq!(
+            parse_retry_after_secs(&headers),
+            Some(MAX_RETRY_DELAY.as_secs())
+        );
     }
 
     #[tokio::test]
@@ -1508,6 +1577,69 @@ mod auth_verification_tests {
     }
 
     #[tokio::test]
+    async fn validation_and_protocol_failures_are_not_credential_rejections() {
+        let cases = [
+            (
+                400,
+                "invalid request",
+                "selected credential type and account email",
+            ),
+            (
+                404,
+                "endpoint or method",
+                "Cloudflare API compatibility change",
+            ),
+            (
+                405,
+                "endpoint or method",
+                "Cloudflare API compatibility change",
+            ),
+        ];
+
+        for (status, message_fragment, remediation_fragment) in cases {
+            let base = spawn_response(
+                status,
+                &[("cf-ray", "protocol123-LHR")],
+                r#"{"success":false,"errors":[{"code":1000,"message":"Request rejected"}]}"#,
+                Duration::ZERO,
+            );
+            let error = test_client(base, "protocol-token")
+                .verify_token()
+                .await
+                .expect_err("validation and protocol failures must fail closed");
+            let context = request_context(&error);
+            assert_eq!(context.kind, VerificationFailureKind::MalformedResponse);
+            assert_eq!(context.status, Some(status));
+            assert_eq!(context.source, VerificationErrorSource::Cloudflare);
+            assert!(!context.retryable);
+            assert!(context.message.contains(message_fragment));
+            assert!(context.remediation.contains(remediation_fragment));
+            assert!(!context.message.contains("credentials"));
+        }
+    }
+
+    #[tokio::test]
+    async fn http_408_is_a_retryable_provider_timeout() {
+        let base = spawn_response(
+            408,
+            &[("cf-ray", "timeout408-LHR")],
+            r#"{"success":false,"errors":[{"code":408,"message":"Request timeout"}]}"#,
+            Duration::ZERO,
+        );
+        let error = test_client(base, "timeout-token")
+            .verify_token()
+            .await
+            .expect_err("HTTP 408 must fail as a timeout");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::Timeout);
+        assert_eq!(context.status, Some(408));
+        assert_eq!(context.source, VerificationErrorSource::Cloudflare);
+        assert!(context.retryable);
+        assert!(context.message.contains("HTTP 408"));
+        assert_eq!(context.request_id.as_deref(), Some("timeout408-LHR"));
+    }
+
+    #[tokio::test]
     async fn rate_limit_preserves_retry_after_and_request_id() {
         let base = spawn_response(
             429,
@@ -1529,22 +1661,40 @@ mod auth_verification_tests {
     }
 
     #[tokio::test]
-    async fn provider_failure_preserves_status_and_safe_detail() {
+    async fn rate_limit_caps_retry_after_in_error_context() {
         let base = spawn_response(
-            500,
-            &[("cf-ray", "provider123-LHR")],
-            r#"{"success":false,"errors":[{"code":1001,"message":"Provider unavailable"}]}"#,
+            429,
+            &[("retry-after", "999999")],
+            r#"{"success":false,"errors":[{"code":1015,"message":"Rate limited"}]}"#,
             Duration::ZERO,
         );
-        let error = test_client(base, "provider-token")
+        let error = test_client(base, "rate-limited-token")
             .verify_token()
             .await
-            .expect_err("provider error must not become false");
+            .expect_err("rate limit must fail closed");
         let context = request_context(&error);
-        assert_eq!(context.kind, VerificationFailureKind::Provider);
-        assert_eq!(context.status, Some(500));
-        assert!(context.retryable);
-        assert_eq!(context.provider_errors[0].message, "Provider unavailable");
+        assert_eq!(context.retry_after_secs, Some(MAX_RETRY_DELAY.as_secs()));
+    }
+
+    #[tokio::test]
+    async fn provider_failure_preserves_status_and_safe_detail() {
+        for status in [500, 503] {
+            let base = spawn_response(
+                status,
+                &[("cf-ray", "provider123-LHR")],
+                r#"{"success":false,"errors":[{"code":1001,"message":"Provider unavailable"}]}"#,
+                Duration::ZERO,
+            );
+            let error = test_client(base, "provider-token")
+                .verify_token()
+                .await
+                .expect_err("provider error must not become false");
+            let context = request_context(&error);
+            assert_eq!(context.kind, VerificationFailureKind::Provider);
+            assert_eq!(context.status, Some(status));
+            assert!(context.retryable);
+            assert_eq!(context.provider_errors[0].message, "Provider unavailable");
+        }
     }
 
     #[tokio::test]
@@ -1573,11 +1723,8 @@ mod auth_verification_tests {
         assert!(network.retryable);
 
         let base = spawn_response(200, &[], r#"{"success":true}"#, Duration::from_millis(250));
-        let timeout_client = Client::builder()
-            .timeout(Duration::from_millis(30))
-            .build()
-            .expect("timeout client");
-        let timeout_error = CloudflareClient::with_client(timeout_client, "timeout-token", None)
+        let timeout_error = CloudflareClient::with_client(Client::new(), "timeout-token", None)
+            .with_request_timeout(Duration::from_millis(30))
             .with_max_retries(0)
             .with_api_base(base)
             .verify_token()
