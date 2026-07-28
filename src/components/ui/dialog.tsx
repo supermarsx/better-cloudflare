@@ -47,17 +47,37 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
-  <DialogPortal>
-    {/**
-     * In Tauri we render dialogs as non-modal so the native titlebar / drag region
-     * stays interactive. Radix only renders Overlay/scroll-lock behavior for modal
-     * dialogs, so we provide our own backdrop here.
-     */}
-    {(() => {
-      return (
+>(
+  (
+    {
+      className,
+      children,
+      onFocusOutside,
+      onInteractOutside,
+      onPointerDownOutside,
+      ...props
+    },
+    ref,
+  ) => {
+    const desktop = isDesktop();
+    const isTitlebarPointer = (originalEvent: Event) => {
+      if (!(originalEvent instanceof PointerEvent)) return false;
+      const insetStr = getComputedStyle(
+        document.documentElement,
+      ).getPropertyValue("--app-top-inset");
+      const insetPx = Number.parseFloat(insetStr) || 0;
+      return originalEvent.clientY <= insetPx;
+    };
+
+    return (
+      <DialogPortal>
+        {/**
+         * In Tauri we render dialogs as non-modal so the native titlebar / drag region
+         * stays interactive. Radix only renders Overlay/scroll-lock behavior for modal
+         * dialogs, so we provide our own backdrop here.
+         */}
         <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
-          {isDesktop() ? (
+          {desktop ? (
             <div className="absolute inset-0 bg-background/70 backdrop-blur-md" />
           ) : (
             <DialogOverlay />
@@ -65,41 +85,42 @@ const DialogContent = React.forwardRef<
           <div className="absolute inset-0 overflow-y-auto">
             <div className="flex min-h-full items-center justify-center p-4 pt-4">
               <DialogPrimitive.Content
+                {...props}
                 ref={ref}
                 className={cn(
                   "glass-surface glass-sheen glass-fade relative z-10 grid w-full max-w-lg gap-4 bg-popover/70 p-6 text-foreground duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-xl",
                   className,
                 )}
+                onFocusOutside={(event) => {
+                  onFocusOutside?.(event);
+                  if (!event.defaultPrevented && desktop) {
+                    event.preventDefault();
+                  }
+                }}
                 onPointerDownOutside={(event) => {
-                  props.onPointerDownOutside?.(event);
-                  if (event.defaultPrevented) return;
-                  const originalEvent = event.detail.originalEvent;
-                  if (!(originalEvent instanceof PointerEvent)) return;
-                  const insetStr = getComputedStyle(
-                    document.documentElement,
-                  ).getPropertyValue("--app-top-inset");
-                  const insetPx = Number.parseFloat(insetStr) || 0;
-                  if (originalEvent.clientY <= insetPx) {
+                  onPointerDownOutside?.(event);
+                  if (
+                    !event.defaultPrevented &&
+                    isTitlebarPointer(event.detail.originalEvent)
+                  ) {
                     event.preventDefault();
                   }
                 }}
                 onInteractOutside={(event) => {
-                  props.onInteractOutside?.(event);
-                  if (event.defaultPrevented) return;
-                  const originalEvent = event.detail.originalEvent;
-                  if (!(originalEvent instanceof PointerEvent)) return;
-                  const insetStr = getComputedStyle(
-                    document.documentElement,
-                  ).getPropertyValue("--app-top-inset");
-                  const insetPx = Number.parseFloat(insetStr) || 0;
-                  if (originalEvent.clientY <= insetPx) {
+                  onInteractOutside?.(event);
+                  if (
+                    !event.defaultPrevented &&
+                    isTitlebarPointer(event.detail.originalEvent)
+                  ) {
                     event.preventDefault();
                   }
                 }}
-                {...props}
               >
                 {children}
-                <DialogPrimitive.Close className="ui-focus absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+                <DialogPrimitive.Close
+                  type="button"
+                  className="ui-focus absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground"
+                >
                   <X className="h-4 w-4" />
                   <span className="sr-only">Close</span>
                 </DialogPrimitive.Close>
@@ -107,10 +128,10 @@ const DialogContent = React.forwardRef<
             </div>
           </div>
         </div>
-      );
-    })()}
-  </DialogPortal>
-));
+      </DialogPortal>
+    );
+  },
+);
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
 const DialogHeader = ({

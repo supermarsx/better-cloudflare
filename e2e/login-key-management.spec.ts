@@ -1,0 +1,274 @@
+import { expect, test, type Page } from "@playwright/test";
+
+type RuntimeFailures = {
+  console: string[];
+  page: string[];
+  requests: string[];
+  responses: string[];
+};
+
+async function installDesktopMock(page: Page) {
+  await page.addInitScript(() => {
+    type Callback = (...args: unknown[]) => unknown;
+    type TauriInternals = {
+      callbacks: Map<number, Callback>;
+      metadata: {
+        currentWindow: { label: string };
+        currentWebview: { windowLabel: string; label: string };
+      };
+      transformCallback: (callback: Callback, once?: boolean) => number;
+      unregisterCallback: (id: number) => void;
+      runCallback: (id: number, data: unknown) => void;
+      invoke: (
+        command: string,
+        args?: Record<string, unknown>,
+      ) => Promise<unknown>;
+      convertFileSrc: (path: string) => string;
+    };
+    const callbacks = new Map<number, Callback>();
+    let callbackId = 0;
+    let passkeyListCalls = 0;
+
+    const internals: TauriInternals = {
+      callbacks,
+      metadata: {
+        currentWindow: { label: "main" },
+        currentWebview: { windowLabel: "main", label: "main" },
+      },
+      transformCallback(callback, once = false) {
+        callbackId += 1;
+        const id = callbackId;
+        callbacks.set(
+          id,
+          once
+            ? (...args: unknown[]) => {
+                callbacks.delete(id);
+                return callback(...args);
+              }
+            : callback,
+        );
+        return id;
+      },
+      unregisterCallback(id) {
+        callbacks.delete(id);
+      },
+      runCallback(id, data) {
+        callbacks.get(id)?.(data);
+      },
+      async invoke(command) {
+        switch (command) {
+          case "get_api_keys":
+            return [
+              {
+                id: "desktop-key",
+                label: "Desktop key",
+                encrypted_key: "ciphertext",
+                email: null,
+                iterations: 100000,
+                key_length: 256,
+                algorithm: "AES-GCM",
+              },
+            ];
+          case "get_encryption_settings":
+            return {
+              iterations: 100000,
+              key_length: 256,
+              algorithm: "AES-GCM",
+            };
+          case "get_preferences":
+            return {};
+          case "get_passkey_status":
+            return {
+              registrationAvailable: false,
+              authenticationAvailable: false,
+              legacyCredentialsRequireReregistration: true,
+              unavailableReason:
+                "Legacy passkeys require review before re-enrollment.",
+            };
+          case "biometric_status":
+            return { available: false, biometricType: "none" };
+          case "decrypt_api_key":
+            return "desktop-token";
+          case "list_passkeys":
+            passkeyListCalls += 1;
+            if (passkeyListCalls === 1) {
+              await new Promise((resolve) => window.setTimeout(resolve, 300));
+            }
+            return [
+              {
+                id: `credential-${passkeyListCalls}`,
+                label: `Credential ${passkeyListCalls}`,
+                requiresReregistration: true,
+              },
+            ];
+          case "plugin:window|is_always_on_top":
+          case "plugin:window|is_maximized":
+          case "plugin:window|is_minimized":
+          case "plugin:window|is_focused":
+            return false;
+          case "plugin:event|listen":
+            return 1;
+          case "plugin:event|unlisten":
+            return undefined;
+          default:
+            if (command.startsWith("plugin:window|")) return undefined;
+            throw new Error(`Unexpected Tauri command: ${command}`);
+        }
+      },
+      convertFileSrc(path) {
+        return `asset://localhost/${encodeURIComponent(path)}`;
+      },
+    };
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: internals,
+    });
+  });
+}
+
+function monitorRuntime(page: Page): {
+  failures: RuntimeFailures;
+  assertClean: () => void;
+} {
+  const failures: RuntimeFailures = {
+    console: [],
+    page: [],
+    requests: [],
+    responses: [],
+  };
+
+  page.on("console", (message) => {
+    if (message.type() === "error") failures.console.push(message.text());
+  });
+  page.on("pageerror", (error) => failures.page.push(error.message));
+  page.on("requestfailed", (request) => {
+    failures.requests.push(
+      `${request.method()} ${request.url()}: ${request.failure()?.errorText ?? "failed"}`,
+    );
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) {
+      failures.responses.push(
+        `${response.status()} ${response.request().method()} ${response.url()}`,
+      );
+    }
+  });
+
+  return {
+    failures,
+    assertClean: () => {
+      expect(failures).toEqual({
+        console: [],
+        page: [],
+        requests: [],
+        responses: [],
+      });
+    },
+  };
+}
+
+async function selectDesktopKey(page: Page) {
+  const keySelect = page.getByRole("combobox").first();
+  await expect(keySelect).toBeEnabled();
+  await keySelect.click();
+  await page.getByRole("option", { name: "Desktop key" }).click();
+  await expect(keySelect).toContainText("Desktop key");
+}
+
+async function openManageAction(page: Page, action: "Edit" | "Delete") {
+  const manage = page.getByRole("button", { name: "Manage Key" });
+  await manage.click();
+
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await page.waitForTimeout(250);
+  await expect(menu).toBeVisible();
+  await expect(menu).toHaveCSS("visibility", "visible");
+  await expect(page.getByRole("menu")).toHaveCount(1);
+
+  await page.getByRole("menuitem", { name: action }).click();
+}
+
+test.beforeEach(async ({ page }) => {
+  await installDesktopMock(page);
+});
+
+test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
+  page,
+}) => {
+  const runtime = monitorRuntime(page);
+  await page.goto("/");
+  await selectDesktopKey(page);
+
+  for (const action of ["Edit", "Delete"] as const) {
+    const dialogName = action === "Edit" ? "Edit API Key" : "Delete API Key";
+
+    await openManageAction(page, action);
+    const dialog = page.getByRole("dialog", { name: dialogName });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Manage Key" }).focus();
+    await expect(dialog).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    await openManageAction(page, action);
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+
+    await page.mouse.click(1100, 150);
+    await expect(dialog).toBeHidden();
+  }
+
+  runtime.assertClean();
+});
+
+test("passkey manager survives focus changes and ignores stale closed loads", async ({
+  page,
+}) => {
+  const runtime = monitorRuntime(page);
+  await page.goto("/");
+  await selectDesktopKey(page);
+  await page.getByLabel("Password").fill("password");
+
+  const review = page.getByRole("button", {
+    name: "Review legacy passkeys",
+  });
+  await expect(review).toBeEnabled();
+  await review.click();
+
+  const dialog = page.getByRole("dialog", {
+    name: "Legacy passkey recovery",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await expect(page.getByRole("status")).toContainText(
+    "Loading legacy passkeys",
+  );
+
+  await page.getByRole("button", { name: "Manage Key" }).focus();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await page.waitForTimeout(350);
+  await expect(page.getByText("Credential 1")).toHaveCount(0);
+
+  await review.click();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByText("Credential 2")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await review.click();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByText("Credential 3")).toBeVisible();
+  await page.mouse.click(1100, 150);
+  await expect(dialog).toBeHidden();
+
+  runtime.assertClean();
+});

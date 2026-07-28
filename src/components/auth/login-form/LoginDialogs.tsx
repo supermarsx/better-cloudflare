@@ -4,6 +4,7 @@ import PasskeyManagerDialog from "../PasskeyManagerDialog";
 import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { EditKeyDialog } from "../EditKeyDialog";
 import type { EncryptionConfig } from "@/types/dns";
+import { useCallback } from "react";
 
 interface LoginDialogsProps {
   showAddKey: boolean;
@@ -94,6 +95,17 @@ export function LoginDialogs({
   setEditPassword,
   handleUpdateKey,
 }: LoginDialogsProps) {
+  const handlePasskeyOpenChange = useCallback(
+    (open: boolean) => {
+      setShowManagePasskeys(open);
+      if (!open) {
+        setPasskeyViewKey("");
+        setPasskeyViewEmail(undefined);
+      }
+    },
+    [setPasskeyViewEmail, setPasskeyViewKey, setShowManagePasskeys],
+  );
+
   return (
     <>
       <AddKeyDialog
@@ -124,15 +136,7 @@ export function LoginDialogs({
 
       <PasskeyManagerDialog
         open={showManagePasskeys}
-        onOpenChange={(open: boolean) => {
-          if (!open) {
-            setShowManagePasskeys(false);
-            setPasskeyViewKey("");
-            setPasskeyViewEmail(undefined);
-          } else {
-            setShowManagePasskeys(true);
-          }
-        }}
+        onOpenChange={handlePasskeyOpenChange}
         id={selectedKeyId}
         apiKey={passkeyViewKey}
         email={passkeyViewEmail}

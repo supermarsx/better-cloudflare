@@ -132,3 +132,130 @@ test("PasskeyManagerDialog preserves structured backend errors during legacy rem
     );
   });
 });
+
+test("PasskeyManagerDialog ignores a stale list after the key changes", async () => {
+  let resolveFirst: (
+    items: Awaited<ReturnType<ServerClient["listPasskeys"]>>,
+  ) => void = () => {};
+  let resolveSecond: (
+    items: Awaited<ReturnType<ServerClient["listPasskeys"]>>,
+  ) => void = () => {};
+  const first = new Promise<Awaited<ReturnType<ServerClient["listPasskeys"]>>>(
+    (resolve) => {
+      resolveFirst = resolve;
+    },
+  );
+  const second = new Promise<Awaited<ReturnType<ServerClient["listPasskeys"]>>>(
+    (resolve) => {
+      resolveSecond = resolve;
+    },
+  );
+
+  ServerClient.prototype.listPasskeys = async function (id) {
+    return id === "key-1" ? first : second;
+  };
+
+  const view = render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key-1"
+      apiKey="token-1"
+      status={unavailableStatus}
+    />,
+  );
+  view.rerender(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key-2"
+      apiKey="token-2"
+      status={unavailableStatus}
+    />,
+  );
+
+  resolveSecond([
+    {
+      id: "fresh",
+      label: "Fresh credential",
+      requiresReregistration: true,
+    },
+  ]);
+  await waitFor(() => assert.ok(screen.getByText("Fresh credential")));
+
+  resolveFirst([
+    {
+      id: "stale",
+      label: "Stale credential",
+      requiresReregistration: true,
+    },
+  ]);
+  await Promise.resolve();
+
+  assert.equal(screen.queryByText("Stale credential"), null);
+  assert.ok(screen.getByText("Fresh credential"));
+});
+
+test("PasskeyManagerDialog aborts a pending list when closed and clears stale content", async () => {
+  let resolveList: (
+    items: Awaited<ReturnType<ServerClient["listPasskeys"]>>,
+  ) => void = () => {};
+  const pending = new Promise<
+    Awaited<ReturnType<ServerClient["listPasskeys"]>>
+  >((resolve) => {
+    resolveList = resolve;
+  });
+  ServerClient.prototype.listPasskeys = async () => pending;
+
+  const view = render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={unavailableStatus}
+    />,
+  );
+  await waitFor(() => {
+    const loading = screen.getByRole("status");
+    assert.match(loading.textContent ?? "", /loading legacy passkeys/i);
+  });
+
+  view.rerender(
+    <PasskeyManagerDialog
+      open={false}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={unavailableStatus}
+    />,
+  );
+  resolveList([
+    {
+      id: "late",
+      label: "Late credential",
+      requiresReregistration: true,
+    },
+  ]);
+  await Promise.resolve();
+
+  assert.equal(screen.queryByText("Late credential"), null);
+});
+
+test("PasskeyManagerDialog remove action is a non-submit button", async () => {
+  ServerClient.prototype.listPasskeys = async () => [
+    { id: "cred1", label: "Credential", requiresReregistration: true },
+  ];
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={unavailableStatus}
+    />,
+  );
+
+  const remove = await screen.findByRole("button", { name: /remove/i });
+  assert.equal(remove.getAttribute("type"), "button");
+});

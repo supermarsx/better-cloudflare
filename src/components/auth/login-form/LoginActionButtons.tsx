@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Plus, Sliders, Trash2 } from "lucide-react";
 import type { ApiKey } from "@/types/dns";
+import { useEffect, useRef, useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,10 +29,44 @@ export function LoginActionButtons({
 }: LoginActionButtonsProps) {
   const { t } = useI18n();
   const canManage = Boolean(selectedKey && hasKeys);
+  const [manageMenuOpen, setManageMenuOpen] = useState(false);
+  const pendingManageAction = useRef<(() => void) | null>(null);
+  const handoffFrame = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (handoffFrame.current !== null) {
+        window.cancelAnimationFrame(handoffFrame.current);
+      }
+    },
+    [],
+  );
+
+  const queueManageAction = (event: Event, action: () => void) => {
+    event.preventDefault();
+    pendingManageAction.current = action;
+    setManageMenuOpen(false);
+  };
+
+  const finishManageActionHandoff = (event: Event) => {
+    const action = pendingManageAction.current;
+    if (!action) return;
+
+    event.preventDefault();
+    pendingManageAction.current = null;
+    if (handoffFrame.current !== null) {
+      window.cancelAnimationFrame(handoffFrame.current);
+    }
+    handoffFrame.current = window.requestAnimationFrame(() => {
+      handoffFrame.current = null;
+      action();
+    });
+  };
 
   return (
     <div className="grid grid-cols-3 gap-3 pt-2">
       <Button
+        type="button"
         variant={hasKeys ? "secondary" : "default"}
         size={hasKeys ? "sm" : "default"}
         onClick={onAddKey}
@@ -40,9 +75,10 @@ export function LoginActionButtons({
         {!hasKeys && <Plus className="h-4 w-4 mr-2" />}
         Add New Key
       </Button>
-      <DropdownMenu>
+      <DropdownMenu open={manageMenuOpen} onOpenChange={setManageMenuOpen}>
         <DropdownMenuTrigger asChild>
           <Button
+            type="button"
             variant="secondary"
             size="sm"
             className="w-full"
@@ -54,16 +90,23 @@ export function LoginActionButtons({
         <DropdownMenuContent
           align="center"
           className="bg-popover/70 text-foreground"
+          onCloseAutoFocus={finishManageActionHandoff}
         >
           <DropdownMenuItem
-            onClick={() => selectedKey && onEditKey(selectedKey)}
+            onSelect={(event) => {
+              if (!selectedKey) return;
+              queueManageAction(event, () => onEditKey(selectedKey));
+            }}
             className="cursor-pointer focus:bg-primary/10"
           >
             <Sliders className="mr-2 h-3.5 w-3.5" />
             {t("Edit")}
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => selectedKey && onDeleteKey(selectedKey.id)}
+            onSelect={(event) => {
+              if (!selectedKey) return;
+              queueManageAction(event, () => onDeleteKey(selectedKey.id));
+            }}
             className="cursor-pointer text-red-500/90 focus:bg-red-500/10 hover:bg-red-500/5"
           >
             <Trash2 className="mr-2 h-3.5 w-3.5" />
@@ -72,6 +115,7 @@ export function LoginActionButtons({
         </DropdownMenuContent>
       </DropdownMenu>
       <Button
+        type="button"
         variant="secondary"
         size="sm"
         onClick={onSettings}
