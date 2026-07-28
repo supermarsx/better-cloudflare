@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { legacySourceLintDebt } from "../eslint.config.js";
@@ -36,6 +38,29 @@ const externalActionPins = new Map([
 
 function read(relativePath: string): string {
   return readFileSync(new URL(relativePath, root), "utf8");
+}
+
+function changedSourceFiles(): string[] {
+  const output = execFileSync(
+    "git",
+    [
+      "diff",
+      "--name-only",
+      "--diff-filter=ACMRTUXB",
+      "origin/main..HEAD",
+      "--",
+      "src",
+    ],
+    {
+      cwd: fileURLToPath(root),
+      encoding: "utf8",
+    },
+  );
+
+  return output
+    .split(/\r?\n/)
+    .map((path) => path.trim().replaceAll("\\", "/"))
+    .filter(Boolean);
 }
 
 function workflowJob(workflow: string, jobId: string): string {
@@ -120,7 +145,6 @@ test("package scripts expose truthful lint and reliability gates", () => {
     scripts["lint:src:baseline"],
     "cross-env ESLINT_SRC_BASELINE=true eslint src --rule react-refresh/only-export-components:off",
   );
-  assert.equal(legacySourceLintDebt.length, 17);
   assert.equal(
     new Set(legacySourceLintDebt).size,
     legacySourceLintDebt.length,
@@ -129,6 +153,16 @@ test("package scripts expose truthful lint and reliability gates", () => {
   assert.ok(
     legacySourceLintDebt.every((path) => path.startsWith("src/")),
     "Source lint debt must stay scoped to src",
+  );
+  const changedSources = changedSourceFiles();
+  assert.ok(changedSources.length > 0, "Expected changed source files");
+  assert.deepEqual(
+    changedSources.filter(
+      (path) =>
+        !/\.(?:ts|tsx)$/.test(path) || legacySourceLintDebt.includes(path),
+    ),
+    [],
+    "Every source file changed in origin/main..HEAD must be TypeScript and covered by the source lint gate",
   );
   assert.ok(!Object.keys(scripts).some((name) => name === "lint:production"));
 

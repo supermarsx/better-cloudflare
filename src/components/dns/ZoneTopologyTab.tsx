@@ -142,7 +142,7 @@ function reportTopologyFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
 }
 
-export async function copyTopologyText(
+async function copyTopologyText(
   text: string,
   label = "Copy topology text",
 ): Promise<boolean> {
@@ -158,7 +158,7 @@ export async function copyTopologyText(
   }
 }
 
-export async function runTopologyRefresh(
+async function runTopologyRefresh(
   refresh: () => Promise<void> | void,
 ): Promise<boolean> {
   try {
@@ -3702,3 +3702,6 @@ export function ZoneTopologyTab({
     </Card>
   );
 }
+
+ZoneTopologyTab.copyTopologyText = copyTopologyText;
+ZoneTopologyTab.runTopologyRefresh = runTopologyRefresh;

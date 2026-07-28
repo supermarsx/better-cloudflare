@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import {
-  copyTopologyText,
-  runTopologyRefresh,
-} from "../src/components/dns/ZoneTopologyTab";
+import { ZoneTopologyTab } from "../src/components/dns/ZoneTopologyTab";
 import {
   getRuntimeDiagnostics,
   resetRuntimeReportingForTests,
@@ -13,6 +10,7 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "clipboard",
 );
+const { copyTopologyText, runTopologyRefresh } = ZoneTopologyTab;
 
 afterEach(() => {
   resetRuntimeReportingForTests();

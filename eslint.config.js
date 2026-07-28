@@ -8,13 +8,11 @@ import { globalIgnores } from "eslint/config";
 export const legacySourceLintDebt = [
   "src/components/dns/AddRecordDialog.tsx",
   "src/components/dns/RecordRow.tsx",
-  "src/components/dns/ZoneTopologyTab.tsx",
   "src/components/dns/builders/DkimBuilder.tsx",
   "src/components/dns/builders/DmarcBuilder.tsx",
   "src/components/dns/builders/HinfoBuilder.tsx",
   "src/components/dns/builders/SpfBuilder.tsx",
   "src/components/dns/builders/SvcbBuilder.tsx",
-  "src/components/layout/ThemeToggle.tsx",
   "src/components/layout/WindowControls.tsx",
   "src/components/layout/WindowTitleBar.tsx",
   "src/lib/audit/audit.ts",

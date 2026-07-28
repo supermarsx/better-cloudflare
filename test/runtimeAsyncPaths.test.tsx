@@ -3,10 +3,7 @@ import React from "react";
 import { afterEach, test } from "node:test";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import {
-  persistTheme,
-  readStoredTheme,
-} from "../src/components/layout/ThemeToggle";
+import { ThemeToggle } from "../src/components/layout/ThemeToggle";
 import { useAiProviders } from "../src/hooks/ai/use-ai-chat";
 import { readSavedLocale } from "../src/i18n";
 import {
@@ -21,6 +18,7 @@ afterEach(() => {
 });
 
 test("theme storage failures preserve the default fallback and report context", () => {
+  const { persistTheme, readStoredTheme } = ThemeToggle;
   const deniedStorage = {
     getItem() {
       throw new DOMException("blocked", "SecurityError");

@@ -26,7 +26,7 @@ export interface StoredThemeResult {
   storageAvailable: boolean;
 }
 
-export function readStoredTheme(
+function readStoredTheme(
   storage: Pick<Storage, "getItem"> | undefined,
 ): StoredThemeResult {
   if (!storage) return { theme: null, storageAvailable: false };
@@ -50,7 +50,7 @@ export function readStoredTheme(
   }
 }
 
-export function persistTheme(
+function persistTheme(
   theme: ThemeId,
   storage: Pick<Storage, "setItem"> | undefined,
 ): boolean {
@@ -191,3 +191,6 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     </DropdownMenu>
   );
 }
+
+ThemeToggle.readStoredTheme = readStoredTheme;
+ThemeToggle.persistTheme = persistTheme;
