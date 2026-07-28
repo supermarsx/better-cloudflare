@@ -34,6 +34,12 @@ test("LoginForm places visible window controls inside the desktop auth card", as
   }));
   mock.method(TauriClient, "getPreferences", async () => ({}));
   mock.method(TauriClient, "getApiKeys", async () => []);
+  mock.method(TauriClient, "getPasskeyStatus", async () => ({
+    registrationAvailable: false,
+    authenticationAvailable: false,
+    legacyCredentialsRequireReregistration: true,
+    unavailableReason: "Passkeys are temporarily unavailable.",
+  }));
 
   render(<LoginForm onLogin={() => {}} desktop />);
 
@@ -49,6 +55,37 @@ test("LoginForm places visible window controls inside the desktop auth card", as
   });
   await act(async () => {
     await Promise.resolve();
+  });
+});
+
+test("LoginForm derives the unavailable passkey UI from the desktop capability", async () => {
+  mock.method(TauriClient, "getEncryptionSettings", async () => ({
+    iterations: 100000,
+    keyLength: 256,
+    algorithm: "AES-GCM",
+  }));
+  mock.method(TauriClient, "getPreferences", async () => ({}));
+  mock.method(TauriClient, "getApiKeys", async () => [
+    { id: "desktop-key", label: "Desktop key", encrypted_key: "ciphertext" },
+  ]);
+  mock.method(TauriClient, "getPasskeyStatus", async () => ({
+    registrationAvailable: false,
+    authenticationAvailable: false,
+    legacyCredentialsRequireReregistration: true,
+    unavailableReason:
+      "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
+  }));
+
+  render(<LoginForm onLogin={() => {}} desktop />);
+
+  await waitFor(() => {
+    assert.ok(screen.getByRole("alert"));
+    assert.equal(
+      screen.queryByRole("button", { name: /register passkey/i }),
+      null,
+    );
+    assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
+    assert.ok(screen.getByRole("button", { name: /review legacy passkeys/i }));
   });
 });
 
@@ -85,6 +122,12 @@ test("LoginForm ignores a stale web key load after switching to desktop", async 
       encrypted_key: "desktop-ciphertext",
     },
   ]);
+  mock.method(TauriClient, "getPasskeyStatus", async () => ({
+    registrationAvailable: false,
+    authenticationAvailable: false,
+    legacyCredentialsRequireReregistration: true,
+    unavailableReason: "Passkeys are temporarily unavailable.",
+  }));
 
   const view = render(<LoginForm onLogin={() => {}} desktop={false} />);
   view.rerender(<LoginForm onLogin={() => {}} desktop />);

@@ -206,11 +206,11 @@ if (TauriClient.isTauri()) {
 - `store_vault_secret(id, secret)` - Store in OS keychain
 - `get_vault_secret(id, passkey_token)` - Retrieve from keychain (requires passkey token)
 - `delete_vault_secret(id)` - Delete from keychain
-- `get_passkey_registration_options(id)` - Start passkey registration
-- `register_passkey(id, attestation)` - Complete registration
-- `authenticate_passkey(id, assertion)` - Authenticate with passkey
-- `list_passkeys(id)` - List registered passkeys
-- `delete_passkey(id, credentialId)` - Revoke passkey
+- `get_passkey_status()` - Report that registration/authentication are fail-closed and legacy credentials require re-enrollment
+- `get_passkey_registration_options(id)` / `register_passkey(id, attestation)` - Deliberately unavailable until cryptographic attestation verification is implemented
+- `authenticate_passkey(id, assertion)` - Deliberately unavailable until stored registrations can be cryptographically verified
+- `list_passkeys(id)` - List legacy credentials for recovery; every entry requires re-enrollment
+- `delete_passkey(id, credentialId)` - Remove a legacy credential
 
 **Encryption**
 
@@ -264,7 +264,7 @@ npm run test:e2e
 1. Launch with `npm run tauri:dev`
 2. Test API key storage and encryption
 3. Test DNS record operations
-4. Test passkey registration and authentication
+4. Confirm the passkey security notice is visible and legacy credentials can be listed or removed; do not expect registration or authentication to work
 5. Verify audit logging
 
 ## Troubleshooting
@@ -303,6 +303,7 @@ npm run build
 
 - The legacy server-mode passkey design required HTTPS or localhost; it is not the desktop implementation contract.
 - The desktop app uses Tauri IPC rather than a local HTTP server.
+- Passkey registration and authentication are intentionally unavailable until verified WebAuthn registration material can be stored. Remove legacy credentials and re-enroll only after that support returns.
 - Biometric runtime support is currently Touch ID on macOS only; Windows Hello is not implemented.
 
 ## Distribution

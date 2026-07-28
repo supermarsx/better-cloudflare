@@ -45,7 +45,7 @@ npm run docs         # API reference in docs/api/
 | macOS desktop            | Tauri desktop build is configured. The only implemented biometric runtime is Touch ID on macOS.                                                                                                                                |
 | Windows desktop          | Tauri desktop build is configured, but Windows Hello biometric authentication is not implemented.                                                                                                                              |
 | Linux desktop            | Tauri desktop build is configured; biometric authentication is unavailable.                                                                                                                                                    |
-| Passkeys                 | The legacy server-mode architecture is documented for historical reference; do not treat it as the current desktop implementation contract.                                                                                    |
+| Passkeys                 | Temporarily unavailable: legacy credentials lack verifiable registration material and cannot authenticate. They may be listed and removed for recovery; future use requires verified re-enrollment.                            |
 | Updates and distribution | The Tauri updater is disabled. Code signing and macOS notarization are not configured. Homebrew, Chocolatey, WinGet, Flathub, Snap, and similar channels are future distribution work unless automation is added and verified. |
 
 See [the documentation hub](docs/index.md) and [the target specification](spec.md) for the distinction between current behavior and planned product requirements.

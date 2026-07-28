@@ -4,6 +4,15 @@ import { afterEach, test } from "node:test";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { LoginPasskeySection } from "../src/components/auth/login-form/LoginPasskeySection";
+import type { PasskeyStatus } from "../src/lib/api/tauri-client";
+
+const unavailableStatus: PasskeyStatus = {
+  registrationAvailable: false,
+  authenticationAvailable: false,
+  legacyCredentialsRequireReregistration: true,
+  unavailableReason:
+    "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
+};
 
 afterEach(() => {
   cleanup();
@@ -12,71 +21,58 @@ afterEach(() => {
 test("LoginPasskeySection hides when no keys", () => {
   const { container } = render(
     <LoginPasskeySection
-      onRegister={() => {}}
-      onUsePasskey={() => {}}
       onManagePasskeys={() => {}}
       selectedKeyId=""
       password=""
-      registerLoading={false}
-      authLoading={false}
       hasKeys={false}
+      status={unavailableStatus}
     />,
   );
   assert.equal(container.firstChild, null);
 });
 
-test("LoginPasskeySection disables buttons when missing key/password", () => {
+test("LoginPasskeySection shows the unavailable notice and disables only legacy recovery without a key", () => {
   render(
     <LoginPasskeySection
-      onRegister={() => {}}
-      onUsePasskey={() => {}}
       onManagePasskeys={() => {}}
       selectedKeyId=""
       password=""
-      registerLoading={false}
-      authLoading={false}
       hasKeys={true}
+      status={unavailableStatus}
     />,
   );
-  const buttons = screen.getAllByRole("button");
-  assert.equal(buttons.length, 3);
-  assert.equal(buttons[0].hasAttribute("disabled"), true);
-  assert.equal(buttons[1].hasAttribute("disabled"), true);
-  assert.equal(buttons[2].hasAttribute("disabled"), true);
+  assert.ok(screen.getByRole("alert"));
+  assert.ok(screen.getByText(/lack verifiable registration material/i));
+  assert.equal(
+    screen.queryByRole("button", { name: /register passkey/i }),
+    null,
+  );
+  assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
+  assert.equal(
+    screen
+      .getByRole("button", { name: /review legacy passkeys/i })
+      .hasAttribute("disabled"),
+    true,
+  );
 });
 
-test("LoginPasskeySection enables actions when key selected", () => {
+test("LoginPasskeySection keeps legacy recovery reachable when a key is selected", () => {
+  let managed = false;
   render(
     <LoginPasskeySection
-      onRegister={() => {}}
-      onUsePasskey={() => {}}
-      onManagePasskeys={() => {}}
+      onManagePasskeys={() => {
+        managed = true;
+      }}
       selectedKeyId="key1"
       password="pw"
-      registerLoading={false}
-      authLoading={false}
       hasKeys={true}
+      status={unavailableStatus}
     />,
   );
-  const buttons = screen.getAllByRole("button");
-  assert.equal(buttons[0].hasAttribute("disabled"), false);
-  assert.equal(buttons[1].hasAttribute("disabled"), false);
-  assert.equal(buttons[2].hasAttribute("disabled"), false);
-});
-
-test("LoginPasskeySection shows loading labels", () => {
-  render(
-    <LoginPasskeySection
-      onRegister={() => {}}
-      onUsePasskey={() => {}}
-      onManagePasskeys={() => {}}
-      selectedKeyId="key1"
-      password="pw"
-      registerLoading={true}
-      authLoading={true}
-      hasKeys={true}
-    />,
-  );
-  assert.ok(screen.getByText(/Registering/i));
-  assert.ok(screen.getByText(/Authenticating/i));
+  const recovery = screen.getByRole("button", {
+    name: /review legacy passkeys/i,
+  });
+  assert.equal(recovery.hasAttribute("disabled"), false);
+  recovery.click();
+  assert.equal(managed, true);
 });

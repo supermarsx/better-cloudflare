@@ -270,6 +270,13 @@ pub async fn delete_vault_secret(storage: State<'_, Storage>, id: String) -> Res
 // ─── Passkey Operations ─────────────────────────────────────────────────────
 
 #[tauri::command]
+pub fn get_passkey_status(
+    passkey_mgr: State<'_, PasskeyManager>,
+) -> bc_passkey::PasskeyStatus {
+    passkey_mgr.status()
+}
+
+#[tauri::command]
 pub async fn get_passkey_registration_options(
     storage: State<'_, Storage>,
     passkey_mgr: State<'_, PasskeyManager>,

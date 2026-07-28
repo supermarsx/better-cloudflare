@@ -7,7 +7,7 @@ import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
 import { formatRequestError } from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
-import { TauriClient } from "@/lib/api/tauri-client";
+import { TauriClient, type PasskeyStatus } from "@/lib/api/tauri-client";
 import {
   serializeAuthenticationCredential,
   serializeRegistrationCredential,
@@ -65,6 +65,9 @@ export function useLoginForm(
   const [benchmarkResult, setBenchmarkResult] = useState<number | null>(null);
   const [passkeyRegisterLoading, setPasskeyRegisterLoading] = useState(false);
   const [passkeyAuthLoading, setPasskeyAuthLoading] = useState(false);
+  const [passkeyStatus, setPasskeyStatus] = useState<PasskeyStatus | null>(
+    null,
+  );
   const [showManagePasskeys, setShowManagePasskeys] = useState(false);
   const [passkeyViewKey, setPasskeyViewKey] = useState("");
   const [passkeyViewEmail, setPasskeyViewEmail] = useState<string | undefined>(
@@ -112,6 +115,31 @@ export function useLoginForm(
     }
     cryptoManager.reloadConfig();
     setEncryptionSettings(cryptoManager.getConfig());
+  }, [desktop]);
+
+  useEffect(() => {
+    let current = true;
+    if (!desktop) {
+      setPasskeyStatus(null);
+      return () => {
+        current = false;
+      };
+    }
+
+    TauriClient.getPasskeyStatus()
+      .then((status) => {
+        if (current) setPasskeyStatus(status);
+      })
+      .catch((error) => {
+        if (current) {
+          console.error("Failed to load passkey capabilities:", error);
+          setPasskeyStatus(null);
+        }
+      });
+
+    return () => {
+      current = false;
+    };
   }, [desktop]);
 
   useEffect(() => {
@@ -938,6 +966,7 @@ export function useLoginForm(
     benchmarkResult,
     passkeyRegisterLoading,
     passkeyAuthLoading,
+    passkeyStatus,
     showManagePasskeys,
     setShowManagePasskeys,
     passkeyViewKey,

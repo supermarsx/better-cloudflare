@@ -1,4 +1,5 @@
 use base64::Engine;
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -16,6 +17,17 @@ passkey and re-enroll after cryptographic WebAuthn verification is available";
 /// create more records that can never authenticate securely.
 const REGISTRATION_DISABLED: &str = "Passkey registration is disabled because this build cannot \
 cryptographically verify WebAuthn attestation; no credential was stored";
+
+const PASSKEYS_UNAVAILABLE: &str = "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material. Remove legacy credentials and re-enroll after verified passkey registration is available.";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyStatus {
+    pub registration_available: bool,
+    pub authentication_available: bool,
+    pub legacy_credentials_require_reregistration: bool,
+    pub unavailable_reason: &'static str,
+}
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum PasskeyError {
@@ -44,6 +56,15 @@ pub enum PasskeyError {
 pub struct PasskeyManager;
 
 impl PasskeyManager {
+    pub fn status(&self) -> PasskeyStatus {
+        PasskeyStatus {
+            registration_available: false,
+            authentication_available: false,
+            legacy_credentials_require_reregistration: true,
+            unavailable_reason: PASSKEYS_UNAVAILABLE,
+        }
+    }
+
     fn decode_credential_id(value: &str) -> Option<Vec<u8>> {
         let value = value.trim();
         if value.is_empty() {
@@ -349,6 +370,19 @@ mod tests {
             PasskeyError::SecureRegistrationUnavailable
         );
         assert!(storage.get_passkeys(ID).await.expect("passkeys").is_empty());
+    }
+
+    #[test]
+    fn status_reports_fail_closed_capabilities_and_legacy_recovery() {
+        assert_eq!(
+            PasskeyManager.status(),
+            PasskeyStatus {
+                registration_available: false,
+                authentication_available: false,
+                legacy_credentials_require_reregistration: true,
+                unavailable_reason: PASSKEYS_UNAVAILABLE,
+            }
+        );
     }
 
     #[tokio::test]

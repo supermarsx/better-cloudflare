@@ -1,74 +1,58 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Fingerprint, Shield } from "lucide-react";
+import type { PasskeyStatus } from "@/lib/api/tauri-client";
+import { AlertTriangle, Shield } from "lucide-react";
 
 interface LoginPasskeySectionProps {
-  onRegister: () => void;
-  onUsePasskey: () => void;
   onManagePasskeys: () => void;
   selectedKeyId: string;
   password?: string;
-  registerLoading: boolean;
-  authLoading: boolean;
   hasKeys: boolean;
+  status: PasskeyStatus | null;
 }
 
 export function LoginPasskeySection({
-  onRegister,
-  onUsePasskey,
   onManagePasskeys,
   selectedKeyId,
   password,
-  registerLoading,
-  authLoading,
   hasKeys,
+  status,
 }: LoginPasskeySectionProps) {
-  if (!hasKeys) return null;
+  if (!hasKeys || !status) return null;
+
+  const legacyRecoveryAvailable = status.legacyCredentialsRequireReregistration;
 
   return (
     <div className="space-y-2 pt-4 border-t border-border">
       <div className="flex items-center gap-2 pl-1">
         <Shield className="h-4 w-4 text-primary/70" />
         <Label className="text-foreground/70 text-xs uppercase tracking-wider font-semibold">
-          Passwordless Login (Passkeys)
+          Passkey security status
         </Label>
       </div>
-      <p className="text-xs text-muted-foreground pl-1 mb-3">
-        Use biometric authentication or security keys for secure, password-free
-        login
-      </p>
-      <div className="grid grid-cols-2 gap-3">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onRegister}
-          disabled={!selectedKeyId || !password || registerLoading}
-          className="w-full"
-        >
-          <Fingerprint className="h-4 w-4 mr-1" />
-          {registerLoading ? "Registering..." : "Register Passkey"}
-        </Button>
-
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onUsePasskey}
-          disabled={!selectedKeyId || authLoading}
-          className="w-full"
-        >
-          {authLoading ? "Authenticating..." : "Use Passkey"}
-        </Button>
-
+      <div
+        className="rounded-md border border-destructive/60 bg-destructive/10 p-3 text-sm text-foreground"
+        role="alert"
+      >
+        <div className="flex items-center gap-2 font-semibold text-destructive">
+          <AlertTriangle className="h-4 w-4" />
+          Passkeys temporarily unavailable
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {status.unavailableReason}
+        </p>
+      </div>
+      {legacyRecoveryAvailable && (
         <Button
           variant="secondary"
           size="sm"
           onClick={onManagePasskeys}
           disabled={!selectedKeyId || !password}
-          className="col-span-2"
+          className="w-full"
         >
-          Manage Passkeys
+          Review legacy passkeys
         </Button>
-      </div>
+      )}
     </div>
   );
 }

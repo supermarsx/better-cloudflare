@@ -83,6 +83,13 @@ export interface McpServerStatus {
   last_error?: string | null;
 }
 
+export interface PasskeyStatus {
+  registrationAvailable: boolean;
+  authenticationAvailable: boolean;
+  legacyCredentialsRequireReregistration: boolean;
+  unavailableReason: string;
+}
+
 export class TauriClient {
   // Check if running in Tauri environment
   static isTauri(): boolean {
@@ -300,6 +307,10 @@ export class TauriClient {
   }
 
   // Passkey Operations
+  static async getPasskeyStatus(): Promise<PasskeyStatus> {
+    return invoke("get_passkey_status");
+  }
+
   static async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
     return invoke("get_passkey_registration_options", { id });
   }

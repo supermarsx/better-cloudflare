@@ -9,7 +9,6 @@ mod passkey;
 mod registrar_commands;
 mod mcp_server;
 mod session;
-mod ai_commands;
 
 use tauri::Manager;
 use crate::storage::Storage;
@@ -59,6 +58,7 @@ fn main() {
             commands::delete_vault_secret,
             
             // Passkey Operations
+            commands::get_passkey_status,
             commands::get_passkey_registration_options,
             commands::register_passkey,
             commands::get_passkey_auth_options,

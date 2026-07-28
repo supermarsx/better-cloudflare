@@ -606,6 +606,7 @@ dependencies = [
  "base64 0.22.1",
  "bc-storage",
  "rand 0.8.5",
+ "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
