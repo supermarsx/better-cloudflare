@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: github-pages
@@ -16,56 +14,81 @@ concurrency:
 
 jobs:
   build:
-    outputs:
-      pages_enabled: ${{ steps.check-pages.outputs.enabled }}
     runs-on: ubuntu-latest
-    environment: github-pages
+    permissions:
+      contents: read
+      pages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Configure GitHub Pages
+        id: pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Detect optional Pages administration token
+        id: admin_token
+        env:
+          PAGES_ADMIN_TOKEN: ${{ secrets.PAGES_ADMIN_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -n "$PAGES_ADMIN_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enable GitHub Pages for Actions
+        id: enable_pages
+        if: steps.pages.outcome == 'failure' && steps.admin_token.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+        with:
+          token: ${{ secrets.PAGES_ADMIN_TOKEN }}
+          enablement: true
+
+      - name: Require a configured GitHub Pages site
+        if: steps.pages.outcome == 'failure' && steps.enable_pages.outcome != 'success'
+        shell: bash
+        run: |
+          echo "::error title=GitHub Pages configuration required::GitHub Pages is not configured for Actions. A repository administrator must set Settings > Pages > Build and deployment > Source to 'GitHub Actions', or add a PAGES_ADMIN_TOKEN repository secret that can manage Pages. A fine-grained token needs Pages: write and Administration: write permissions."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
+
       - name: Install dependencies
         run: npm ci
+
       - name: Configure GitHub Pages base path
+        shell: bash
         run: |
           repo_name="${GITHUB_REPOSITORY#*/}"
           echo "GITHUB_PAGES_BASE_PATH=$repo_name" >> "$GITHUB_ENV"
-      - name: Check GitHub Pages site exists
-        id: check-pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          status_code=$(curl -s -o /tmp/pages.json -w '%{http_code}' \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")
-          if [ "$status_code" -eq 200 ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "GitHub Pages site is available."
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "GitHub Pages site is not configured for this repository. Skipping deployment."
-          fi
+
       - name: Build export
-        if: steps.check-pages.outputs.enabled == 'true'
         run: npm run build
-      - name: Setup Pages
-        if: steps.check-pages.outputs.enabled == 'true'
-        uses: actions/configure-pages@v5
-        with:
-          enablement: false
+
       - name: Upload artifact
-        if: steps.check-pages.outputs.enabled == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./out
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: github-pages
-    if: needs.build.outputs.pages_enabled == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4

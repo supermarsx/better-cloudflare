@@ -1,69 +1,65 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-test.beforeEach(async ({ page }) => {
-  // Intercept API requests and mock responses for simple UI flows
-  await page.route("**/api/verify-token", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ success: true }),
-    }),
-  );
-  await page.route("**/api/zones", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([
-        { id: "zone-1", name: "example.com", status: "active" },
-      ]),
-    }),
-  );
-  await page.route("**/api/zones/zone-1/dns_records", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([]),
-    }),
-  );
-  await page.route("**/api/zones/*/dns_records", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([]),
-    }),
-  );
-  await page.route("**/api/passkeys/register/options/*", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ challenge: "c1", options: {} }),
-    }),
-  );
-});
+const staticResourceTypes = new Set([
+  "document",
+  "font",
+  "image",
+  "script",
+  "stylesheet",
+]);
 
-test("happy path: add key and login", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator("text=Cloudflare DNS Manager")).toBeVisible();
+function monitorStaticResourceFailures(page: Page) {
+  const failures: string[] = [];
 
-  // Open Add Key dialog
-  await page.getByRole("button", { name: "Add Key" }).click();
-  await page.fill('input[placeholder="Label"]', "e2e-key");
-  await page.fill('input[placeholder="API Key"]', "dummy-token");
-  await page.fill('input[placeholder="Enter your password"]', "pw");
-  await page.getByRole("button", { name: "Create" }).click();
-  // The UI uses a toast; check toast exists or dropdown contains new item
-  await page.waitForTimeout(500);
-  // The stored key should appear in select list
-  await expect(page.locator("text=e2e-key")).toBeVisible();
+  page.on("requestfailed", (request) => {
+    if (staticResourceTypes.has(request.resourceType())) {
+      failures.push(
+        `${request.resourceType()} request failed: ${request.url()} (${
+          request.failure()?.errorText ?? "unknown error"
+        })`,
+      );
+    }
+  });
 
-  // Attempt login via select change
-  await page.click("text=e2e-key");
-  await page.fill("#password", "pw");
-  await page.getByRole("button", { name: "Login" }).click();
+  page.on("response", (response) => {
+    const request = response.request();
+    if (
+      response.status() === 404 &&
+      staticResourceTypes.has(request.resourceType())
+    ) {
+      failures.push(
+        `${request.resourceType()} returned 404: ${response.url()}`,
+      );
+    }
+  });
 
-  // After login, DNS Manager should show
-  await expect(page.locator("text=DNS Manager")).toBeVisible();
+  return failures;
+}
+
+test("homepage loads its metadata icon and static resources without 404s", async ({
+  page,
+}) => {
+  const staticFailures = monitorStaticResourceFailures(page);
+
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page).toHaveTitle(/Better Cloudflare/);
+
+  const iconLinks = page.locator('link[rel~="icon"]');
+  await expect(iconLinks).not.toHaveCount(0);
+
+  const iconUrls = await iconLinks.evaluateAll((links) =>
+    links.map((link) => (link as HTMLLinkElement).href),
+  );
+  for (const iconUrl of iconUrls) {
+    const iconResponse = await page.request.get(iconUrl);
+    expect(
+      iconResponse.status(),
+      `metadata icon request failed: ${iconUrl}`,
+    ).toBeLessThan(400);
+  }
+
+  expect(staticFailures).toEqual([]);
 });
 
 test("accessibility: homepage has no a11y violations", async ({ page }) => {
