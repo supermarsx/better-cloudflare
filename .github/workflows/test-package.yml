@@ -1,33 +1,37 @@
 name: Test and Package
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test-and-package:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [24.x]
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
-          node-version: ${{ matrix.node-version }}
-      - name: Install deps
-        run: npm ci
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
       - name: Run unit tests
         run: npm test
-      - name: Run build
+      - name: Run web build
         run: npm run build
-      - name: Create package (npm pack)
+      - name: Create npm package
         run: npm pack
-      - name: Upload package
-        uses: actions/upload-artifact@v4
+      - name: Upload npm package for CI inspection only
+        uses: actions/upload-artifact@v7
         with:
-          name: package-tarball
+          name: web-npm-package
           path: "*.tgz"
+          if-no-files-found: error
+          retention-days: 7

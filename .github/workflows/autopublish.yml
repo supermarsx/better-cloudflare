@@ -1,210 +1,186 @@
-name: Autopublish Release
+name: Native Release
 
-# Run only when Test and Package completes on push events.
 on:
-  workflow_run:
-    workflows:
-      - "Test and Package"
-    types:
-      - completed
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Full commit SHA that passed every required CI gate
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  prepare-release:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  contract:
+    name: Validate release contract
+    runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      short_sha: ${{ steps.context.outputs.short_sha }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Ensure Format Check and Lint also passed for this commit
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          SHA="${{ github.event.workflow_run.head_sha }}"
-          echo "Checking other workflows for commit $SHA"
-          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100")
-          check_workflow() {
-            local name="$1"
-            local c
-            c=$(echo "$runs_json" | jq -r --arg name "$name" '.workflow_runs[] | select(.name==$name) | .conclusion' | head -n 1)
-            if [ "$c" != "success" ]; then
-              echo "Required workflow '$name' did not succeed for $SHA (conclusion=$c)."
-              exit 1
-            fi
-            echo "Workflow '$name' succeeded for $SHA"
-          }
-          check_workflow "Format Check"
-          check_workflow "Lint"
-
-      - name: Prepare release context
-        id: context
-        run: |
-          echo "short_sha=$(echo '${{ github.event.workflow_run.head_sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
-          echo "version_year=$(date +%y)" >> "$GITHUB_OUTPUT"
-
-      - name: Compute next YY.N version
-        id: version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_YEAR: ${{ steps.context.outputs.version_year }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/releases?per_page=100")
-          max=$(echo "$runs_json" \
-            | jq -r --arg year "$RELEASE_YEAR" '
-              [
-                .[]
-                | select(.name | startswith("Autopublish "))
-                | select(.tag_name | test("^" + $year + "\\.[0-9]+$"))
-                | (.tag_name | split(".")[1] | tonumber)
-              ] | if length == 0 then [0] else . end | max
-            ')
-          version="$RELEASE_YEAR.$((max + 1))"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Delete previous auto releases
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          runs_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/releases?per_page=100")
-          echo "$runs_json" \
-            | jq -r '
-              .[]
-              | select(.name | startswith("Autopublish"))
-              | "\(.id) \(.tag_name)"
-            ' \
-            | while read -r id tag; do
-                echo "Deleting previous release $id ($tag)"
-                curl -fsSL -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  "https://api.github.com/repos/$REPO/releases/$id" || true
-                curl -fsSL -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  "https://api.github.com/repos/$REPO/git/refs/tags/$tag" || true
-              done
-
-      - name: Create GitHub release
-        id: create_release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          VERSION: ${{ steps.version.outputs.version }}
-          SHORT_SHA: ${{ steps.context.outputs.short_sha }}
-        run: |
-          set -euo pipefail
-          response=$(curl -fsSL -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/releases" \
-            -d "{\"tag_name\":\"$VERSION\",\"name\":\"Autopublish $VERSION\",\"body\":\"Automated release for commit $SHORT_SHA\",\"draft\":false,\"prerelease\":false}")
-          upload_url=$(echo "$response" | jq -r '.upload_url')
-          if [ -z "$upload_url" ] || [ "$upload_url" = "null" ]; then
-            echo "$response"
-            exit 1
-          fi
-          echo "upload_url=$upload_url" >> "$GITHUB_OUTPUT"
-
-  build-and-publish:
-    needs: prepare-release
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            target: x86_64-unknown-linux-gnu
-            arch: x64
-          - os: ubuntu-latest
-            platform: linux
-            target: aarch64-unknown-linux-gnu
-            arch: arm64
-          - os: macos-13
-            platform: macos
-            target: x86_64-apple-darwin
-            arch: x64
-          - os: macos-14
-            platform: macos
-            target: aarch64-apple-darwin
-            arch: arm64
-          - os: windows-latest
-            platform: windows
-            target: x86_64-pc-windows-msvc
-            arch: x64
-          - os: windows-latest
-            platform: windows
-            target: aarch64-pc-windows-msvc
-            arch: arm64
-    steps:
-      - name: Checkout target commit
-        uses: actions/checkout@v4
+      - name: Checkout release commit
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
+      - name: Test release contract
+        run: node --test .github/scripts/release-contract.test.mjs
+      - name: Generate native build matrix
+        id: matrix
+        run: node .github/scripts/release-contract.mjs matrix >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: contract
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v7
         with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-      - name: Install Linux build dependencies
-        if: matrix.platform == 'linux'
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Verify native runner architecture
+        run: >-
+          node .github/scripts/release-contract.mjs verify-runner
+          ${{ matrix.platform }} ${{ matrix.arch }}
+      - name: Install stable Rust target
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            pkg-config \
-            libglib2.0-dev \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
-      - name: Configure Linux ARM64 linker
-        if: matrix.platform == 'linux' && matrix.target == 'aarch64-unknown-linux-gnu'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-      - name: Build Tauri target
-        run: npm run tauri -- build --target "${{ matrix.target }}"
-      - name: Upload binary artifacts to release
-        env:
-          UPLOAD_URL: ${{ needs.prepare-release.outputs.upload_url }}
-          TARGET: ${{ matrix.target }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+      - name: Install Linux Tauri dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
         run: |
           set -euo pipefail
-          bundle_dir="src-tauri/target/${TARGET}/release/bundle"
-          if [ ! -d "$bundle_dir" ]; then
-            echo "Bundle directory missing: $bundle_dir"
-            exit 1
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            xdg-utils
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build native Tauri bundle
+        run: >-
+          npm run tauri -- build
+          --target ${{ matrix.target }}
+          --bundles ${{ matrix.bundle }}
+      - name: Stage deterministic native asset
+        run: >-
+          node .github/scripts/release-contract.mjs stage
+          src-tauri/target/${{ matrix.target }}/release/bundle
+          ${{ matrix.platform }} ${{ matrix.arch }} release-assets
+      - name: Upload native asset and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Verify and publish native release
+    needs:
+      - contract
+      - build
+    if: needs.contract.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: native-release-publish-${{ github.repository }}-${{ inputs.commit_sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release commit with complete tag history
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+      - name: Download all native assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: release-assets
+          merge-multiple: true
+      - name: Require all six native assets and valid checksums
+        run: node .github/scripts/release-contract.mjs validate release-assets
+      - name: Atomically reserve the next YY.N tag
+        id: tag
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: node .github/scripts/release-contract.mjs reserve-tag "$RELEASE_SHA"
+      - name: Upload a complete draft, verify it, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft \
+              --jq '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              gh release view "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq '.assets[].name' \
+                | node .github/scripts/release-contract.mjs validate-names
+              echo "::notice::Release $RELEASE_TAG is already complete and published."
+              exit 0
+            fi
+          else
+            short_sha="${RELEASE_SHA:0:7}"
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "Better Cloudflare $RELEASE_TAG" \
+              --notes "Automated native release for commit \`$short_sha\`. Includes Linux, macOS, and Windows installers for x64 and arm64, with SHA-256 checksums."
           fi
-          artifacts="$(find "$bundle_dir" -type f \( -name '*.AppImage' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.msi' -o -name '*.exe' -o -name '*.app' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.pkg' \))"
-          if [ -z "$artifacts" ]; then
-            echo "No release artifacts found under $bundle_dir"
-            exit 1
-          fi
-          base_upload_url="${UPLOAD_URL%\{*}"
-          while IFS= read -r artifact; do
-            filename="$(basename "$artifact")"
-            encoded_name="$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$filename")"
-            echo "Uploading $filename"
-            curl -fsSL -X POST \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary "@$artifact" \
-              "${base_upload_url}?name=${encoded_name}&label=${encoded_name}"
-          done <<< "$artifacts"
+
+          gh release upload "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' \
+            | node .github/scripts/release-contract.mjs validate-names
+
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
