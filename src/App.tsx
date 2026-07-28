@@ -17,7 +17,7 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [apiKey, setApiKey] = useState<string>("");
   const [email, setEmail] = useState<string | undefined>(undefined);
-  const [isDesktopEnv, setIsDesktopEnv] = useState(false);
+  const [isDesktopEnv, setIsDesktopEnv] = useState(() => isDesktop());
   const [activeView, setActiveView] = useState<"login" | "app">("login");
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);

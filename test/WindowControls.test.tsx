@@ -57,3 +57,56 @@ test("WindowControls reports native action failures", async () => {
     );
   });
 });
+
+test("WindowControls cancel drag gestures without blocking button activation", async () => {
+  const actions: string[] = [];
+  let parentPointerDowns = 0;
+  let parentMouseDowns = 0;
+
+  render(
+    <div
+      data-tauri-drag-region
+      onPointerDown={() => {
+        parentPointerDowns += 1;
+      }}
+      onMouseDown={() => {
+        parentMouseDowns += 1;
+      }}
+    >
+      <WindowControls
+        actionRunner={async (action) => {
+          actions.push(action);
+        }}
+      />
+    </div>,
+  );
+
+  const minimizeButton = screen.getByRole("button", {
+    name: "Minimize window",
+  });
+  const pointerDown = new MouseEvent("pointerdown", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  const mouseDown = new MouseEvent("mousedown", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+
+  minimizeButton.dispatchEvent(pointerDown);
+  minimizeButton.dispatchEvent(mouseDown);
+
+  assert.equal(pointerDown.defaultPrevented, true);
+  assert.equal(mouseDown.defaultPrevented, true);
+  assert.equal(parentPointerDowns, 0);
+  assert.equal(parentMouseDowns, 0);
+  assert.equal(minimizeButton.tagName, "BUTTON");
+  assert.equal(minimizeButton.tabIndex, 0);
+
+  fireEvent.click(minimizeButton);
+  await waitFor(() => {
+    assert.deepEqual(actions, ["minimize"]);
+  });
+});

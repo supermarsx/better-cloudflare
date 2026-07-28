@@ -115,10 +115,13 @@ export function useLoginForm(
   }, [desktop]);
 
   useEffect(() => {
+    let current = true;
+
     const loadKeys = async () => {
       if (desktop) {
         const config = cryptoManager.getConfig();
         const keys = await TauriClient.getApiKeys();
+        if (!current) return;
         const mapped = (Array.isArray(keys) ? keys : []).map((k) => {
           const item = k as {
             id?: string;
@@ -145,12 +148,20 @@ export function useLoginForm(
         setApiKeys(mapped);
         return;
       }
-      setApiKeys(storageManager.getApiKeys());
+      const keys = await Promise.resolve(storageManager.getApiKeys());
+      if (current) {
+        setApiKeys(keys);
+      }
     };
     loadKeys().catch((err) => {
+      if (!current) return;
       console.error("Failed to load API keys:", err);
       setApiKeys([]);
     });
+
+    return () => {
+      current = false;
+    };
   }, [desktop]);
 
   // Check biometric hardware availability on mount

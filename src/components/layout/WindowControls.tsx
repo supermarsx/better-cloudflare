@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import type { PointerEvent } from "react";
+import type { MouseEvent, PointerEvent } from "react";
 import { Minus, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -104,6 +104,13 @@ export function WindowControls({
 }: WindowControlsProps) {
   const { t } = useI18n();
 
+  const preventWindowDrag = (
+    event: PointerEvent<HTMLDivElement> | MouseEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   const invoke = useCallback(
     (action: "minimize" | "toggle-maximize" | "close") => {
       if (action === "close" && onClose) {
@@ -123,8 +130,9 @@ export function WindowControls({
         "titlebar-actions flex h-full items-center gap-1 text-[10px] uppercase",
         className,
       )}
-      onPointerDown={(event) => event.stopPropagation()}
-      onDoubleClick={(event) => event.stopPropagation()}
+      onPointerDown={preventWindowDrag}
+      onMouseDown={preventWindowDrag}
+      onDoubleClick={preventWindowDrag}
     >
       <Tooltip tip={t("Minimize", "Minimize")} side="bottom">
         <Button
