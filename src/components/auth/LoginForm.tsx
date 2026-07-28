@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useLoginForm } from "@/hooks/auth/use-login-form";
+import { formatRequestError } from "@/lib/api/request-error";
 
 /**
  * Props for the login form used on the main page to select and decrypt
@@ -45,6 +46,8 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
     password,
     setPassword,
     isLoading,
+    loginError,
+    clearLoginError,
     showAddKey,
     setShowAddKey,
     showSettings,
@@ -133,6 +136,39 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             onLogin={handleLogin}
             isLoading={isLoading}
           />
+
+          {loginError ? (
+            <div
+              role="alert"
+              data-testid="login-error"
+              className="rounded-lg border border-destructive/60 bg-destructive/10 p-3 text-sm text-foreground"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-destructive">
+                    Login could not be completed
+                  </p>
+                  <p className="mt-1 break-words">{loginError.message}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearLoginError}
+                  className="ui-focus shrink-0 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  aria-label="Dismiss login error"
+                >
+                  Dismiss
+                </button>
+              </div>
+              <details className="mt-2 rounded border border-border/60 bg-background/40 p-2 text-xs">
+                <summary className="cursor-pointer font-medium">
+                  Safe technical details
+                </summary>
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                  {formatRequestError(loginError)}
+                </pre>
+              </details>
+            </div>
+          ) : null}
 
           <LoginActionButtons
             onAddKey={() => setShowAddKey(true)}

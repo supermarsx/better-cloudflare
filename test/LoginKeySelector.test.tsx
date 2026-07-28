@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, test } from "node:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { LoginKeySelector } from "../src/components/auth/login-form/LoginKeySelector";
 import type { ApiKey } from "../src/types/dns";
@@ -69,4 +69,32 @@ test("LoginKeySelector enables login when key + password set", () => {
   assert.equal(keySelector.id, "api-key");
   assert.equal(keySelector.getAttribute("aria-labelledby"), "api-key-label");
   assert.equal(login.hasAttribute("disabled"), false);
+});
+
+test("LoginKeySelector blocks password and repeated Enter submission while loading", () => {
+  let loginCalls = 0;
+  render(
+    <LoginKeySelector
+      apiKeys={[sampleKey]}
+      selectedKeyId="k1"
+      onSelectKey={() => {}}
+      password="pw"
+      onPasswordChange={() => {}}
+      onLogin={() => {
+        loginCalls += 1;
+      }}
+      isLoading
+    />,
+  );
+
+  const keySelector = screen.getByRole("combobox", { name: "API Key" });
+  const passwordInput = document.getElementById("password") as HTMLInputElement;
+  const login = screen.getByRole("button", { name: /logging in/i });
+  assert.equal(keySelector.hasAttribute("disabled"), true);
+  assert.equal(passwordInput.hasAttribute("disabled"), true);
+  assert.equal(login.hasAttribute("disabled"), true);
+
+  fireEvent.keyDown(passwordInput, { key: "Enter" });
+  fireEvent.keyDown(passwordInput, { key: "Enter" });
+  assert.equal(loginCalls, 0);
 });

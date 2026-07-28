@@ -17,6 +17,7 @@ import {
 } from "./request-error";
 
 const DEFAULT_TIMEOUT = 10_000;
+type ResponseMode = "json" | "json-or-empty" | "text";
 
 function configuredServerApiBase(): string | undefined {
   const nextPublic =
@@ -165,11 +166,13 @@ export class ServerClient {
       body,
       headers,
       signal,
+      responseMode = "json",
     }: {
       method?: string;
       body?: unknown;
       headers?: Record<string, string>;
       signal?: AbortSignal;
+      responseMode?: ResponseMode;
     } = {},
   ): Promise<T> {
     const baseUrl = this.baseUrl;
@@ -178,17 +181,24 @@ export class ServerClient {
         "No public server API base was supplied; the app will not guess a localhost proxy.",
       );
     }
-    let controller: AbortController | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const callerSignal = signal;
+    const controller = new AbortController();
+    let detachCallerSignal: (() => void) | undefined;
     let timedOut = false;
-    if (!signal) {
-      controller = new AbortController();
-      timeout = setTimeout(() => {
-        timedOut = true;
-        controller!.abort();
-      }, this.timeoutMs);
-      signal = controller.signal;
+    if (callerSignal) {
+      const abortFromCaller = () => controller.abort();
+      if (callerSignal.aborted) {
+        abortFromCaller();
+      } else {
+        callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+        detachCallerSignal = () =>
+          callerSignal.removeEventListener("abort", abortFromCaller);
+      }
     }
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
     try {
       const requestUrl = joinRequestUrl(baseUrl, endpoint);
       const res = await fetch(requestUrl, {
@@ -198,10 +208,9 @@ export class ServerClient {
           ...(headers ?? {}),
         },
         body: body ? JSON.stringify(body) : undefined,
-        signal,
+        signal: controller.signal,
       });
       const contentType = res.headers.get("content-type");
-      const expectsJson = contentType?.includes("application/json") ?? false;
       const bodyText = await res.text();
       if (!res.ok) {
         throw requestErrorFromResponse(
@@ -212,23 +221,46 @@ export class ServerClient {
           requestUrl,
         );
       }
-      if (expectsJson && bodyText) {
-        try {
-          return JSON.parse(bodyText) as T;
-        } catch (error) {
-          throw malformedResponseError(endpoint, error, {
-            operation: method,
-            status: res.status,
-            statusText: res.statusText,
-            requestUrl,
-            requestId:
-              res.headers.get("cf-ray") ??
-              res.headers.get("x-request-id") ??
-              undefined,
-          });
-        }
+      const trimmedBody = bodyText.trim();
+      const responseContext = {
+        operation: method,
+        status: res.status,
+        statusText: res.statusText,
+        requestUrl,
+        requestId:
+          res.headers.get("cf-ray") ??
+          res.headers.get("x-request-id") ??
+          undefined,
+        contentType: contentType ?? undefined,
+      };
+      if (!trimmedBody) {
+        if (responseMode !== "json") return undefined as T;
+        throw malformedResponseError(endpoint, new SyntaxError("Empty body"), {
+          ...responseContext,
+          responseKind: "unexpected-content",
+        });
       }
-      return undefined as T;
+      const isHtml =
+        contentType?.toLowerCase().includes("text/html") === true ||
+        /^(?:<!doctype\s+html|<html\b)/i.test(trimmedBody);
+      if (isHtml) {
+        throw malformedResponseError(endpoint, new SyntaxError("HTML body"), {
+          ...responseContext,
+          responseKind: "unexpected-html",
+        });
+      }
+      if (responseMode === "text") return bodyText as T;
+      try {
+        return JSON.parse(bodyText) as T;
+      } catch (error) {
+        throw malformedResponseError(endpoint, error, {
+          ...responseContext,
+          responseKind:
+            contentType?.toLowerCase().includes("json") === true
+              ? "invalid-json"
+              : "unexpected-content",
+        });
+      }
     } catch (error) {
       throw normalizeRequestError(error, {
         endpoint,
@@ -238,6 +270,7 @@ export class ServerClient {
       });
     } finally {
       if (timeout) clearTimeout(timeout);
+      detachCallerSignal?.();
     }
   }
 
@@ -255,7 +288,11 @@ export class ServerClient {
       }
       return;
     }
-    await this.request("/verify-token", { method: "POST", signal });
+    await this.request("/verify-token", {
+      method: "POST",
+      signal,
+      responseMode: "json-or-empty",
+    });
   }
 
   /**
@@ -415,6 +452,7 @@ export class ServerClient {
     await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: "DELETE",
       signal,
+      responseMode: "json-or-empty",
     });
   }
 
@@ -427,7 +465,11 @@ export class ServerClient {
       await TauriClient.storeVaultSecret(id, secret);
       return;
     }
-    await this.request(`/vault/${id}`, { method: "POST", body: { secret } });
+    await this.request(`/vault/${id}`, {
+      method: "POST",
+      body: { secret },
+      responseMode: "json-or-empty",
+    });
   }
 
   async getVaultSecret(
@@ -451,7 +493,10 @@ export class ServerClient {
       await TauriClient.deleteVaultSecret(id);
       return;
     }
-    await this.request(`/vault/${id}`, { method: "DELETE" });
+    await this.request(`/vault/${id}`, {
+      method: "DELETE",
+      responseMode: "json-or-empty",
+    });
   }
 
   async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
@@ -478,6 +523,7 @@ export class ServerClient {
     await this.request(`/passkeys/register/${id}`, {
       method: "POST",
       body: attestation,
+      responseMode: "json-or-empty",
     });
   }
 
@@ -554,7 +600,10 @@ export class ServerClient {
       await TauriClient.deletePasskey(id, cid);
       return;
     }
-    await this.request(`/passkeys/${id}/${cid}`, { method: "DELETE" });
+    await this.request(`/passkeys/${id}/${cid}`, {
+      method: "DELETE",
+      responseMode: "json-or-empty",
+    });
   }
 
   async exportDNSRecords(
@@ -583,7 +632,9 @@ export class ServerClient {
     if (page) q.push(`page=${page}`);
     if (perPage) q.push(`per_page=${perPage}`);
     const query = q.length ? `?${q.join("&")}` : "";
-    return this.request(`/zones/${zoneId}/dns_records/export${query}`);
+    return this.request(`/zones/${zoneId}/dns_records/export${query}`, {
+      responseMode: "text",
+    });
   }
 
   async purgeCache(
@@ -710,6 +761,7 @@ export class ServerClient {
     }
     await this.request(`/registrar/credentials/${credentialId}`, {
       method: "DELETE",
+      responseMode: "json-or-empty",
     });
   }
 
@@ -961,6 +1013,7 @@ export class ServerClient {
     await this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
       method: "DELETE",
       signal,
+      responseMode: "json-or-empty",
     });
   }
 
@@ -1018,6 +1071,7 @@ export class ServerClient {
       {
         method: "DELETE",
         signal,
+        responseMode: "json-or-empty",
       },
     );
   }
@@ -1082,6 +1136,7 @@ export class ServerClient {
     await this.request(`/zones/${zoneId}/workers/routes/${routeId}`, {
       method: "DELETE",
       signal,
+      responseMode: "json-or-empty",
     });
   }
 
@@ -1147,6 +1202,7 @@ export class ServerClient {
     await this.request(`/zones/${zoneId}/email/routing/rules/${ruleId}`, {
       method: "DELETE",
       signal,
+      responseMode: "json-or-empty",
     });
   }
 
@@ -1179,6 +1235,7 @@ export class ServerClient {
       await this.request(`/zones/${zoneId}/dns_records/${id}`, {
         method: "DELETE",
         signal,
+        responseMode: "json-or-empty",
       });
     }
   }

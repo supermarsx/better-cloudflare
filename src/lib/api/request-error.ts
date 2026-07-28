@@ -12,6 +12,7 @@ export type RequestErrorSource =
   | "browser"
   | "client"
   | "server"
+  | "network"
   | "cloudflare"
   | "tauri"
   | "unknown";
@@ -42,6 +43,7 @@ export interface RequestErrorMetadata {
   requestId?: string;
   retryAfter?: string;
   retryable?: boolean;
+  remediation?: string;
   diagnosticId?: string;
   providerErrors?: readonly ProviderErrorDetail[];
 }
@@ -53,9 +55,30 @@ const MAX_ENDPOINT_LENGTH = 160;
 const MAX_OPERATION_LENGTH = 80;
 const MAX_COMMAND_LENGTH = 80;
 const MAX_HEADER_VALUE_LENGTH = 120;
+const MAX_SERIALIZED_ERROR_LENGTH = 64 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseSerializedError(error: unknown): unknown {
+  const candidate =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : undefined;
+  if (!candidate || candidate.length > MAX_SERIALIZED_ERROR_LENGTH) {
+    return error;
+  }
+  const trimmed = candidate.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return error;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return isRecord(parsed) ? parsed : error;
+  } catch {
+    return error;
+  }
 }
 
 function redact(value: string, maxLength = MAX_DETAIL_LENGTH): string {
@@ -188,9 +211,17 @@ function validationDetail(error: unknown): string | undefined {
 
 function candidateRecords(error: unknown): Record<string, unknown>[] {
   if (!isRecord(error)) return [];
-  const records = [error];
-  for (const key of ["error", "cause", "data"]) {
-    if (isRecord(error[key])) records.push(error[key]);
+  const records: Record<string, unknown>[] = [];
+  const pending: Record<string, unknown>[] = [error];
+  const seen = new Set<Record<string, unknown>>();
+  while (pending.length && records.length < 8) {
+    const record = pending.shift()!;
+    if (seen.has(record)) continue;
+    seen.add(record);
+    records.push(record);
+    for (const key of ["error", "cause", "data", "details"]) {
+      if (isRecord(record[key])) pending.push(record[key]);
+    }
   }
   return records;
 }
@@ -223,19 +254,108 @@ function rawDetail(error: unknown): string | undefined {
   return undefined;
 }
 
-function metadataFromUnknown(error: unknown): RequestErrorMetadata {
+function safeBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function requestKindFromUnknown(
+  records: readonly Record<string, unknown>[],
+): RequestErrorKind | undefined {
+  const value = firstField(records, ["kind", "failure_kind"]);
+  if (typeof value !== "string") return undefined;
+  switch (value.trim().toLowerCase()) {
+    case "authentication":
+    case "rate_limited":
+    case "provider":
+      return "http";
+    case "network":
+      return "network";
+    case "timeout":
+      return "timeout";
+    case "malformed_response":
+      return "malformed-response";
+    default:
+      return undefined;
+  }
+}
+
+function providerErrorsFromRecords(
+  records: readonly Record<string, unknown>[],
+): ProviderErrorDetail[] {
+  for (const record of records) {
+    const value = record.provider_errors ?? record.providerErrors;
+    if (!Array.isArray(value)) continue;
+    const parsed = value
+      .slice(0, MAX_PROVIDER_ERRORS)
+      .flatMap((item): ProviderErrorDetail[] => {
+        if (!isRecord(item)) return [];
+        const code = safeCode(item.code);
+        const message =
+          typeof item.message === "string"
+            ? redact(item.message, MAX_PROVIDER_DETAIL_LENGTH)
+            : undefined;
+        return code || message ? [{ code, message }] : [];
+      });
+    if (parsed.length) return parsed;
+  }
+
+  const codeValue = firstField(records, ["provider_codes", "providerCodes"]);
+  const messageValue = firstField(records, [
+    "provider_messages",
+    "providerMessages",
+  ]);
+  const codes = Array.isArray(codeValue)
+    ? codeValue
+        .slice(0, MAX_PROVIDER_ERRORS)
+        .map(safeCode)
+        .filter((value): value is string => Boolean(value))
+    : [];
+  const messages = Array.isArray(messageValue)
+    ? messageValue
+        .slice(0, MAX_PROVIDER_ERRORS)
+        .map((value) =>
+          typeof value === "string"
+            ? redact(value, MAX_PROVIDER_DETAIL_LENGTH)
+            : undefined,
+        )
+        .filter((value): value is string => Boolean(value))
+    : [];
+  return Array.from(
+    {
+      length: Math.min(
+        MAX_PROVIDER_ERRORS,
+        Math.max(codes.length, messages.length),
+      ),
+    },
+    (_, index) => ({
+      ...(codes[index] ? { code: codes[index] } : {}),
+      ...(messages[index] ? { message: messages[index] } : {}),
+    }),
+  );
+}
+
+interface ExtractedRequestMetadata extends RequestErrorMetadata {
+  kind?: RequestErrorKind;
+}
+
+function metadataFromUnknown(error: unknown): ExtractedRequestMetadata {
   const records = candidateRecords(error);
   const sourceValue = firstField(records, ["source"]);
   const source =
     sourceValue === "browser" ||
     sourceValue === "client" ||
     sourceValue === "server" ||
+    sourceValue === "network" ||
     sourceValue === "cloudflare" ||
     sourceValue === "tauri"
       ? sourceValue
       : undefined;
   return {
+    kind: requestKindFromUnknown(records),
     source,
+    operation: safeOperation(
+      firstField(records, ["operation"]) as string | undefined,
+    ),
     status: safeStatus(firstField(records, ["status", "statusCode"])),
     statusText: safeLabel(
       firstField(records, ["statusText", "status_message"]) as
@@ -258,8 +378,19 @@ function metadataFromUnknown(error: unknown): RequestErrorMetadata {
       ]),
     ),
     retryAfter: safeHeaderValue(
-      firstField(records, ["retryAfter", "retry_after"]),
+      firstField(records, [
+        "retryAfter",
+        "retry_after",
+        "retryAfterSecs",
+        "retry_after_secs",
+      ]),
     ),
+    retryable: safeBoolean(firstField(records, ["retryable"])),
+    remediation: safeLabel(
+      firstField(records, ["remediation"]) as string | undefined,
+      MAX_DETAIL_LENGTH,
+    ),
+    providerErrors: providerErrorsFromRecords(records),
   };
 }
 
@@ -267,6 +398,32 @@ function joinDetail(message: string, detail?: string): string {
   if (!detail) return message;
   const punctuation = /[.!?]$/.test(message) ? "" : ".";
   return `${message}${punctuation} Server detail: ${detail}`;
+}
+
+function providerDetail(
+  providerErrors: readonly ProviderErrorDetail[] | undefined,
+): string | undefined {
+  if (!providerErrors?.length) return undefined;
+  return providerErrors
+    .map(({ code, message }) =>
+      code && message ? `${code}: ${message}` : (message ?? code ?? ""),
+    )
+    .filter(Boolean)
+    .join("; ");
+}
+
+function combineDetails(
+  ...values: Array<string | undefined>
+): string | undefined {
+  const unique = Array.from(
+    new Set(values.map((value) => value?.trim()).filter(Boolean)),
+  );
+  return unique.length ? unique.join("; ") : undefined;
+}
+
+function withRemediation(message: string, remediation?: string): string {
+  const safe = remediation ? redact(remediation) : undefined;
+  return safe ? `${message} Next step: ${safe}` : message;
 }
 
 function statusMessage(
@@ -321,6 +478,7 @@ export class RequestError extends Error {
   readonly requestId?: string;
   readonly retryAfter?: string;
   readonly retryable: boolean;
+  readonly remediation?: string;
   readonly diagnosticId?: string;
   readonly providerErrors: readonly Readonly<ProviderErrorDetail>[];
   readonly providerCodes: readonly string[];
@@ -343,6 +501,9 @@ export class RequestError extends Error {
     this.statusText = safeLabel(context.statusText, MAX_HEADER_VALUE_LENGTH);
     this.requestId = safeHeaderValue(context.requestId);
     this.retryAfter = safeHeaderValue(context.retryAfter);
+    this.remediation = context.remediation
+      ? redact(context.remediation, MAX_DETAIL_LENGTH)
+      : undefined;
     this.providerErrors = Object.freeze(
       (context.providerErrors ?? []).slice(0, MAX_PROVIDER_ERRORS).map((item) =>
         Object.freeze({
@@ -382,6 +543,7 @@ export class RequestError extends Error {
       ...(this.requestId ? { requestId: this.requestId } : {}),
       ...(this.retryAfter ? { retryAfter: this.retryAfter } : {}),
       retryable: this.retryable,
+      ...(this.remediation ? { remediation: this.remediation } : {}),
       ...(this.diagnosticId ? { diagnosticId: this.diagnosticId } : {}),
       ...(this.providerErrors.length
         ? { providerErrors: this.providerErrors }
@@ -410,14 +572,22 @@ export function normalizeRequestError(
   context: RequestErrorContext = {},
 ): RequestError {
   if (error instanceof RequestError) return error;
+  const parsedError = parseSerializedError(error);
+  if (parsedError !== error) {
+    return normalizeRequestError(parsedError, context);
+  }
 
   const endpoint = safeEndpoint(context.endpoint);
   const requestUrl = safeRequestUrl(context.requestUrl);
   const operation = safeOperation(context.operation);
   const command = safeCommand(context.command);
   const extracted = metadataFromUnknown(error);
-  const source = context.source ?? extracted.source;
+  const source = extracted.source ?? context.source;
   const detail = rawDetail(error);
+  const structuredDetail = combineDetails(
+    detail,
+    providerDetail(extracted.providerErrors),
+  );
   const records = candidateRecords(error);
   const name =
     error instanceof Error
@@ -429,20 +599,34 @@ export function normalizeRequestError(
     source,
     endpoint,
     requestUrl,
-    operation,
+    operation: extracted.operation ?? operation,
     command: command ?? extracted.command,
     status: extracted.status,
     statusText: extracted.statusText,
     code: extracted.code,
     requestId: extracted.requestId,
     retryAfter: extracted.retryAfter,
+    remediation: extracted.remediation,
+    providerErrors: extracted.providerErrors,
   };
 
-  if (context.timedOut || name === "TimeoutError" || code === "ETIMEDOUT") {
+  if (
+    context.timedOut ||
+    extracted.kind === "timeout" ||
+    name === "TimeoutError" ||
+    code === "ETIMEDOUT"
+  ) {
     return new RequestError(
       "timeout",
-      `Request timed out. Check connectivity and backend availability, then try again.${endpointSuffix(endpoint)}`,
-      { ...common, source: source ?? "client", retryable: true },
+      withRemediation(
+        `Request timed out. Check connectivity and backend availability, then try again.${endpointSuffix(endpoint)}`,
+        extracted.remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "client",
+        retryable: extracted.retryable ?? true,
+      },
       { cause: error },
     );
   }
@@ -461,6 +645,41 @@ export function normalizeRequestError(
     );
   }
 
+  if (extracted.kind === "malformed-response") {
+    return new RequestError(
+      "malformed-response",
+      withRemediation(
+        joinDetail(
+          `The authentication service returned a malformed response. Retry once; if it continues, inspect the request ID and provider status.${endpointSuffix(endpoint)}`,
+          structuredDetail,
+        ),
+        extracted.remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "server",
+        retryable: extracted.retryable ?? true,
+      },
+      { cause: error },
+    );
+  }
+
+  if (extracted.kind === "network") {
+    return new RequestError(
+      "network",
+      withRemediation(
+        `Cloudflare could not be reached. Check internet connectivity, proxy, DNS, and TLS settings, then retry.${endpointSuffix(endpoint)}`,
+        extracted.remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "network",
+        retryable: extracted.retryable ?? true,
+      },
+      { cause: error },
+    );
+  }
+
   const invalid = validationDetail(error);
   if (invalid) {
     return new RequestError(
@@ -474,11 +693,40 @@ export function normalizeRequestError(
   if (extracted.status !== undefined) {
     return new RequestError(
       "http",
-      statusMessage(extracted.status, extracted.statusText, detail),
+      withRemediation(
+        statusMessage(extracted.status, extracted.statusText, structuredDetail),
+        extracted.remediation,
+      ),
       {
         ...common,
         source: source ?? "server",
-        retryable: retryableFor("http", extracted.status),
+        retryable:
+          extracted.retryable ?? retryableFor("http", extracted.status),
+      },
+      { cause: error },
+    );
+  }
+
+  if (extracted.kind === "http") {
+    const rawKind = firstField(records, ["kind", "failure_kind"]);
+    const normalizedKind =
+      typeof rawKind === "string" ? rawKind.trim().toLowerCase() : "";
+    const baseMessage =
+      normalizedKind === "rate_limited"
+        ? "Cloudflare rate-limited credential verification. Wait for the retry interval before trying again"
+        : normalizedKind === "authentication"
+          ? "Cloudflare rejected the supplied credentials. Check the token or key, required permissions, and email for global-key authentication"
+          : "Cloudflare could not complete credential verification. Retry shortly and check provider status if the failure continues";
+    return new RequestError(
+      "http",
+      withRemediation(
+        joinDetail(baseMessage, structuredDetail),
+        extracted.remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "cloudflare",
+        retryable: extracted.retryable ?? normalizedKind !== "authentication",
       },
       { cause: error },
     );
@@ -663,6 +911,41 @@ function responseHeader(response: Response, names: readonly string[]) {
   return undefined;
 }
 
+function summarizeHtmlResponse(bodyText: string): string {
+  const title = bodyText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const visibleText = bodyText
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+  const summary = combineDetails(
+    title ? `page title: ${title}` : undefined,
+    visibleText,
+  );
+  return summary
+    ? `The backend returned an HTML error page (${redact(summary)})`
+    : "The backend returned an HTML error page";
+}
+
+function summarizeResponseBody(
+  bodyText: string,
+  contentType?: string | null,
+): string {
+  const trimmed = bodyText.trim();
+  if (
+    contentType?.toLowerCase().includes("text/html") ||
+    /^(?:<!doctype\s+html|<html\b)/i.test(trimmed)
+  ) {
+    return summarizeHtmlResponse(trimmed);
+  }
+  return redact(trimmed);
+}
+
 export function requestErrorFromResponse(
   response: Response,
   endpoint: string,
@@ -681,7 +964,10 @@ export function requestErrorFromResponse(
         JSON.parse(bodyText),
       ));
     } catch {
-      detail = redact(bodyText);
+      detail = summarizeResponseBody(
+        bodyText,
+        response.headers.get("content-type"),
+      );
     }
   }
   return new RequestError(
@@ -717,12 +1003,22 @@ export function malformedResponseError(
     statusText?: string;
     requestUrl?: string;
     requestId?: string;
+    contentType?: string;
+    responseKind?: "invalid-json" | "unexpected-html" | "unexpected-content";
   } = {},
 ): RequestError {
   const safePath = safeEndpoint(endpoint);
+  const message =
+    context.responseKind === "unexpected-html"
+      ? `The server returned an HTML page instead of the expected JSON response. Check the configured API base URL, reverse proxy route, and authentication redirects.${endpointSuffix(safePath)}`
+      : context.responseKind === "unexpected-content"
+        ? `The server returned a non-JSON response where JSON was required. Check the configured API base URL and backend response contract.${endpointSuffix(safePath)}`
+        : `The server returned invalid JSON for a successful response. Retry once; if it continues, use the request ID to inspect server logs.${endpointSuffix(safePath)}`;
   return new RequestError(
     "malformed-response",
-    `The server returned invalid JSON for a successful response. Retry once; if it continues, use the request ID to inspect server logs.${endpointSuffix(safePath)}`,
+    context.contentType
+      ? `${message} Content type: ${redact(context.contentType, MAX_HEADER_VALUE_LENGTH)}.`
+      : message,
     {
       source: "server",
       endpoint: safePath,
@@ -751,6 +1047,13 @@ export function formatRequestError(error: unknown): string {
     normalized.code ? `code ${normalized.code}` : "",
     normalized.requestId ? `request ID ${normalized.requestId}` : "",
     normalized.retryAfter ? `retry after ${normalized.retryAfter}` : "",
+    normalized.remediation ? `next step ${normalized.remediation}` : "",
+    normalized.providerCodes.length
+      ? `provider codes ${normalized.providerCodes.join(", ")}`
+      : "",
+    normalized.providerMessages.length
+      ? `provider messages ${normalized.providerMessages.join("; ")}`
+      : "",
     `retryable ${normalized.retryable ? "yes" : "no"}`,
   ].filter(Boolean);
   return details.length

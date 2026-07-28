@@ -52,7 +52,7 @@ export function LoginKeySelector({
         <Select
           value={selectedKeyId}
           onValueChange={onSelectKey}
-          disabled={!hasKeys}
+          disabled={!hasKeys || isLoading}
         >
           <SelectTrigger
             id="api-key"
@@ -98,8 +98,10 @@ export function LoginKeySelector({
                 ? t("Enter your password", "Enter your password")
                 : t("Add an API key first", "Add an API key first")
             }
-            onKeyDown={(e) => e.key === "Enter" && hasKeys && onLogin()}
-            disabled={!hasKeys}
+            onKeyDown={(e) =>
+              e.key === "Enter" && hasKeys && !isLoading && onLogin()
+            }
+            disabled={!hasKeys || isLoading}
             className="bg-card/70 border-border text-foreground h-11 pr-10 placeholder:text-muted-foreground/70 transition-colors hover:border-primary/30 focus:border-primary/50 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <button
@@ -111,7 +113,7 @@ export function LoginKeySelector({
                 ? t("Hide password", "Hide password")
                 : t("Show password", "Show password")
             }
-            disabled={!hasKeys}
+            disabled={!hasKeys || isLoading}
           >
             {showPassword ? (
               <EyeOff className="h-4 w-4" />

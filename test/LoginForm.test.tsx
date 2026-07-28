@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, mock, test } from "node:test";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import { LoginForm } from "../src/components/auth/LoginForm";
+import { useLoginForm } from "../src/hooks/auth/use-login-form";
+import { ServerClient } from "../src/lib/api/server-client";
 import { TauriClient } from "../src/lib/api/tauri-client";
 import { storageManager } from "../src/lib/storage/storage";
 
@@ -11,6 +20,34 @@ afterEach(() => {
   cleanup();
   mock.restoreAll();
 });
+
+function mockDesktopLoginBootstrap() {
+  mock.method(TauriClient, "getEncryptionSettings", async () => ({
+    iterations: 100000,
+    keyLength: 256,
+    algorithm: "AES-GCM",
+  }));
+  mock.method(TauriClient, "getPreferences", async () => ({
+    vault_enabled: false,
+  }));
+  mock.method(TauriClient, "getApiKeys", async () => [
+    {
+      id: "desktop-key",
+      label: "Desktop key",
+      encrypted_key: "ciphertext",
+    },
+  ]);
+  mock.method(TauriClient, "getPasskeyStatus", async () => ({
+    registrationAvailable: false,
+    authenticationAvailable: false,
+    legacyCredentialsRequireReregistration: true,
+    unavailableReason: "Passkeys are temporarily unavailable.",
+  }));
+  mock.method(ServerClient, "biometricStatus", async () => ({
+    available: false,
+    biometricType: "none" as const,
+  }));
+}
 
 test("LoginForm renders web login without embedded window chrome", async () => {
   render(<LoginForm onLogin={() => {}} desktop={false} />);
@@ -150,4 +187,94 @@ test("LoginForm ignores a stale web key load after switching to desktop", async 
     assert.ok(screen.getByText("Desktop key"));
     assert.equal(screen.queryByText("Web key"), null);
   });
+});
+
+test("useLoginForm prevents repeated login submissions while verification is pending", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(TauriClient, "decryptApiKey", async () => "desktop-secret");
+
+  let resolveVerification: (value: boolean) => void = () => {};
+  const pendingVerification = new Promise<boolean>((resolve) => {
+    resolveVerification = resolve;
+  });
+  let verificationCalls = 0;
+  mock.method(TauriClient, "verifyToken", async () => {
+    verificationCalls += 1;
+    return pendingVerification;
+  });
+  let loginCalls = 0;
+  const view = renderHook(() =>
+    useLoginForm(async () => {
+      loginCalls += 1;
+    }, true),
+  );
+
+  await waitFor(() => assert.equal(view.result.current.apiKeys.length, 1));
+  act(() => {
+    view.result.current.setSelectedKeyId("desktop-key");
+    view.result.current.setPassword("password");
+  });
+
+  let firstLogin: Promise<void> = Promise.resolve();
+  let repeatedLogin: Promise<void> = Promise.resolve();
+  act(() => {
+    firstLogin = view.result.current.handleLogin();
+    repeatedLogin = view.result.current.handleLogin();
+  });
+
+  await waitFor(() => {
+    assert.equal(view.result.current.isLoading, true);
+    assert.equal(verificationCalls, 1);
+  });
+
+  resolveVerification(true);
+  await act(async () => {
+    await Promise.all([firstLogin, repeatedLogin]);
+  });
+
+  assert.equal(verificationCalls, 1);
+  assert.equal(loginCalls, 1);
+  assert.equal(view.result.current.isLoading, false);
+});
+
+test("useLoginForm keeps settings open when native persistence rejects", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(TauriClient, "updateEncryptionSettings", async () => {
+    throw {
+      kind: "timeout",
+      message: "Could not persist encryption preferences",
+      details: {
+        operation: "update encryption settings",
+        retryable: true,
+        remediation: "Retry after checking the desktop service.",
+      },
+    };
+  });
+  const view = renderHook(() => useLoginForm(() => {}, true));
+
+  await waitFor(() => assert.equal(view.result.current.apiKeys.length, 1));
+  act(() => view.result.current.setShowSettings(true));
+  await act(async () => {
+    await view.result.current.handleUpdateSettings();
+  });
+
+  assert.equal(view.result.current.showSettings, true);
+});
+
+test("useLoginForm does not report a vault preference as enabled before persistence succeeds", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(storageManager, "getVaultEnabled", () => false);
+  mock.method(TauriClient, "updatePreferences", async () => {
+    throw new Error("preferences database is locked");
+  });
+  const view = renderHook(() => useLoginForm(() => {}, true));
+
+  await waitFor(() => assert.equal(view.result.current.apiKeys.length, 1));
+  assert.equal(view.result.current.vaultEnabled, false);
+
+  await act(async () => {
+    await view.result.current.setVaultEnabled(true);
+  });
+
+  assert.equal(view.result.current.vaultEnabled, false);
 });

@@ -365,6 +365,35 @@ test("aborts request after timeout", async () => {
   }
 });
 
+test("keeps the timeout active when a caller supplies an AbortSignal", async () => {
+  const client = new ServerClient("key", "http://example.com", undefined, 5);
+  const caller = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      requestSignal = init?.signal ?? undefined;
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  try {
+    await assert.rejects(
+      () => client.getZones(caller.signal),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "timeout");
+        assert.equal(error.retryable, true);
+        assert.match(error.message, /timed out/i);
+        return true;
+      },
+    );
+    assert.equal(caller.signal.aborted, false);
+    assert.equal(requestSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("normalizes network failures and explicit cancellation", async () => {
   const client = new ServerClient("key", "http://example.com");
   try {
@@ -409,6 +438,57 @@ test("normalizes network failures and explicit cancellation", async () => {
           error.message,
           /Request was cancelled\. Retry when you are ready\. \(\/zones\)/,
         );
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects successful HTML and summarizes failed HTML responses", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        "<!doctype html><html><head><title>Proxy login</title></head><body>password=hidden-value</body></html>",
+        {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/html" },
+        },
+      );
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "malformed-response");
+        assert.equal(error.status, 200);
+        assert.match(error.message, /HTML page instead of.*JSON/i);
+        assert.match(error.message, /reverse proxy route/i);
+        assert.doesNotMatch(error.message, /<html|hidden-value/i);
+        return true;
+      },
+    );
+
+    globalThis.fetch = async () =>
+      new Response(
+        "<html><head><title>Bad gateway</title></head><body>Proxy unavailable api_key=hidden-value</body></html>",
+        {
+          status: 502,
+          statusText: "Bad Gateway",
+          headers: { "content-type": "text/html" },
+        },
+      );
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "http");
+        assert.equal(error.status, 502);
+        assert.match(error.message, /HTML error page/i);
+        assert.match(error.message, /Bad gateway/);
+        assert.doesNotMatch(error.message, /<html|hidden-value/i);
         return true;
       },
     );
@@ -495,7 +575,9 @@ test("listPasskeys forwards cancellation to fetch", async () => {
         return true;
       },
     );
-    assert.equal(receivedSignal, controller.signal);
+    assert.ok(receivedSignal);
+    assert.notEqual(receivedSignal, controller.signal);
+    assert.equal(receivedSignal.aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

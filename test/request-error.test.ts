@@ -257,6 +257,45 @@ test("supports common server payloads and malformed success responses", () => {
   assert.match(malformed.message, /invalid JSON/i);
 });
 
+test("summarizes HTML failures without exposing markup or secrets", () => {
+  const response = new Response("", {
+    status: 502,
+    statusText: "Bad Gateway",
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+  const error = requestErrorFromResponse(
+    response,
+    "/verify-token",
+    "<!doctype html><html><head><title>Proxy login</title></head><body><script>token=script-secret</script><h1>Gateway unavailable</h1><p>password=body-secret</p></body></html>",
+    "POST",
+    "https://backend.example.test/api/verify-token",
+  );
+  assert.equal(error.kind, "http");
+  assert.equal(error.status, 502);
+  assert.match(error.message, /HTML error page/i);
+  assert.match(error.message, /Proxy login/);
+  assert.match(error.message, /Gateway unavailable/);
+  assert.doesNotMatch(
+    error.message,
+    /<html|<script|script-secret|body-secret/i,
+  );
+
+  const malformedHtml = malformedResponseError(
+    "/verify-token",
+    new SyntaxError("HTML body"),
+    {
+      operation: "POST",
+      status: 200,
+      statusText: "OK",
+      contentType: "text/html",
+      responseKind: "unexpected-html",
+    },
+  );
+  assert.match(malformedHtml.message, /HTML page instead of.*JSON/i);
+  assert.match(malformedHtml.message, /reverse proxy route/i);
+  assert.doesNotMatch(malformedHtml.message, /<html/i);
+});
+
 test("normalizes validation and backend configuration errors", () => {
   const result = z.object({ email: z.string().email() }).safeParse({
     email: "invalid",

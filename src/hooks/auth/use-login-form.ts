@@ -1,11 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "@/hooks/use-toast";
 import { storageManager } from "@/lib/storage/storage";
 import { storageBackend } from "@/lib/storage/storage-util";
 import i18next from "i18next";
 import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
-import { formatRequestError, RequestError } from "@/lib/api/request-error";
+import {
+  formatRequestError,
+  normalizeRequestError,
+  RequestError,
+} from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
 import { TauriClient } from "@/lib/api/tauri-client";
 import {
@@ -55,6 +59,21 @@ export function useLoginForm(
     await client.verifyToken(signal);
   };
   const formatError = formatRequestError;
+  const loginInFlight = useRef(false);
+  const [loginError, setLoginError] = useState<RequestError | null>(null);
+  const showLoginFailure = (error: unknown) => {
+    const normalized = normalizeRequestError(error, {
+      operation: "login",
+      ...(desktop ? { command: "verify_token" } : {}),
+    });
+    setLoginError(normalized);
+    toast({
+      title: "Login failed",
+      description: formatError(normalized),
+      variant: "destructive",
+      persistent: true,
+    });
+  };
   const delay = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -104,7 +123,7 @@ export function useLoginForm(
         description: `Using ${backend} storage. IndexedDB not available or in use. Some features may be limited.`,
       });
     }
-  }, [backend, toast, t]);
+  }, [backend, t]);
 
   useEffect(() => {
     if (desktop) {
@@ -114,8 +133,13 @@ export function useLoginForm(
             setEncryptionSettings(settings as typeof encryptionSettings);
           }
         })
-        .catch(() => {
-          // Keep default config if Tauri settings are unavailable.
+        .catch((error) => {
+          toast({
+            title: "Encryption settings unavailable",
+            description: formatError(error),
+            variant: "destructive",
+            persistent: true,
+          });
         });
       TauriClient.getPreferences()
         .then((prefs) => {
@@ -124,12 +148,19 @@ export function useLoginForm(
             setVaultEnabled(prefObj.vault_enabled);
           }
         })
-        .catch(() => {});
+        .catch((error) => {
+          toast({
+            title: "Preferences unavailable",
+            description: formatError(error),
+            variant: "destructive",
+            persistent: true,
+          });
+        });
       return;
     }
     cryptoManager.reloadConfig();
     setEncryptionSettings(cryptoManager.getConfig());
-  }, [desktop]);
+  }, [desktop, formatError]);
 
   useEffect(() => {
     let current = true;
@@ -235,6 +266,7 @@ export function useLoginForm(
   }, [desktop, biometricAvailable, selectedKeyId]);
 
   const handleLogin = async () => {
+    if (loginInFlight.current) return;
     if (!selectedKeyId || !password) {
       toast({
         title: "Error",
@@ -244,7 +276,9 @@ export function useLoginForm(
       return;
     }
 
+    loginInFlight.current = true;
     let succeeded = false;
+    setLoginError(null);
     setIsLoading(true);
     try {
       const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
@@ -256,11 +290,17 @@ export function useLoginForm(
       const email =
         typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
       if (!decryptedKey) {
-        toast({
-          title: "Error",
-          description: "Invalid password or corrupted key",
-          variant: "destructive",
-        });
+        showLoginFailure(
+          new RequestError(
+            "validation",
+            "Invalid password or corrupted key. Re-enter the password; if it still fails, restore or replace the saved credential.",
+            {
+              source: "client",
+              operation: "decrypt saved credential",
+              retryable: false,
+            },
+          ),
+        );
         return;
       }
 
@@ -268,16 +308,12 @@ export function useLoginForm(
       try {
         await verifyToken(decryptedKey, email);
       } catch (err) {
-        toast({
-          title: "Error",
-          description: formatError(err),
-          variant: "destructive",
-        });
+        showLoginFailure(err);
         return;
       }
 
       storageManager.setCurrentSession(selectedKeyId);
-      onLogin(decryptedKey, email);
+      await onLogin(decryptedKey, email);
       succeeded = true;
 
       toast({
@@ -285,15 +321,12 @@ export function useLoginForm(
         description: "Logged in successfully",
       });
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to login: " + formatError(error),
-        variant: "destructive",
-      });
+      showLoginFailure(error);
     } finally {
       if (!succeeded) {
         await delay(1000);
       }
+      loginInFlight.current = false;
       setIsLoading(false);
     }
   };
@@ -313,11 +346,7 @@ export function useLoginForm(
       try {
         await verifyToken(newApiKey, newEmail || undefined);
       } catch (err) {
-        toast({
-          title: "Error",
-          description: formatError(err),
-          variant: "destructive",
-        });
+        showLoginFailure(err);
         return;
       }
 
@@ -433,8 +462,14 @@ export function useLoginForm(
         const sc = new ServerClient(decryptedKey, undefined, decryptedEmail);
         await sc.storeVaultSecret(selectedKeyId, decryptedKey);
       } catch (err) {
-        console.warn("Failed to store key to OS vault:", err);
-        // Don't show toast for vault failures as it's optional
+        toast({
+          title: "OS vault storage unavailable",
+          description:
+            "Passkey registration can continue, but vault-based recovery was not saved. " +
+            formatError(err),
+          variant: "destructive",
+          persistent: true,
+        });
       }
 
       const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
@@ -475,7 +510,7 @@ export function useLoginForm(
         });
       }
     } catch (error) {
-      const errorMsg = (error as Error).message;
+      const errorMsg = formatError(error);
       let userMessage = errorMsg;
 
       if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
@@ -550,7 +585,7 @@ export function useLoginForm(
           if (secret) {
             const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
             storageManager.setCurrentSession(selectedKeyId);
-            onLogin(secret, selectedKey?.email);
+            await onLogin(secret, selectedKey?.email);
             toast({
               title: "✓ Login Successful",
               description: "Authenticated using passkey",
@@ -578,7 +613,7 @@ export function useLoginForm(
         });
       }
     } catch (error) {
-      const errorMsg = (error as Error).message;
+      const errorMsg = formatError(error);
       let userMessage = errorMsg;
 
       if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
@@ -671,8 +706,9 @@ export function useLoginForm(
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to update API key: " + (error as Error).message,
+        description: "Failed to update API key: " + formatError(error),
         variant: "destructive",
+        persistent: true,
       });
     }
   };
@@ -735,23 +771,32 @@ export function useLoginForm(
     } catch (error) {
       toast({
         title: "Error",
-        description: "Benchmark failed: " + (error as Error).message,
+        description: "Benchmark failed: " + formatError(error),
         variant: "destructive",
       });
     }
   };
 
-  const handleUpdateSettings = () => {
-    if (desktop) {
-      TauriClient.updateEncryptionSettings(encryptionSettings).catch(() => {});
-    } else {
-      cryptoManager.updateConfig(encryptionSettings);
+  const handleUpdateSettings = async () => {
+    try {
+      if (desktop) {
+        await TauriClient.updateEncryptionSettings(encryptionSettings);
+      } else {
+        cryptoManager.updateConfig(encryptionSettings);
+      }
+      toast({
+        title: "Success",
+        description: "Encryption settings updated",
+      });
+      setShowSettings(false);
+    } catch (error) {
+      toast({
+        title: "Encryption settings were not saved",
+        description: formatError(error),
+        variant: "destructive",
+        persistent: true,
+      });
     }
-    toast({
-      title: "Success",
-      description: "Encryption settings updated",
-    });
-    setShowSettings(false);
   };
 
   const handleManagePasskeys = async () => {
@@ -779,8 +824,9 @@ export function useLoginForm(
     } catch (err) {
       toast({
         title: "Error",
-        description: "Failed to decrypt key: " + (err as Error).message,
+        description: "Failed to decrypt key: " + formatError(err),
         variant: "destructive",
+        persistent: true,
       });
     }
   };
@@ -819,7 +865,7 @@ export function useLoginForm(
       }
 
       storageManager.setCurrentSession(selectedKeyId);
-      onLogin(decryptedKey, selectedKey?.email);
+      await onLogin(decryptedKey, selectedKey?.email);
       toast({
         title: "Success",
         description: `Logged in with ${biometricLabel}`,
@@ -939,9 +985,9 @@ export function useLoginForm(
     } catch (err) {
       toast({
         title: t("Error"),
-        description:
-          t("Failed to remove vault secret: ") + (err as Error).message,
+        description: t("Failed to remove vault secret: ") + formatError(err),
         variant: "destructive",
+        persistent: true,
       });
     }
   };
@@ -953,6 +999,8 @@ export function useLoginForm(
     password,
     setPassword,
     isLoading,
+    loginError,
+    clearLoginError: () => setLoginError(null),
     showAddKey,
     setShowAddKey,
     showSettings,
@@ -988,20 +1036,26 @@ export function useLoginForm(
     passkeyViewEmail,
     setPasskeyViewEmail,
     vaultEnabled,
-    setVaultEnabled: (enabled: boolean) => {
-      setVaultEnabled(enabled);
-      if (desktop) {
-        TauriClient.getPreferences()
-          .then((prefs) => {
-            const current = (prefs as Record<string, unknown>) ?? {};
-            return TauriClient.updatePreferences({
-              ...current,
-              vault_enabled: enabled,
-            });
-          })
-          .catch(() => {});
-      } else {
-        storageManager.setVaultEnabled(enabled);
+    setVaultEnabled: async (enabled: boolean) => {
+      try {
+        if (desktop) {
+          const prefs = await TauriClient.getPreferences();
+          const current = (prefs as Record<string, unknown>) ?? {};
+          await TauriClient.updatePreferences({
+            ...current,
+            vault_enabled: enabled,
+          });
+        } else {
+          storageManager.setVaultEnabled(enabled);
+        }
+        setVaultEnabled(enabled);
+      } catch (error) {
+        toast({
+          title: "Vault preference was not saved",
+          description: formatError(error),
+          variant: "destructive",
+          persistent: true,
+        });
       }
     },
     handleLogin,

@@ -7,10 +7,11 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { isDesktop } from "@/lib/environment";
-import {
-  normalizeRequestError,
-  type RequestError,
-} from "@/lib/api/request-error";
+import { normalizeRequestError, RequestError } from "@/lib/api/request-error";
+
+const TAURI_UI_TIMEOUT_MS = 15_000;
+const BOUNDED_UI_COMMAND =
+  /(?:token|api_key|passkey|vault|biometric|encryption_settings|preferences)/;
 
 export function normalizeTauriInvokeError(
   error: unknown,
@@ -23,12 +24,48 @@ export function normalizeTauriInvokeError(
   });
 }
 
+export async function withTauriUiTimeout<T>(
+  operation: Promise<T>,
+  command: string,
+  timeoutMs = TAURI_UI_TIMEOUT_MS,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(
+            new RequestError(
+              "timeout",
+              "The desktop operation timed out. The native task may still finish in the background; wait briefly before retrying to avoid duplicate changes.",
+              {
+                source: "tauri",
+                operation: "Tauri invoke",
+                command,
+                retryable: true,
+                remediation:
+                  "Check desktop connectivity and logs, then retry once.",
+              },
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 async function invoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
   try {
-    return await tauriInvoke<T>(command, args);
+    const operation = tauriInvoke<T>(command, args);
+    return await (BOUNDED_UI_COMMAND.test(command)
+      ? withTauriUiTimeout(operation, command)
+      : operation);
   } catch (error) {
     throw normalizeTauriInvokeError(error, command);
   }

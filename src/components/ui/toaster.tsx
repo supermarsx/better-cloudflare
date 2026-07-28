@@ -28,19 +28,15 @@ export function Toaster() {
         persistent,
         ...props
       }) {
-        const isPersistentDiagnostic =
-          Boolean(diagnostic) &&
-          (persistent === true || props.variant === "destructive");
+        const isPersistent =
+          persistent === true ||
+          (Boolean(diagnostic) && props.variant === "destructive");
         return (
           <Toast
             key={id}
             {...props}
-            duration={
-              isPersistentDiagnostic ? Number.POSITIVE_INFINITY : props.duration
-            }
-            data-persistent-diagnostic={
-              isPersistentDiagnostic ? "true" : undefined
-            }
+            duration={isPersistent ? Number.POSITIVE_INFINITY : props.duration}
+            data-persistent-diagnostic={isPersistent ? "true" : undefined}
           >
             <div className="min-w-0 flex-1 grid gap-1">
               {title && <ToastTitle>{title}</ToastTitle>}
