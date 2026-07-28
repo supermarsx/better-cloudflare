@@ -16,7 +16,29 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 jobs:
+  ci_contract:
+    name: CI reliability contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test CI reliability contract
+        run: npm run test:ci-contract
+
   unit_tests:
     name: Unit tests (${{ matrix.driver }})
     runs-on: ubuntu-24.04
@@ -44,6 +66,84 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+  e2e_reliability:
+    name: Chromium reliability E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build static export for browser tests
+        run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run Chromium reliability specifications
+        run: npm run test:e2e:reliability
+      - name: Upload Playwright failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-reliability-failures
+          path: test-results/playwright/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  native_reliability:
+    name: Rust workspace reliability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install stable Rust with Clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - name: Install Linux Tauri dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            xdg-utils
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ". -> target"
+      - name: Test Rust workspace
+        run: cargo test --workspace --all-targets --locked
+      - name: Run incremental workspace Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Enforce strict Clippy for native error contracts
+        run: >-
+          cargo clippy
+          -p bc-error
+          -p bc-cloudflare-api
+          --all-targets
+          --locked
+          --
+          -D warnings
+
   format:
     name: Format Check
     uses: ./.github/workflows/format.yml
@@ -51,7 +151,7 @@ jobs:
       contents: read
 
   lint:
-    name: Lint
+    name: App and source baseline lint
     uses: ./.github/workflows/lint.yml
     permissions:
       contents: read
@@ -80,13 +180,19 @@ jobs:
   release:
     name: Native Release
     needs:
+      - ci_contract
       - unit_tests
+      - e2e_reliability
+      - native_reliability
       - format
       - lint
       - test_package
       - release_contract
     if: >-
+      needs.ci_contract.result == 'success' &&
       needs.unit_tests.result == 'success' &&
+      needs.e2e_reliability.result == 'success' &&
+      needs.native_reliability.result == 'success' &&
       needs.format.result == 'success' &&
       needs.lint.result == 'success' &&
       needs.test_package.result == 'success' &&
