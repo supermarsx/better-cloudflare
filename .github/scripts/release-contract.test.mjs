@@ -27,6 +27,21 @@ import {
 const RELEASE_CONTRACT_SCRIPT = fileURLToPath(
   new URL("./release-contract.mjs", import.meta.url),
 );
+const AUTOPUBLISH_WORKFLOW = readFileSync(
+  new URL("../workflows/autopublish.yml", import.meta.url),
+  "utf8",
+).replaceAll("\r\n", "\n");
+
+function workflowStep(name) {
+  const marker = `      - name: ${name}\n`;
+  const start = AUTOPUBLISH_WORKFLOW.indexOf(marker);
+  assert.notEqual(start, -1, `Missing workflow step: ${name}`);
+  const next = AUTOPUBLISH_WORKFLOW.indexOf(
+    "\n      - name: ",
+    start + marker.length,
+  );
+  return AUTOPUBLISH_WORKFLOW.slice(start, next === -1 ? undefined : next);
+}
 
 function run(command, arguments_, cwd) {
   const result = spawnSync(command, arguments_, { cwd, encoding: "utf8" });
@@ -96,6 +111,48 @@ test("runner verification rejects a target that is only cross-compiled", () => {
   assert.throws(
     () => verifyRunnerArchitecture("linux", "arm64", "linux", "x64"),
     /Runner architecture mismatch/,
+  );
+});
+
+test("native staging uses the repository-root Cargo bundle directory", () => {
+  const step = workflowStep("Stage deterministic native asset");
+  assert.match(
+    step,
+    /^\s+target\/\$\{\{ matrix\.target \}\}\/release\/bundle$/m,
+  );
+  assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /src-tauri\/target/);
+});
+
+test("only Windows ARM64 disables dependency lifecycle scripts", () => {
+  const standardInstall = workflowStep("Install JavaScript dependencies");
+  assert.match(
+    standardInstall,
+    /^\s+if: matrix\.platform != 'windows' \|\| matrix\.arch != 'arm64'$/m,
+  );
+  assert.match(standardInstall, /^\s+run: npm ci --no-audit --no-fund$/m);
+  assert.doesNotMatch(standardInstall, /ignore-scripts/);
+
+  const windowsArmInstall = workflowStep(
+    "Install JavaScript dependencies without lifecycle scripts (Windows ARM64)",
+  );
+  assert.match(
+    windowsArmInstall,
+    /^\s+if: matrix\.platform == 'windows' && matrix\.arch == 'arm64'$/m,
+  );
+  assert.match(
+    windowsArmInstall,
+    /^\s+run: npm ci --ignore-scripts --no-audit --no-fund$/m,
+  );
+  assert.equal(
+    AUTOPUBLISH_WORKFLOW.match(/npm ci --ignore-scripts/g)?.length,
+    1,
+  );
+
+  const nativeBuild = workflowStep("Build native Tauri bundle");
+  assert.match(nativeBuild, /npm run tauri -- build/);
+  assert.ok(
+    AUTOPUBLISH_WORKFLOW.indexOf(windowsArmInstall) <
+      AUTOPUBLISH_WORKFLOW.indexOf(nativeBuild),
   );
 });
 

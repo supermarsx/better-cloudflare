@@ -80,7 +80,11 @@ jobs:
             patchelf \
             xdg-utils
       - name: Install JavaScript dependencies
+        if: matrix.platform != 'windows' || matrix.arch != 'arm64'
         run: npm ci --no-audit --no-fund
+      - name: Install JavaScript dependencies without lifecycle scripts (Windows ARM64)
+        if: matrix.platform == 'windows' && matrix.arch == 'arm64'
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build native Tauri bundle
         run: >-
           npm run tauri -- build
@@ -89,7 +93,7 @@ jobs:
       - name: Stage deterministic native asset
         run: >-
           node .github/scripts/release-contract.mjs stage
-          src-tauri/target/${{ matrix.target }}/release/bundle
+          target/${{ matrix.target }}/release/bundle
           ${{ matrix.platform }} ${{ matrix.arch }} release-assets
       - name: Upload native asset and checksum
         uses: actions/upload-artifact@v7
