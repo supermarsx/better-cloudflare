@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 import type {
   AgentConfig,
   AgentEvent,
-  ChatMessage,
   Conversation,
   ConversationMeta,
   Model,
@@ -14,25 +14,49 @@ import type {
   ProviderStatus,
 } from "@/types/ai";
 
+function reportAiFailure(error: unknown, label: string): void {
+  reportRuntimeError(error, { source: "runtime", label });
+}
+
+function useMountedRef() {
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return mountedRef;
+}
+
 // ─── Provider hooks ────────────────────────────────────────────────────────
 
 /** List all providers and their configuration status. */
 export function useAiProviders() {
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [loading, setLoading] = useState(false);
+  const mountedRef = useMountedRef();
+  const refreshVersionRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    const version = ++refreshVersionRef.current;
+    if (mountedRef.current) setLoading(true);
     try {
       const result = await invoke<ProviderStatus[]>("ai_list_providers");
-      setProviders(result);
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setProviders(result);
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [mountedRef]);
 
   useEffect(() => {
-    refresh();
+    void refresh().catch((error) =>
+      reportAiFailure(error, "Refresh AI providers"),
+    );
   }, [refresh]);
 
   const configure = useCallback(
@@ -65,20 +89,30 @@ export function useAiProviders() {
 /** Read and update agent configuration. */
 export function useAiConfig() {
   const [config, setConfig] = useState<AgentConfig | null>(null);
+  const mountedRef = useMountedRef();
+  const refreshVersionRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const version = ++refreshVersionRef.current;
     const result = await invoke<AgentConfig>("ai_get_config");
-    setConfig(result);
-  }, []);
+    if (mountedRef.current && refreshVersionRef.current === version) {
+      setConfig(result);
+    }
+  }, [mountedRef]);
 
   useEffect(() => {
-    refresh();
+    void refresh().catch((error) =>
+      reportAiFailure(error, "Refresh AI configuration"),
+    );
   }, [refresh]);
 
-  const update = useCallback(async (newConfig: AgentConfig) => {
-    await invoke("ai_set_config", { config: newConfig });
-    setConfig(newConfig);
-  }, []);
+  const update = useCallback(
+    async (newConfig: AgentConfig) => {
+      await invoke("ai_set_config", { config: newConfig });
+      if (mountedRef.current) setConfig(newConfig);
+    },
+    [mountedRef],
+  );
 
   return { config, refresh, update };
 }
@@ -89,19 +123,28 @@ export function useAiConfig() {
 export function useAiConversations() {
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [loading, setLoading] = useState(false);
+  const mountedRef = useMountedRef();
+  const refreshVersionRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    const version = ++refreshVersionRef.current;
+    if (mountedRef.current) setLoading(true);
     try {
       const result = await invoke<ConversationMeta[]>("ai_list_conversations");
-      setConversations(result);
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setConversations(result);
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [mountedRef]);
 
   useEffect(() => {
-    refresh();
+    void refresh().catch((error) =>
+      reportAiFailure(error, "Refresh AI conversations"),
+    );
   }, [refresh]);
 
   const create = useCallback(
@@ -156,25 +199,33 @@ export function useAiChat(conversationId: string | null) {
     null,
   );
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const mountedRef = useMountedRef();
+  const refreshVersionRef = useRef(0);
 
   // Load the full conversation
   const refresh = useCallback(async () => {
+    const version = ++refreshVersionRef.current;
     if (!conversationId) {
-      setConversation(null);
+      if (mountedRef.current) setConversation(null);
       return;
     }
     try {
       const conv = await invoke<Conversation>("ai_get_conversation", {
         id: conversationId,
       });
-      setConversation(conv);
-    } catch {
-      setConversation(null);
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setConversation(conv);
+      }
+    } catch (error) {
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setConversation(null);
+      }
+      reportAiFailure(error, "Load AI conversation");
     }
-  }, [conversationId]);
+  }, [conversationId, mountedRef]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   // Listen for agent events
@@ -200,17 +251,17 @@ export function useAiChat(conversationId: string | null) {
           case "turnComplete":
             setStreaming(false);
             setStreamText("");
-            refresh();
+            void refresh();
             break;
           case "error":
             setStreaming(false);
             setStreamText("");
-            refresh();
+            void refresh();
             break;
           case "cancelled":
             setStreaming(false);
             setStreamText("");
-            refresh();
+            void refresh();
             break;
         }
       });
@@ -218,15 +269,25 @@ export function useAiChat(conversationId: string | null) {
       if (!cancelled) {
         unlistenRef.current = unlisten;
       } else {
-        unlisten();
+        try {
+          unlisten();
+        } catch (error) {
+          reportAiFailure(error, "Dispose stale AI event listener");
+        }
       }
     };
 
-    setup();
+    void setup().catch((error) =>
+      reportAiFailure(error, "Subscribe to AI agent events"),
+    );
 
     return () => {
       cancelled = true;
-      unlistenRef.current?.();
+      try {
+        unlistenRef.current?.();
+      } catch (error) {
+        reportAiFailure(error, "Unsubscribe from AI agent events");
+      }
       unlistenRef.current = null;
     };
   }, [conversationId, refresh]);
@@ -240,29 +301,50 @@ export function useAiChat(conversationId: string | null) {
       setStreamText("");
       setPendingApproval(null);
 
-      await invoke("ai_send_message", {
-        conversationId,
-        text,
-        provider,
-      });
+      try {
+        await invoke("ai_send_message", {
+          conversationId,
+          text,
+          provider,
+        });
+      } catch (error) {
+        if (mountedRef.current) {
+          setStreaming(false);
+          setStreamText("");
+        }
+        reportAiFailure(error, "Send AI chat message");
+        throw error;
+      }
     },
-    [conversationId],
+    [conversationId, mountedRef],
   );
 
   // Approve a tool call
   const approveToolCall = useCallback(
     async (toolCallId: string) => {
       if (!conversationId) return;
+      const previousApproval = pendingApproval;
       setPendingApproval(null);
-      await invoke("ai_approve_tool_call", { conversationId, toolCallId });
+      try {
+        await invoke("ai_approve_tool_call", { conversationId, toolCallId });
+      } catch (error) {
+        if (mountedRef.current) setPendingApproval(previousApproval);
+        reportAiFailure(error, "Approve AI tool call");
+        throw error;
+      }
     },
-    [conversationId],
+    [conversationId, mountedRef, pendingApproval],
   );
 
   // Cancel generation
   const cancel = useCallback(async () => {
     if (!conversationId) return;
-    await invoke("ai_cancel_generation", { conversationId });
+    try {
+      await invoke("ai_cancel_generation", { conversationId });
+    } catch (error) {
+      reportAiFailure(error, "Cancel AI generation");
+      throw error;
+    }
   }, [conversationId]);
 
   // Export conversation
@@ -289,12 +371,18 @@ export function useAiChat(conversationId: string | null) {
 /** Load available agent persona presets. */
 export function useAiPresets() {
   const [presets, setPresets] = useState<Preset[]>([]);
+  const mountedRef = useMountedRef();
 
   useEffect(() => {
-    invoke<Preset[]>("ai_list_presets")
-      .then(setPresets)
-      .catch(() => {});
-  }, []);
+    void invoke<Preset[]>("ai_list_presets")
+      .then((nextPresets) => {
+        if (mountedRef.current) setPresets(nextPresets);
+      })
+      .catch((error) => {
+        reportAiFailure(error, "Load AI presets");
+        if (mountedRef.current) setPresets([]);
+      });
+  }, [mountedRef]);
 
   const getPreset = useCallback(async (id: string): Promise<Preset> => {
     return invoke<Preset>("ai_get_preset", { id });

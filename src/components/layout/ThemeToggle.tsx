@@ -11,14 +11,74 @@ import {
 import { isDesktop } from "@/lib/environment";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { useI18n } from "@/hooks/use-i18n";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
-type ThemeId = "sunset" | "oled" | "light";
+export type ThemeId = "sunset" | "oled" | "light";
 
 const themeLabels: Record<ThemeId, string> = {
   sunset: "Sunset",
   oled: "Night",
   light: "Midday",
 };
+
+export interface StoredThemeResult {
+  theme: ThemeId | null;
+  storageAvailable: boolean;
+}
+
+export function readStoredTheme(
+  storage: Pick<Storage, "getItem"> | undefined,
+): StoredThemeResult {
+  if (!storage) return { theme: null, storageAvailable: false };
+  try {
+    const saved = storage.getItem("theme");
+    if (saved === null) return { theme: null, storageAvailable: true };
+    if (saved in themeLabels) {
+      return { theme: saved as ThemeId, storageAvailable: true };
+    }
+    reportRuntimeError(new SyntaxError("Unsupported saved theme value"), {
+      source: "runtime",
+      label: "Read saved theme: corrupt preference",
+    });
+    return { theme: null, storageAvailable: true };
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Read saved theme: storage access denied",
+    });
+    return { theme: null, storageAvailable: false };
+  }
+}
+
+export function persistTheme(
+  theme: ThemeId,
+  storage: Pick<Storage, "setItem"> | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    storage.setItem("theme", theme);
+    return true;
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Save theme preference",
+    });
+    return false;
+  }
+}
+
+function getBrowserThemeStorage(): Storage | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage;
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Access browser theme storage",
+    });
+    return undefined;
+  }
+}
 
 interface ThemeToggleProps {
   compact?: boolean;
@@ -35,36 +95,44 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
   };
 
   useEffect(() => {
-    const apply = (next: ThemeId) => {
+    let cancelled = false;
+    const storage = getBrowserThemeStorage();
+    const stored = readStoredTheme(storage);
+    const apply = (next: ThemeId, saveLocally: boolean) => {
+      if (cancelled) return;
       setTheme(next);
       if (typeof document !== "undefined") {
         document.documentElement.dataset.theme = next;
       }
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("theme", next);
-      }
+      if (saveLocally) persistTheme(next, storage);
     };
 
-    const saved =
-      typeof window !== "undefined"
-        ? (window.localStorage.getItem("theme") as ThemeId | null)
-        : null;
-    if (saved) {
-      apply(saved);
+    if (stored.theme) {
+      apply(stored.theme, false);
     } else if (isDesktop()) {
-      TauriClient.getPreferences()
+      void TauriClient.getPreferences()
         .then((prefs) => {
           const pref = prefs as { theme?: ThemeId };
           if (pref.theme && themeLabels[pref.theme]) {
-            apply(pref.theme);
+            apply(pref.theme, stored.storageAvailable);
           } else {
-            apply("sunset");
+            apply("sunset", stored.storageAvailable);
           }
         })
-        .catch(() => apply("sunset"));
+        .catch((error) => {
+          reportRuntimeError(error, {
+            source: "runtime",
+            label: "Load desktop theme preference",
+          });
+          apply("sunset", stored.storageAvailable);
+        });
     } else {
-      apply("sunset");
+      apply("sunset", stored.storageAvailable);
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const applyTheme = (next: ThemeId) => {
@@ -72,11 +140,14 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     if (typeof document !== "undefined") {
       document.documentElement.dataset.theme = next;
     }
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("theme", next);
-    }
+    persistTheme(next, getBrowserThemeStorage());
     if (isDesktop()) {
-      void TauriClient.updatePreferenceFields({ theme: next });
+      void TauriClient.updatePreferenceFields({ theme: next }).catch((error) =>
+        reportRuntimeError(error, {
+          source: "runtime",
+          label: "Save desktop theme preference",
+        }),
+      );
     }
   };
 

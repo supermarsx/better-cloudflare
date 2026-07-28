@@ -1,3 +1,5 @@
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+
 /**
  * Export scheduling utility — allows users to set up recurring DNS record
  * exports with configurable format and destination. Works in both web
@@ -18,6 +20,48 @@ export interface ExportSchedule {
 
 const STORAGE_KEY = "bc_export_schedules";
 
+function storageFailureCategory(error: unknown): string {
+  const name =
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    typeof error.name === "string"
+      ? error.name
+      : "";
+  if (name === "QuotaExceededError") return "quota exceeded";
+  if (name === "SecurityError" || name === "NotAllowedError")
+    return "access denied";
+  if (error instanceof SyntaxError) return "corrupt schedule data";
+  return "operation failed";
+}
+
+function reportScheduleStorageFailure(error: unknown, operation: string): void {
+  reportRuntimeError(error, {
+    source: "runtime",
+    label: `${operation}: ${storageFailureCategory(error)}`,
+  });
+}
+
+function isExportSchedule(value: unknown): value is ExportSchedule {
+  if (!value || typeof value !== "object") return false;
+  const schedule = value as Partial<ExportSchedule>;
+  return (
+    typeof schedule.id === "string" &&
+    typeof schedule.zoneId === "string" &&
+    typeof schedule.zoneName === "string" &&
+    (schedule.format === "json" ||
+      schedule.format === "csv" ||
+      schedule.format === "bind") &&
+    typeof schedule.intervalMs === "number" &&
+    Number.isFinite(schedule.intervalMs) &&
+    schedule.intervalMs > 0 &&
+    typeof schedule.enabled === "boolean" &&
+    (schedule.lastExportAt === undefined ||
+      (typeof schedule.lastExportAt === "number" &&
+        Number.isFinite(schedule.lastExportAt)))
+  );
+}
+
 /**
  * Load saved export schedules from localStorage.
  */
@@ -25,10 +69,13 @@ export function loadExportSchedules(): ExportSchedule[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as ExportSchedule[];
-  } catch {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isExportSchedule)) {
+      throw new SyntaxError("Invalid DNS export schedule data");
+    }
+    return parsed;
+  } catch (error) {
+    reportScheduleStorageFailure(error, "Load DNS export schedules");
     return [];
   }
 }
@@ -37,7 +84,11 @@ export function loadExportSchedules(): ExportSchedule[] {
  * Save export schedules to localStorage.
  */
 export function saveExportSchedules(schedules: ExportSchedule[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(schedules));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(schedules));
+  } catch (error) {
+    reportScheduleStorageFailure(error, "Save DNS export schedules");
+  }
 }
 
 /**

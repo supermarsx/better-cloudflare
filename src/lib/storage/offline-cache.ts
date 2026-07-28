@@ -6,6 +6,8 @@
  * with a timestamp so we can indicate freshness.
  */
 
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+
 export interface CachedZoneRecords {
   zoneId: string;
   zoneName: string;
@@ -17,6 +19,60 @@ const CACHE_KEY_PREFIX = "bc_offline_cache_";
 const CACHE_INDEX_KEY = "bc_offline_cache_index";
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+function storageErrorName(error: unknown): string {
+  return typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    typeof error.name === "string"
+    ? error.name
+    : "";
+}
+
+function isQuotaError(error: unknown): boolean {
+  return storageErrorName(error) === "QuotaExceededError";
+}
+
+function storageFailureCategory(error: unknown, corruption = false): string {
+  const name = storageErrorName(error);
+  if (corruption || error instanceof SyntaxError) return "corrupt cache data";
+  if (name === "QuotaExceededError") return "quota exceeded";
+  if (name === "SecurityError" || name === "NotAllowedError")
+    return "access denied";
+  return "operation failed";
+}
+
+function reportCacheFailure(
+  error: unknown,
+  operation: string,
+  corruption = false,
+): void {
+  reportRuntimeError(error, {
+    source: "runtime",
+    label: `${operation}: ${storageFailureCategory(error, corruption)}`,
+  });
+}
+
+function isCachedZoneRecords(value: unknown): value is CachedZoneRecords {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<CachedZoneRecords>;
+  return (
+    typeof entry.zoneId === "string" &&
+    typeof entry.zoneName === "string" &&
+    Array.isArray(entry.records) &&
+    typeof entry.cachedAt === "number" &&
+    Number.isFinite(entry.cachedAt)
+  );
+}
+
+function persistCacheEntry(entry: CachedZoneRecords): void {
+  localStorage.setItem(CACHE_KEY_PREFIX + entry.zoneId, JSON.stringify(entry));
+  const index = getCacheIndex();
+  if (!index.includes(entry.zoneId)) {
+    index.push(entry.zoneId);
+    localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
+  }
+}
+
 /**
  * Save records for a zone to the offline cache.
  */
@@ -25,32 +81,26 @@ export function cacheZoneRecords(
   zoneName: string,
   records: unknown[],
 ): void {
+  const entry: CachedZoneRecords = {
+    zoneId,
+    zoneName,
+    records,
+    cachedAt: Date.now(),
+  };
   try {
-    const entry: CachedZoneRecords = {
-      zoneId,
-      zoneName,
-      records,
-      cachedAt: Date.now(),
-    };
-    localStorage.setItem(CACHE_KEY_PREFIX + zoneId, JSON.stringify(entry));
+    persistCacheEntry(entry);
+    return;
+  } catch (error) {
+    reportCacheFailure(error, "Write DNS offline cache");
+    if (!isQuotaError(error)) return;
+  }
 
-    // Update index
-    const index = getCacheIndex();
-    if (!index.includes(zoneId)) {
-      index.push(zoneId);
-      localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
-    }
-  } catch {
-    // localStorage might be full — evict oldest entries and retry
+  // Quota failures get one bounded eviction and retry.
+  try {
     evictOldest();
-    try {
-      localStorage.setItem(
-        CACHE_KEY_PREFIX + zoneId,
-        JSON.stringify({ zoneId, zoneName, records, cachedAt: Date.now() }),
-      );
-    } catch {
-      // Still failed, bail silently
-    }
+    persistCacheEntry(entry);
+  } catch (error) {
+    reportCacheFailure(error, "Retry DNS offline cache write");
   }
 }
 
@@ -61,14 +111,28 @@ export function getCachedZoneRecords(zoneId: string): CachedZoneRecords | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY_PREFIX + zoneId);
     if (!raw) return null;
-    const entry = JSON.parse(raw) as CachedZoneRecords;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isCachedZoneRecords(parsed) || parsed.zoneId !== zoneId) {
+      throw new SyntaxError("Invalid offline cache entry");
+    }
+    const entry = parsed;
     // Check freshness
     if (Date.now() - entry.cachedAt > MAX_CACHE_AGE_MS) {
       removeCachedZone(zoneId);
       return null;
     }
     return entry;
-  } catch {
+  } catch (error) {
+    reportCacheFailure(
+      error,
+      "Read DNS offline cache",
+      error instanceof SyntaxError,
+    );
+    try {
+      localStorage.removeItem(CACHE_KEY_PREFIX + zoneId);
+    } catch (removeError) {
+      reportCacheFailure(removeError, "Remove corrupt DNS offline cache");
+    }
     return null;
   }
 }
@@ -93,9 +157,13 @@ export function getCacheAge(zoneId: string): number | null {
  * Remove cached data for a zone.
  */
 export function removeCachedZone(zoneId: string): void {
-  localStorage.removeItem(CACHE_KEY_PREFIX + zoneId);
-  const index = getCacheIndex().filter((id) => id !== zoneId);
-  localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
+  try {
+    localStorage.removeItem(CACHE_KEY_PREFIX + zoneId);
+    const index = getCacheIndex().filter((id) => id !== zoneId);
+    localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
+  } catch (error) {
+    reportCacheFailure(error, "Remove DNS offline cache");
+  }
 }
 
 /**
@@ -104,9 +172,17 @@ export function removeCachedZone(zoneId: string): void {
 export function clearOfflineCache(): void {
   const index = getCacheIndex();
   for (const zoneId of index) {
-    localStorage.removeItem(CACHE_KEY_PREFIX + zoneId);
+    try {
+      localStorage.removeItem(CACHE_KEY_PREFIX + zoneId);
+    } catch (error) {
+      reportCacheFailure(error, "Clear DNS offline cache entry");
+    }
   }
-  localStorage.removeItem(CACHE_INDEX_KEY);
+  try {
+    localStorage.removeItem(CACHE_INDEX_KEY);
+  } catch (error) {
+    reportCacheFailure(error, "Clear DNS offline cache index");
+  }
 }
 
 /**
@@ -116,9 +192,25 @@ export function getCacheIndex(): string[] {
   try {
     const raw = localStorage.getItem(CACHE_INDEX_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.some((zoneId) => typeof zoneId !== "string")
+    ) {
+      throw new SyntaxError("Invalid offline cache index");
+    }
+    return parsed;
+  } catch (error) {
+    reportCacheFailure(
+      error,
+      "Read DNS offline cache index",
+      error instanceof SyntaxError,
+    );
+    try {
+      localStorage.removeItem(CACHE_INDEX_KEY);
+    } catch (removeError) {
+      reportCacheFailure(removeError, "Remove corrupt DNS offline cache index");
+    }
     return [];
   }
 }
@@ -149,13 +241,21 @@ function evictOldest(): void {
     try {
       const raw = localStorage.getItem(CACHE_KEY_PREFIX + zoneId);
       if (!raw) continue;
-      const entry = JSON.parse(raw) as CachedZoneRecords;
+      const parsed: unknown = JSON.parse(raw);
+      if (!isCachedZoneRecords(parsed)) {
+        throw new SyntaxError("Invalid offline cache entry");
+      }
+      const entry = parsed;
       if (entry.cachedAt < oldestTime) {
         oldestTime = entry.cachedAt;
         oldestId = zoneId;
       }
-    } catch {
-      // corrupted entry, remove it
+    } catch (error) {
+      reportCacheFailure(
+        error,
+        "Inspect DNS offline cache for eviction",
+        error instanceof SyntaxError,
+      );
       removeCachedZone(zoneId);
       return;
     }

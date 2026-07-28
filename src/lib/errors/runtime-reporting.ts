@@ -39,6 +39,7 @@ const MAX_STACK_LENGTH = 6000;
 const MAX_COMPONENT_STACK_LENGTH = 4000;
 const MAX_DIAGNOSTICS = 30;
 const DEDUPLICATION_WINDOW_MS = 10_000;
+const MAX_RECENT_FINGERPRINTS = 100;
 
 let diagnosticCounter = 0;
 let dispatching = false;
@@ -71,15 +72,29 @@ function safeString(value: unknown): string {
 
   const seen = new WeakSet<object>();
   try {
-    return JSON.stringify(value, (_key, nested) => {
+    const serialized = JSON.stringify(value, (_key, nested) => {
       if (typeof nested === "object" && nested !== null) {
         if (seen.has(nested)) return "[circular]";
         seen.add(nested);
       }
+      if (typeof nested === "bigint") return String(nested);
+      if (typeof nested === "symbol") return String(nested);
+      if (typeof nested === "function")
+        return `[function ${nested.name || "anonymous"}]`;
       return nested;
     });
+    if (typeof serialized === "string") return serialized;
   } catch {
-    return Object.prototype.toString.call(value);
+    // Fall through to bounded string coercion.
+  }
+  try {
+    return String(value);
+  } catch {
+    try {
+      return Object.prototype.toString.call(value);
+    } catch {
+      return "[unserializable value]";
+    }
   }
 }
 
@@ -88,6 +103,14 @@ export function sanitizeRuntimeText(
   maxLength = MAX_MESSAGE_LENGTH,
 ): string {
   return safeString(value)
+    .replace(
+      /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi,
+      "$1[redacted]@",
+    )
+    .replace(
+      /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+      "[redacted-jwt]",
+    )
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(
       /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
@@ -155,10 +178,7 @@ function diagnosticParts(error: unknown): {
   };
 }
 
-function fingerprintFor(
-  parts: ReturnType<typeof diagnosticParts>,
-  context: RuntimeErrorContext,
-): string {
+function fingerprintFor(parts: ReturnType<typeof diagnosticParts>): string {
   const firstStackLine = parts.stack?.split("\n", 2)[1]?.trim() ?? "";
   const input = [
     parts.name,
@@ -176,6 +196,27 @@ function fingerprintFor(
 function nextDiagnosticId(): string {
   diagnosticCounter = (diagnosticCounter + 1) % Number.MAX_SAFE_INTEGER;
   return `runtime-${Date.now().toString(36)}-${diagnosticCounter.toString(36)}`;
+}
+
+function pruneRecentFingerprints(now: number): void {
+  for (const [fingerprint, recent] of recentByFingerprint) {
+    if (now - recent.lastSeen > DEDUPLICATION_WINDOW_MS) {
+      recentByFingerprint.delete(fingerprint);
+    }
+  }
+
+  while (recentByFingerprint.size >= MAX_RECENT_FINGERPRINTS) {
+    let oldestFingerprint: string | undefined;
+    let oldestSeen = Infinity;
+    for (const [fingerprint, recent] of recentByFingerprint) {
+      if (recent.lastSeen < oldestSeen) {
+        oldestSeen = recent.lastSeen;
+        oldestFingerprint = fingerprint;
+      }
+    }
+    if (!oldestFingerprint) break;
+    recentByFingerprint.delete(oldestFingerprint);
+  }
 }
 
 export function createRuntimeDiagnostic(
@@ -199,7 +240,7 @@ export function createRuntimeDiagnostic(
 
   return {
     id: nextDiagnosticId(),
-    fingerprint: fingerprintFor(parts, normalizedContext),
+    fingerprint: fingerprintFor(parts),
     source: normalizedContext.source,
     ...(normalizedContext.label ? { label: normalizedContext.label } : {}),
     name: parts.name,
@@ -275,6 +316,7 @@ export function reportRuntimeError(
 ): RuntimeReportResult {
   const candidate = createRuntimeDiagnostic(error, context);
   const now = Date.now();
+  pruneRecentFingerprints(now);
   const recent = recentByFingerprint.get(candidate.fingerprint);
 
   if (recent && now - recent.lastSeen <= DEDUPLICATION_WINDOW_MS) {

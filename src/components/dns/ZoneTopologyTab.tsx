@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
 type Annotation = {
   id: string;
@@ -136,6 +137,38 @@ type TopologyResolutionCacheEntry = {
   value: ExternalDnsResolution;
   ts: number;
 };
+
+function reportTopologyFailure(error: unknown, label: string) {
+  return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
+}
+
+export async function copyTopologyText(
+  text: string,
+  label = "Copy topology text",
+): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Text clipboard access is unavailable");
+    }
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    reportTopologyFailure(error, label);
+    return false;
+  }
+}
+
+export async function runTopologyRefresh(
+  refresh: () => Promise<void> | void,
+): Promise<boolean> {
+  try {
+    await refresh();
+    return true;
+  } catch (error) {
+    reportTopologyFailure(error, "Refresh DNS topology");
+    return false;
+  }
+}
 type TopologyProbeCacheEntry = {
   host: string;
   httpsUp: boolean;
@@ -319,25 +352,6 @@ function buildCnameMap(records: DNSRecord[]): Map<string, string> {
     map.set(from, to);
   }
   return map;
-}
-
-function resolveCnameTerminal(
-  name: string,
-  cnameMap: Map<string, string>,
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  let cur = normalizeDomain(name);
-  let hops = 0;
-  while (cur && hops < 12) {
-    const next = cnameMap.get(cur);
-    if (!next || seen.has(next)) break;
-    out.push(next);
-    seen.add(next);
-    cur = next;
-    hops += 1;
-  }
-  return out;
 }
 
 function buildAddressMaps(records: DNSRecord[]): {
@@ -1339,6 +1353,7 @@ export function ZoneTopologyTab({
     new Map(),
   );
   const probeCacheRef = useRef<Map<string, TopologyProbeCacheEntry>>(new Map());
+  const discoveryRunRef = useRef(0);
   const lastResolutionRunKeyRef = useRef<string>("");
   const [isDarkThemeMode, setIsDarkThemeMode] = useState(() =>
     detectDarkThemeMode(),
@@ -1409,6 +1424,12 @@ export function ZoneTopologyTab({
   }, [disableFullWindow]);
 
   useEffect(() => {
+    return () => {
+      discoveryRunRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
     if (disableFullWindow && expandGraph) {
       closeExpandGraph();
     }
@@ -1474,6 +1495,7 @@ export function ZoneTopologyTab({
     disableGeoLookups,
     geoProvider,
     scanResolutionChain,
+    tcpServicePorts,
   ]);
 
   useEffect(() => {
@@ -1533,12 +1555,14 @@ export function ZoneTopologyTab({
       const seenTopologyNodes = new Set(
         queue.map((name) => normalizeDomain(name)),
       );
-      const updateProgress = () =>
+      const updateProgress = () => {
+        if (cancelled) return;
         setTopologyResolutionProgress({
           running: true,
           total: Math.max(0, total),
           done: Math.max(0, done),
         });
+      };
       setTopologyResolutionProgress({ running: true, total, done });
       const now = Date.now();
       const cachePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|${disablePtrLookups ? "noptr" : "ptr"}|${disableGeoLookups ? "nogeo" : `geo:${geoProvider}`}|${scanResolutionChain ? "chain" : "nochain"}|`;
@@ -1585,7 +1609,9 @@ export function ZoneTopologyTab({
       }
       updateProgress();
       if (unresolvedQueue.length > 0) {
-        setActiveResolutionRequests(unresolvedQueue.slice(0, 12));
+        if (!cancelled) {
+          setActiveResolutionRequests(unresolvedQueue.slice(0, 12));
+        }
         const backendBatch = await resolveTopologyBatchInBackend(
           unresolvedQueue,
           clampedHops,
@@ -1680,7 +1706,17 @@ export function ZoneTopologyTab({
         done: Math.max(done, total),
       });
       setActiveResolutionRequests([]);
-    })().catch(() => {});
+    })().catch((error) => {
+      if (cancelled) return;
+      reportTopologyFailure(error, "Resolve DNS topology");
+      setTopologyResolutionReady(true);
+      setTopologyResolutionProgress({
+        running: false,
+        total: candidates.size,
+        done: 0,
+      });
+      setActiveResolutionRequests([]);
+    });
     return () => {
       cancelled = true;
       setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
@@ -1704,6 +1740,7 @@ export function ZoneTopologyTab({
     disableGeoLookups,
     geoProvider,
     scanResolutionChain,
+    tcpServicePorts,
   ]);
 
   useEffect(() => {
@@ -1787,9 +1824,11 @@ export function ZoneTopologyTab({
         }
       } catch (error) {
         if (!cancelled) {
-          setRenderError(
-            error instanceof Error ? error.message : String(error),
+          const diagnostic = reportTopologyFailure(
+            error,
+            "Render DNS topology",
           );
+          setRenderError(diagnostic.message);
           setSvgMarkup("");
         }
       } finally {
@@ -2082,11 +2121,7 @@ export function ZoneTopologyTab({
           toast({ title: "Exported", description: path });
         })
         .catch((e) => {
-          toast({
-            title: "Export failed",
-            description: e instanceof Error ? e.message : String(e),
-            variant: "destructive",
-          });
+          reportTopologyFailure(e, "Export Mermaid topology");
         });
       return;
     }
@@ -2108,7 +2143,8 @@ export function ZoneTopologyTab({
   ]);
 
   const copyCode = useCallback(async () => {
-    await navigator.clipboard.writeText(mermaidCode);
+    const copied = await copyTopologyText(mermaidCode, "Copy Mermaid topology");
+    if (!copied) return;
     toast({
       title: "Copied",
       description: "Topology Mermaid code copied to clipboard.",
@@ -2261,8 +2297,18 @@ export function ZoneTopologyTab({
         title: "Copied",
         description: "Topology SVG copied to clipboard.",
       });
-    } catch {
-      await navigator.clipboard.writeText(svgMarkup);
+    } catch (imageClipboardError) {
+      const copied = await copyTopologyText(
+        svgMarkup,
+        "Copy SVG topology fallback",
+      );
+      if (!copied) {
+        reportTopologyFailure(
+          imageClipboardError,
+          "Copy SVG topology as an image",
+        );
+        return;
+      }
       toast({
         title: "Copied",
         description: "SVG markup copied to clipboard.",
@@ -2271,31 +2317,32 @@ export function ZoneTopologyTab({
   }, [svgMarkup, toast]);
 
   const copyPng = useCallback(async () => {
-    const pngBlob = await renderSvgToPngBlob();
-    if (!pngBlob) {
-      toast({
-        title: "Copy failed",
-        description: "Unable to render PNG from topology.",
-        variant: "destructive",
-      });
-      return;
+    try {
+      const pngBlob = await renderSvgToPngBlob();
+      if (!pngBlob) {
+        reportTopologyFailure(
+          new Error("Unable to render PNG from topology"),
+          "Copy PNG topology",
+        );
+        return;
+      }
+      if ("ClipboardItem" in window && navigator.clipboard?.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({ "image/png": pngBlob }),
+        ]);
+        toast({
+          title: "Copied",
+          description: "Topology PNG copied to clipboard.",
+        });
+        return;
+      }
+      reportTopologyFailure(
+        new Error("PNG clipboard writing is not supported"),
+        "Copy PNG topology",
+      );
+    } catch (error) {
+      reportTopologyFailure(error, "Copy PNG topology");
     }
-    if ("ClipboardItem" in window && navigator.clipboard?.write) {
-      await navigator.clipboard.write([
-        new ClipboardItem({ "image/png": pngBlob }),
-      ]);
-      toast({
-        title: "Copied",
-        description: "Topology PNG copied to clipboard.",
-      });
-      return;
-    }
-    toast({
-      title: "Copy unsupported",
-      description:
-        "PNG clipboard writing is not supported in this environment.",
-      variant: "destructive",
-    });
   }, [renderSvgToPngBlob, toast]);
 
   const exportSvg = useCallback(() => {
@@ -2315,11 +2362,7 @@ export function ZoneTopologyTab({
           toast({ title: "Exported", description: path });
         })
         .catch((e) => {
-          toast({
-            title: "Export failed",
-            description: e instanceof Error ? e.message : String(e),
-            variant: "destructive",
-          });
+          reportTopologyFailure(e, "Export SVG topology");
         });
       return;
     }
@@ -2341,25 +2384,24 @@ export function ZoneTopologyTab({
   ]);
 
   const exportPng = useCallback(async () => {
-    const pngBlob = await renderSvgToPngBlob();
-    if (!pngBlob) {
-      toast({
-        title: "Export failed",
-        description: "Unable to render PNG from topology.",
-        variant: "destructive",
-      });
-      return;
-    }
-    const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
-    if (desktop) {
-      const bytes = await pngBlob.arrayBuffer();
-      const arr = new Uint8Array(bytes);
-      let binary = "";
-      for (let i = 0; i < arr.length; i += 1) {
-        binary += String.fromCharCode(arr[i]);
+    try {
+      const pngBlob = await renderSvgToPngBlob();
+      if (!pngBlob) {
+        reportTopologyFailure(
+          new Error("Unable to render PNG from topology"),
+          "Export PNG topology",
+        );
+        return;
       }
-      const b64 = btoa(binary);
-      try {
+      const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
+      if (desktop) {
+        const bytes = await pngBlob.arrayBuffer();
+        const arr = new Uint8Array(bytes);
+        let binary = "";
+        for (let i = 0; i < arr.length; i += 1) {
+          binary += String.fromCharCode(arr[i]);
+        }
+        const b64 = btoa(binary);
         const path = await TauriClient.saveTopologyAsset(
           "png",
           `${baseName}.png`,
@@ -2370,21 +2412,17 @@ export function ZoneTopologyTab({
           exportConfirmPath,
         );
         toast({ title: "Exported", description: path });
-      } catch (e) {
-        toast({
-          title: "Export failed",
-          description: e instanceof Error ? e.message : String(e),
-          variant: "destructive",
-        });
+        return;
       }
-      return;
+      const url = URL.createObjectURL(pngBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      reportTopologyFailure(error, "Export PNG topology");
     }
-    const url = URL.createObjectURL(pngBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${baseName}.png`;
-    a.click();
-    URL.revokeObjectURL(url);
   }, [
     desktop,
     exportConfirmPath,
@@ -2418,7 +2456,7 @@ export function ZoneTopologyTab({
           <h1>${zoneName} topology</h1>
           <div class="graph">${svgMarkup}</div>
           ${noteHtml ? `<h3>Annotations</h3><ul>${noteHtml}</ul>` : ""}
-          <script>window.onload = () => window.print();<\/script>
+          <script>window.onload = () => window.print();</script>
         </body>
       </html>
     `);
@@ -2563,6 +2601,8 @@ export function ZoneTopologyTab({
       });
       return;
     }
+    const runId = ++discoveryRunRef.current;
+    const isCurrentRun = () => discoveryRunRef.current === runId;
     const items: ServiceDiscoveryItem[] = [];
     setDiscovering(true);
     setDiscoveryProgress({
@@ -2623,6 +2663,7 @@ export function ZoneTopologyTab({
       const discoveryTotal = Math.max(1, probeHosts.length + 3);
       let discoveryDone = 1;
       const setProgress = (label: string, requests: string[] = []) => {
+        if (!isCurrentRun()) return;
         setDiscoveryProgress({
           label,
           done: discoveryDone,
@@ -2671,6 +2712,7 @@ export function ZoneTopologyTab({
         scanResolutionChain,
         probeHosts,
       );
+      if (!isCurrentRun()) return;
       if (backendBatch && backendBatch.probes.length > 0) {
         for (const probe of backendBatch.probes) {
           const norm = normalizeDomain(probe.host);
@@ -2714,6 +2756,7 @@ export function ZoneTopologyTab({
         for (const host of probeHosts) {
           setProgress(`Probing ${host}...`, [host]);
           const httpsStatus = await probeHttp(`https://${host}`);
+          if (!isCurrentRun()) return;
           items.push({
             service: `HTTPS (${host})`,
             status: httpsStatus,
@@ -2721,6 +2764,7 @@ export function ZoneTopologyTab({
               httpsStatus === "up" ? "Probe reachable" : "Probe failed/blocked",
           });
           const httpStatus = await probeHttp(`http://${host}`);
+          if (!isCurrentRun()) return;
           items.push({
             service: `HTTP (${host})`,
             status: httpStatus,
@@ -2760,14 +2804,21 @@ export function ZoneTopologyTab({
       }
       discoveryDone = discoveryTotal;
       setProgress("Discovery complete", []);
+      if (!isCurrentRun()) return;
       setDiscovery(items);
       toast({
         title: "Discovery complete",
         description: `Found ${items.length} service signal(s).`,
       });
+    } catch (error) {
+      if (isCurrentRun()) {
+        reportTopologyFailure(error, "Run DNS service discovery");
+      }
     } finally {
-      setDiscovering(false);
-      setDiscoveryProgress({ label: "", done: 0, total: 0, requests: [] });
+      if (isCurrentRun()) {
+        setDiscovering(false);
+        setDiscoveryProgress({ label: "", done: 0, total: 0, requests: [] });
+      }
     }
   }, [
     disableServiceDiscovery,
@@ -2978,7 +3029,7 @@ export function ZoneTopologyTab({
           setSvgMarkup("");
           setActiveResolutionRequests([]);
           setManualRefreshTick((v) => v + 1);
-          void onRefresh();
+          void runTopologyRefresh(onRefresh);
         }}
         disabled={isLoading}
       >
@@ -3221,11 +3272,16 @@ export function ZoneTopologyTab({
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/60"
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(nodeContextMenu.text);
-                  toast({
-                    title: "Copied",
-                    description: "Node text copied to clipboard.",
-                  });
+                  const copied = await copyTopologyText(
+                    nodeContextMenu.text,
+                    "Copy DNS topology node text",
+                  );
+                  if (copied) {
+                    toast({
+                      title: "Copied",
+                      description: "Node text copied to clipboard.",
+                    });
+                  }
                 } finally {
                   closeNodeContextMenu();
                 }

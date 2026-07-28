@@ -1,3 +1,5 @@
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+
 /**
  * Minimal interface for storage implementations used by the app. The
  * production implementation uses `localStorage`, but unit tests or server
@@ -7,6 +9,28 @@ export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+}
+
+function reportStorageFailure(error: unknown, label: string): void {
+  const name =
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    typeof error.name === "string"
+      ? error.name
+      : "";
+  const category =
+    name === "QuotaExceededError"
+      ? "quota exceeded"
+      : name === "SecurityError" || name === "NotAllowedError"
+        ? "access denied"
+        : name === "DataError" || name === "UnknownError"
+          ? "data unavailable"
+          : "operation failed";
+  reportRuntimeError(error, {
+    source: "runtime",
+    label: `${label}: ${category}`,
+  });
 }
 
 /**
@@ -83,14 +107,22 @@ export function getStorage(storage?: StorageLike): StorageLike {
         private initialized = false;
         async init() {
           // load the idb module lazily so we don't import it at package init
-          const idb = await import("idb").catch(() => null);
+          const idb = await import("idb").catch((error) => {
+            reportStorageFailure(error, "Load IndexedDB adapter");
+            return null;
+          });
           if (!idb) return;
           const { openDB } = idb;
-          this.db = await openDB("better-cloudflare", 1, {
-            upgrade(db: { createObjectStore: (name: string) => void }) {
-              db.createObjectStore("kv");
-            },
-          });
+          try {
+            this.db = await openDB("better-cloudflare", 1, {
+              upgrade(db: { createObjectStore: (name: string) => void }) {
+                db.createObjectStore("kv");
+              },
+            });
+          } catch (error) {
+            reportStorageFailure(error, "Open IndexedDB storage");
+            return;
+          }
           try {
             // dynamic idb runtime methods accessed via dynamic import
             const keys = await (this.db as IDBRuntime).getAllKeys?.("kv");
@@ -100,13 +132,13 @@ export function getStorage(storage?: StorageLike): StorageLike {
                   // runtime access
                   const v = await (this.db as IDBRuntime).get?.("kv", k);
                   this.store[k] = String(v);
-                } catch {
-                  // ignore - best-effort cache population
+                } catch (error) {
+                  reportStorageFailure(error, "Read an IndexedDB cache entry");
                 }
               }
             }
-          } catch {
-            // ignore cache population failures
+          } catch (error) {
+            reportStorageFailure(error, "Populate IndexedDB cache");
           }
           this.initialized = true;
         }
@@ -118,26 +150,30 @@ export function getStorage(storage?: StorageLike): StorageLike {
         setItem(key: string, value: string) {
           this.store[key] = String(value);
           if (this.initialized) {
-            // runtime call to idb. We don't block on errors.
-            (this.db as IDBRuntime).put?.("kv", value, key).catch(() => {});
+            void (this.db as IDBRuntime)
+              .put?.("kv", value, key)
+              .catch((error) =>
+                reportStorageFailure(error, "Persist IndexedDB value"),
+              );
           }
         }
         removeItem(key: string) {
           delete this.store[key];
           if (this.initialized) {
-            // runtime call
-            (this.db as IDBRuntime).delete?.("kv", key).catch(() => {});
+            void (this.db as IDBRuntime)
+              .delete?.("kv", key)
+              .catch((error) =>
+                reportStorageFailure(error, "Delete IndexedDB value"),
+              );
           }
         }
       }
 
       const IDS = new IndexedDBStorage();
       // Note: not awaiting init here since module may run server side; try to init
-      try {
-        IDS.init();
-      } catch {
-        /* ignore */
-      }
+      void IDS.init().catch((error) =>
+        reportStorageFailure(error, "Initialize IndexedDB storage"),
+      );
       // attach a helper to detect whether we've selected an IndexedDB backend
       // mark selection explicitly on the instance so callers can tell which
       // backend was chosen without unsafe casts
@@ -160,8 +196,8 @@ export function getStorage(storage?: StorageLike): StorageLike {
         return maybeLS as StorageLike;
       }
     }
-  } catch {
-    // Ignore access errors and fall back to memory storage
+  } catch (error) {
+    reportStorageFailure(error, "Select browser storage");
   }
   return new MemoryStorage();
 }
@@ -179,8 +215,8 @@ export function storageBackend(): "indexeddb" | "localstorage" | "memory" {
     if (typeof indexedDB !== "undefined") return "indexeddb";
     if (typeof globalThis !== "undefined" && "localStorage" in globalThis)
       return "localstorage";
-  } catch {
-    // ignore
+  } catch (error) {
+    reportStorageFailure(error, "Detect browser storage");
   }
   return "memory";
 }

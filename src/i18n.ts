@@ -1,5 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
 // Dynamically load translation resources from `src/locales` files. This
 // allows us to keep translations in dedicated JSON files, decoupled from the
@@ -42,31 +43,84 @@ const loadResources = async () => {
   };
 };
 
-(async () => {
-  const resources = await loadResources();
-  i18n.use(initReactI18next).init({
-    resources,
-    lng: "en-US",
-    fallbackLng: "en-US",
-    interpolation: { escapeValue: false },
-  });
+type TranslationResources = Awaited<ReturnType<typeof loadResources>>;
+
+export function readSavedLocale(
+  resources: TranslationResources,
+  storage?: Pick<Storage, "getItem">,
+): string | undefined {
   try {
-    const saved =
-      typeof globalThis !== "undefined" && "localStorage" in globalThis
-        ? (globalThis as { localStorage: Storage }).localStorage.getItem(
-            "locale",
-          )
-        : undefined;
+    const selectedStorage =
+      storage ??
+      (typeof globalThis !== "undefined" && "localStorage" in globalThis
+        ? (globalThis as { localStorage: Storage }).localStorage
+        : undefined);
+    const saved = selectedStorage?.getItem("locale");
     if (
       typeof saved === "string" &&
       Object.prototype.hasOwnProperty.call(resources, saved)
     ) {
-      void i18n.changeLanguage(saved);
+      return saved;
     }
-  } catch {
-    // Ignore storage access errors in test or SSR environments
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Read saved language preference",
+    });
   }
-})();
+  return undefined;
+}
+
+export async function initializeI18n(): Promise<void> {
+  let resources: TranslationResources;
+  try {
+    resources = await loadResources();
+    await i18n.use(initReactI18next).init({
+      resources,
+      lng: "en-US",
+      fallbackLng: "en-US",
+      interpolation: { escapeValue: false },
+    });
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Initialize translations",
+    });
+    try {
+      await i18n.use(initReactI18next).init({
+        resources: {},
+        lng: "en-US",
+        fallbackLng: "en-US",
+        interpolation: { escapeValue: false },
+      });
+    } catch (fallbackError) {
+      reportRuntimeError(fallbackError, {
+        source: "runtime",
+        label: "Initialize fallback translations",
+      });
+    }
+    return;
+  }
+
+  const saved = readSavedLocale(resources);
+  if (!saved) return;
+
+  try {
+    await i18n.changeLanguage(saved);
+  } catch (error) {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: "Apply saved language preference",
+    });
+  }
+}
+
+void initializeI18n().catch((error) => {
+  reportRuntimeError(error, {
+    source: "runtime",
+    label: "Start translation initialization",
+  });
+});
 
 export default i18n;
 
