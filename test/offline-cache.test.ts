@@ -648,6 +648,7 @@ test("retries an evicted durable entry restoration after the first rollback fail
     storagePrototype.setItem = originalSetItem;
   }
 
+  t.mock.timers.reset();
   assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
   assert.equal(rawIndexZoneIds().includes(`retry-${hardLimit}`), false);
   assert.equal(localStorage.getItem(oldestKey), null);

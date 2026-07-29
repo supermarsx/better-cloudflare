@@ -439,6 +439,12 @@ function rollbackGenerationIsCurrent(
 function scheduleRollback(): void {
   if (rollbackTimer !== undefined || !pendingRollback) return;
   const rollback = pendingRollback;
+  const terminateRollback = (): void => {
+    if (pendingRollback !== rollback) return;
+    pendingRollback = undefined;
+    completedCacheState = undefined;
+    recoveryState = undefined;
+  };
   const delay = Math.min(
     ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(rollback.attempts, 6),
     1_000,
@@ -586,9 +592,7 @@ function scheduleRollback(): void {
     }
 
     if (rollbackFinished && cleanupComplete) {
-      pendingRollback = undefined;
-      completedCacheState = undefined;
-      recoveryState = undefined;
+      terminateRollback();
       tryReconcileAfterFailure("Reconcile retried DNS offline cache rollback");
       return;
     }
@@ -596,15 +600,18 @@ function scheduleRollback(): void {
       rollback.attempts >= ROLLBACK_RETRY_LIMIT ||
       Date.now() - rollback.startedAt >= ROLLBACK_RETRY_WINDOW_MS
     ) {
-      pendingRollback = undefined;
-      completedCacheState = undefined;
-      recoveryState = undefined;
+      terminateRollback();
       tryReconcileAfterFailure(
         "Reconcile abandoned DNS offline cache rollback",
       );
       return;
     }
-    scheduleRollback();
+    try {
+      scheduleRollback();
+    } catch (error) {
+      terminateRollback();
+      reportCacheFailure(error, "Schedule DNS offline cache rollback retry");
+    }
   }, delay);
 }
 
