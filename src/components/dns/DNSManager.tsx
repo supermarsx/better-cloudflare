@@ -2513,9 +2513,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             );
           }
           if (Array.isArray(prefObj.mcp_enabled_tools)) {
-            const confirmedTools = normalizeMcpToolIds(
-              prefObj.mcp_enabled_tools,
-            );
+            // The local permission snapshot is the confirmed source of truth
+            // while the off-view permission controller is bootstrapping. A
+            // preference response may still contain the previous server
+            // selection, so retain confirmed local tools until reconciliation
+            // publishes the authoritative provisional/final result.
+            const confirmedTools = normalizeMcpToolIds([
+              ...mcpEnabledToolsRef.current,
+              ...prefObj.mcp_enabled_tools,
+            ]);
             const persistedPermissionSnapshot =
               storageManager.getMcpEnabledToolsSnapshot();
             const requestedTools = normalizeMcpToolIds([

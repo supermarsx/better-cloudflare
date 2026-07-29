@@ -974,13 +974,13 @@ export function McpToolPermissions({
         removedToolIdsRef.current = loadRemovedToolIds;
         setSaveError(storageReadError);
         setCatalog(resolveCatalog(appliedStatus));
+        setLoadState("ready");
         publishApplied(
           confirmedAppliedTools,
           appliedStatus,
           generation,
           pendingHighRiskTools.length > 0 ? "provisional" : "final",
         );
-        setLoadState("ready");
 
         if (pendingHighRiskTools.length > 0) {
           openConfirmation(

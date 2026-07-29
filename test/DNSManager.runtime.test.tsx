@@ -554,10 +554,9 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
   const statusLoad = deferred<McpServerStatus>();
   const setToolCalls: string[][] = [];
   const startCalls: string[][] = [];
-  let snapshotReads = 0;
+  let statusLoadCalls = 0;
 
   mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => {
-    snapshotReads += 1;
     return {
       enabledTools: ["cf_list_zones"],
       removedToolIds: [],
@@ -578,7 +577,10 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
       return createMcpStatus(tools);
     },
     {
-      getMcpServerStatus: () => statusLoad.promise,
+      getMcpServerStatus: () => {
+        statusLoadCalls += 1;
+        return statusLoad.promise;
+      },
       startMcpServer: async (_host, _port, enabledTools) => {
         startCalls.push([...enabledTools]);
         return createMcpStatus(enabledTools);
@@ -588,7 +590,7 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
 
   render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
 
-  await waitFor(() => assert.ok(snapshotReads >= 3));
+  await waitFor(() => assert.equal(statusLoadCalls, 1));
   statusLoad.resolve(createMcpStatus(["cf_list_zones"]));
   await waitFor(() => {
     assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
