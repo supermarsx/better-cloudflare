@@ -16,6 +16,7 @@ import {
 
 const CACHE_KEY_PREFIX = "bc_offline_cache_";
 const CACHE_INDEX_KEY = "bc_offline_cache_index";
+const CACHE_COORDINATION_KEY = "bc_offline_cache_coordination";
 
 function rawCacheEntry(
   zoneId: string,
@@ -41,6 +42,51 @@ function ownedEntryKeys(): string[] {
   return keys.sort();
 }
 
+function zoneIdFromRawEntry(raw: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed &&
+      typeof parsed === "object" &&
+      "zoneId" in parsed &&
+      typeof parsed.zoneId === "string"
+      ? parsed.zoneId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function entryKeyForZone(zoneId: string): string | undefined {
+  return ownedEntryKeys().find((key) => {
+    const raw = localStorage.getItem(key);
+    return raw !== null && zoneIdFromRawEntry(raw) === zoneId;
+  });
+}
+
+function ownedEntryZoneIds(): string[] {
+  return ownedEntryKeys()
+    .map((key) => {
+      const raw = localStorage.getItem(key);
+      return raw === null ? undefined : zoneIdFromRawEntry(raw);
+    })
+    .filter((zoneId): zoneId is string => zoneId !== undefined)
+    .sort();
+}
+
+function rawIndexZoneIds(): string[] {
+  const raw = localStorage.getItem(CACHE_INDEX_KEY);
+  if (raw === null) return [];
+  const parsed: unknown = JSON.parse(raw);
+  if (Array.isArray(parsed)) return parsed as string[];
+  return (parsed as { zoneIds: string[] }).zoneIds;
+}
+
+function namedStorageError(name: string, message: string): Error {
+  const error = new Error(message);
+  Object.defineProperty(error, "name", { value: name });
+  return error;
+}
+
 function failNextSetAfterWriting(targetKey: string): () => void {
   const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
   const originalSetItem = storagePrototype.setItem;
@@ -54,6 +100,26 @@ function failNextSetAfterWriting(targetKey: string): () => void {
     if (armed && key === targetKey) {
       armed = false;
       throw new Error(`forced setItem failure for ${key}`);
+    }
+  };
+  return () => {
+    storagePrototype.setItem = originalSetItem;
+  };
+}
+
+function failNextEntrySetAfterWriting(zoneId: string): () => void {
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  let armed = true;
+  storagePrototype.setItem = function setEntryWithFailure(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    originalSetItem.call(this, key, value);
+    if (armed && zoneIdFromRawEntry(value) === zoneId) {
+      armed = false;
+      throw new Error(`forced entry setItem failure for ${zoneId}`);
     }
   };
   return () => {
@@ -196,12 +262,242 @@ test("recovers a malformed index within byte limits and removes corrupt owned ke
   );
 });
 
+test("reconciles a deterministic stale-index interleaving from a second module instance", async () => {
+  const secondTab = (await import(
+    new URL("../src/lib/storage/offline-cache.ts?second-tab", import.meta.url)
+      .href
+  )) as typeof import("../src/lib/storage/offline-cache");
+  assert.notEqual(secondTab.cacheZoneRecords, cacheZoneRecords);
+
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  let injected = false;
+  let observedStaleOverwrite = false;
+  storagePrototype.setItem = function setItemWithInterleaving(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    originalSetItem.call(this, key, value);
+    if (!injected && zoneIdFromRawEntry(value) === "tab-a") {
+      injected = true;
+      secondTab.cacheZoneRecords("tab-b", "Tab B", []);
+      return;
+    }
+    if (
+      injected &&
+      key === CACHE_INDEX_KEY &&
+      JSON.stringify(rawIndexZoneIds()) === JSON.stringify(["tab-a"])
+    ) {
+      observedStaleOverwrite = true;
+    }
+  };
+
+  try {
+    cacheZoneRecords("tab-a", "Tab A", []);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+  }
+
+  assert.equal(injected, true);
+  assert.equal(observedStaleOverwrite, true);
+  assert.deepEqual(getCacheIndex(), ["tab-a", "tab-b"]);
+  assert.deepEqual(rawIndexZoneIds(), ["tab-a", "tab-b"]);
+  assert.deepEqual(ownedEntryZoneIds(), ["tab-a", "tab-b"]);
+});
+
+test("immutable entry versions survive a concurrent replacement during stale eviction", async () => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = 0; index < hardLimit; index += 1) {
+    cacheZoneRecords(`race-${index}`, `Original ${index}`, []);
+  }
+  const oldestKey = entryKeyForZone("race-0");
+  assert.ok(oldestKey);
+
+  const secondTab = (await import(
+    new URL("../src/lib/storage/offline-cache.ts?eviction-tab", import.meta.url)
+      .href
+  )) as typeof import("../src/lib/storage/offline-cache");
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalRemoveItem = storagePrototype.removeItem;
+  let injected = false;
+  storagePrototype.removeItem = function removeWithConcurrentReplacement(
+    this: Storage,
+    key: string,
+  ): void {
+    if (!injected && key === oldestKey) {
+      injected = true;
+      secondTab.cacheZoneRecords("race-0", "Concurrent replacement", []);
+    }
+    originalRemoveItem.call(this, key);
+  };
+
+  try {
+    cacheZoneRecords("race-incoming", "Concurrent incoming", []);
+  } finally {
+    storagePrototype.removeItem = originalRemoveItem;
+  }
+
+  const index = getCacheIndex();
+  assert.equal(injected, true);
+  assert.equal(index.length, hardLimit);
+  assert.equal(index.includes("race-0"), true);
+  assert.equal(index.includes("race-incoming"), true);
+  assert.equal(index.includes("race-1"), false);
+  assert.equal(
+    getCachedZoneRecords("race-0")?.zoneName,
+    "Concurrent replacement",
+  );
+  assert.deepEqual(ownedEntryZoneIds(), [...index].sort());
+});
+
+test("recovery and clear discover owned keys after 650 unrelated origin keys", () => {
+  const unrelatedKeys = Array.from(
+    { length: 650 },
+    (_, index) => `unrelated-${index.toString().padStart(4, "0")}`,
+  );
+  for (const key of unrelatedKeys) localStorage.setItem(key, "unrelated");
+  localStorage.setItem(
+    `${CACHE_KEY_PREFIX}after-unrelated-a`,
+    rawCacheEntry("after-unrelated-a", 1),
+  );
+  localStorage.setItem(
+    `${CACHE_KEY_PREFIX}after-unrelated-b`,
+    rawCacheEntry("after-unrelated-b", 2),
+  );
+
+  try {
+    assert.deepEqual(getCacheIndex(), [
+      "after-unrelated-a",
+      "after-unrelated-b",
+    ]);
+    assert.deepEqual(rawIndexZoneIds(), [
+      "after-unrelated-a",
+      "after-unrelated-b",
+    ]);
+
+    clearOfflineCache();
+
+    assert.deepEqual(ownedEntryKeys(), []);
+    assert.equal(localStorage.getItem(CACHE_INDEX_KEY), null);
+    assert.equal(localStorage.getItem(unrelatedKeys[0]!), "unrelated");
+    assert.equal(localStorage.getItem(unrelatedKeys.at(-1)!), "unrelated");
+  } finally {
+    for (const key of unrelatedKeys) localStorage.removeItem(key);
+  }
+});
+
+test("takes over a stale lease and reconciles a crashed data-only write without storage events", () => {
+  localStorage.setItem(
+    CACHE_COORDINATION_KEY,
+    JSON.stringify({
+      owner: "crashed-tab",
+      token: "abandoned-operation",
+      expiresAt: Date.now() - 1,
+    }),
+  );
+  localStorage.setItem(
+    `${CACHE_KEY_PREFIX}crash-recovery`,
+    rawCacheEntry("crash-recovery", 1),
+  );
+
+  assert.deepEqual(getCacheIndex(), ["crash-recovery"]);
+  assert.deepEqual(rawIndexZoneIds(), ["crash-recovery"]);
+  assert.equal(localStorage.getItem(CACHE_COORDINATION_KEY), null);
+});
+
+test("self-heals an orphan and absent index claim after repeated quota and access failures", () => {
+  cacheZoneRecords("stable", "Stable", []);
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  const originalRemoveItem = storagePrototype.removeItem;
+  let quotaFailures = 3;
+  let rollbackAccessFailures = 2;
+  let orphanKey: string | undefined;
+
+  storagePrototype.setItem = function setItemWithRepeatedQuotaFailure(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (zoneIdFromRawEntry(value) === "orphan") {
+      orphanKey = key;
+    }
+    if (key === CACHE_INDEX_KEY && quotaFailures > 0) {
+      quotaFailures -= 1;
+      throw namedStorageError(
+        "QuotaExceededError",
+        "forced repeated index quota failure",
+      );
+    }
+    originalSetItem.call(this, key, value);
+  };
+  storagePrototype.removeItem = function removeWithRepeatedAccessFailure(
+    this: Storage,
+    key: string,
+  ): void {
+    if (key === orphanKey && rollbackAccessFailures > 0) {
+      rollbackAccessFailures -= 1;
+      throw namedStorageError(
+        "SecurityError",
+        "forced repeated rollback access failure",
+      );
+    }
+    originalRemoveItem.call(this, key);
+  };
+
+  try {
+    cacheZoneRecords("orphan", "Recovered orphan", []);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+    storagePrototype.removeItem = originalRemoveItem;
+  }
+
+  assert.equal(quotaFailures, 0);
+  assert.ok(rollbackAccessFailures < 2);
+  assert.ok(orphanKey);
+  assert.ok(localStorage.getItem(orphanKey));
+  const stableKey = entryKeyForZone("stable");
+  assert.ok(stableKey);
+  originalRemoveItem.call(localStorage, stableKey);
+  assert.deepEqual(rawIndexZoneIds(), ["stable"]);
+
+  const originalGetItem = storagePrototype.getItem;
+  let readAccessFailures = 2;
+  storagePrototype.getItem = function getWithRepeatedAccessFailure(
+    this: Storage,
+    key: string,
+  ): string | null {
+    if (key === CACHE_INDEX_KEY && readAccessFailures > 0) {
+      readAccessFailures -= 1;
+      throw namedStorageError(
+        "SecurityError",
+        "forced repeated recovery access failure",
+      );
+    }
+    return originalGetItem.call(this, key);
+  };
+  try {
+    assert.deepEqual(getCacheIndex(), []);
+    assert.deepEqual(getCacheIndex(), []);
+  } finally {
+    storagePrototype.getItem = originalGetItem;
+  }
+
+  assert.equal(readAccessFailures, 0);
+  assert.deepEqual(getCacheIndex(), ["orphan"]);
+  assert.deepEqual(rawIndexZoneIds(), ["orphan"]);
+  assert.deepEqual(ownedEntryZoneIds(), ["orphan"]);
+  assert.equal(getCachedZoneRecords("orphan")?.zoneName, "Recovered orphan");
+});
+
 test("rolls back a replaced entry and index when the entry write mutates then fails", () => {
   cacheZoneRecords("stable", "Stable Zone", [{ id: "before" }]);
-  const entryKey = `${CACHE_KEY_PREFIX}stable`;
+  const entryKey = entryKeyForZone("stable");
+  assert.ok(entryKey);
   const previousEntry = localStorage.getItem(entryKey);
   const previousIndex = localStorage.getItem(CACHE_INDEX_KEY);
-  const restoreSetItem = failNextSetAfterWriting(entryKey);
+  const restoreSetItem = failNextEntrySetAfterWriting("stable");
 
   try {
     cacheZoneRecords("stable", "Replacement", [{ id: "after" }]);
@@ -211,6 +507,7 @@ test("rolls back a replaced entry and index when the entry write mutates then fa
 
   assert.equal(localStorage.getItem(entryKey), previousEntry);
   assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
+  assert.deepEqual(ownedEntryZoneIds(), ["stable"]);
   assert.equal(getCachedZoneRecords("stable")?.zoneName, "Stable Zone");
 });
 
@@ -220,9 +517,9 @@ test("rolls back a new entry and index before deleting old data when index write
     cacheZoneRecords(`durable-${index}`, `Durable ${index}`, []);
   }
   const previousIndex = localStorage.getItem(CACHE_INDEX_KEY);
-  const oldestKey = `${CACHE_KEY_PREFIX}durable-0`;
+  const oldestKey = entryKeyForZone("durable-0");
+  assert.ok(oldestKey);
   const previousOldest = localStorage.getItem(oldestKey);
-  const incomingKey = `${CACHE_KEY_PREFIX}durable-${hardLimit}`;
   const restoreSetItem = failNextSetAfterWriting(CACHE_INDEX_KEY);
 
   try {
@@ -231,7 +528,7 @@ test("rolls back a new entry and index before deleting old data when index write
     restoreSetItem();
   }
 
-  assert.equal(localStorage.getItem(incomingKey), null);
+  assert.equal(entryKeyForZone(`durable-${hardLimit}`), undefined);
   assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
   assert.equal(localStorage.getItem(oldestKey), previousOldest);
   assert.equal(getCacheIndex()[0], "durable-0");
@@ -244,9 +541,9 @@ test("restores deleted entries when eviction fails after data and index writes",
     cacheZoneRecords(`rollback-${index}`, `Rollback ${index}`, []);
   }
   const previousIndex = localStorage.getItem(CACHE_INDEX_KEY);
-  const oldestKey = `${CACHE_KEY_PREFIX}rollback-0`;
+  const oldestKey = entryKeyForZone("rollback-0");
+  assert.ok(oldestKey);
   const previousOldest = localStorage.getItem(oldestKey);
-  const incomingKey = `${CACHE_KEY_PREFIX}rollback-${hardLimit}`;
   const restoreRemoveItem = failNextRemoveAfterDeleting(oldestKey);
 
   try {
@@ -255,7 +552,7 @@ test("restores deleted entries when eviction fails after data and index writes",
     restoreRemoveItem();
   }
 
-  assert.equal(localStorage.getItem(incomingKey), null);
+  assert.equal(entryKeyForZone(`rollback-${hardLimit}`), undefined);
   assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
   assert.equal(localStorage.getItem(oldestKey), previousOldest);
   assert.equal(getCacheIndex()[0], "rollback-0");

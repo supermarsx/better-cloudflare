@@ -93,6 +93,30 @@ test("rejects Content-Length before reading and cancels the reader", async () =>
   assert.equal(cancellations, 1);
 });
 
+test("rejects a non-streamable response-like body before calling unbounded text()", async () => {
+  let textCalls = 0;
+  const responseLike = {
+    body: undefined,
+    headers: new Headers({ "content-length": "5" }),
+    text: async () => {
+      textCalls += 1;
+      return "x".repeat(1_000_000);
+    },
+  } as unknown as Response;
+
+  await assert.rejects(
+    () => readBoundedResponseText(responseLike, 5),
+    (error: unknown) => {
+      assert.ok(error instanceof ResponseBodyLimitError);
+      assert.equal(error.limitBytes, 5);
+      assert.equal(error.observedBytes, undefined);
+      assert.equal(error.declaredBytes, undefined);
+      return true;
+    },
+  );
+  assert.equal(textCalls, 0);
+});
+
 test("UTF-8 truncation respects byte boundaries without splitting Unicode", () => {
   assert.equal(truncateUtf8("abcd", 5), "abcd");
   assert.equal(truncateUtf8("abcde", 5), "abcde");

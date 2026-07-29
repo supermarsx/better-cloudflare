@@ -20,7 +20,12 @@ export const RESOURCE_LIMITS = {
   offlineCache: {
     hardEntries: 50,
     hardBytes: 5 * MEBIBYTE,
-    recoveryScanHardKeys: 500,
+    recoveryOwnedEntriesHard: 200,
+    recoveryInspectionCharactersHard: 5 * MEBIBYTE,
+    discoveryBatchKeys: 128,
+    discoveryPassesHard: 2,
+    reconciliationPassesHard: 3,
+    coordinationValueHardCharacters: 512,
   },
   undoRedo: {
     defaultEntries: 50,
@@ -32,7 +37,27 @@ const utf8Encoder = new TextEncoder();
 const INITIAL_RESPONSE_BUFFER_BYTES = 16 * 1024;
 
 export function utf8ByteLength(value: string): number {
-  return utf8Encoder.encode(value).byteLength;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit < 0x80) {
+      bytes += 1;
+    } else if (codeUnit < 0x800) {
+      bytes += 2;
+    } else if (
+      codeUnit >= 0xd800 &&
+      codeUnit <= 0xdbff &&
+      index + 1 < value.length &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      bytes += 4;
+      index += 1;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
 }
 
 function assertSafeIntegerInRange(
@@ -157,14 +182,10 @@ export async function readBoundedResponseText(
   ).body;
   if (body === null) return "";
   if (!body) {
-    // Response.body is always present in production Fetch implementations.
-    // This compatibility path supports response-like test doubles.
-    const text = await response.text();
-    const observedBytes = utf8ByteLength(text);
-    if (observedBytes > limitBytes) {
-      throw new ResponseBodyLimitError(limitBytes, observedBytes);
-    }
-    return text;
+    // A non-streaming response-like object cannot be consumed under an
+    // enforceable allocation ceiling. Standard Fetch responses use `null` for
+    // an absent body and a ReadableStream for a present one.
+    throw new ResponseBodyLimitError(limitBytes);
   }
 
   const reader = body.getReader();

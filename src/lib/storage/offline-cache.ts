@@ -1,8 +1,10 @@
 /**
  * Offline cache for DNS records.
  *
- * Entries remain in localStorage for up to seven days. The index is ordered
- * from oldest to newest write so count and byte eviction are deterministic.
+ * Entries remain in localStorage for up to seven days. Entry keys are the
+ * durable source of truth; the versioned index is only an ordering hint. Every
+ * observable read reconciles both so a crashed or racing tab cannot leave a
+ * permanently lost entry or an index claim for absent data.
  */
 
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
@@ -20,17 +22,62 @@ interface IndexedCacheEntry {
   key: string;
   raw: string;
   value: CachedZoneRecords;
+  mutationToken: string;
   retainedBytes: number;
 }
 
-interface OwnedCacheKeyScan {
-  keys: string[];
-  complete: boolean;
+interface CacheIndexSnapshot {
+  raw: string | null;
+  zoneIds: string[];
+  revision: number;
+  modern: boolean;
+  valid: boolean;
+}
+
+interface CacheStateInspection {
+  index: CacheIndexSnapshot;
+  retained: IndexedCacheEntry[];
+  purgeCandidates: Array<{
+    key: string;
+    expectedRaw: string;
+  }>;
+  scanStable: boolean;
+}
+
+interface CacheLease {
+  owner: string;
+  token: string;
+  expiresAt: number;
+}
+
+interface PreparedIndexWrite {
+  raw: string | null;
 }
 
 const CACHE_KEY_PREFIX = "bc_offline_cache_";
 const CACHE_INDEX_KEY = "bc_offline_cache_index";
+const CACHE_COORDINATION_KEY = "bc_offline_cache_coordination";
+const CACHE_ENTRY_KEY_PREFIX = `${CACHE_KEY_PREFIX}entry_v1_`;
+const CACHE_INDEX_FORMAT = 1;
+const CACHE_LEASE_MS = 2_000;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const RESERVED_CACHE_KEYS = new Set([CACHE_INDEX_KEY, CACHE_COORDINATION_KEY]);
+
+let ownerSequence = 0;
+let mutationSequence = 0;
+
+function randomToken(): string {
+  const randomUuid = globalThis.crypto?.randomUUID;
+  if (typeof randomUuid === "function") {
+    return randomUuid.call(globalThis.crypto);
+  }
+  ownerSequence = (ownerSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${Date.now().toString(36)}-${ownerSequence.toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 14)}`;
+}
+
+const CACHE_OWNER_ID = randomToken();
 
 class OfflineCacheLimitError extends Error {
   readonly name = "OfflineCacheLimitError";
@@ -83,14 +130,25 @@ function isCachedZoneRecords(value: unknown): value is CachedZoneRecords {
   );
 }
 
-function cacheKey(zoneId: string): string {
-  return CACHE_KEY_PREFIX + zoneId;
+function mutationTokenFromCacheKey(key: string): string | undefined {
+  if (!key.startsWith(CACHE_ENTRY_KEY_PREFIX)) return undefined;
+  const mutationToken = key.slice(CACHE_ENTRY_KEY_PREFIX.length);
+  return mutationToken.length > 0 ? mutationToken : undefined;
 }
 
-function zoneIdFromCacheKey(key: string): string | undefined {
-  return key.startsWith(CACHE_KEY_PREFIX) && key !== CACHE_INDEX_KEY
+function legacyZoneIdFromCacheKey(key: string): string | undefined {
+  return key.startsWith(CACHE_KEY_PREFIX) &&
+    !key.startsWith(CACHE_ENTRY_KEY_PREFIX) &&
+    !RESERVED_CACHE_KEYS.has(key)
     ? key.slice(CACHE_KEY_PREFIX.length)
     : undefined;
+}
+
+function isOwnedCacheEntryKey(key: string): boolean {
+  return (
+    key.startsWith(CACHE_ENTRY_KEY_PREFIX) ||
+    legacyZoneIdFromCacheKey(key) !== undefined
+  );
 }
 
 function retainedBytes(key: string, value: string): number {
@@ -98,7 +156,15 @@ function retainedBytes(key: string, value: string): number {
 }
 
 function indexRetainedBytes(index: readonly string[]): number {
-  return retainedBytes(CACHE_INDEX_KEY, JSON.stringify(index));
+  return retainedBytes(
+    CACHE_INDEX_KEY,
+    JSON.stringify({
+      format: CACHE_INDEX_FORMAT,
+      revision: Number.MAX_SAFE_INTEGER,
+      writer: CACHE_OWNER_ID,
+      zoneIds: index,
+    }),
+  );
 }
 
 function assertStoredValueWithinLimit(key: string, value: string): number {
@@ -117,51 +183,150 @@ function assertStoredValueWithinLimit(key: string, value: string): number {
 }
 
 function parseCacheEntry(key: string, raw: string): IndexedCacheEntry {
-  const zoneId = zoneIdFromCacheKey(key);
-  if (zoneId === undefined) {
+  const keyMutationToken = mutationTokenFromCacheKey(key);
+  const legacyZoneId = legacyZoneIdFromCacheKey(key);
+  if (keyMutationToken === undefined && legacyZoneId === undefined) {
     throw new SyntaxError("Invalid offline cache key");
   }
   const entryBytes = assertStoredValueWithinLimit(key, raw);
   const parsed: unknown = JSON.parse(raw);
-  if (!isCachedZoneRecords(parsed) || parsed.zoneId !== zoneId) {
+  if (!isCachedZoneRecords(parsed)) {
     throw new SyntaxError("Invalid offline cache entry");
   }
+  const parsedMutationToken =
+    "__bcMutation" in parsed && typeof parsed.__bcMutation === "string"
+      ? parsed.__bcMutation
+      : "";
+  if (
+    (legacyZoneId !== undefined && parsed.zoneId !== legacyZoneId) ||
+    (keyMutationToken !== undefined && parsedMutationToken !== keyMutationToken)
+  ) {
+    throw new SyntaxError("Offline cache entry key does not match its value");
+  }
   return {
-    zoneId,
+    zoneId: parsed.zoneId,
     key,
     raw,
-    value: parsed,
+    value: {
+      zoneId: parsed.zoneId,
+      zoneName: parsed.zoneName,
+      records: parsed.records,
+      cachedAt: parsed.cachedAt,
+    },
+    mutationToken: parsedMutationToken,
     retainedBytes: entryBytes,
   };
 }
 
-function parseCacheIndex(raw: string): string[] {
-  assertStoredValueWithinLimit(CACHE_INDEX_KEY, raw);
-  const parsed: unknown = JSON.parse(raw);
+function validateIndexZoneIds(value: unknown): string[] {
   if (
-    !Array.isArray(parsed) ||
-    parsed.length > RESOURCE_LIMITS.offlineCache.hardEntries ||
-    parsed.some((zoneId) => typeof zoneId !== "string") ||
-    new Set(parsed).size !== parsed.length
+    !Array.isArray(value) ||
+    value.length > RESOURCE_LIMITS.offlineCache.hardEntries ||
+    value.some((zoneId) => typeof zoneId !== "string") ||
+    new Set(value).size !== value.length
   ) {
     throw new SyntaxError("Invalid offline cache index");
   }
-  return parsed;
+  return value;
 }
 
-function writeCacheIndex(index: readonly string[]): void {
+function parseCacheIndex(raw: string): Omit<CacheIndexSnapshot, "raw"> {
+  assertStoredValueWithinLimit(CACHE_INDEX_KEY, raw);
+  const parsed: unknown = JSON.parse(raw);
+  if (Array.isArray(parsed)) {
+    return {
+      zoneIds: validateIndexZoneIds(parsed),
+      revision: 0,
+      modern: false,
+      valid: true,
+    };
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new SyntaxError("Invalid offline cache index");
+  }
+  const candidate = parsed as {
+    format?: unknown;
+    revision?: unknown;
+    writer?: unknown;
+    zoneIds?: unknown;
+  };
+  if (
+    candidate.format !== CACHE_INDEX_FORMAT ||
+    !Number.isSafeInteger(candidate.revision) ||
+    (candidate.revision as number) < 0 ||
+    typeof candidate.writer !== "string" ||
+    candidate.writer.length === 0 ||
+    candidate.writer.length > 128
+  ) {
+    throw new SyntaxError("Invalid offline cache index");
+  }
+  return {
+    zoneIds: validateIndexZoneIds(candidate.zoneIds),
+    revision: candidate.revision as number,
+    modern: true,
+    valid: true,
+  };
+}
+
+function readCacheIndex(): CacheIndexSnapshot {
+  const raw = localStorage.getItem(CACHE_INDEX_KEY);
+  if (raw === null) {
+    return {
+      raw,
+      zoneIds: [],
+      revision: 0,
+      modern: true,
+      valid: true,
+    };
+  }
+  try {
+    return { raw, ...parseCacheIndex(raw) };
+  } catch (error) {
+    reportCacheFailure(
+      error,
+      "Recover DNS offline cache index",
+      error instanceof SyntaxError,
+    );
+    return {
+      raw,
+      zoneIds: [],
+      revision: 0,
+      modern: false,
+      valid: false,
+    };
+  }
+}
+
+function prepareCacheIndex(
+  index: readonly string[],
+  previousRevision: number,
+): PreparedIndexWrite {
   if (index.length > RESOURCE_LIMITS.offlineCache.hardEntries) {
     throw new OfflineCacheLimitError(
       "DNS offline cache index exceeds the entry limit.",
     );
   }
   if (index.length === 0) {
-    localStorage.removeItem(CACHE_INDEX_KEY);
-    return;
+    return { raw: null };
   }
-  const serialized = JSON.stringify(index);
-  assertStoredValueWithinLimit(CACHE_INDEX_KEY, serialized);
-  localStorage.setItem(CACHE_INDEX_KEY, serialized);
+  const revision =
+    previousRevision >= Number.MAX_SAFE_INTEGER ? 1 : previousRevision + 1;
+  const raw = JSON.stringify({
+    format: CACHE_INDEX_FORMAT,
+    revision,
+    writer: CACHE_OWNER_ID,
+    zoneIds: index,
+  });
+  assertStoredValueWithinLimit(CACHE_INDEX_KEY, raw);
+  return { raw };
+}
+
+function applyPreparedIndex(write: PreparedIndexWrite): void {
+  if (write.raw === null) {
+    localStorage.removeItem(CACHE_INDEX_KEY);
+  } else {
+    localStorage.setItem(CACHE_INDEX_KEY, write.raw);
+  }
 }
 
 function restoreStoredValue(key: string, previous: string | null): void {
@@ -172,32 +337,155 @@ function restoreStoredValue(key: string, previous: string | null): void {
   }
 }
 
-function tryRestoreStoredValue(
+function tryRestoreIfUnchanged(
   key: string,
+  expectedCurrent: string | null,
   previous: string | null,
   operation: string,
 ): void {
   try {
+    if (localStorage.getItem(key) !== expectedCurrent) return;
     restoreStoredValue(key, previous);
   } catch (error) {
     reportCacheFailure(error, operation);
   }
 }
 
-function scanOwnedCacheKeys(): OwnedCacheKeyScan {
-  const storedKeyCount = localStorage.length;
-  const scannedKeyCount = Math.min(
-    storedKeyCount,
-    RESOURCE_LIMITS.offlineCache.recoveryScanHardKeys,
-  );
-  const keys: string[] = [];
-  for (let index = 0; index < scannedKeyCount; index += 1) {
-    const key = localStorage.key(index);
-    if (key && zoneIdFromCacheKey(key) !== undefined) keys.push(key);
+function parseCacheLease(raw: string | null): CacheLease | undefined {
+  if (
+    raw === null ||
+    raw.length > RESOURCE_LIMITS.offlineCache.coordinationValueHardCharacters
+  ) {
+    return undefined;
   }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const lease = parsed as Partial<CacheLease>;
+    return typeof lease.owner === "string" &&
+      typeof lease.token === "string" &&
+      lease.owner.length <= 128 &&
+      lease.token.length <= 128 &&
+      typeof lease.expiresAt === "number" &&
+      Number.isFinite(lease.expiresAt)
+      ? (lease as CacheLease)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function tryAcquireCacheLease(): CacheLease | undefined {
+  try {
+    const now = Date.now();
+    const current = parseCacheLease(
+      localStorage.getItem(CACHE_COORDINATION_KEY),
+    );
+    if (
+      current &&
+      current.owner !== CACHE_OWNER_ID &&
+      current.expiresAt > now &&
+      current.expiresAt <= now + CACHE_LEASE_MS * 2
+    ) {
+      return undefined;
+    }
+
+    const lease: CacheLease = {
+      owner: CACHE_OWNER_ID,
+      token: randomToken(),
+      expiresAt: now + CACHE_LEASE_MS,
+    };
+    const raw = JSON.stringify(lease);
+    localStorage.setItem(CACHE_COORDINATION_KEY, raw);
+    const confirmed = parseCacheLease(
+      localStorage.getItem(CACHE_COORDINATION_KEY),
+    );
+    return confirmed?.owner === lease.owner && confirmed.token === lease.token
+      ? lease
+      : undefined;
+  } catch (error) {
+    // The lease only reduces collisions. Versioned reconciliation remains the
+    // correctness mechanism when quota or access policy blocks coordination.
+    reportCacheFailure(error, "Coordinate DNS offline cache");
+    return undefined;
+  }
+}
+
+function releaseCacheLease(lease: CacheLease | undefined): void {
+  if (!lease) return;
+  try {
+    const current = parseCacheLease(
+      localStorage.getItem(CACHE_COORDINATION_KEY),
+    );
+    if (current?.owner === lease.owner && current.token === lease.token) {
+      localStorage.removeItem(CACHE_COORDINATION_KEY);
+    }
+  } catch (error) {
+    reportCacheFailure(error, "Release DNS offline cache coordination");
+  }
+}
+
+function scanOwnedCacheKeys(): {
+  keys: string[];
+  stable: boolean;
+  observedLength: number;
+} {
+  const keys = new Set<string>();
+  let stable = true;
+  let previousLength = localStorage.length;
+
+  for (
+    let pass = 0;
+    pass < RESOURCE_LIMITS.offlineCache.discoveryPassesHard;
+    pass += 1
+  ) {
+    const storedKeyCount = localStorage.length;
+    const scanForward = pass % 2 === 0;
+    for (
+      let batchStart = 0;
+      batchStart < storedKeyCount;
+      batchStart += RESOURCE_LIMITS.offlineCache.discoveryBatchKeys
+    ) {
+      const batchEnd = Math.min(
+        storedKeyCount,
+        batchStart + RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
+      );
+      for (let offset = batchStart; offset < batchEnd; offset += 1) {
+        const index = scanForward ? offset : storedKeyCount - offset - 1;
+        const key = localStorage.key(index);
+        if (!key || !isOwnedCacheEntryKey(key) || keys.has(key)) {
+          continue;
+        }
+        if (
+          keys.size >= RESOURCE_LIMITS.offlineCache.recoveryOwnedEntriesHard
+        ) {
+          localStorage.removeItem(key);
+          stable = false;
+          continue;
+        }
+        keys.add(key);
+      }
+    }
+    const nextLength = localStorage.length;
+    if (nextLength !== storedKeyCount || storedKeyCount !== previousLength) {
+      stable = false;
+    }
+    previousLength = nextLength;
+  }
+
   return {
-    keys,
-    complete: scannedKeyCount === storedKeyCount,
+    keys: [...keys].sort((left, right) => {
+      const leftMutation = mutationTokenFromCacheKey(left);
+      const rightMutation = mutationTokenFromCacheKey(right);
+      if (leftMutation && rightMutation) {
+        return rightMutation.localeCompare(leftMutation);
+      }
+      if (leftMutation) return -1;
+      if (rightMutation) return 1;
+      return left.localeCompare(right);
+    }),
+    stable,
+    observedLength: localStorage.length,
   };
 }
 
@@ -240,151 +528,191 @@ function sameIndex(left: readonly string[], right: readonly string[]): boolean {
   );
 }
 
-function commitRecoveredIndex(
-  index: readonly string[],
-  purgeKeys: readonly string[],
-  previousIndexRaw: string | null,
-): void {
-  const uniquePurgeKeys = Array.from(new Set(purgeKeys));
-  try {
-    writeCacheIndex(index);
-    for (const key of uniquePurgeKeys) localStorage.removeItem(key);
-  } catch (error) {
-    tryRestoreStoredValue(
-      CACHE_INDEX_KEY,
-      previousIndexRaw,
-      "Roll back DNS offline cache recovery index",
-    );
-    throw error;
-  }
+function isNewerCacheEntry(
+  candidate: IndexedCacheEntry,
+  current: IndexedCacheEntry,
+): boolean {
+  return (
+    candidate.value.cachedAt > current.value.cachedAt ||
+    (candidate.value.cachedAt === current.value.cachedAt &&
+      (candidate.mutationToken > current.mutationToken ||
+        (candidate.mutationToken === current.mutationToken &&
+          candidate.key > current.key)))
+  );
 }
 
-function recoverCacheState(
-  previousIndexRaw: string | null,
+function inspectCacheState(
   invalidEntryOperation: string,
-): IndexedCacheEntry[] {
+): CacheStateInspection {
+  const indexBefore = readCacheIndex();
   const scan = scanOwnedCacheKeys();
-  if (!scan.complete) {
-    for (const key of scan.keys) {
-      try {
-        localStorage.removeItem(key);
-      } catch (error) {
-        reportCacheFailure(error, "Purge DNS offline cache recovery entry");
-      }
-    }
-    try {
-      localStorage.removeItem(CACHE_INDEX_KEY);
-    } catch (error) {
-      reportCacheFailure(error, "Purge DNS offline cache recovery index");
-    }
-    throw new OfflineCacheLimitError(
-      `DNS offline cache recovery exceeded the ${RESOURCE_LIMITS.offlineCache.recoveryScanHardKeys}-key scan limit.`,
-    );
-  }
-
-  const validEntries: IndexedCacheEntry[] = [];
-  const purgeKeys: string[] = [];
+  const entries = new Map<string, IndexedCacheEntry>();
+  const purgeCandidates: CacheStateInspection["purgeCandidates"] = [];
   let inspectedCharacters = 0;
+
   for (const key of scan.keys) {
     const raw = localStorage.getItem(key);
     if (raw === null) continue;
     if (
       raw.length >
-      RESOURCE_LIMITS.offlineCache.hardBytes - inspectedCharacters
+      RESOURCE_LIMITS.offlineCache.recoveryInspectionCharactersHard -
+        inspectedCharacters
     ) {
-      purgeKeys.push(key);
+      purgeCandidates.push({ key, expectedRaw: raw });
       continue;
     }
     inspectedCharacters += raw.length;
     try {
-      validEntries.push(parseCacheEntry(key, raw));
+      const entry = parseCacheEntry(key, raw);
+      const existing = entries.get(entry.zoneId);
+      if (!existing || isNewerCacheEntry(entry, existing)) {
+        if (existing) {
+          purgeCandidates.push({
+            key: existing.key,
+            expectedRaw: existing.raw,
+          });
+        }
+        entries.set(entry.zoneId, entry);
+      } else {
+        purgeCandidates.push({ key: entry.key, expectedRaw: entry.raw });
+      }
     } catch (error) {
       reportCacheFailure(
         error,
         invalidEntryOperation,
         error instanceof SyntaxError,
       );
-      purgeKeys.push(key);
+      purgeCandidates.push({ key, expectedRaw: raw });
     }
   }
 
-  validEntries.sort(
+  const ordered: IndexedCacheEntry[] = [];
+  for (const zoneId of indexBefore.zoneIds) {
+    const entry = entries.get(zoneId);
+    if (!entry) continue;
+    ordered.push(entry);
+    entries.delete(zoneId);
+  }
+  const recovered = [...entries.values()].sort(
     (left, right) =>
       left.value.cachedAt - right.value.cachedAt ||
       left.zoneId.localeCompare(right.zoneId),
   );
-  const { retained, evicted } = entriesWithinLimits(validEntries);
-  purgeKeys.push(...evicted.map((entry) => entry.key));
-  const recoveredIndex = retained.map((entry) => entry.zoneId);
+  ordered.push(...recovered);
 
-  if (
-    previousIndexRaw !== null ||
-    recoveredIndex.length > 0 ||
-    purgeKeys.length > 0
-  ) {
-    commitRecoveredIndex(recoveredIndex, purgeKeys, previousIndexRaw);
-  }
-  return retained;
+  const { retained, evicted } = entriesWithinLimits(ordered);
+  purgeCandidates.push(
+    ...evicted.map((entry) => ({
+      key: entry.key,
+      expectedRaw: entry.raw,
+    })),
+  );
+
+  const indexAfterRaw = localStorage.getItem(CACHE_INDEX_KEY);
+  return {
+    index: indexBefore,
+    retained,
+    purgeCandidates,
+    scanStable:
+      scan.stable &&
+      indexAfterRaw === indexBefore.raw &&
+      localStorage.length === scan.observedLength,
+  };
 }
 
-function readCacheState(
+function inspectionIsNormalized(inspection: CacheStateInspection): boolean {
+  const normalizedIndex = inspection.retained.map((entry) => entry.zoneId);
+  return (
+    inspection.scanStable &&
+    inspection.purgeCandidates.length === 0 &&
+    inspection.index.valid &&
+    inspection.index.modern &&
+    sameIndex(inspection.index.zoneIds, normalizedIndex) &&
+    (normalizedIndex.length > 0 || inspection.index.raw === null) &&
+    inspection.retained.every(
+      (entry) => localStorage.getItem(entry.key) === entry.raw,
+    )
+  );
+}
+
+function commitInspection(inspection: CacheStateInspection): void {
+  const uniqueCandidates = new Map(
+    inspection.purgeCandidates.map((candidate) => [
+      candidate.key,
+      candidate.expectedRaw,
+    ]),
+  );
+  for (const [key, expectedRaw] of uniqueCandidates) {
+    if (localStorage.getItem(key) === expectedRaw) {
+      localStorage.removeItem(key);
+    }
+  }
+  applyPreparedIndex(
+    prepareCacheIndex(
+      inspection.retained.map((entry) => entry.zoneId),
+      inspection.index.revision,
+    ),
+  );
+}
+
+function reconcileCacheState(
   invalidEntryOperation = "Inspect DNS offline cache entry",
+  coordinate = true,
 ): IndexedCacheEntry[] {
-  const rawIndex = localStorage.getItem(CACHE_INDEX_KEY);
-  if (rawIndex === null) {
-    return recoverCacheState(null, invalidEntryOperation);
-  }
-
-  let index: string[];
+  const lease = coordinate ? tryAcquireCacheLease() : undefined;
   try {
-    index = parseCacheIndex(rawIndex);
-  } catch (error) {
-    reportCacheFailure(
-      error,
-      "Recover DNS offline cache index",
-      error instanceof SyntaxError,
-    );
-    return recoverCacheState(rawIndex, invalidEntryOperation);
-  }
-
-  const validEntries: IndexedCacheEntry[] = [];
-  const purgeKeys: string[] = [];
-  let inspectedCharacters = 0;
-  for (const zoneId of index) {
-    const key = cacheKey(zoneId);
-    const raw = localStorage.getItem(key);
-    if (raw === null) continue;
-    if (
-      raw.length >
-      RESOURCE_LIMITS.offlineCache.hardBytes - inspectedCharacters
+    for (
+      let pass = 0;
+      pass < RESOURCE_LIMITS.offlineCache.reconciliationPassesHard;
+      pass += 1
     ) {
-      purgeKeys.push(key);
-      continue;
+      const inspection = inspectCacheState(invalidEntryOperation);
+      if (inspectionIsNormalized(inspection)) return inspection.retained;
+      commitInspection(inspection);
     }
-    inspectedCharacters += raw.length;
-    try {
-      validEntries.push(parseCacheEntry(key, raw));
-    } catch (error) {
-      reportCacheFailure(
-        error,
-        invalidEntryOperation,
-        error instanceof SyntaxError,
-      );
-      purgeKeys.push(key);
-    }
-  }
 
-  const { retained, evicted } = entriesWithinLimits(validEntries);
-  purgeKeys.push(...evicted.map((entry) => entry.key));
-  const normalizedIndex = retained.map((entry) => entry.zoneId);
-  if (!sameIndex(index, normalizedIndex) || purgeKeys.length > 0) {
-    commitRecoveredIndex(normalizedIndex, purgeKeys, rawIndex);
+    const finalInspection = inspectCacheState(invalidEntryOperation);
+    if (inspectionIsNormalized(finalInspection)) {
+      return finalInspection.retained;
+    }
+    throw new OfflineCacheLimitError(
+      "DNS offline cache did not stabilize within its reconciliation limit.",
+    );
+  } finally {
+    releaseCacheLease(lease);
   }
-  return retained;
 }
 
-function persistCacheEntry(entry: CachedZoneRecords, serialized: string): void {
-  const key = cacheKey(entry.zoneId);
+function nextMutationToken(cachedAt: number): string {
+  mutationSequence = (mutationSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${cachedAt.toString(36).padStart(11, "0")}:${CACHE_OWNER_ID}:${mutationSequence
+    .toString(36)
+    .padStart(11, "0")}`;
+}
+
+function serializedCacheEntry(
+  entry: CachedZoneRecords,
+  mutationToken: string,
+): string {
+  return JSON.stringify({
+    ...entry,
+    __bcMutation: mutationToken,
+  });
+}
+
+function tryReconcileAfterFailure(operation: string): void {
+  try {
+    reconcileCacheState(operation, false);
+  } catch (error) {
+    reportCacheFailure(error, operation);
+  }
+}
+
+function persistCacheEntry(
+  entry: CachedZoneRecords,
+  key: string,
+  serialized: string,
+): void {
   const incomingBytes = assertStoredValueWithinLimit(key, serialized);
   if (
     incomingBytes + indexRetainedBytes([entry.zoneId]) >
@@ -395,71 +723,88 @@ function persistCacheEntry(entry: CachedZoneRecords, serialized: string): void {
     );
   }
 
-  const existing = readCacheState().filter(
-    (candidate) => candidate.zoneId !== entry.zoneId,
-  );
-  const retained = [...existing];
-  const evicted: IndexedCacheEntry[] = [];
-  let retainedEntryBytes = retained.reduce(
-    (total, candidate) => total + candidate.retainedBytes,
-    0,
-  );
-  const projectedBytes = () =>
-    retainedEntryBytes +
-    incomingBytes +
-    indexRetainedBytes([
-      ...retained.map((candidate) => candidate.zoneId),
-      entry.zoneId,
-    ]);
-
-  while (
-    retained.length > 0 &&
-    exceedsCacheLimit(retained.length + 1, projectedBytes())
-  ) {
-    const oldest = retained.shift();
-    if (!oldest) break;
-    retainedEntryBytes -= oldest.retainedBytes;
-    evicted.push(oldest);
-  }
-  if (exceedsCacheLimit(retained.length + 1, projectedBytes())) {
-    throw new OfflineCacheLimitError(
-      "DNS offline cache could not be reduced below its hard limit.",
-    );
-  }
-
-  const previousEntryRaw = localStorage.getItem(key);
-  const previousIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
-  const attemptedEvictions: IndexedCacheEntry[] = [];
+  const lease = tryAcquireCacheLease();
   try {
-    localStorage.setItem(key, serialized);
-    writeCacheIndex([
-      ...retained.map((candidate) => candidate.zoneId),
-      entry.zoneId,
-    ]);
-    for (const evictedEntry of evicted) {
-      attemptedEvictions.push(evictedEntry);
-      localStorage.removeItem(evictedEntry.key);
-    }
-  } catch (error) {
-    tryRestoreStoredValue(
-      key,
-      previousEntryRaw,
-      "Roll back DNS offline cache entry",
+    const state = reconcileCacheState("Inspect DNS offline cache entry", false);
+    const replaced = state.filter(
+      (candidate) => candidate.zoneId === entry.zoneId,
     );
-    for (const evictedEntry of attemptedEvictions) {
-      tryRestoreStoredValue(
-        evictedEntry.key,
-        evictedEntry.raw,
-        "Roll back evicted DNS offline cache entry",
+    const existing = state.filter(
+      (candidate) => candidate.zoneId !== entry.zoneId,
+    );
+    const retained = [...existing];
+    const evicted: IndexedCacheEntry[] = [];
+    let retainedEntryBytes = retained.reduce(
+      (total, candidate) => total + candidate.retainedBytes,
+      0,
+    );
+    const projectedBytes = () =>
+      retainedEntryBytes +
+      incomingBytes +
+      indexRetainedBytes([
+        ...retained.map((candidate) => candidate.zoneId),
+        entry.zoneId,
+      ]);
+
+    while (
+      retained.length > 0 &&
+      exceedsCacheLimit(retained.length + 1, projectedBytes())
+    ) {
+      const oldest = retained.shift();
+      if (!oldest) break;
+      retainedEntryBytes -= oldest.retainedBytes;
+      evicted.push(oldest);
+    }
+    if (exceedsCacheLimit(retained.length + 1, projectedBytes())) {
+      throw new OfflineCacheLimitError(
+        "DNS offline cache could not be reduced below its hard limit.",
       );
     }
-    tryRestoreStoredValue(
-      CACHE_INDEX_KEY,
-      previousIndexRaw,
-      "Roll back DNS offline cache index",
+
+    const previousIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
+    const previousRevision = readCacheIndex().revision;
+    const indexWrite = prepareCacheIndex(
+      [...retained.map((candidate) => candidate.zoneId), entry.zoneId],
+      previousRevision,
     );
-    throw error;
+    const attemptedRemovals: IndexedCacheEntry[] = [];
+
+    try {
+      localStorage.setItem(key, serialized);
+      for (const removedEntry of [...replaced, ...evicted]) {
+        attemptedRemovals.push(removedEntry);
+        localStorage.removeItem(removedEntry.key);
+      }
+      applyPreparedIndex(indexWrite);
+    } catch (error) {
+      tryRestoreIfUnchanged(
+        CACHE_INDEX_KEY,
+        indexWrite.raw,
+        previousIndexRaw,
+        "Roll back DNS offline cache index",
+      );
+      for (const removedEntry of attemptedRemovals) {
+        tryRestoreIfUnchanged(
+          removedEntry.key,
+          null,
+          removedEntry.raw,
+          "Roll back removed DNS offline cache entry",
+        );
+      }
+      tryRestoreIfUnchanged(
+        key,
+        serialized,
+        null,
+        "Roll back DNS offline cache entry",
+      );
+      tryReconcileAfterFailure("Reconcile failed DNS offline cache write");
+      throw error;
+    }
+  } finally {
+    releaseCacheLease(lease);
   }
+
+  reconcileCacheState("Verify DNS offline cache write");
 }
 
 /**
@@ -476,25 +821,27 @@ export function cacheZoneRecords(
     records,
     cachedAt: Date.now(),
   };
+  const mutationToken = nextMutationToken(entry.cachedAt);
+  const key = `${CACHE_ENTRY_KEY_PREFIX}${mutationToken}`;
   let serialized: string;
   try {
-    serialized = JSON.stringify(entry);
+    serialized = serializedCacheEntry(entry, mutationToken);
   } catch (error) {
     reportCacheFailure(error, "Serialize DNS offline cache");
     return;
   }
 
   try {
-    persistCacheEntry(entry, serialized);
+    persistCacheEntry(entry, key, serialized);
     return;
   } catch (error) {
     reportCacheFailure(error, "Write DNS offline cache");
     if (!isQuotaError(error)) return;
   }
 
-  // Retry one transient quota failure without deleting previously durable data.
+  // Retry one transient quota failure without deleting durable data.
   try {
-    persistCacheEntry(entry, serialized);
+    persistCacheEntry(entry, key, serialized);
   } catch (error) {
     reportCacheFailure(error, "Retry DNS offline cache write");
   }
@@ -505,7 +852,7 @@ export function cacheZoneRecords(
  */
 export function getCachedZoneRecords(zoneId: string): CachedZoneRecords | null {
   try {
-    const cached = readCacheState("Read DNS offline cache").find(
+    const cached = reconcileCacheState("Read DNS offline cache").find(
       (entry) => entry.zoneId === zoneId,
     );
     if (!cached) return null;
@@ -544,51 +891,113 @@ export function getCacheAge(zoneId: string): number | null {
  * Remove cached data for a zone.
  */
 export function removeCachedZone(zoneId: string): void {
-  const key = cacheKey(zoneId);
+  const lease = tryAcquireCacheLease();
   try {
-    const state = readCacheState();
-    const previousEntryRaw = localStorage.getItem(key);
+    const state = reconcileCacheState("Inspect DNS offline cache entry", false);
+    const removedEntries = state.filter((entry) => entry.zoneId === zoneId);
     const previousIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
+    const indexWrite = prepareCacheIndex(
+      state
+        .filter((entry) => entry.zoneId !== zoneId)
+        .map((entry) => entry.zoneId),
+      readCacheIndex().revision,
+    );
+    const attemptedRemovals: IndexedCacheEntry[] = [];
     try {
-      writeCacheIndex(
-        state
-          .filter((entry) => entry.zoneId !== zoneId)
-          .map((entry) => entry.zoneId),
-      );
-      localStorage.removeItem(key);
+      for (const removedEntry of removedEntries) {
+        attemptedRemovals.push(removedEntry);
+        localStorage.removeItem(removedEntry.key);
+      }
+      applyPreparedIndex(indexWrite);
     } catch (error) {
-      tryRestoreStoredValue(
-        key,
-        previousEntryRaw,
-        "Roll back removed DNS offline cache entry",
-      );
-      tryRestoreStoredValue(
+      tryRestoreIfUnchanged(
         CACHE_INDEX_KEY,
+        indexWrite.raw,
         previousIndexRaw,
         "Roll back removed DNS offline cache index",
       );
+      for (const removedEntry of attemptedRemovals) {
+        tryRestoreIfUnchanged(
+          removedEntry.key,
+          null,
+          removedEntry.raw,
+          "Roll back removed DNS offline cache entry",
+        );
+      }
+      tryReconcileAfterFailure("Reconcile failed DNS offline cache removal");
       throw error;
     }
   } catch (error) {
     reportCacheFailure(error, "Remove DNS offline cache");
+  } finally {
+    releaseCacheLease(lease);
   }
+
+  try {
+    reconcileCacheState("Verify DNS offline cache removal");
+  } catch (error) {
+    reportCacheFailure(error, "Verify DNS offline cache removal");
+  }
+}
+
+function clearOwnedCacheKeysPass(): {
+  discovered: number;
+  firstError: unknown;
+} {
+  const storedKeyCount = localStorage.length;
+  let discovered = 0;
+  let firstError: unknown;
+  for (
+    let batchEnd = storedKeyCount;
+    batchEnd > 0;
+    batchEnd -= RESOURCE_LIMITS.offlineCache.discoveryBatchKeys
+  ) {
+    const batchStart = Math.max(
+      0,
+      batchEnd - RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
+    );
+    for (let index = batchEnd - 1; index >= batchStart; index -= 1) {
+      const key = localStorage.key(index);
+      if (key && (key === CACHE_INDEX_KEY || isOwnedCacheEntryKey(key))) {
+        discovered += 1;
+        try {
+          localStorage.removeItem(key);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    }
+  }
+  return { discovered, firstError };
 }
 
 /**
  * Clear all keys owned by the offline cache.
  */
 export function clearOfflineCache(): void {
+  const lease = tryAcquireCacheLease();
   try {
-    const scan = scanOwnedCacheKeys();
-    for (const key of scan.keys) localStorage.removeItem(key);
-    localStorage.removeItem(CACHE_INDEX_KEY);
-    if (!scan.complete) {
-      throw new OfflineCacheLimitError(
-        `DNS offline cache clearing exceeded the ${RESOURCE_LIMITS.offlineCache.recoveryScanHardKeys}-key scan limit.`,
-      );
+    let firstError: unknown;
+    for (
+      let pass = 0;
+      pass < RESOURCE_LIMITS.offlineCache.reconciliationPassesHard;
+      pass += 1
+    ) {
+      const result = clearOwnedCacheKeysPass();
+      firstError ??= result.firstError;
+      if (result.discovered === 0) {
+        if (firstError !== undefined) throw firstError;
+        return;
+      }
     }
+    if (firstError !== undefined) throw firstError;
+    throw new OfflineCacheLimitError(
+      "DNS offline cache clearing did not stabilize within its pass limit.",
+    );
   } catch (error) {
     reportCacheFailure(error, "Clear DNS offline cache");
+  } finally {
+    releaseCacheLease(lease);
   }
 }
 
@@ -597,7 +1006,7 @@ export function clearOfflineCache(): void {
  */
 export function getCacheIndex(): string[] {
   try {
-    return readCacheState().map((entry) => entry.zoneId);
+    return reconcileCacheState().map((entry) => entry.zoneId);
   } catch (error) {
     reportCacheFailure(
       error,
