@@ -8,6 +8,7 @@ import { legacySourceLintDebt } from "../eslint.config.js";
 import { createPlaywrightConfig } from "../playwright.config.ts";
 
 const root = new URL("../", import.meta.url);
+const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const rustCacheRevision = "c19371144df3bb44fab255c43d04cbc2ab54d1c4";
 const workflowPaths = readdirSync(new URL(".github/workflows/", root))
   .filter((name) => /\.ya?ml$/.test(name))
@@ -40,6 +41,25 @@ function read(relativePath: string): string {
   return readFileSync(new URL(relativePath, root), "utf8");
 }
 
+function fallbackChangedSourceBase(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD^"], {
+      cwd: fileURLToPath(root),
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return emptyTreeSha;
+  }
+}
+
+function changedSourceBase(baseSha = process.env.CI_BASE_SHA): string {
+  const normalizedBase = baseSha?.trim();
+  if (!normalizedBase || /^0{40}$/.test(normalizedBase)) {
+    return fallbackChangedSourceBase();
+  }
+  return normalizedBase;
+}
+
 function changedSourceFiles(): string[] {
   const output = execFileSync(
     "git",
@@ -47,7 +67,8 @@ function changedSourceFiles(): string[] {
       "diff",
       "--name-only",
       "--diff-filter=ACMRTUXB",
-      "origin/main..HEAD",
+      changedSourceBase(),
+      "HEAD",
       "--",
       "src",
     ],
@@ -155,14 +176,13 @@ test("package scripts expose truthful lint and reliability gates", () => {
     "Source lint debt must stay scoped to src",
   );
   const changedSources = changedSourceFiles();
-  assert.ok(changedSources.length > 0, "Expected changed source files");
   assert.deepEqual(
     changedSources.filter(
       (path) =>
         !/\.(?:ts|tsx)$/.test(path) || legacySourceLintDebt.includes(path),
     ),
     [],
-    "Every source file changed in origin/main..HEAD must be TypeScript and covered by the source lint gate",
+    "Every source file changed from the event base must be TypeScript and covered by the source lint gate",
   );
   assert.ok(!Object.keys(scripts).some((name) => name === "lint:production"));
 
@@ -170,6 +190,7 @@ test("package scripts expose truthful lint and reliability gates", () => {
   for (const specification of [
     "e2e/home.spec.ts",
     "e2e/login-key-management.spec.ts",
+    "e2e/auth-errors.spec.ts",
     "test/ci-playwright-runtime.spec.ts",
   ]) {
     assert.ok(
@@ -191,6 +212,31 @@ test("package scripts expose truthful lint and reliability gates", () => {
     "cross-env CI=true PLAYWRIGHT_STATIC_BASE_PATH=/better-cloudflare playwright test test/ci-pages-base-path.spec.ts --project=chromium",
   );
   assert.match(scripts.check, /npm run test:ci-contract/);
+  assert.equal(
+    scripts["test:release-contract"],
+    "node --test .github/scripts/release-contract.test.mjs",
+  );
+});
+
+test("CI changed-source lint uses the event base with complete history", () => {
+  const workflow = read(".github/workflows/ci.yml");
+  const contractJob = workflowJob(workflow, "ci_contract");
+  const checkoutStep = workflowStep(contractJob, "Checkout");
+  const contractStep = workflowStep(
+    contractJob,
+    "Test CI reliability contract",
+  );
+
+  assert.match(checkoutStep, /fetch-depth: 0/);
+  assert.match(
+    contractStep,
+    /CI_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| github\.event\.before \}\}/,
+  );
+  assert.equal(changedSourceBase("0".repeat(40)), fallbackChangedSourceBase());
+  assert.equal(
+    changedSourceBase("1234567890abcdef1234567890abcdef12345678"),
+    "1234567890abcdef1234567890abcdef12345678",
+  );
 });
 
 test("Playwright structurally separates CI static export from local development", () => {
@@ -319,6 +365,7 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
   const workflow = read(".github/workflows/ci.yml");
   const e2eJob = workflowJob(workflow, "e2e_reliability");
   const nativeJob = workflowJob(workflow, "native_reliability");
+  const releaseContractJob = workflowJob(workflow, "release_contract");
   const releaseJob = workflowJob(workflow, "release");
 
   assert.equal(
@@ -365,6 +412,10 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
       "-D",
       "warnings",
     ],
+  );
+  assert.equal(
+    stepRun(workflowStep(releaseContractJob, "Test release contract")),
+    "npm run test:release-contract",
   );
   assert.deepEqual(workflowNeeds(releaseJob), [
     "ci_contract",
