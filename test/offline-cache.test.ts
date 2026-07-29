@@ -157,8 +157,14 @@ function failNextRemoveAfterDeleting(targetKey: string): () => void {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   clearOfflineCache();
+  await waitFor(
+    () =>
+      ownedEntryKeys().length === 0 &&
+      localStorage.getItem(CACHE_INDEX_KEY) === null,
+    500,
+  );
   resetRuntimeReportingForTests();
 });
 
@@ -390,6 +396,11 @@ test("recovery yields between bounded batches and resumes past 650 unrelated key
     ]);
 
     clearOfflineCache();
+    await waitFor(
+      () =>
+        ownedEntryKeys().length === 0 &&
+        localStorage.getItem(CACHE_INDEX_KEY) === null,
+    );
 
     assert.deepEqual(ownedEntryKeys(), []);
     assert.equal(localStorage.getItem(CACHE_INDEX_KEY), null);
@@ -640,4 +651,274 @@ test("retries an evicted durable entry restoration after the first rollback fail
   assert.equal(entryKeyForZone(`retry-${hardLimit}`), undefined);
   assert.deepEqual(getCacheIndex(), rawIndexZoneIds());
   assert.equal(getCacheIndex()[0], "retry-0");
+});
+
+test("deferred rollback does not resurrect an entry deleted by a second tab", async (t) => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = 0; index < hardLimit; index += 1) {
+    cacheZoneRecords(`delete-race-${index}`, `Delete race ${index}`, []);
+  }
+  const oldestKey = entryKeyForZone("delete-race-0");
+  assert.ok(oldestKey);
+  const oldestRaw = localStorage.getItem(oldestKey);
+  assert.ok(oldestRaw);
+
+  const secondTab = (await import(
+    new URL("../src/lib/storage/offline-cache.ts?delete-tab", import.meta.url)
+      .href
+  )) as typeof import("../src/lib/storage/offline-cache");
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  let indexFailureArmed = true;
+  let restorationFailureArmed = true;
+  storagePrototype.setItem = function failWriteAndRestoration(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced index write failure");
+    }
+    if (key === oldestKey && value === oldestRaw && restorationFailureArmed) {
+      restorationFailureArmed = false;
+      throw new Error("forced restoration failure");
+    }
+    originalSetItem.call(this, key, value);
+  };
+  try {
+    cacheZoneRecords(`delete-race-${hardLimit}`, "Incoming", []);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+  }
+
+  assert.equal(localStorage.getItem(oldestKey), null);
+  secondTab.removeCachedZone("delete-race-0");
+  t.mock.timers.tick(10);
+
+  assert.equal(localStorage.getItem(oldestKey), null);
+  assert.equal(getCacheIndex().includes("delete-race-0"), false);
+  assert.equal(getCacheIndex().includes(`delete-race-${hardLimit}`), false);
+  assert.deepEqual(ownedEntryZoneIds(), [...getCacheIndex()].sort());
+});
+
+test("permanent rollback failure stops at the retry ceiling with no timer work", (t) => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = 0; index < hardLimit; index += 1) {
+    cacheZoneRecords(`retry-cap-${index}`, `Retry cap ${index}`, []);
+  }
+  const oldestKey = entryKeyForZone("retry-cap-0");
+  assert.ok(oldestKey);
+  const oldestRaw = localStorage.getItem(oldestKey);
+  assert.ok(oldestRaw);
+
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  const fakeSetTimeout = globalThis.setTimeout;
+  const fakeClearTimeout = globalThis.clearTimeout;
+  const pendingRollbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  globalThis.setTimeout = ((
+    callback: TimerHandler,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    const timer = fakeSetTimeout(() => {
+      pendingRollbackTimers.delete(timer);
+      if (typeof callback === "function") callback(...args);
+    }, delay);
+    if ((delay ?? 0) > 0) pendingRollbackTimers.add(timer);
+    return timer;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+    pendingRollbackTimers.delete(timer);
+    fakeClearTimeout(timer);
+  }) as typeof clearTimeout;
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  let indexFailureArmed = true;
+  let restorationAttempts = 0;
+  storagePrototype.setItem = function failEveryRestoration(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced index write failure");
+    }
+    if (key === oldestKey && value === oldestRaw) {
+      restorationAttempts += 1;
+      throw new Error("forced permanent restoration failure");
+    }
+    originalSetItem.call(this, key, value);
+  };
+  try {
+    cacheZoneRecords(`retry-cap-${hardLimit}`, "Incoming", []);
+    assert.fail("cache write should have failed");
+  } catch {
+    // Expected forced storage failure.
+  }
+
+  const retryDelays = [10, 20, 40, 80, 160, 320, 640, 640];
+  for (const delay of retryDelays) {
+    assert.equal(pendingRollbackTimers.size, 1);
+    t.mock.timers.tick(delay);
+  }
+  const terminalAttempts = restorationAttempts;
+  assert.equal(pendingRollbackTimers.size, 0);
+  t.mock.timers.tick(10_000);
+  globalThis.setTimeout = fakeSetTimeout;
+  globalThis.clearTimeout = fakeClearTimeout;
+  storagePrototype.setItem = originalSetItem;
+
+  assert.equal(terminalAttempts, 1 + 8);
+  assert.equal(restorationAttempts, terminalAttempts);
+  assert.equal(pendingRollbackTimers.size, 0);
+  assert.equal(localStorage.getItem(oldestKey), null);
+  assert.deepEqual(getCacheIndex(), rawIndexZoneIds());
+  assert.deepEqual(ownedEntryZoneIds(), [...getCacheIndex()].sort());
+});
+
+test("clear yields with a hard per-turn inspection bound across 20,000 unrelated keys", () => {
+  class ConstantTimeStorage implements Storage {
+    readonly #values = new Map<string, string>();
+    readonly #keys: string[] = [];
+    readonly #indexes = new Map<string, number>();
+
+    get length(): number {
+      return this.#keys.length;
+    }
+
+    clear(): void {
+      this.#values.clear();
+      this.#keys.length = 0;
+      this.#indexes.clear();
+    }
+
+    getItem(key: string): string | null {
+      return this.#values.get(String(key)) ?? null;
+    }
+
+    key(index: number): string | null {
+      return this.#keys[index] ?? null;
+    }
+
+    removeItem(key: string): void {
+      const normalized = String(key);
+      const index = this.#indexes.get(normalized);
+      if (index === undefined) return;
+      const lastIndex = this.#keys.length - 1;
+      const lastKey = this.#keys[lastIndex]!;
+      if (index !== lastIndex) {
+        this.#keys[index] = lastKey;
+        this.#indexes.set(lastKey, index);
+      }
+      this.#keys.pop();
+      this.#indexes.delete(normalized);
+      this.#values.delete(normalized);
+    }
+
+    setItem(key: string, value: string): void {
+      const normalized = String(key);
+      if (!this.#values.has(normalized)) {
+        this.#indexes.set(normalized, this.#keys.length);
+        this.#keys.push(normalized);
+      }
+      this.#values.set(normalized, String(value));
+    }
+  }
+
+  const unrelatedCount = 20_000;
+  const ownedZoneIds: string[] = [];
+  const originalStorage = globalThis.localStorage;
+  const originalSetTimeout = globalThis.setTimeout;
+  const testStorage = new ConstantTimeStorage();
+  const scheduledTurns: Array<() => void> = [];
+  let inspectionsThisTurn = 0;
+  let maximumInspections = 0;
+  let yieldedTurns = 0;
+  testStorage.key = ((index: number): string | null => {
+    inspectionsThisTurn += 1;
+    maximumInspections = Math.max(maximumInspections, inspectionsThisTurn);
+    return ConstantTimeStorage.prototype.key.call(testStorage, index);
+  }) as Storage["key"];
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: testStorage,
+  });
+  globalThis.setTimeout = ((
+    callback: TimerHandler,
+    _delay?: number,
+    ...args: unknown[]
+  ) => {
+    scheduledTurns.push(() => {
+      yieldedTurns += 1;
+      inspectionsThisTurn = 0;
+      if (typeof callback === "function") callback(...args);
+    });
+    return scheduledTurns.length as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  for (let index = 0; index < unrelatedCount; index += 1) {
+    localStorage.setItem(`huge-origin-${index}`, "unrelated");
+    if (index % 4_000 === 0) {
+      const zoneId = `clear-owned-${index}`;
+      ownedZoneIds.push(zoneId);
+      localStorage.setItem(
+        `${CACHE_KEY_PREFIX}${zoneId}`,
+        rawCacheEntry(zoneId, index),
+      );
+    }
+  }
+  localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(ownedZoneIds));
+
+  try {
+    clearOfflineCache();
+    assert.ok(localStorage.length > unrelatedCount);
+    assert.equal(scheduledTurns.length, 1);
+    const maximumExpectedTurns =
+      2 *
+        Math.ceil(
+          (unrelatedCount + ownedZoneIds.length + 1) /
+            RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
+        ) +
+      1;
+    while (scheduledTurns.length > 0) {
+      assert.ok(yieldedTurns < maximumExpectedTurns);
+      const turn = scheduledTurns.shift();
+      assert.ok(turn);
+      turn();
+      assert.ok(
+        inspectionsThisTurn <= RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
+      );
+    }
+    assert.ok(yieldedTurns > 1);
+    assert.ok(
+      maximumInspections <= RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
+    );
+    assert.equal(localStorage.getItem(CACHE_INDEX_KEY), null);
+    for (const zoneId of ownedZoneIds) {
+      assert.equal(localStorage.getItem(`${CACHE_KEY_PREFIX}${zoneId}`), null);
+    }
+    assert.equal(localStorage.length, unrelatedCount);
+    assert.equal(localStorage.getItem("huge-origin-0"), "unrelated");
+    assert.equal(
+      localStorage.getItem(`huge-origin-${unrelatedCount - 1}`),
+      "unrelated",
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  }
 });

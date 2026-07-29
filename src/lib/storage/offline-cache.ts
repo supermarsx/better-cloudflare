@@ -58,6 +58,15 @@ interface PendingCacheRollback {
   removedEntries: IndexedCacheEntry[];
   incomingKey: string;
   incomingRaw: string;
+  attempts: number;
+  startedAt: number;
+}
+
+interface PendingCacheClear {
+  cursor: number;
+  discovered: number;
+  pass: number;
+  firstError: unknown;
 }
 
 const CACHE_KEY_PREFIX = "bc_offline_cache_";
@@ -66,6 +75,9 @@ const CACHE_COORDINATION_KEY = "bc_offline_cache_coordination";
 const CACHE_ENTRY_KEY_PREFIX = `${CACHE_KEY_PREFIX}entry_v1_`;
 const CACHE_INDEX_FORMAT = 1;
 const CACHE_LEASE_MS = 2_000;
+const ROLLBACK_RETRY_LIMIT = 8;
+const ROLLBACK_RETRY_WINDOW_MS = 5_000;
+const ROLLBACK_RETRY_BASE_DELAY_MS = 10;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const RESERVED_CACHE_KEYS = new Set([CACHE_INDEX_KEY, CACHE_COORDINATION_KEY]);
 
@@ -76,6 +88,8 @@ let recoveryState: CacheRecoveryState | undefined;
 let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingRollback: PendingCacheRollback | undefined;
 let rollbackTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingClear: PendingCacheClear | undefined;
+let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
 function randomToken(): string {
   const randomUuid = globalThis.crypto?.randomUUID;
@@ -372,10 +386,15 @@ function restoreIfUnchanged(
 
 function scheduleRollback(): void {
   if (rollbackTimer !== undefined || !pendingRollback) return;
+  const delay = Math.min(
+    ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(pendingRollback.attempts, 6),
+    1_000,
+  );
   rollbackTimer = setTimeout(() => {
     rollbackTimer = undefined;
     const rollback = pendingRollback;
     if (!rollback) return;
+    rollback.attempts += 1;
     const indexResult = restoreIfUnchanged(
       CACHE_INDEX_KEY,
       rollback.attemptedIndexRaw,
@@ -383,32 +402,55 @@ function scheduleRollback(): void {
       "Retry DNS offline cache index rollback",
     );
     let entriesRestored = true;
-    for (const entry of rollback.removedEntries) {
-      const result = restoreIfUnchanged(
-        entry.key,
-        null,
-        entry.raw,
-        "Retry removed DNS offline cache entry rollback",
-      );
-      entriesRestored &&= result !== "failed";
+    let indexMatchesRollbackGeneration = false;
+    try {
+      indexMatchesRollbackGeneration =
+        localStorage.getItem(CACHE_INDEX_KEY) === rollback.previousIndexRaw;
+    } catch (error) {
+      reportCacheFailure(error, "Verify DNS offline cache rollback generation");
     }
-    if (indexResult !== "failed" && entriesRestored) {
-      if (indexResult !== "changed") {
-        restoreIfUnchanged(
-          rollback.incomingKey,
-          rollback.incomingRaw,
+    if (indexMatchesRollbackGeneration) {
+      for (const entry of rollback.removedEntries) {
+        const result = restoreIfUnchanged(
+          entry.key,
           null,
-          "Retry incoming DNS offline cache entry rollback",
+          entry.raw,
+          "Retry removed DNS offline cache entry rollback",
         );
+        entriesRestored &&= result !== "failed";
       }
+    }
+    if (
+      indexResult !== "failed" &&
+      entriesRestored &&
+      (indexMatchesRollbackGeneration || indexResult === "changed")
+    ) {
+      restoreIfUnchanged(
+        rollback.incomingKey,
+        rollback.incomingRaw,
+        null,
+        "Retry incoming DNS offline cache entry rollback",
+      );
       pendingRollback = undefined;
       completedCacheState = undefined;
       recoveryState = undefined;
       tryReconcileAfterFailure("Reconcile retried DNS offline cache rollback");
       return;
     }
+    if (
+      rollback.attempts >= ROLLBACK_RETRY_LIMIT ||
+      Date.now() - rollback.startedAt >= ROLLBACK_RETRY_WINDOW_MS
+    ) {
+      pendingRollback = undefined;
+      completedCacheState = undefined;
+      recoveryState = undefined;
+      tryReconcileAfterFailure(
+        "Reconcile abandoned DNS offline cache rollback",
+      );
+      return;
+    }
     scheduleRollback();
-  }, 0);
+  }, delay);
 }
 
 function parseCacheLease(raw: string | null): CacheLease | undefined {
@@ -789,6 +831,8 @@ function persistCacheEntry(
           ),
           incomingKey: key,
           incomingRaw: serialized,
+          attempts: 0,
+          startedAt: Date.now(),
         };
         scheduleRollback();
       } else {
@@ -942,35 +986,49 @@ export function removeCachedZone(zoneId: string): void {
   }
 }
 
-function clearOwnedCacheKeysPass(): {
-  discovered: number;
-  firstError: unknown;
-} {
-  const storedKeyCount = localStorage.length;
-  let discovered = 0;
-  let firstError: unknown;
-  for (
-    let batchEnd = storedKeyCount;
-    batchEnd > 0;
-    batchEnd -= RESOURCE_LIMITS.offlineCache.discoveryBatchKeys
-  ) {
-    const batchStart = Math.max(
-      0,
-      batchEnd - RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
-    );
-    for (let index = batchEnd - 1; index >= batchStart; index -= 1) {
-      const key = localStorage.key(index);
-      if (key && (key === CACHE_INDEX_KEY || isOwnedCacheEntryKey(key))) {
-        discovered += 1;
-        try {
-          localStorage.removeItem(key);
-        } catch (error) {
-          firstError ??= error;
-        }
+function scheduleClear(): void {
+  if (clearTimer !== undefined || !pendingClear) return;
+  clearTimer = setTimeout(() => {
+    clearTimer = undefined;
+    continueClear();
+  }, 0);
+}
+
+function continueClear(): void {
+  const state = pendingClear;
+  if (!state) return;
+  let budget = RESOURCE_LIMITS.offlineCache.discoveryBatchKeys;
+  while (state.cursor > 0 && budget > 0) {
+    state.cursor -= 1;
+    budget -= 1;
+    const key = localStorage.key(state.cursor);
+    if (key && (key === CACHE_INDEX_KEY || isOwnedCacheEntryKey(key))) {
+      state.discovered += 1;
+      try {
+        localStorage.removeItem(key);
+      } catch (error) {
+        state.firstError ??= error;
       }
     }
   }
-  return { discovered, firstError };
+  if (state.cursor > 0) {
+    scheduleClear();
+    return;
+  }
+  if (
+    state.discovered > 0 &&
+    state.pass + 1 < RESOURCE_LIMITS.offlineCache.reconciliationPassesHard
+  ) {
+    state.cursor = localStorage.length;
+    state.discovered = 0;
+    state.pass += 1;
+    scheduleClear();
+    return;
+  }
+  pendingClear = undefined;
+  if (state.firstError !== undefined) {
+    reportCacheFailure(state.firstError, "Clear DNS offline cache");
+  }
 }
 
 /**
@@ -979,35 +1037,20 @@ function clearOwnedCacheKeysPass(): {
 export function clearOfflineCache(): void {
   if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
   if (rollbackTimer !== undefined) clearTimeout(rollbackTimer);
+  if (clearTimer !== undefined) clearTimeout(clearTimer);
   recoveryTimer = undefined;
   rollbackTimer = undefined;
+  clearTimer = undefined;
   recoveryState = undefined;
   completedCacheState = undefined;
   pendingRollback = undefined;
-  const lease = tryAcquireCacheLease();
-  try {
-    let firstError: unknown;
-    for (
-      let pass = 0;
-      pass < RESOURCE_LIMITS.offlineCache.reconciliationPassesHard;
-      pass += 1
-    ) {
-      const result = clearOwnedCacheKeysPass();
-      firstError ??= result.firstError;
-      if (result.discovered === 0) {
-        if (firstError !== undefined) throw firstError;
-        return;
-      }
-    }
-    if (firstError !== undefined) throw firstError;
-    throw new OfflineCacheLimitError(
-      "DNS offline cache clearing did not stabilize within its pass limit.",
-    );
-  } catch (error) {
-    reportCacheFailure(error, "Clear DNS offline cache");
-  } finally {
-    releaseCacheLease(lease);
-  }
+  pendingClear = {
+    cursor: localStorage.length,
+    discovered: 0,
+    pass: 0,
+    firstError: undefined,
+  };
+  continueClear();
 }
 
 /**
