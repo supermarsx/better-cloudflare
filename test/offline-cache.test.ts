@@ -714,6 +714,139 @@ test("deferred rollback does not resurrect an entry deleted by a second tab", as
   assert.deepEqual(ownedEntryZoneIds(), [...getCacheIndex()].sort());
 });
 
+test("multi-entry rollback cleans its first restoration when generation changes", (t) => {
+  const payload = "x".repeat(
+    Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 5),
+  );
+  for (let index = 0; index < 4; index += 1) {
+    cacheZoneRecords(`multi-race-${index}`, `Multi race ${index}`, [payload]);
+  }
+  const firstKey = entryKeyForZone("multi-race-0");
+  const secondKey = entryKeyForZone("multi-race-1");
+  assert.ok(firstKey);
+  assert.ok(secondKey);
+  const firstRaw = localStorage.getItem(firstKey);
+  const secondRaw = localStorage.getItem(secondKey);
+  assert.ok(firstRaw);
+  assert.ok(secondRaw);
+
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  let indexFailureArmed = true;
+  const initialRestorationFailures = new Set([firstKey, secondKey]);
+  let generationChangeArmed = true;
+  let secondDeferredRestorationAttempted = false;
+  storagePrototype.setItem = function changeGenerationAfterFirstRestoration(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced multi-entry index write failure");
+    }
+    if (
+      initialRestorationFailures.has(key) &&
+      (value === firstRaw || value === secondRaw)
+    ) {
+      initialRestorationFailures.delete(key);
+      throw new Error(`forced initial restoration failure for ${key}`);
+    }
+    originalSetItem.call(this, key, value);
+    if (key === firstKey && value === firstRaw && generationChangeArmed) {
+      generationChangeArmed = false;
+      originalSetItem.call(this, CACHE_INDEX_KEY, "[]");
+    } else if (key === secondKey && value === secondRaw) {
+      secondDeferredRestorationAttempted = true;
+    }
+  };
+  try {
+    cacheZoneRecords("multi-race-incoming", "Incoming", [
+      "y".repeat(Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 2)),
+    ]);
+    assert.equal(localStorage.getItem(firstKey), null);
+    assert.equal(localStorage.getItem(secondKey), null);
+    t.mock.timers.tick(10);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+  }
+
+  assert.equal(generationChangeArmed, false);
+  assert.equal(localStorage.getItem(firstKey), null);
+  assert.equal(localStorage.getItem(secondKey), null);
+  assert.equal(secondDeferredRestorationAttempted, false);
+});
+
+test("deferred rollback releases its lease after a synchronous storage throw", (t) => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = 0; index < hardLimit; index += 1) {
+    cacheZoneRecords(`lease-throw-${index}`, `Lease throw ${index}`, []);
+  }
+  const oldestKey = entryKeyForZone("lease-throw-0");
+  assert.ok(oldestKey);
+  const oldestRaw = localStorage.getItem(oldestKey);
+  assert.ok(oldestRaw);
+
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  const originalGetItem = storagePrototype.getItem;
+  let indexFailureArmed = true;
+  let initialRestorationFailureArmed = true;
+  let throwAfterDeferredRestoration = false;
+  storagePrototype.setItem = function armSynchronousReadThrow(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced lease-release index write failure");
+    }
+    if (
+      key === oldestKey &&
+      value === oldestRaw &&
+      initialRestorationFailureArmed
+    ) {
+      initialRestorationFailureArmed = false;
+      throw new Error("forced initial lease-release restoration failure");
+    }
+    originalSetItem.call(this, key, value);
+    if (key === oldestKey && value === oldestRaw) {
+      throwAfterDeferredRestoration = true;
+    }
+  };
+  storagePrototype.getItem = function throwDuringPostWriteGuard(
+    this: Storage,
+    key: string,
+  ): string | null {
+    if (key === CACHE_COORDINATION_KEY && throwAfterDeferredRestoration) {
+      throwAfterDeferredRestoration = false;
+      throw new Error("forced synchronous rollback guard read failure");
+    }
+    return originalGetItem.call(this, key);
+  };
+  try {
+    cacheZoneRecords(`lease-throw-${hardLimit}`, "Incoming", []);
+    t.mock.timers.tick(10);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+    storagePrototype.getItem = originalGetItem;
+  }
+
+  assert.equal(throwAfterDeferredRestoration, false);
+  assert.equal(localStorage.getItem(CACHE_COORDINATION_KEY), null);
+});
+
 test("permanent rollback failure stops at the retry ceiling with no timer work", (t) => {
   const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
   for (let index = 0; index < hardLimit; index += 1) {
