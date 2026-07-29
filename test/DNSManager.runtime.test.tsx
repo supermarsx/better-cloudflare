@@ -721,7 +721,10 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   );
   assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
   const mutationToast = mutationMessage.closest('[data-state="open"]');
-  assert.ok(mutationToast, "the rejected mutation owns an open diagnostic toast");
+  assert.ok(
+    mutationToast,
+    "the rejected mutation owns an open diagnostic toast",
+  );
   fireEvent.click(
     within(mutationToast).getByRole("button", { name: "More info" }),
   );
