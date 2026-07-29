@@ -31,7 +31,7 @@ import {
   useWindowDragRegion,
 } from "./WindowControls";
 
-const TITLEBAR_HEIGHT_PX = 36;
+export const TITLEBAR_HEIGHT_PX = 36;
 
 interface ClosePreferencePersistence {
   persistLocal: (enabled: boolean) => void;
@@ -358,7 +358,7 @@ export function WindowTitleBar() {
 
   return (
     <div
-      className="titlebar fixed inset-x-0 top-0 z-[2147483000] flex h-10 items-center justify-between border-b border-border/60 backdrop-blur-xl"
+      className="titlebar fixed inset-x-0 top-0 z-[2147483000] flex h-9 items-center justify-between border-b border-border/60 backdrop-blur-xl"
       style={{ height: TITLEBAR_HEIGHT_PX }}
     >
       <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>

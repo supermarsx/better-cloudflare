@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { GripVertical, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -49,6 +49,45 @@ export function DnsWorkspaceTabs({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingCloseFocusRef = useRef<{
+    closedId: string;
+    closedIndex: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const pendingFocus = pendingCloseFocusRef.current;
+    if (
+      !pendingFocus ||
+      items.some((item) => item.id === pendingFocus.closedId)
+    ) {
+      return;
+    }
+
+    pendingCloseFocusRef.current = null;
+    const activeItem = items.find((item) => item.id === activeId);
+    const nearestItem =
+      items[Math.min(pendingFocus.closedIndex, items.length - 1)];
+    const targetId = activeItem?.id ?? nearestItem?.id;
+    if (targetId) tabRefs.current.get(targetId)?.focus();
+  }, [activeId, items]);
+
+  const closeWithFocusRecovery = (
+    id: string,
+    index: number,
+    trigger: HTMLButtonElement,
+  ) => {
+    if (
+      typeof document !== "undefined" &&
+      (document.activeElement === trigger ||
+        document.activeElement === tabRefs.current.get(id))
+    ) {
+      pendingCloseFocusRef.current = {
+        closedId: id,
+        closedIndex: index,
+      };
+    }
+    onClose(id);
+  };
 
   const activateAndFocus = (index: number) => {
     const item = items[index];
@@ -91,7 +130,7 @@ export function DnsWorkspaceTabs({
     }
     if (event.key === "Delete") {
       event.preventDefault();
-      onClose(id);
+      closeWithFocusRecovery(id, index, event.currentTarget);
     }
   };
 
@@ -184,7 +223,7 @@ export function DnsWorkspaceTabs({
               onMouseDown={(event) => {
                 if (event.button !== 1 || !closeOnMiddleClick) return;
                 event.preventDefault();
-                onClose(item.id);
+                closeWithFocusRecovery(item.id, index, event.currentTarget);
               }}
               onKeyDown={(event) => handleKeyDown(event, index, item.id)}
             >
@@ -203,7 +242,9 @@ export function DnsWorkspaceTabs({
               type="button"
               className="mr-1 rounded p-1 text-muted-foreground outline-none transition hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/60"
               aria-label={`${t("Close tab", "Close tab")}: ${item.label}`}
-              onClick={() => onClose(item.id)}
+              onClick={(event) =>
+                closeWithFocusRecovery(item.id, index, event.currentTarget)
+              }
             >
               <X aria-hidden="true" className="h-3 w-3" />
             </button>

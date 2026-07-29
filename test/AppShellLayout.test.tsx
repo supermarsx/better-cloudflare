@@ -193,10 +193,31 @@ test("workspace tabs switch with pointer and roving keyboard focus", () => {
 
   fireEvent.keyDown(settings, { key: "Delete" });
   assert.equal(screen.queryByRole("tab", { name: /Settings/ }), null);
+  assert.equal(document.activeElement, alpha);
 
   const remainingBeta = screen.getByRole("tab", { name: /Beta/ });
+  remainingBeta.focus();
   fireEvent.mouseDown(remainingBeta, { button: 1 });
   assert.equal(screen.queryByRole("tab", { name: /Beta/ }), null);
+  assert.equal(document.activeElement, alpha);
+});
+
+test("workspace tabs restore focus after the focused close button removes a tab", () => {
+  render(<StatefulTabs />);
+
+  const beta = screen.getByRole("tab", { name: /Beta/ });
+  fireEvent.click(beta);
+
+  const closeBeta = screen.getByRole("button", {
+    name: /Close tab: Beta/,
+  });
+  closeBeta.focus();
+  fireEvent.click(closeBeta);
+
+  const alpha = screen.getByRole("tab", { name: /Alpha/ });
+  assert.equal(screen.queryByRole("tab", { name: /Beta/ }), null);
+  assert.equal(alpha.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement, alpha);
 });
 
 function createDataTransfer(): DataTransfer {

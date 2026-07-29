@@ -5,7 +5,10 @@ import { Toaster } from "@/components/ui/toaster";
 import { storageManager } from "@/lib/storage/storage";
 import { LanguageSelector } from "@/components/layout/LanguageSelector";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
-import { WindowTitleBar } from "@/components/layout/WindowTitleBar";
+import {
+  TITLEBAR_HEIGHT_PX,
+  WindowTitleBar,
+} from "@/components/layout/WindowTitleBar";
 import { isDesktop } from "@/lib/environment";
 import i18n from "@/i18n";
 import { TauriClient } from "@/lib/api/tauri-client";
@@ -204,7 +207,7 @@ function App() {
 
   const showingAuthenticatedApp = activeView === "app" && isAuthenticated;
   const languageSelectorTop = isDesktopEnv ? "top-12" : "top-3";
-  const mainOffset = isDesktopEnv ? "top-10" : "top-0";
+  const mainOffset = isDesktopEnv ? TITLEBAR_HEIGHT_PX : 0;
 
   return (
     <div className="h-screen overflow-hidden bg-background text-foreground">
@@ -252,7 +255,8 @@ function App() {
       ) : null}
       <main
         data-testid="app-viewport"
-        className={`absolute inset-x-0 bottom-0 ${mainOffset} flex min-h-0 overflow-hidden`}
+        className="absolute inset-x-0 bottom-0 flex min-h-0 overflow-hidden"
+        style={{ top: mainOffset }}
       >
         <div
           className={cn(
