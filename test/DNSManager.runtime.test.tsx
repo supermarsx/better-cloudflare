@@ -535,7 +535,7 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
       ),
     );
   });
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 1);
   const synchronizationDiagnostics = getRuntimeDiagnostics().filter(
     (diagnostic) => diagnostic.label === "Synchronize MCP server preferences",
   );
@@ -591,7 +591,7 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
   await waitFor(() => assert.ok(snapshotReads >= 3));
   statusLoad.resolve(createMcpStatus(["cf_list_zones"]));
   await waitFor(() => {
-    assert.deepEqual(setToolCalls, [[]]);
+    assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
     assert.deepEqual(startCalls, [["cf_list_zones"]]);
   });
 
@@ -704,12 +704,27 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   await waitFor(() =>
     assert.equal(selectVisible.hasAttribute("disabled"), false),
   );
+  for (const closeButton of document.querySelectorAll<HTMLElement>(
+    "[toast-close]",
+  )) {
+    fireEvent.click(closeButton);
+  }
   rejectToolMutation = true;
   fireEvent.click(selectVisible);
 
-  assert.ok(await screen.findByText("A runtime problem was contained"));
+  const mutationMessage = await screen.findByText(
+    "MCP tools failed token=[redacted]",
+  );
+  assert.equal(
+    screen.getAllByText("MCP tools failed token=[redacted]").length,
+    1,
+  );
   assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
-  fireEvent.click(screen.getByRole("button", { name: "More info" }));
+  const mutationToast = mutationMessage.closest('[data-state="open"]');
+  assert.ok(mutationToast, "the rejected mutation owns an open diagnostic toast");
+  fireEvent.click(
+    within(mutationToast).getByRole("button", { name: "More info" }),
+  );
   const diagnosticDialog = await screen.findByRole("dialog", {
     name: "Error details",
   });

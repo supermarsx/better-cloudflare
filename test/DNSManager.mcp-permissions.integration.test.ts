@@ -75,10 +75,14 @@ test("starts and restarts MCP with confirmed permissions only", () => {
     "useEffect(() => {\n    if (!prefsReady) return;",
   );
   const startupSynchronization = sourceBetween(
-    "useEffect(() => {\n    if (!prefsReady || !mcpPermissionsReady",
+    "mcpInitialSyncAttemptedRef.current = true;",
     "const persistTabStateBestEffort = useCallback(",
   );
 
+  assert.match(
+    startupSynchronization,
+    /mcpInitialSyncAttemptedRef\.current = true;/,
+  );
   assert.match(
     serverControl,
     /TauriClient\.startMcpServer\(\s*nextHost,\s*nextPort,\s*mcpEnabledTools,\s*\)/,
