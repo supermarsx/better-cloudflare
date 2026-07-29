@@ -286,22 +286,29 @@
 
   .glass-fade-table {
     --table-bottom-fade: 1;
-    --table-bottom-solid-stop: calc(100% - (12% * var(--table-bottom-fade)));
-    --table-bottom-mid-stop: calc(100% - (5% * var(--table-bottom-fade)));
-    --table-bottom-tail-alpha: calc(0.7 * var(--table-bottom-fade));
+    --table-bottom-fade-height: clamp(16px, 4%, 32px);
+    --table-bottom-solid-stop: calc(
+      100% - (var(--table-bottom-fade-height) * var(--table-bottom-fade))
+    );
+    --table-bottom-mid-stop: calc(
+      100% -
+        ((var(--table-bottom-fade-height) * 0.4) * var(--table-bottom-fade))
+    );
+    --table-bottom-mid-alpha: calc(1 - (0.1 * var(--table-bottom-fade)));
+    --table-bottom-tail-alpha: calc(1 - (0.22 * var(--table-bottom-fade)));
     -webkit-mask-image: linear-gradient(
       to bottom,
       #000 0%,
       #000 var(--table-bottom-solid-stop),
-      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) var(--table-bottom-mid-stop),
-      transparent 100%
+      rgba(0, 0, 0, var(--table-bottom-mid-alpha)) var(--table-bottom-mid-stop),
+      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) 100%
     );
     mask-image: linear-gradient(
       to bottom,
       #000 0%,
       #000 var(--table-bottom-solid-stop),
-      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) var(--table-bottom-mid-stop),
-      transparent 100%
+      rgba(0, 0, 0, var(--table-bottom-mid-alpha)) var(--table-bottom-mid-stop),
+      rgba(0, 0, 0, var(--table-bottom-tail-alpha)) 100%
     );
     -webkit-mask-repeat: no-repeat;
     mask-repeat: no-repeat;
