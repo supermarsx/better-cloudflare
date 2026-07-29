@@ -1,132 +1,154 @@
 import { expect, test, type Page } from "@playwright/test";
 
-type AuthFailureMode = "invalid" | "provider";
+type AuthFailureMode = "invalid" | "provider-object" | "provider-json";
+
+const desktopSecret = "desktop-secret-token-never-render";
+const nativeAuthErrorEnvelope = {
+  code: "AUTH_REQUEST_FAILED",
+  kind: "authentication",
+  message: "Cloudflare rejected the supplied credentials (HTTP 403).",
+  status: 403,
+  source: "cloudflare",
+  operation: "auth:verify_token",
+  retryable: false,
+  retry_after: "7",
+  details: {
+    provider_errors: [
+      {
+        code: "10000",
+        message: "Authentication error: token=[redacted]",
+      },
+    ],
+    provider_codes: ["10000"],
+    provider_messages: ["Authentication error: token=[redacted]"],
+    retry_after_secs: 7,
+    remediation: "Create a token with the required Cloudflare permissions.",
+  },
+  request_id: "cf-ray-safe-123",
+} as const;
 
 async function installFailingDesktopAuth(
   page: Page,
   initialMode: AuthFailureMode,
 ) {
-  await page.addInitScript((mode: AuthFailureMode) => {
-    type Callback = (...args: unknown[]) => unknown;
-    const callbacks = new Map<number, Callback>();
-    let callbackId = 0;
-    const desktopSecret = "desktop-secret-token-never-render";
+  await page.addInitScript(
+    ({
+      mode,
+      nativeEnvelope,
+      decryptedSecret,
+    }: {
+      mode: AuthFailureMode;
+      nativeEnvelope: typeof nativeAuthErrorEnvelope;
+      decryptedSecret: string;
+    }) => {
+      type Callback = (...args: unknown[]) => unknown;
+      const callbacks = new Map<number, Callback>();
+      let callbackId = 0;
 
-    Object.defineProperty(window, "__authFailureMode", {
-      configurable: true,
-      writable: true,
-      value: mode,
-    });
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {
-        callbacks,
-        metadata: {
-          currentWindow: { label: "main" },
-          currentWebview: { windowLabel: "main", label: "main" },
-        },
-        transformCallback(callback: Callback, once = false) {
-          callbackId += 1;
-          const id = callbackId;
-          callbacks.set(
-            id,
-            once
-              ? (...args: unknown[]) => {
-                  callbacks.delete(id);
-                  return callback(...args);
-                }
-              : callback,
-          );
-          return id;
-        },
-        unregisterCallback(id: number) {
-          callbacks.delete(id);
-        },
-        runCallback(id: number, data: unknown) {
-          callbacks.get(id)?.(data);
-        },
-        async invoke(command: string) {
-          switch (command) {
-            case "get_api_keys":
-              return [
-                {
-                  id: "desktop-key",
-                  label: "Desktop key",
-                  encrypted_key: "ciphertext",
-                  email: null,
+      Object.defineProperty(window, "__authFailureMode", {
+        configurable: true,
+        writable: true,
+        value: mode,
+      });
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        configurable: true,
+        value: {
+          callbacks,
+          metadata: {
+            currentWindow: { label: "main" },
+            currentWebview: { windowLabel: "main", label: "main" },
+          },
+          transformCallback(callback: Callback, once = false) {
+            callbackId += 1;
+            const id = callbackId;
+            callbacks.set(
+              id,
+              once
+                ? (...args: unknown[]) => {
+                    callbacks.delete(id);
+                    return callback(...args);
+                  }
+                : callback,
+            );
+            return id;
+          },
+          unregisterCallback(id: number) {
+            callbacks.delete(id);
+          },
+          runCallback(id: number, data: unknown) {
+            callbacks.get(id)?.(data);
+          },
+          async invoke(command: string) {
+            switch (command) {
+              case "get_api_keys":
+                return [
+                  {
+                    id: "desktop-key",
+                    label: "Desktop key",
+                    encrypted_key: "ciphertext",
+                    email: null,
+                    iterations: 100000,
+                    key_length: 256,
+                    algorithm: "AES-GCM",
+                  },
+                ];
+              case "get_encryption_settings":
+                return {
                   iterations: 100000,
                   key_length: 256,
                   algorithm: "AES-GCM",
-                },
-              ];
-            case "get_encryption_settings":
-              return {
-                iterations: 100000,
-                key_length: 256,
-                algorithm: "AES-GCM",
-              };
-            case "get_preferences":
-              return {};
-            case "get_passkey_status":
-              return {
-                registrationAvailable: false,
-                authenticationAvailable: false,
-                legacyCredentialsRequireReregistration: true,
-                unavailableReason: "Legacy passkeys require review.",
-              };
-            case "biometric_status":
-              return { available: false, biometricType: "none" };
-            case "decrypt_api_key":
-              return desktopSecret;
-            case "verify_token":
-              if (
-                (
+                };
+              case "get_preferences":
+                return {};
+              case "get_passkey_status":
+                return {
+                  registrationAvailable: false,
+                  authenticationAvailable: false,
+                  legacyCredentialsRequireReregistration: true,
+                  unavailableReason: "Legacy passkeys require review.",
+                };
+              case "biometric_status":
+                return { available: false, biometricType: "none" };
+              case "decrypt_api_key":
+                return decryptedSecret;
+              case "verify_token": {
+                const failureMode = (
                   window as Window & {
                     __authFailureMode?: AuthFailureMode;
                   }
-                ).__authFailureMode === "invalid"
-              ) {
-                return false;
+                ).__authFailureMode;
+                if (failureMode === "invalid") return false;
+                if (failureMode === "provider-json") {
+                  throw JSON.stringify(nativeEnvelope);
+                }
+                throw nativeEnvelope;
               }
-              throw JSON.stringify({
-                kind: "authentication",
-                message: "Cloudflare rejected the credentials.",
-                details: {
-                  operation: "verify token",
-                  status: 403,
-                  request_id: "cf-ray-safe-123",
-                  retry_after_secs: 7,
-                  retryable: false,
-                  provider_errors: [
-                    {
-                      code: 10000,
-                      message: `Authentication error: token=${desktopSecret}`,
-                    },
-                  ],
-                  remediation:
-                    "Create a token with the required Cloudflare permissions.",
-                },
-              });
-            case "plugin:window|is_always_on_top":
-            case "plugin:window|is_maximized":
-            case "plugin:window|is_minimized":
-            case "plugin:window|is_focused":
-              return false;
-            case "plugin:event|listen":
-              return 1;
-            case "plugin:event|unlisten":
-              return undefined;
-            default:
-              if (command.startsWith("plugin:window|")) return undefined;
-              throw new Error(`Unexpected Tauri command: ${command}`);
-          }
+              case "plugin:window|is_always_on_top":
+              case "plugin:window|is_maximized":
+              case "plugin:window|is_minimized":
+              case "plugin:window|is_focused":
+                return false;
+              case "plugin:event|listen":
+                return 1;
+              case "plugin:event|unlisten":
+                return undefined;
+              default:
+                if (command.startsWith("plugin:window|")) return undefined;
+                throw new Error(`Unexpected Tauri command: ${command}`);
+            }
+          },
+          convertFileSrc(path: string) {
+            return `asset://localhost/${encodeURIComponent(path)}`;
+          },
         },
-        convertFileSrc(path: string) {
-          return `asset://localhost/${encodeURIComponent(path)}`;
-        },
-      },
-    });
-  }, initialMode);
+      });
+    },
+    {
+      mode: initialMode,
+      nativeEnvelope: nativeAuthErrorEnvelope,
+      decryptedSecret: desktopSecret,
+    },
+  );
 }
 
 async function selectDesktopKey(page: Page) {
@@ -153,23 +175,40 @@ test("invalid and native provider login failures remain actionable and sanitized
   await expect(error).toBeVisible();
 
   await page.getByRole("button", { name: "Dismiss login error" }).click();
-  await page.evaluate(() => {
-    (
-      window as Window & { __authFailureMode?: AuthFailureMode }
-    ).__authFailureMode = "provider";
-  });
-  await page.getByRole("button", { name: "Login" }).click();
+  for (const rejectionMode of [
+    "provider-object",
+    "provider-json",
+  ] satisfies AuthFailureMode[]) {
+    await page.evaluate((mode: AuthFailureMode) => {
+      (
+        window as Window & { __authFailureMode?: AuthFailureMode }
+      ).__authFailureMode = mode;
+    }, rejectionMode);
+    await page.getByRole("button", { name: "Login" }).click();
 
-  await expect(error).toBeVisible();
-  await expect(error).toContainText("Cloudflare rejected the credentials");
-  await error.getByText("Safe technical details").click();
-  await expect(error).toContainText("HTTP 403");
-  await expect(error).toContainText("request ID cf-ray-safe-123");
-  await expect(error).toContainText("provider codes 10000");
-  await expect(error).toContainText(
-    "Create a token with the required Cloudflare permissions",
-  );
-  await expect(error).not.toContainText("desktop-secret-token-never-render");
+    await expect(error).toBeVisible();
+    await expect(error).toContainText(
+      "Cloudflare rejected the supplied credentials",
+    );
+    await error.getByText("Safe technical details").click();
+    await expect(error).toContainText("source cloudflare");
+    await expect(error).toContainText("operation auth:verify_token");
+    await expect(error).toContainText("HTTP 403");
+    await expect(error).toContainText("request ID cf-ray-safe-123");
+    await expect(error).toContainText("retry after 7");
+    await expect(error).toContainText("provider codes 10000");
+    await expect(error).toContainText("Authentication error: token=[redacted]");
+    await expect(error).toContainText(
+      "Create a token with the required Cloudflare permissions",
+    );
+    await expect(error).not.toContainText(desktopSecret);
+    await page.waitForTimeout(1_200);
+    await expect(error).toBeVisible();
+
+    if (rejectionMode === "provider-object") {
+      await page.getByRole("button", { name: "Dismiss login error" }).click();
+    }
+  }
 });
 
 test("missing web backend fails locally with visible configuration guidance", async ({
