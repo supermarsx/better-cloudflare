@@ -395,6 +395,78 @@ test("keeps the timeout active when a caller supplies an AbortSignal", async () 
   }
 });
 
+test("checkDnsPropagation preserves caller cancellation when rejection follows the timeout deadline", async () => {
+  const client = new ServerClient("key", "http://example.com", undefined, 5);
+  const caller = new AbortController();
+  let requestSignal: AbortSignal | null | undefined;
+  let rejectFetch: ((reason?: unknown) => void) | undefined;
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      rejectFetch = reject;
+    });
+
+  try {
+    const request = client.checkDnsPropagation(
+      "example.com",
+      "A",
+      undefined,
+      caller.signal,
+    );
+    assert.ok(requestSignal);
+    assert.notEqual(requestSignal, caller.signal);
+
+    caller.abort();
+    assert.equal(requestSignal.aborted, true);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    rejectFetch?.(new DOMException("cancelled", "AbortError"));
+
+    await assert.rejects(
+      () => request,
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "aborted");
+        assert.equal(error.endpoint, "/dns/propagation");
+        assert.equal(error.operation, "POST");
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkDnsPropagation removes caller listeners and clears its timeout after completion", async () => {
+  const client = new ServerClient("key", "http://example.com", undefined, 20);
+  const caller = new AbortController();
+  let requestSignal: AbortSignal | null | undefined;
+  globalThis.fetch = async (_url: string | URL, init?: RequestInit) => {
+    requestSignal = init?.signal;
+    return new Response(JSON.stringify({ resolvers: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await client.checkDnsPropagation(
+      "example.com",
+      "A",
+      undefined,
+      caller.signal,
+    );
+    assert.ok(requestSignal);
+    assert.equal(requestSignal.aborted, false);
+
+    caller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(requestSignal.aborted, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("normalizes network failures and explicit cancellation", async () => {
   const client = new ServerClient("key", "http://example.com");
   try {

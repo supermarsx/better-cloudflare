@@ -196,7 +196,7 @@ export class ServerClient {
   /**
    * Internal helper for performing HTTP requests.
    *
-   * - Handles timeout via AbortController when a `signal` is not provided
+   * - Composes caller cancellation with an independent request timeout
    * - Parses JSON responses, otherwise returns undefined
    * - On error attempts to parse response body for additional details
    *
@@ -234,7 +234,11 @@ export class ServerClient {
     let detachCallerSignal: (() => void) | undefined;
     let timedOut = false;
     if (callerSignal) {
-      const abortFromCaller = () => controller.abort();
+      const abortFromCaller = () => {
+        if (!controller.signal.aborted) {
+          controller.abort();
+        }
+      };
       if (callerSignal.aborted) {
         abortFromCaller();
       } else {
@@ -243,10 +247,13 @@ export class ServerClient {
           callerSignal.removeEventListener("abort", abortFromCaller);
       }
     }
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.timeoutMs);
+    const timeout = controller.signal.aborted
+      ? undefined
+      : setTimeout(() => {
+          if (controller.signal.aborted) return;
+          timedOut = true;
+          controller.abort();
+        }, this.timeoutMs);
     try {
       const requestUrl = joinRequestUrl(baseUrl, endpoint);
       const res = await fetch(requestUrl, {
@@ -333,7 +340,7 @@ export class ServerClient {
         timedOut,
       });
     } finally {
-      if (timeout) clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
       detachCallerSignal?.();
     }
   }
@@ -1310,6 +1317,7 @@ export class ServerClient {
     domain: string,
     recordType: string,
     extraResolvers?: string[],
+    signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
       return TauriClient.checkDnsPropagation(
@@ -1326,6 +1334,7 @@ export class ServerClient {
         record_type: recordType,
         extra_resolvers: extraResolvers,
       },
+      signal,
     });
   }
 }

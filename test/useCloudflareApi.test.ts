@@ -4,10 +4,12 @@ import React from "react";
 import { act, create } from "./testRenderer";
 
 import { useCloudflareAPI } from "../src/hooks/dns/use-cloudflare-api.ts";
+import { RequestError } from "../src/lib/api/request-error.ts";
 
 interface FetchCallOptions {
   method?: string;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
   [key: string]: unknown;
 }
 
@@ -198,5 +200,69 @@ test("createDNSRecord posts record using email auth", async () => {
     assert.equal(key, "abc");
     assert.equal(email, "me@example.com");
     assert.equal(bearer, undefined);
+  });
+});
+
+test("checkDnsPropagation forwards caller cancellation through the hook and ServerClient", async () => {
+  await withConfiguredWebBackend(async () => {
+    let requestSignal: AbortSignal | undefined;
+    let requestUrl: string | undefined;
+    let requestBody: string | undefined;
+    (
+      globalThis as unknown as {
+        fetch: (url: string, options: FetchCallOptions) => Promise<Response>;
+      }
+    ).fetch = async (url: string, options: FetchCallOptions) =>
+      new Promise<Response>((_resolve, reject) => {
+        requestUrl = url;
+        requestBody =
+          typeof options.body === "string" ? options.body : undefined;
+        requestSignal = options.signal;
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      });
+
+    let api: ReturnType<typeof useCloudflareAPI>;
+    function Wrapper() {
+      api = useCloudflareAPI("abc");
+      return null;
+    }
+    act(() => {
+      create(React.createElement(Wrapper));
+    });
+
+    const caller = new AbortController();
+    const request = api.checkDnsPropagation(
+      "example.com",
+      "A",
+      ["9.9.9.9"],
+      caller.signal,
+    );
+    assert.ok(requestSignal);
+    assert.notEqual(requestSignal, caller.signal);
+
+    caller.abort();
+    await assert.rejects(
+      () => request,
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "aborted");
+        assert.equal(error.endpoint, "/dns/propagation");
+        assert.equal(error.operation, "POST");
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+
+    assert.equal(requestSignal.aborted, true);
+    assert.equal(requestUrl, `${TEST_WEB_API_BASE}/dns/propagation`);
+    assert.deepEqual(JSON.parse(requestBody ?? ""), {
+      domain: "example.com",
+      record_type: "A",
+      extra_resolvers: ["9.9.9.9"],
+    });
   });
 });

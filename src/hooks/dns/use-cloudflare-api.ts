@@ -469,9 +469,19 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
   // ── DNS Propagation ───────────────────────────────────────────────────────
 
   const checkDnsPropagation = useCallback(
-    (domain: string, recordType: string, extraResolvers?: string[]) => {
+    (
+      domain: string,
+      recordType: string,
+      extraResolvers?: string[],
+      signal?: AbortSignal,
+    ) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.checkDnsPropagation(domain, recordType, extraResolvers);
+      return api.checkDnsPropagation(
+        domain,
+        recordType,
+        extraResolvers,
+        signal,
+      );
     },
     [api],
   );
