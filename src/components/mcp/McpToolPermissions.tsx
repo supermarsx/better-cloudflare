@@ -1284,6 +1284,11 @@ export function McpToolPermissions({
     if (loadState === "loading") {
       return;
     }
+    // Keep a failed bootstrap fail-closed until the user explicitly retries;
+    // preference hydration must not enqueue a second backend reconciliation.
+    if (loadState === "error") {
+      return;
+    }
 
     if (observedControlledRequestRef.current === requestKey) {
       if (latestControlledSelectionRef.current === requested) {
@@ -1455,7 +1460,7 @@ export function McpToolPermissions({
           </div>
         )}
 
-        {saveError && (
+        {saveError && onError === undefined && (
           <div
             className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs break-words [overflow-wrap:anywhere]"
             role="alert"

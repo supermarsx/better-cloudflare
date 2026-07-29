@@ -942,6 +942,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpServerEnabledRef = useRef(mcpServerEnabled);
   const mcpServerHostRef = useRef(mcpServerHost);
   const mcpServerPortRef = useRef(mcpServerPort);
+  const mcpInitialSyncAttemptedRef = useRef(false);
   mcpServerEnabledRef.current = mcpServerEnabled;
   mcpServerHostRef.current = mcpServerHost;
   mcpServerPortRef.current = mcpServerPort;
@@ -2162,15 +2163,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (failure.operation === "bootstrap") {
         setMcpPermissionsReady(false);
       }
-      const diagnostic = reportDnsManagerFailure(
-        error,
+      const label =
         failure.operation === "bootstrap"
           ? "Synchronize MCP server preferences"
-          : "Update MCP tool access",
-      );
+          : "Update MCP tool access";
+      const report = reportRuntimeError(error, { source: "runtime", label });
+      const diagnostic = report.diagnostic;
       setMcpActionError(diagnostic.message);
+      if (!report.duplicate) {
+        toast({
+          title: label,
+          description: diagnostic.message,
+          diagnostic,
+          variant: "destructive",
+        });
+      }
     },
-    [],
+    [toast],
   );
 
   const setMcpServerRunning = useCallback(
@@ -2490,12 +2499,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setCloseTabOnMiddleClick(prefObj.close_tab_on_middle_click);
           }
           if (typeof prefObj.mcp_server_enabled === "boolean") {
+            mcpServerEnabledRef.current = prefObj.mcp_server_enabled;
             setMcpServerEnabled(prefObj.mcp_server_enabled);
           }
           if (typeof prefObj.mcp_server_host === "string") {
+            mcpServerHostRef.current = prefObj.mcp_server_host || "127.0.0.1";
             setMcpServerHost(prefObj.mcp_server_host || "127.0.0.1");
           }
           if (typeof prefObj.mcp_server_port === "number") {
+            mcpServerPortRef.current = Math.max(
+              1,
+              Math.min(65535, Math.round(prefObj.mcp_server_port)),
+            );
             setMcpServerPort(
               Math.max(1, Math.min(65535, Math.round(prefObj.mcp_server_port))),
             );
@@ -2792,7 +2807,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   useEffect(() => {
-    if (!prefsReady || !mcpPermissionsReady || !isDesktop()) return;
+    if (
+      !prefsReady ||
+      !mcpPermissionsReady ||
+      !isDesktop() ||
+      mcpInitialSyncAttemptedRef.current
+    )
+      return;
+    mcpInitialSyncAttemptedRef.current = true;
     let active = true;
     setMcpBusy(true);
     setMcpActionError(null);
