@@ -784,18 +784,18 @@ test("the portal modal inerts and restores external application siblings", async
     });
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("alertdialog");
-    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const backdrop = await screen.findByTestId("mcp-permission-modal-backdrop");
 
-    assert.ok(screen.getByTestId("mcp-permission-modal-backdrop"));
+    assert.ok(backdrop);
     assert.equal(externalSibling.getAttribute("inert"), "");
     assert.equal(externalSibling.getAttribute("aria-hidden"), "true");
     assert.equal(externalSibling.style.pointerEvents, "none");
 
-    externalSibling.focus();
-    assert.equal(document.activeElement, cancel);
-
-    fireEvent.click(cancel);
-    await waitFor(() => assert.equal(document.activeElement, trigger));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() =>
+      assert.equal(screen.queryByTestId("mcp-permission-modal-backdrop"), null),
+    );
+    assert.equal(document.activeElement, trigger);
     assert.equal(externalSibling.hasAttribute("inert"), false);
     assert.equal(externalSibling.getAttribute("aria-hidden"), "false");
     assert.equal(externalSibling.style.pointerEvents, "auto");

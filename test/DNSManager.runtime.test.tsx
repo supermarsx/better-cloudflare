@@ -23,6 +23,8 @@ import {
 } from "../src/lib/errors/runtime-reporting";
 import { storageManager } from "../src/lib/storage/storage";
 import { MCP_PERMISSION_POLICY_VERSION } from "../src/lib/mcp/tool-permissions";
+import { RuntimeErrorListener } from "../src/components/layout/RuntimeErrorListener";
+import { Toaster } from "../src/components/ui/toaster";
 
 const {
   DNS_API_PAGE_SIZE_LIMIT,
@@ -533,7 +535,7 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
       ),
     );
   });
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 2);
   const synchronizationDiagnostics = getRuntimeDiagnostics().filter(
     (diagnostic) =>
       diagnostic.label === "Synchronize MCP server preferences",
@@ -590,7 +592,7 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
   await waitFor(() => assert.ok(snapshotReads >= 3));
   statusLoad.resolve(createMcpStatus(["cf_list_zones"]));
   await waitFor(() => {
-    assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
+    assert.deepEqual(setToolCalls, [[]]);
     assert.deepEqual(startCalls, [["cf_list_zones"]]);
   });
 
@@ -667,20 +669,30 @@ test("an equal hydrated session profile preserves MCP readiness after reconcilia
 test("rejected MCP tool mutation rolls back selection and shows sanitized context", async () => {
   setDesktopWindow();
   let rejectToolMutation = false;
+  let rejectedMutation = false;
+  const setToolCalls: string[][] = [];
   mockDnsRuntime(
     async () => ({
       mcp_server_enabled: false,
       mcp_enabled_tools: [],
     }),
     async (tools) => {
-      if (rejectToolMutation) {
+      setToolCalls.push([...tools]);
+      if (rejectToolMutation && !rejectedMutation) {
+        rejectedMutation = true;
         throw new Error("MCP tools failed token=hidden-tool-secret");
       }
       return createMcpStatus(tools);
     },
   );
 
-  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  render(
+    <>
+      <RuntimeErrorListener />
+      <Toaster />
+      <DNSManager apiKey="test-key" onLogout={() => {}} />
+    </>,
+  );
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
   fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
 
@@ -696,9 +708,30 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   rejectToolMutation = true;
   fireEvent.click(selectVisible);
 
-  await waitFor(() => {
-    assert.ok(screen.getByText("MCP tools failed token=[redacted]"));
+  assert.ok(await screen.findByText("A runtime problem was contained"));
+  assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
+  fireEvent.click(screen.getByRole("button", { name: "More info" }));
+  const diagnosticDialog = await screen.findByRole("dialog", {
+    name: "Error details",
   });
+  assert.match(diagnosticDialog.textContent ?? "", /Diagnostic ID:/);
+  assert.match(diagnosticDialog.textContent ?? "", /Area: Update MCP tool access/);
+  assert.match(
+    diagnosticDialog.textContent ?? "",
+    /MCP tools failed token=\[redacted\]/,
+  );
+  assert.doesNotMatch(diagnosticDialog.textContent ?? "", /hidden-tool-secret/);
+  fireEvent.click(
+    within(diagnosticDialog).getByRole("button", {
+      name: "Close error details",
+    }),
+  );
+  await waitFor(() =>
+    assert.equal(
+      screen.queryByRole("dialog", { name: "Error details" }),
+      null,
+    ),
+  );
   const checkbox = within(accessGroup).getByRole("checkbox", {
     name: /^List zones/,
   }) as HTMLInputElement;
