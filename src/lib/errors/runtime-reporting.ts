@@ -497,10 +497,14 @@ export function reportRuntimeError(
   }
 
   diagnostics.unshift(candidate);
-  recentByFingerprint.set(candidate.fingerprint, {
-    lastSeen: now,
-    diagnostic: candidate,
-  });
+  const isSilentNonDeduplicatingReport =
+    context.deduplicate === false && context.notifyListeners === false;
+  if (!isSilentNonDeduplicatingReport) {
+    recentByFingerprint.set(candidate.fingerprint, {
+      lastSeen: now,
+      diagnostic: candidate,
+    });
+  }
   const evictedDiagnostics = diagnostics.splice(
     RESOURCE_LIMITS.runtimeDiagnostics.retainedCountHard,
   );

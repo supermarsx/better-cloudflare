@@ -265,6 +265,29 @@ test("deduplicates the same failure across global error and rejection sources", 
   assert.equal(getRuntimeDiagnostics().length, 1);
 });
 
+test("does not let silent non-deduplicating reports suppress normal reports", () => {
+  const received: string[] = [];
+  const unsubscribe = subscribeRuntimeReports((diagnostic) => {
+    received.push(diagnostic.id);
+  });
+  const error = stableError("silent diagnostic followed by visible failure");
+
+  const silent = reportRuntimeError(error, {
+    deduplicate: false,
+    notifyListeners: false,
+  });
+  const normal = reportRuntimeError(error);
+  const duplicate = reportRuntimeError(error);
+
+  unsubscribe();
+  assert.equal(silent.duplicate, false);
+  assert.equal(normal.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.notEqual(silent.diagnostic.id, normal.diagnostic.id);
+  assert.equal(duplicate.diagnostic.id, normal.diagnostic.id);
+  assert.deepEqual(received, [normal.diagnostic.id]);
+});
+
 test("global handlers report errors and rejected promises once without loops", () => {
   const received: string[] = [];
   const unsubscribe = subscribeRuntimeReports((diagnostic) => {
