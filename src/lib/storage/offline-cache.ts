@@ -56,7 +56,7 @@ interface PendingCacheRollback {
   previousIndexRaw: string | null;
   attemptedIndexRaw: string | null;
   removedEntries: IndexedCacheEntry[];
-  restoredEntryKeys: Set<string>;
+  restoredEntries: Map<string, string>;
   incomingKey: string;
   incomingRaw: string;
   attempts: number;
@@ -396,17 +396,18 @@ function restoreIfUnchanged(
 }
 
 function cleanupRollbackRestorations(
-  rollback: Pick<PendingCacheRollback, "removedEntries" | "restoredEntryKeys">,
+  rollback: Pick<PendingCacheRollback, "restoredEntries">,
   operation: string,
 ): boolean {
   let cleanupComplete = true;
-  for (const entry of rollback.removedEntries) {
-    if (!rollback.restoredEntryKeys.has(entry.key)) continue;
-    const result = restoreIfUnchanged(entry.key, entry.raw, null, operation);
+  for (const [key, ownedRaw] of rollback.restoredEntries) {
+    const result = restoreIfUnchanged(key, ownedRaw, null, operation);
     if (result === "failed") {
       cleanupComplete = false;
     } else {
-      rollback.restoredEntryKeys.delete(entry.key);
+      // A successful removal, an already-removed value, or a newer immutable
+      // generation all end this rollback's ownership of the exact raw value.
+      rollback.restoredEntries.delete(key);
     }
   }
   return cleanupComplete;
@@ -446,7 +447,7 @@ function scheduleRollback(): void {
     ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(rollback.attempts, 6),
     1_000,
   );
-  rollbackTimer = setTimeout(() => {
+  rollbackTimer = globalThis.setTimeout(() => {
     rollbackTimer = undefined;
     if (pendingRollback !== rollback) {
       scheduleRollback();
@@ -507,7 +508,7 @@ function scheduleRollback(): void {
                 "Retry removed DNS offline cache entry rollback",
               );
               if (result === "restored") {
-                rollback.restoredEntryKeys.add(entry.key);
+                rollback.restoredEntries.set(entry.key, entry.raw);
               } else if (result === "changed") {
                 rollbackSuperseded = true;
                 generationStillCurrent = false;
@@ -1004,7 +1005,7 @@ function persistCacheEntry(
         0,
         RESOURCE_LIMITS.offlineCache.hardEntries,
       );
-      const restoredEntryKeys = new Set<string>();
+      const restoredEntries = new Map<string, string>();
       let entriesRestored = true;
       for (const removedEntry of removedEntries) {
         const result = restoreIfUnchanged(
@@ -1013,7 +1014,9 @@ function persistCacheEntry(
           removedEntry.raw,
           "Roll back removed DNS offline cache entry",
         );
-        if (result === "restored") restoredEntryKeys.add(removedEntry.key);
+        if (result === "restored") {
+          restoredEntries.set(removedEntry.key, removedEntry.raw);
+        }
         entriesRestored &&=
           result === "restored" || result === "already-restored";
       }
@@ -1024,7 +1027,7 @@ function persistCacheEntry(
       let staleRestorationsRemoved = true;
       if (rollbackIncomplete) {
         staleRestorationsRemoved = cleanupRollbackRestorations(
-          { removedEntries, restoredEntryKeys },
+          { restoredEntries },
           "Remove incomplete DNS offline cache rollback restoration",
         );
       }
@@ -1043,7 +1046,7 @@ function persistCacheEntry(
           previousIndexRaw,
           attemptedIndexRaw: indexWrite.raw,
           removedEntries,
-          restoredEntryKeys,
+          restoredEntries,
           incomingKey: key,
           incomingRaw: serialized,
           attempts: 0,
