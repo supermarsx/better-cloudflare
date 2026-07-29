@@ -7,7 +7,8 @@ mod types;
 
 pub use types::*;
 
-use reqwest::Client;
+use reqwest::{header::CONTENT_LENGTH, Client, Response};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -23,6 +24,10 @@ const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const AUTH_OPERATION: &str = "auth:verify_token";
 const MAX_PROVIDER_ERRORS: usize = 5;
 const MAX_PROVIDER_MESSAGE_LENGTH: usize = 240;
+const MAX_RESPONSE_BODY_BYTES: usize = 10 * 1024 * 1024;
+const MAX_DNS_PAGE: u32 = 1_000_000;
+const MAX_DNS_RECORDS_PER_PAGE: u32 = 5_000;
+const MAX_BULK_DNS_RECORDS: usize = 200;
 
 // ── Error ───────────────────────────────────────────────────────────────────
 
@@ -79,7 +84,7 @@ impl std::fmt::Display for CloudflareRequestError {
 #[derive(Error, Debug)]
 pub enum CloudflareError {
     #[error("HTTP error: {0}")]
-    HttpError(String),
+    HttpError(CloudflareHttpError),
     #[error("API error: {0}")]
     ApiError(String),
     #[error("Authentication failed")]
@@ -88,6 +93,220 @@ pub enum CloudflareError {
     RateLimited(u32),
     #[error("{0}")]
     Verification(Box<CloudflareRequestError>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceLimitKind {
+    ContentLength,
+    StreamedBody,
+    Collection,
+    Allocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceLimitError {
+    pub resource: &'static str,
+    pub limit: u64,
+    pub actual: Option<u64>,
+    pub kind: ResourceLimitKind,
+}
+
+impl std::fmt::Display for ResourceLimitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} exceeded its resource limit of {}",
+            self.resource, self.limit
+        )?;
+        if let Some(actual) = self.actual {
+            write!(formatter, " (actual: {actual})")?;
+        }
+        write!(formatter, " [{:?}]", self.kind)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudflareHttpError {
+    Transport(String),
+    ResourceLimit(ResourceLimitError),
+}
+
+impl From<String> for CloudflareHttpError {
+    fn from(message: String) -> Self {
+        Self::Transport(message)
+    }
+}
+
+impl std::fmt::Display for CloudflareHttpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(message) => formatter.write_str(message),
+            Self::ResourceLimit(context) => context.fmt(formatter),
+        }
+    }
+}
+
+impl CloudflareError {
+    fn http(error: impl std::fmt::Display) -> Self {
+        Self::HttpError(CloudflareHttpError::Transport(error.to_string()))
+    }
+
+    fn resource_limit(context: ResourceLimitError) -> Self {
+        Self::HttpError(CloudflareHttpError::ResourceLimit(context))
+    }
+
+    pub fn resource_limit_context(&self) -> Option<&ResourceLimitError> {
+        match self {
+            Self::HttpError(CloudflareHttpError::ResourceLimit(context)) => Some(context),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ResponseBodyReadError {
+    ResourceLimit(ResourceLimitError),
+    Stream(reqwest::Error),
+}
+
+impl From<ResponseBodyReadError> for CloudflareError {
+    fn from(error: ResponseBodyReadError) -> Self {
+        match error {
+            ResponseBodyReadError::ResourceLimit(context) => Self::resource_limit(context),
+            ResponseBodyReadError::Stream(error) => Self::http(error),
+        }
+    }
+}
+
+async fn read_bounded_response_body(
+    mut response: Response,
+    limit: usize,
+) -> Result<Vec<u8>, ResponseBodyReadError> {
+    const RESOURCE: &str = "Cloudflare HTTP response body";
+
+    let limit_u64 = u64::try_from(limit).unwrap_or(u64::MAX);
+    let declared_length = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if declared_length.is_some_and(|length| length > limit_u64) {
+        return Err(ResponseBodyReadError::ResourceLimit(ResourceLimitError {
+            resource: RESOURCE,
+            limit: limit_u64,
+            actual: declared_length,
+            kind: ResourceLimitKind::ContentLength,
+        }));
+    }
+
+    let initial_capacity = declared_length
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or(0);
+    let mut body = Vec::new();
+    body.try_reserve_exact(initial_capacity).map_err(|_| {
+        ResponseBodyReadError::ResourceLimit(ResourceLimitError {
+            resource: RESOURCE,
+            limit: limit_u64,
+            actual: declared_length,
+            kind: ResourceLimitKind::Allocation,
+        })
+    })?;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(ResponseBodyReadError::Stream)?
+    {
+        let new_length = body.len().checked_add(chunk.len()).ok_or_else(|| {
+            ResponseBodyReadError::ResourceLimit(ResourceLimitError {
+                resource: RESOURCE,
+                limit: limit_u64,
+                actual: None,
+                kind: ResourceLimitKind::StreamedBody,
+            })
+        })?;
+        if new_length > limit {
+            return Err(ResponseBodyReadError::ResourceLimit(ResourceLimitError {
+                resource: RESOURCE,
+                limit: limit_u64,
+                actual: u64::try_from(new_length).ok(),
+                kind: ResourceLimitKind::StreamedBody,
+            }));
+        }
+        body.try_reserve_exact(chunk.len()).map_err(|_| {
+            ResponseBodyReadError::ResourceLimit(ResourceLimitError {
+                resource: RESOURCE,
+                limit: limit_u64,
+                actual: u64::try_from(new_length).ok(),
+                kind: ResourceLimitKind::Allocation,
+            })
+        })?;
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
+async fn read_json_response<T: DeserializeOwned>(response: Response) -> Result<T, CloudflareError> {
+    let body = read_bounded_response_body(response, MAX_RESPONSE_BODY_BYTES).await?;
+    serde_json::from_slice(&body).map_err(CloudflareError::http)
+}
+
+fn check_collection_limit(
+    resource: &'static str,
+    actual: usize,
+    limit: usize,
+) -> Result<(), CloudflareError> {
+    if actual <= limit {
+        return Ok(());
+    }
+    Err(CloudflareError::resource_limit(ResourceLimitError {
+        resource,
+        limit: u64::try_from(limit).unwrap_or(u64::MAX),
+        actual: u64::try_from(actual).ok(),
+        kind: ResourceLimitKind::Collection,
+    }))
+}
+
+fn try_reserve_exact<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    resource: &'static str,
+    limit: usize,
+) -> Result<(), CloudflareError> {
+    values.try_reserve_exact(additional).map_err(|_| {
+        CloudflareError::resource_limit(ResourceLimitError {
+            resource,
+            limit: u64::try_from(limit).unwrap_or(u64::MAX),
+            actual: u64::try_from(additional).ok(),
+            kind: ResourceLimitKind::Allocation,
+        })
+    })
+}
+
+fn check_dns_pagination_bounds(
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<(), CloudflareError> {
+    if let Some(page) = page {
+        check_collection_limit(
+            "DNS page number",
+            usize::try_from(page).unwrap_or(usize::MAX),
+            usize::try_from(MAX_DNS_PAGE).unwrap_or(usize::MAX),
+        )?;
+    }
+    if let Some(per_page) = per_page {
+        check_collection_limit(
+            "DNS records per page",
+            usize::try_from(per_page).unwrap_or(usize::MAX),
+            usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
+        )?;
+    }
+    Ok(())
+}
+
+fn check_bulk_dns_bounds(record_count: usize) -> Result<(), CloudflareError> {
+    check_collection_limit("bulk DNS records", record_count, MAX_BULK_DNS_RECORDS)
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -170,7 +389,7 @@ impl CloudflareClient {
             let response = req
                 .send()
                 .await
-                .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+                .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
             let status = response.status();
 
@@ -185,11 +404,14 @@ impl CloudflareClient {
                 if status.as_u16() == 429 {
                     return Err(CloudflareError::RateLimited(self.max_retries));
                 }
-                return Err(CloudflareError::HttpError(format!(
-                    "Server error {} after {} retries",
-                    status.as_u16(),
-                    self.max_retries
-                )));
+                return Err(CloudflareError::HttpError(
+                    format!(
+                        "Server error {} after {} retries",
+                        status.as_u16(),
+                        self.max_retries
+                    )
+                    .into(),
+                ));
             }
 
             // Calculate backoff: prefer Retry-After header, else exponential
@@ -233,9 +455,17 @@ impl CloudflareClient {
                 continue;
             }
 
-            let body = response.text().await.map_err(|error| {
-                CloudflareError::Verification(Box::new(self.transport_error(&error)))
-            })?;
+            let body = read_bounded_response_body(response, MAX_RESPONSE_BODY_BYTES)
+                .await
+                .map_err(|error| match error {
+                    ResponseBodyReadError::ResourceLimit(context) => {
+                        CloudflareError::resource_limit(context)
+                    }
+                    ResponseBodyReadError::Stream(error) => {
+                        CloudflareError::Verification(Box::new(self.transport_error(&error)))
+                    }
+                })?;
+            let body = String::from_utf8_lossy(&body);
             return self.parse_verification_response(status, &body, retry_after_secs, request_id);
         }
     }
@@ -458,10 +688,7 @@ impl CloudflareClient {
             })
             .await?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         let zones = json["result"]
             .as_array()
@@ -501,6 +728,7 @@ impl CloudflareClient {
         page: Option<u32>,
         per_page: Option<u32>,
     ) -> Result<Vec<DNSRecord>, CloudflareError> {
+        check_dns_pagination_bounds(page, per_page)?;
         let mut url = format!(
             "https://api.cloudflare.com/client/v4/zones/{}/dns_records",
             zone_id
@@ -522,19 +750,24 @@ impl CloudflareClient {
             .request_with_retry(move |s| s.apply_auth(s.client.get(&url_owned)))
             .await?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
-        let records = json["result"]
-            .as_array()
-            .ok_or(CloudflareError::ApiError(
-                "Invalid response format".to_string(),
-            ))?
-            .iter()
-            .filter_map(parse_dns_record)
-            .collect();
+        let source = json["result"].as_array().ok_or(CloudflareError::ApiError(
+            "Invalid response format".to_string(),
+        ))?;
+        check_collection_limit(
+            "DNS records per page",
+            source.len(),
+            usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
+        )?;
+        let mut records = Vec::new();
+        try_reserve_exact(
+            &mut records,
+            source.len(),
+            "parsed DNS records",
+            usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
+        )?;
+        records.extend(source.iter().filter_map(parse_dns_record));
 
         Ok(records)
     }
@@ -553,10 +786,7 @@ impl CloudflareClient {
             .request_with_retry(|s| s.apply_auth(s.client.post(&url).json(&record)))
             .await?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         parse_dns_record(&json["result"])
             .ok_or_else(|| CloudflareError::ApiError("Invalid response format".to_string()))
@@ -577,10 +807,7 @@ impl CloudflareClient {
             .request_with_retry(|s| s.apply_auth(s.client.put(&url).json(&record)))
             .await?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         parse_dns_record(&json["result"])
             .ok_or_else(|| CloudflareError::ApiError("Invalid response format".to_string()))
@@ -607,26 +834,43 @@ impl CloudflareClient {
         records: Vec<DNSRecordInput>,
         dryrun: bool,
     ) -> Result<Value, CloudflareError> {
+        check_bulk_dns_bounds(records.len())?;
         if dryrun {
-            let created = records
-                .into_iter()
-                .map(|r| {
-                    json!({
-                        "type": r.r#type,
-                        "name": r.name,
-                        "content": r.content,
-                        "comment": r.comment,
-                        "ttl": r.ttl,
-                        "priority": r.priority,
-                        "proxied": r.proxied
-                    })
+            let mut created = Vec::new();
+            try_reserve_exact(
+                &mut created,
+                records.len(),
+                "bulk DNS dry-run results",
+                MAX_BULK_DNS_RECORDS,
+            )?;
+            created.extend(records.into_iter().map(|r| {
+                json!({
+                    "type": r.r#type,
+                    "name": r.name,
+                    "content": r.content,
+                    "comment": r.comment,
+                    "ttl": r.ttl,
+                    "priority": r.priority,
+                    "proxied": r.proxied
                 })
-                .collect::<Vec<_>>();
+            }));
             return Ok(json!({ "created": created, "skipped": [] }));
         }
 
         let mut created = Vec::new();
         let mut skipped = Vec::new();
+        try_reserve_exact(
+            &mut created,
+            records.len(),
+            "bulk DNS create results",
+            MAX_BULK_DNS_RECORDS,
+        )?;
+        try_reserve_exact(
+            &mut skipped,
+            records.len(),
+            "bulk DNS skipped results",
+            MAX_BULK_DNS_RECORDS,
+        )?;
 
         for (idx, record) in records.into_iter().enumerate() {
             match self.create_dns_record(zone_id, record).await {
@@ -710,12 +954,9 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
@@ -743,12 +984,9 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
@@ -776,12 +1014,9 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
@@ -805,12 +1040,9 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
@@ -836,12 +1068,9 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let json: Value = read_json_response(response).await?;
 
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
@@ -875,11 +1104,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
                 .as_array()
@@ -914,11 +1140,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         if json["success"].as_bool() != Some(true) {
             let err = json["errors"]
                 .as_array()
@@ -944,11 +1167,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rules: Vec<FirewallRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
@@ -972,11 +1192,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rules: Vec<FirewallRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         rules
@@ -1004,11 +1221,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rule: FirewallRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rule)
@@ -1026,7 +1240,7 @@ impl CloudflareClient {
         let req = self.apply_auth(self.client.delete(&url));
         req.send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
         Ok(())
     }
 
@@ -1042,11 +1256,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rules: Vec<IpAccessRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
@@ -1068,11 +1279,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rule: IpAccessRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rule)
@@ -1090,7 +1298,7 @@ impl CloudflareClient {
         let req = self.apply_auth(self.client.delete(&url));
         req.send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
         Ok(())
     }
 
@@ -1106,11 +1314,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rulesets: Vec<WafRuleset> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rulesets)
@@ -1130,11 +1335,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let routes: Vec<WorkerRoute> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(routes)
@@ -1155,11 +1357,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let route: WorkerRoute = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(route)
@@ -1177,7 +1376,7 @@ impl CloudflareClient {
         let req = self.apply_auth(self.client.delete(&url));
         req.send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
         Ok(())
     }
 
@@ -1195,11 +1394,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let settings: EmailRoutingSettings = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(settings)
@@ -1217,11 +1413,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rules: Vec<EmailRoutingRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
@@ -1236,17 +1429,14 @@ impl CloudflareClient {
             "https://api.cloudflare.com/client/v4/zones/{}/email/routing/rules",
             zone_id
         );
-        let body =
-            serde_json::to_value(rule).map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+        let body = serde_json::to_value(rule)
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
         let req = self.apply_auth(self.client.post(&url).json(&body));
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let created: EmailRoutingRule = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(created)
@@ -1264,7 +1454,7 @@ impl CloudflareClient {
         let req = self.apply_auth(self.client.delete(&url));
         req.send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
         Ok(())
     }
 
@@ -1279,11 +1469,8 @@ impl CloudflareClient {
         let response = req
             .send()
             .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string()))?;
+            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+        let json: Value = read_json_response(response).await?;
         let rules: Vec<PageRule> = serde_json::from_value(json["result"].clone())
             .map_err(|e| CloudflareError::ApiError(e.to_string()))?;
         Ok(rules)
@@ -1296,8 +1483,21 @@ impl CloudflareClient {
         zone_id: &str,
         record_ids: &[String],
     ) -> Result<Value, CloudflareError> {
+        check_bulk_dns_bounds(record_ids.len())?;
         let mut deleted = Vec::new();
         let mut failed = Vec::new();
+        try_reserve_exact(
+            &mut deleted,
+            record_ids.len(),
+            "bulk DNS delete results",
+            MAX_BULK_DNS_RECORDS,
+        )?;
+        try_reserve_exact(
+            &mut failed,
+            record_ids.len(),
+            "bulk DNS failed results",
+            MAX_BULK_DNS_RECORDS,
+        )?;
         for id in record_ids {
             match self.delete_dns_record(zone_id, id).await {
                 Ok(()) => deleted.push(id.clone()),
@@ -1476,6 +1676,36 @@ mod auth_verification_tests {
         format!("http://{address}")
     }
 
+    fn spawn_raw_response(response_headers: &str, chunks: Vec<(Duration, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let response_headers = response_headers.as_bytes().to_vec();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept test request");
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&response_headers);
+            for (delay, chunk) in chunks {
+                if !delay.is_zero() {
+                    thread::sleep(delay);
+                }
+                if stream.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        format!("http://{address}")
+    }
+
+    async fn fetch_response(base: &str, timeout: Duration) -> Response {
+        Client::new()
+            .get(base)
+            .timeout(timeout)
+            .send()
+            .await
+            .expect("fetch test response headers")
+    }
+
     fn test_client(base: String, api_key: &str) -> CloudflareClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(2))
@@ -1490,6 +1720,13 @@ mod auth_verification_tests {
         match error {
             CloudflareError::Verification(context) => context,
             other => panic!("expected structured verification error, got {other:?}"),
+        }
+    }
+
+    fn resource_context(error: &CloudflareError) -> &ResourceLimitError {
+        match error {
+            CloudflareError::HttpError(CloudflareHttpError::ResourceLimit(context)) => context,
+            other => panic!("expected structured resource limit error, got {other:?}"),
         }
     }
 
@@ -1521,6 +1758,142 @@ mod auth_verification_tests {
             parse_retry_after_secs(&headers),
             Some(MAX_RETRY_DELAY.as_secs())
         );
+    }
+
+    #[tokio::test]
+    async fn response_body_accepts_below_and_equal_limits() {
+        assert_eq!(MAX_RESPONSE_BODY_BYTES, 10 * 1024 * 1024);
+        for size in [7, 8] {
+            let body = "x".repeat(size);
+            let base = spawn_response(200, &[], &body, Duration::ZERO);
+            let response = fetch_response(&base, Duration::from_secs(2)).await;
+            let received = read_bounded_response_body(response, 8)
+                .await
+                .expect("body at or below the limit must be accepted");
+            assert_eq!(received, body.as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn response_body_rejects_content_length_above_limit() {
+        let base = spawn_response(200, &[], "123456789", Duration::ZERO);
+        let response = fetch_response(&base, Duration::from_secs(2)).await;
+        let error = read_bounded_response_body(response, 8)
+            .await
+            .expect_err("oversized Content-Length must be rejected");
+        let context = match error {
+            ResponseBodyReadError::ResourceLimit(context) => context,
+            ResponseBodyReadError::Stream(error) => {
+                panic!("expected Content-Length rejection, got stream error: {error}")
+            }
+        };
+        assert_eq!(context.kind, ResourceLimitKind::ContentLength);
+        assert_eq!(context.limit, 8);
+        assert_eq!(context.actual, Some(9));
+    }
+
+    #[tokio::test]
+    async fn response_body_rejects_streaming_overrun_without_content_length() {
+        let base = spawn_raw_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            vec![
+                (Duration::ZERO, b"5\r\n12345\r\n".to_vec()),
+                (Duration::ZERO, b"4\r\n6789\r\n0\r\n\r\n".to_vec()),
+            ],
+        );
+        let response = fetch_response(&base, Duration::from_secs(2)).await;
+        let error = read_bounded_response_body(response, 8)
+            .await
+            .expect_err("streamed body must not exceed the limit");
+        let context = match error {
+            ResponseBodyReadError::ResourceLimit(context) => context,
+            ResponseBodyReadError::Stream(error) => {
+                panic!("expected streaming overrun, got stream error: {error}")
+            }
+        };
+        assert_eq!(context.kind, ResourceLimitKind::StreamedBody);
+        assert_eq!(context.limit, 8);
+        assert_eq!(context.actual, Some(9));
+    }
+
+    #[tokio::test]
+    async fn response_body_reports_stream_failure_and_cancellation() {
+        let partial_base = spawn_raw_response(
+            "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n",
+            vec![(Duration::ZERO, b"123".to_vec())],
+        );
+        let partial_response = fetch_response(&partial_base, Duration::from_secs(2)).await;
+        match read_bounded_response_body(partial_response, 8)
+            .await
+            .expect_err("truncated response must fail")
+        {
+            ResponseBodyReadError::Stream(error) => assert!(!error.is_timeout()),
+            ResponseBodyReadError::ResourceLimit(context) => {
+                panic!("expected stream failure, got resource limit: {context}")
+            }
+        }
+
+        let stalled_base = spawn_raw_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            vec![(Duration::from_millis(200), b"0\r\n\r\n".to_vec())],
+        );
+        let stalled_response = fetch_response(&stalled_base, Duration::from_millis(30)).await;
+        match read_bounded_response_body(stalled_response, 8)
+            .await
+            .expect_err("stalled response body must be cancelled by the request timeout")
+        {
+            ResponseBodyReadError::Stream(error) => assert!(error.is_timeout()),
+            ResponseBodyReadError::ResourceLimit(context) => {
+                panic!("expected cancellation, got resource limit: {context}")
+            }
+        }
+    }
+
+    #[test]
+    fn pagination_and_bulk_bounds_accept_below_and_equal_but_reject_above() {
+        for (page, per_page) in [
+            (MAX_DNS_PAGE - 1, MAX_DNS_RECORDS_PER_PAGE - 1),
+            (MAX_DNS_PAGE, MAX_DNS_RECORDS_PER_PAGE),
+        ] {
+            check_dns_pagination_bounds(Some(page), Some(per_page))
+                .expect("bounded pagination must be accepted");
+        }
+
+        let page_error = check_dns_pagination_bounds(Some(MAX_DNS_PAGE + 1), None).unwrap_err();
+        let page_context = resource_context(&page_error);
+        assert_eq!(page_context.kind, ResourceLimitKind::Collection);
+        assert_eq!(page_context.actual, Some(u64::from(MAX_DNS_PAGE) + 1));
+
+        let per_page_error =
+            check_dns_pagination_bounds(None, Some(MAX_DNS_RECORDS_PER_PAGE + 1)).unwrap_err();
+        let per_page_context = resource_context(&per_page_error);
+        assert_eq!(per_page_context.kind, ResourceLimitKind::Collection);
+        assert_eq!(
+            per_page_context.actual,
+            Some(u64::from(MAX_DNS_RECORDS_PER_PAGE) + 1)
+        );
+
+        for count in [MAX_BULK_DNS_RECORDS - 1, MAX_BULK_DNS_RECORDS] {
+            check_bulk_dns_bounds(count).expect("bounded bulk request must be accepted");
+        }
+        let bulk_error = check_bulk_dns_bounds(MAX_BULK_DNS_RECORDS + 1).unwrap_err();
+        let bulk_context = resource_context(&bulk_error);
+        assert_eq!(bulk_context.kind, ResourceLimitKind::Collection);
+        assert_eq!(
+            bulk_context.actual,
+            u64::try_from(MAX_BULK_DNS_RECORDS + 1).ok()
+        );
+    }
+
+    #[test]
+    fn allocation_failure_is_a_structured_resource_limit_error() {
+        let mut values = Vec::<u8>::new();
+        let error = try_reserve_exact(&mut values, usize::MAX, "test values", 8)
+            .expect_err("capacity overflow must remain recoverable");
+        let context = resource_context(&error);
+        assert_eq!(context.kind, ResourceLimitKind::Allocation);
+        assert_eq!(context.resource, "test values");
+        assert_eq!(context.limit, 8);
     }
 
     #[tokio::test]
@@ -1734,6 +2107,28 @@ mod auth_verification_tests {
         assert_eq!(timeout.kind, VerificationFailureKind::Timeout);
         assert_eq!(timeout.source, VerificationErrorSource::Network);
         assert!(timeout.retryable);
+    }
+
+    #[tokio::test]
+    async fn auth_body_cancellation_preserves_timeout_classification() {
+        let base = spawn_raw_response(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            vec![(
+                Duration::from_millis(200),
+                b"0\r\n\r\n".to_vec(),
+            )],
+        );
+        let error = CloudflareClient::with_client(Client::new(), "timeout-token", None)
+            .with_request_timeout(Duration::from_millis(30))
+            .with_max_retries(0)
+            .with_api_base(base)
+            .verify_token()
+            .await
+            .expect_err("stalled verification body must time out");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::Timeout);
+        assert_eq!(context.source, VerificationErrorSource::Network);
+        assert!(context.retryable);
     }
 
     #[tokio::test]
