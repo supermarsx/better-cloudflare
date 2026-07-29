@@ -108,6 +108,7 @@ type ZoneTopologyTabProps = {
   tcpServicePorts?: number[];
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
+  modelYieldControl?: (signal?: AbortSignal) => Promise<void>;
 };
 
 type ServiceDiscoveryItem = {
@@ -250,9 +251,65 @@ const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
 ];
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
+export const TOPOLOGY_MODEL_NODE_LIMIT = 10_000;
+export const TOPOLOGY_GRAPH_DOM_NODE_LIMIT = 80;
+export const TOPOLOGY_GRAPH_DOM_EDGE_LIMIT = 160;
+export const TOPOLOGY_RESULT_PAGE_SIZE = 50;
+export const TOPOLOGY_NODE_LABEL_MAX_CHARS = 80;
+export const TOPOLOGY_SUMMARY_RENDER_LIMIT = 120;
+export const TOPOLOGY_EMAIL_RENDER_LIMIT = 40;
+export const TOPOLOGY_MODEL_CHUNK_SIZE = 250;
+const TOPOLOGY_LEGACY_MERMAID_RECORD_LIMIT = 500;
+const TOPOLOGY_RESOLUTION_CHAIN_LIMIT = 8;
+const TOPOLOGY_RESOLUTION_TARGET_LIMIT = TOPOLOGY_LEGACY_MERMAID_RECORD_LIMIT;
+const TOPOLOGY_LOOKUP_CONCURRENCY = 6;
+const TOPOLOGY_IPS_PER_FAMILY_LIMIT = 4;
+const TOPOLOGY_PTR_HOSTS_PER_IP_LIMIT = 4;
+const TOPOLOGY_CACHE_ENTRY_LIMIT = 512;
+const TOPOLOGY_ANNOTATION_LIMIT = 100;
+const EMPTY_TOPOLOGY_RECORDS: DNSRecord[] = [];
+const DEFAULT_TOPOLOGY_TCP_SERVICE_PORTS = [80, 443, 22];
+
+function throwIfTopologyAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw new DOMException("Topology request aborted", "AbortError");
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < values.length) {
+      throwIfTopologyAborted(signal);
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index]);
+    }
+  };
+  const workerCount = Math.min(
+    values.length,
+    Math.max(1, Math.floor(concurrency)),
+  );
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
 
 function esc(value: string): string {
   return String(value ?? "").replace(/"/g, '\\"');
+}
+
+function sanitizeId(value: string): string {
+  return (
+    String(value ?? "")
+      .replace(/[^a-zA-Z0-9_]/g, "_")
+      .replace(/^(\d)/, "_$1")
+      .slice(0, 80) || "node"
+  );
 }
 
 function normalizeDomain(value: string): string {
@@ -308,6 +365,328 @@ function extractTarget(record: DNSRecord): string | null {
     return ip || null;
   }
   return null;
+}
+
+export type TopologyGraphNode = {
+  id: string;
+  recordIndex: number;
+  recordId: string;
+  recordType: string;
+  nodeType: "address" | "alias" | "mail" | "service" | "text" | "other";
+  name: string;
+  content: string;
+  label: string;
+  searchText: string;
+};
+
+export type TopologyGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  recordType: string;
+};
+
+export type TopologyGraphModel =
+  | {
+      status: "ready";
+      sourceRecords: readonly DNSRecord[];
+      nodes: TopologyGraphNode[];
+      edges: TopologyGraphEdge[];
+    }
+  | {
+      status: "refused";
+      sourceRecords: readonly DNSRecord[];
+      nodes: [];
+      edges: [];
+      limit: number;
+    };
+
+type TopologyModelBuildOptions = {
+  signal?: AbortSignal;
+  chunkSize?: number;
+  yieldControl?: (signal?: AbortSignal) => Promise<void>;
+  onProgress?: (completed: number, total: number) => void;
+};
+
+function topologyNodeType(recordType: string): TopologyGraphNode["nodeType"] {
+  switch (recordType.toUpperCase()) {
+    case "A":
+    case "AAAA":
+      return "address";
+    case "CNAME":
+    case "DNAME":
+    case "ALIAS":
+    case "ANAME":
+      return "alias";
+    case "MX":
+      return "mail";
+    case "SRV":
+    case "SVCB":
+    case "HTTPS":
+      return "service";
+    case "TXT":
+    case "SPF":
+      return "text";
+    default:
+      return "other";
+  }
+}
+
+function boundedTopologyLabel(record: DNSRecord): string {
+  const value = `${record.type} ${record.name}`.trim();
+  if (value.length <= TOPOLOGY_NODE_LABEL_MAX_CHARS) return value;
+  return `${value.slice(0, TOPOLOGY_NODE_LABEL_MAX_CHARS - 1)}…`;
+}
+
+function yieldTopologyConstruction(signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Topology construction aborted", "AbortError"));
+      return;
+    }
+
+    const browserWindow =
+      typeof window === "undefined"
+        ? undefined
+        : (window as Window & {
+            requestIdleCallback?: (
+              callback: () => void,
+              options?: { timeout: number },
+            ) => number;
+            cancelIdleCallback?: (id: number) => void;
+          });
+    let settled = false;
+    let idleId: number | undefined;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (idleId !== undefined) browserWindow?.cancelIdleCallback?.(idleId);
+      if (timerId !== undefined) clearTimeout(timerId);
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new DOMException("Topology construction aborted", "AbortError"));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (browserWindow?.requestIdleCallback) {
+      idleId = browserWindow.requestIdleCallback(finish, { timeout: 50 });
+    } else {
+      timerId = setTimeout(finish, 0);
+    }
+  });
+}
+
+/**
+ * Builds one graph-model node per source record without truncation. Work is
+ * yielded between deterministic chunks, and an aborted build never returns a
+ * partial model.
+ */
+async function buildTopologyGraphModelProgressively(
+  records: readonly DNSRecord[],
+  options: TopologyModelBuildOptions = {},
+): Promise<TopologyGraphModel> {
+  if (records.length > TOPOLOGY_MODEL_NODE_LIMIT) {
+    return {
+      status: "refused",
+      sourceRecords: records,
+      nodes: [],
+      edges: [],
+      limit: TOPOLOGY_MODEL_NODE_LIMIT,
+    };
+  }
+
+  const signal = options.signal;
+  const chunkSize = Math.max(
+    1,
+    Math.floor(options.chunkSize ?? TOPOLOGY_MODEL_CHUNK_SIZE),
+  );
+  const yieldControl = options.yieldControl ?? yieldTopologyConstruction;
+  const nodes = new Array<TopologyGraphNode>(records.length);
+  const nodeIdByName = new Map<string, string>();
+
+  for (let start = 0; start < records.length; start += chunkSize) {
+    throwIfTopologyAborted(signal);
+    const end = Math.min(records.length, start + chunkSize);
+    for (let index = start; index < end; index += 1) {
+      const record = records[index];
+      const recordId = String(record.id ?? "");
+      const id = `record_${index}_${sanitizeId(recordId || record.name)}`;
+      const name = String(record.name ?? "");
+      const content = String(record.content ?? "");
+      const recordType = String(record.type ?? "UNKNOWN").toUpperCase();
+      nodes[index] = {
+        id,
+        recordIndex: index,
+        recordId,
+        recordType,
+        nodeType: topologyNodeType(recordType),
+        name,
+        content,
+        label: boundedTopologyLabel(record),
+        searchText:
+          `${recordId}\n${recordType}\n${name}\n${content}`.toLowerCase(),
+      };
+      const normalizedName = normalizeDomain(name);
+      if (normalizedName && !nodeIdByName.has(normalizedName)) {
+        nodeIdByName.set(normalizedName, id);
+      }
+    }
+    options.onProgress?.(end, records.length);
+    if (end < records.length) await yieldControl(signal);
+  }
+
+  const edges: TopologyGraphEdge[] = [];
+  for (let start = 0; start < records.length; start += chunkSize) {
+    throwIfTopologyAborted(signal);
+    const end = Math.min(records.length, start + chunkSize);
+    for (let index = start; index < end; index += 1) {
+      const targetName = extractTarget(records[index]);
+      if (!targetName) continue;
+      const target = nodeIdByName.get(normalizeDomain(targetName));
+      if (!target || target === nodes[index].id) continue;
+      edges.push({
+        id: `edge_${index}_${target}`,
+        source: nodes[index].id,
+        target,
+        recordType: nodes[index].recordType,
+      });
+    }
+    if (end < records.length) await yieldControl(signal);
+  }
+
+  throwIfTopologyAborted(signal);
+  return {
+    status: "ready",
+    sourceRecords: records,
+    nodes,
+    edges,
+  };
+}
+
+function filterTopologyModelNodes(
+  nodes: readonly TopologyGraphNode[],
+  text: string,
+  recordType: string,
+): TopologyGraphNode[] {
+  const query = text.trim().toLowerCase();
+  const normalizedType = recordType.trim().toUpperCase();
+  if (!query && !normalizedType) return nodes as TopologyGraphNode[];
+  const matches: TopologyGraphNode[] = [];
+  for (const node of nodes) {
+    if (normalizedType && node.recordType !== normalizedType) continue;
+    if (query && !node.searchText.includes(query)) continue;
+    matches.push(node);
+  }
+  return matches;
+}
+
+function filterTopologySourceRecords(
+  records: readonly DNSRecord[],
+  text: string,
+  recordType: string,
+): readonly DNSRecord[] {
+  const query = text.trim().toLowerCase();
+  const normalizedType = recordType.trim().toUpperCase();
+  if (!query && !normalizedType) return records;
+  const matches: DNSRecord[] = [];
+  for (const record of records) {
+    const currentType = String(record.type ?? "UNKNOWN").toUpperCase();
+    if (normalizedType && currentType !== normalizedType) continue;
+    if (query) {
+      const searchable =
+        `${record.id ?? ""}\n${currentType}\n${record.name ?? ""}\n${record.content ?? ""}`.toLowerCase();
+      if (!searchable.includes(query)) continue;
+    }
+    matches.push(record);
+  }
+  return matches;
+}
+
+function takeUniqueStrings(
+  values: string[] | undefined,
+  limit: number,
+  normalize = false,
+): string[] {
+  if (!values?.length) return [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const value = normalize ? normalizeDomain(raw) : String(raw).trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function boundExternalResolution(
+  resolution: ExternalDnsResolution,
+): ExternalDnsResolution {
+  const chain = takeUniqueStrings(
+    resolution.chain,
+    TOPOLOGY_RESOLUTION_CHAIN_LIMIT,
+    true,
+  );
+  const ipv4 = takeUniqueStrings(
+    resolution.ipv4,
+    TOPOLOGY_IPS_PER_FAMILY_LIMIT,
+  );
+  const ipv6 = takeUniqueStrings(
+    resolution.ipv6,
+    TOPOLOGY_IPS_PER_FAMILY_LIMIT,
+  );
+  const retainedIps = new Set([...ipv4, ...ipv6]);
+  const reverseHostnamesByIp: Record<string, string[]> = {};
+  for (const [ip, hostnames] of Object.entries(
+    resolution.reverseHostnamesByIp ?? {},
+  )) {
+    if (!retainedIps.has(ip)) continue;
+    reverseHostnamesByIp[ip] = takeUniqueStrings(
+      hostnames,
+      TOPOLOGY_PTR_HOSTS_PER_IP_LIMIT,
+      true,
+    );
+  }
+  const geoByIp: Record<string, { country: string; countryCode?: string }> = {};
+  for (const [ip, geo] of Object.entries(resolution.geoByIp ?? {})) {
+    if (retainedIps.has(ip) && geo?.country) geoByIp[ip] = geo;
+  }
+  const requestedName = normalizeDomain(resolution.requestedName ?? "");
+  const terminal =
+    normalizeDomain(resolution.terminal) ||
+    chain[chain.length - 1] ||
+    requestedName;
+  return {
+    ...resolution,
+    ...(requestedName ? { requestedName } : {}),
+    chain: chain.length ? chain : terminal ? [terminal] : [],
+    terminal,
+    ipv4,
+    ipv6,
+    reverseHostnamesByIp,
+    geoByIp,
+  };
+}
+
+function setBoundedCache<K, V>(map: Map<K, V>, key: K, value: V): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > TOPOLOGY_CACHE_ENTRY_LIMIT) {
+    const oldest = map.keys().next().value as K | undefined;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
 }
 
 function computeCnameChains(
@@ -1018,10 +1397,14 @@ function buildTopology(
 async function probeHttp(
   url: string,
   timeoutMs = 5000,
+  signal?: AbortSignal,
 ): Promise<"up" | "down"> {
   const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+  signal?.addEventListener("abort", abortFromParent, { once: true });
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
+    throwIfTopologyAborted(signal);
     await fetch(url, {
       method: "GET",
       mode: "no-cors",
@@ -1030,9 +1413,11 @@ async function probeHttp(
     });
     return "up";
   } catch {
+    throwIfTopologyAborted(signal);
     return "down";
   } finally {
     window.clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -1071,20 +1456,24 @@ async function queryDoh(
   name: string,
   type: "CNAME" | "A" | "AAAA",
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   for (const endpoint of endpoints) {
+    throwIfTopologyAborted(signal);
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    signal?.addEventListener("abort", abortFromParent, { once: true });
+    const timer = window.setTimeout(
+      () => controller.abort(),
+      Math.max(250, timeoutMs),
+    );
     try {
       const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(name)}&type=${type}`;
-      const controller = new AbortController();
-      const timer = window.setTimeout(
-        () => controller.abort(),
-        Math.max(250, timeoutMs),
-      );
       const res = await fetch(url, {
         cache: "no-store",
         headers: { accept: "application/dns-json" },
         signal: controller.signal,
-      }).finally(() => window.clearTimeout(timer));
+      });
       if (!res.ok) continue;
       const data = (await res.json()) as {
         Answer?: Array<{ data?: string; type?: number }>;
@@ -1097,7 +1486,11 @@ async function queryDoh(
       );
       if (normalized.length > 0) return normalized;
     } catch {
+      throwIfTopologyAborted(signal);
       continue;
+    } finally {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromParent);
     }
   }
   return [];
@@ -1109,6 +1502,7 @@ async function resolveExternalCnameToAddress(
   dohEndpoints: string[],
   timeoutMs: number,
   scanResolutionChain: boolean,
+  signal?: AbortSignal,
 ): Promise<ExternalDnsResolution> {
   const chain: string[] = [];
   const seen = new Set<string>();
@@ -1129,7 +1523,13 @@ async function resolveExternalCnameToAddress(
   try {
     if (scanResolutionChain) {
       while (hops < maxHops) {
-        const cnames = await queryDoh(dohEndpoints, cur, "CNAME", timeoutMs);
+        const cnames = await queryDoh(
+          dohEndpoints,
+          cur,
+          "CNAME",
+          timeoutMs,
+          signal,
+        );
         const next = cnames.find(Boolean);
         if (!next || seen.has(next)) break;
         chain.push(next);
@@ -1139,17 +1539,18 @@ async function resolveExternalCnameToAddress(
       }
     }
     const [a, aaaa] = await Promise.all([
-      queryDoh(dohEndpoints, cur, "A", timeoutMs),
-      queryDoh(dohEndpoints, cur, "AAAA", timeoutMs),
+      queryDoh(dohEndpoints, cur, "A", timeoutMs, signal),
+      queryDoh(dohEndpoints, cur, "AAAA", timeoutMs, signal),
     ]);
-    return {
+    return boundExternalResolution({
       chain,
       terminal: cur,
       ipv4: a,
       ipv6: aaaa,
       source: "external",
-    };
+    });
   } catch (error) {
+    throwIfTopologyAborted(signal);
     return {
       chain,
       terminal: cur,
@@ -1200,58 +1601,66 @@ async function resolveTopologyBatchInBackend(
       scanResolutionChain,
     );
     return {
-      resolutions: (result.resolutions ?? []).map((item) => ({
-        requestedName: normalizeDomain(item.name ?? ""),
-        chain: item.chain ?? [],
-        terminal: item.terminal ?? "",
-        ipv4: item.ipv4 ?? [],
-        ipv6: item.ipv6 ?? [],
-        reverseHostnamesByIp: Object.fromEntries(
-          (item.reverse_hostnames ?? []).map((entry) => [
-            String(entry.ip ?? ""),
-            Array.from(
-              new Set(
-                (entry.hostnames ?? [])
-                  .map((value) => normalizeDomain(value))
-                  .filter(Boolean),
-              ),
+      resolutions: (result.resolutions ?? [])
+        .slice(0, TOPOLOGY_RESOLUTION_TARGET_LIMIT)
+        .map((item) =>
+          boundExternalResolution({
+            requestedName: normalizeDomain(item.name ?? ""),
+            chain: item.chain ?? [],
+            terminal: item.terminal ?? "",
+            ipv4: item.ipv4 ?? [],
+            ipv6: item.ipv6 ?? [],
+            reverseHostnamesByIp: Object.fromEntries(
+              (item.reverse_hostnames ?? []).map((entry) => [
+                String(entry.ip ?? ""),
+                Array.from(
+                  new Set(
+                    (entry.hostnames ?? [])
+                      .map((value) => normalizeDomain(value))
+                      .filter(Boolean),
+                  ),
+                ),
+              ]),
             ),
-          ]),
-        ),
-        geoByIp: Object.fromEntries(
-          (item.geo_by_ip ?? [])
-            .map((entry) => {
-              const ip = String(entry.ip ?? "").trim();
-              const country = String(entry.country ?? "").trim();
-              const countryCode = String(entry.country_code ?? "").trim();
-              if (!ip || !country) return null;
-              return [
-                ip,
-                { country, ...(countryCode ? { countryCode } : {}) },
-              ] as const;
-            })
-            .filter(
-              (
-                entry,
-              ): entry is readonly [
-                string,
-                { country: string; countryCode?: string },
-              ] => Boolean(entry),
+            geoByIp: Object.fromEntries(
+              (item.geo_by_ip ?? [])
+                .map((entry) => {
+                  const ip = String(entry.ip ?? "").trim();
+                  const country = String(entry.country ?? "").trim();
+                  const countryCode = String(entry.country_code ?? "").trim();
+                  if (!ip || !country) return null;
+                  return [
+                    ip,
+                    { country, ...(countryCode ? { countryCode } : {}) },
+                  ] as const;
+                })
+                .filter(
+                  (
+                    entry,
+                  ): entry is readonly [
+                    string,
+                    { country: string; countryCode?: string },
+                  ] => Boolean(entry),
+                ),
             ),
+            source: "external" as const,
+            error: item.error ?? undefined,
+          }),
         ),
-        source: "external" as const,
-        error: item.error ?? undefined,
-      })),
-      probes: (result.probes ?? []).map((item) => ({
-        host: item.host,
-        httpsUp: Boolean(item.https_up),
-        httpUp: Boolean(item.http_up),
-      })),
-      tcpProbes: (result.tcp_probes ?? []).map((item) => ({
-        host: item.host,
-        port: Number(item.port),
-        up: Boolean(item.up),
-      })),
+      probes: (result.probes ?? [])
+        .slice(0, TOPOLOGY_RESOLUTION_TARGET_LIMIT)
+        .map((item) => ({
+          host: item.host,
+          httpsUp: Boolean(item.https_up),
+          httpUp: Boolean(item.http_up),
+        })),
+      tcpProbes: (result.tcp_probes ?? [])
+        .slice(0, TOPOLOGY_RESOLUTION_TARGET_LIMIT)
+        .map((item) => ({
+          host: item.host,
+          port: Number(item.port),
+          up: Boolean(item.up),
+        })),
     };
   } catch {
     return null;
@@ -1281,9 +1690,10 @@ export function ZoneTopologyTab({
   geoProvider = "auto",
   scanResolutionChain = true,
   disableServiceDiscovery = false,
-  tcpServicePorts = [80, 443, 22],
+  tcpServicePorts = DEFAULT_TOPOLOGY_TCP_SERVICE_PORTS,
   onRefresh,
   onEditRecord,
+  modelYieldControl,
 }: ZoneTopologyTabProps) {
   const { toast } = useToast();
   const desktop = isDesktop();
@@ -1354,6 +1764,7 @@ export function ZoneTopologyTab({
   );
   const probeCacheRef = useRef<Map<string, TopologyProbeCacheEntry>>(new Map());
   const discoveryRunRef = useRef(0);
+  const discoveryAbortRef = useRef<AbortController | null>(null);
   const lastResolutionRunKeyRef = useRef<string>("");
   const [isDarkThemeMode, setIsDarkThemeMode] = useState(() =>
     detectDarkThemeMode(),
@@ -1366,6 +1777,26 @@ export function ZoneTopologyTab({
     areas: { email: 0, web: 0, infra: 0, misc: 0 },
     nodeSummaries: [],
   });
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelRecordType, setModelRecordType] = useState("");
+  const [modelResultPage, setModelResultPage] = useState(1);
+  const [modelWindowStart, setModelWindowStart] = useState(0);
+  const [selectedModelNodeId, setSelectedModelNodeId] = useState<string | null>(
+    null,
+  );
+  const [topologyModel, setTopologyModel] = useState<TopologyGraphModel>({
+    status: "ready",
+    sourceRecords: EMPTY_TOPOLOGY_RECORDS,
+    nodes: [],
+    edges: [],
+  });
+  const [modelBuildProgress, setModelBuildProgress] = useState({
+    running: false,
+    completed: 0,
+    total: 0,
+  });
+  const modelBuildRunRef = useRef(0);
+  const modelFocusCancelRef = useRef<(() => void) | null>(null);
   const enabledCopyActions = useMemo(
     () =>
       new Set(
@@ -1396,17 +1827,117 @@ export function ZoneTopologyTab({
       ),
     [customDnsServer, dnsServer, dohCustomUrl, resolverMode],
   );
-  const recordsFingerprint = useMemo(
-    () =>
-      records
-        .map(
-          (record) =>
-            `${record.id ?? ""}|${record.type}|${normalizeDomain(record.name)}|${normalizeDomain(String(record.content ?? ""))}|${record.modified_on ?? ""}`,
-        )
-        .sort()
-        .join("||"),
-    [records],
+  const topologyMaxResolutionHops = Math.max(
+    1,
+    Math.min(TOPOLOGY_RESOLUTION_CHAIN_LIMIT, Math.round(maxResolutionHops)),
   );
+  const topologyRecordTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const record of records) {
+      types.add(String(record.type ?? "UNKNOWN").toUpperCase());
+    }
+    return Array.from(types).sort((a, b) => a.localeCompare(b));
+  }, [records]);
+  const modelSourceRecords = useMemo(
+    () =>
+      records.length > TOPOLOGY_MODEL_NODE_LIMIT
+        ? filterTopologySourceRecords(records, modelSearch, modelRecordType)
+        : records,
+    [modelRecordType, modelSearch, records],
+  );
+  const graphSourceRecords =
+    topologyModel.status === "ready"
+      ? topologyModel.sourceRecords
+      : EMPTY_TOPOLOGY_RECORDS;
+  const topologyRecords: DNSRecord[] =
+    topologyModel.status === "ready" &&
+    topologyModel.nodes.length <= TOPOLOGY_LEGACY_MERMAID_RECORD_LIMIT
+      ? (topologyModel.sourceRecords as DNSRecord[])
+      : EMPTY_TOPOLOGY_RECORDS;
+  const matchingModelNodes = useMemo(
+    () =>
+      topologyModel.status === "ready"
+        ? filterTopologyModelNodes(
+            topologyModel.nodes,
+            modelSearch,
+            modelRecordType,
+          )
+        : [],
+    [modelRecordType, modelSearch, topologyModel],
+  );
+  const modelResultPageCount = Math.max(
+    1,
+    Math.ceil(matchingModelNodes.length / TOPOLOGY_RESULT_PAGE_SIZE),
+  );
+  const currentModelResultPage = Math.min(
+    modelResultPage,
+    modelResultPageCount,
+  );
+  const visibleModelResults = useMemo(() => {
+    const start = (currentModelResultPage - 1) * TOPOLOGY_RESULT_PAGE_SIZE;
+    return matchingModelNodes.slice(start, start + TOPOLOGY_RESULT_PAGE_SIZE);
+  }, [currentModelResultPage, matchingModelNodes]);
+  const visibleGraphNodes = useMemo(() => {
+    if (topologyModel.status !== "ready") return [];
+    const maxStart = Math.max(
+      0,
+      topologyModel.nodes.length - TOPOLOGY_GRAPH_DOM_NODE_LIMIT,
+    );
+    const start = Math.min(modelWindowStart, maxStart);
+    return topologyModel.nodes.slice(
+      start,
+      start + TOPOLOGY_GRAPH_DOM_NODE_LIMIT,
+    );
+  }, [modelWindowStart, topologyModel]);
+  const visibleGraphEdges = useMemo(() => {
+    if (topologyModel.status !== "ready" || visibleGraphNodes.length === 0)
+      return [];
+    const positionById = new Map<string, number>();
+    visibleGraphNodes.forEach((node, index) => {
+      positionById.set(node.id, index);
+    });
+    const edges: Array<{
+      id: string;
+      sourceIndex: number;
+      targetIndex: number;
+    }> = [];
+    for (const edge of topologyModel.edges) {
+      const sourceIndex = positionById.get(edge.source);
+      const targetIndex = positionById.get(edge.target);
+      if (sourceIndex === undefined || targetIndex === undefined) continue;
+      edges.push({ id: edge.id, sourceIndex, targetIndex });
+      if (edges.length >= TOPOLOGY_GRAPH_DOM_EDGE_LIMIT) break;
+    }
+    return edges;
+  }, [topologyModel, visibleGraphNodes]);
+  const visibleNodeSummaries = useMemo(
+    () =>
+      summary.nodeSummaries.length > TOPOLOGY_SUMMARY_RENDER_LIMIT
+        ? summary.nodeSummaries.slice(0, TOPOLOGY_SUMMARY_RENDER_LIMIT)
+        : summary.nodeSummaries,
+    [summary.nodeSummaries],
+  );
+  const visibleDiscovery = useMemo(
+    () =>
+      discovery.length > TOPOLOGY_SUMMARY_RENDER_LIMIT
+        ? discovery.slice(0, TOPOLOGY_SUMMARY_RENDER_LIMIT)
+        : discovery,
+    [discovery],
+  );
+  const recordsFingerprint = useMemo(() => {
+    const parts: string[] = [];
+    for (const record of topologyRecords) {
+      parts.push(
+        `${record.id ?? ""}|${record.type}|${normalizeDomain(record.name)}|${normalizeDomain(String(record.content ?? ""))}|${record.modified_on ?? ""}`,
+      );
+    }
+    return `${parts.sort().join("||")}|source:${records.length}|model:${topologyModel.status}:${graphSourceRecords.length}`;
+  }, [
+    graphSourceRecords.length,
+    records.length,
+    topologyModel.status,
+    topologyRecords,
+  ]);
   const closeExpandGraph = useCallback(() => {
     setExpandGraph(false);
     autoFitDoneRef.current = "";
@@ -1424,8 +1955,126 @@ export function ZoneTopologyTab({
   }, [disableFullWindow]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const runId = ++modelBuildRunRef.current;
+    let lastReportedProgress = 0;
+    const isCurrentRun = () =>
+      modelBuildRunRef.current === runId && !controller.signal.aborted;
+
+    setTopologyModel({
+      status: "ready",
+      sourceRecords: EMPTY_TOPOLOGY_RECORDS,
+      nodes: [],
+      edges: [],
+    });
+    setModelBuildProgress({
+      running: modelSourceRecords.length <= TOPOLOGY_MODEL_NODE_LIMIT,
+      completed: 0,
+      total: modelSourceRecords.length,
+    });
+
+    void buildTopologyGraphModelProgressively(modelSourceRecords, {
+      signal: controller.signal,
+      yieldControl: modelYieldControl,
+      onProgress: (completed, total) => {
+        if (!isCurrentRun()) return;
+        if (
+          completed < total &&
+          completed - lastReportedProgress < TOPOLOGY_MODEL_CHUNK_SIZE * 4
+        ) {
+          return;
+        }
+        lastReportedProgress = completed;
+        setModelBuildProgress({ running: true, completed, total });
+      },
+    })
+      .then((model) => {
+        if (!isCurrentRun()) return;
+        setTopologyModel(model);
+        setModelBuildProgress({
+          running: false,
+          completed: model.status === "ready" ? model.nodes.length : 0,
+          total: model.sourceRecords.length,
+        });
+        setModelWindowStart(0);
+        setSelectedModelNodeId(null);
+      })
+      .catch((error) => {
+        if (
+          !isCurrentRun() ||
+          (error as { name?: string })?.name === "AbortError"
+        )
+          return;
+        reportTopologyFailure(error, "Build DNS topology graph model");
+        setModelBuildProgress({
+          running: false,
+          completed: 0,
+          total: modelSourceRecords.length,
+        });
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [modelSourceRecords, modelYieldControl]);
+
+  useEffect(() => {
+    setModelResultPage(1);
+  }, [modelRecordType, modelSearch, topologyModel]);
+
+  const selectAndRevealModelNode = useCallback(
+    (node: TopologyGraphNode) => {
+      if (topologyModel.status !== "ready") return;
+      setSelectedModelNodeId(node.id);
+      const maxStart = Math.max(
+        0,
+        topologyModel.nodes.length - TOPOLOGY_GRAPH_DOM_NODE_LIMIT,
+      );
+      const centeredStart = Math.max(
+        0,
+        node.recordIndex - Math.floor(TOPOLOGY_GRAPH_DOM_NODE_LIMIT / 2),
+      );
+      setModelWindowStart(Math.min(centeredStart, maxStart));
+
+      modelFocusCancelRef.current?.();
+      const focusNode = () => {
+        modelFocusCancelRef.current = null;
+        const element = document.getElementById(
+          `topology-model-node-${node.recordIndex}`,
+        );
+        if (!(element instanceof HTMLElement)) return;
+        element.focus({ preventScroll: true });
+        element.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      };
+      if (typeof requestAnimationFrame === "function") {
+        const frameId = requestAnimationFrame(focusNode);
+        modelFocusCancelRef.current = () => cancelAnimationFrame(frameId);
+      } else {
+        const timerId = setTimeout(focusNode, 0);
+        modelFocusCancelRef.current = () => clearTimeout(timerId);
+      }
+    },
+    [topologyModel],
+  );
+
+  useEffect(
+    () => () => {
+      modelBuildRunRef.current += 1;
+      modelFocusCancelRef.current?.();
+      modelFocusCancelRef.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const resolutionCache = resolutionCacheRef.current;
+    const probeCache = probeCacheRef.current;
     return () => {
       discoveryRunRef.current += 1;
+      discoveryAbortRef.current?.abort();
+      discoveryAbortRef.current = null;
+      resolutionCache.clear();
+      probeCache.clear();
     };
   }, []);
 
@@ -1500,18 +2149,28 @@ export function ZoneTopologyTab({
 
   useEffect(() => {
     if (!topologyResolutionReady) return;
-    const clampedMaxHops = Math.max(
-      1,
-      Math.min(15, Math.round(maxResolutionHops)),
-    );
+    if (topologyRecords.length === 0) {
+      setMermaidCode("");
+      setSvgMarkup("");
+      setNodeMetaById({});
+      setSummary({
+        cnameChains: [],
+        sharedIps: [],
+        detectedServices: [],
+        mxTrails: [],
+        areas: { email: 0, web: 0, infra: 0, misc: 0 },
+        nodeSummaries: [],
+      });
+      return;
+    }
     const {
       code,
       summary: nextSummary,
       nodeMetaById: nextNodeMetaById,
     } = buildTopology(
-      records,
+      topologyRecords,
       zoneName,
-      clampedMaxHops,
+      topologyMaxResolutionHops,
       isDarkThemeMode,
       externalResolutionByName,
     );
@@ -1521,23 +2180,24 @@ export function ZoneTopologyTab({
   }, [
     externalResolutionByName,
     isDarkThemeMode,
-    maxResolutionHops,
-    records,
+    topologyMaxResolutionHops,
+    topologyRecords,
     topologyResolutionReady,
     zoneName,
   ]);
 
   useEffect(() => {
     const candidates = new Set<string>();
-    for (const record of records) {
+    for (const record of topologyRecords) {
       const target = extractTarget(record);
       if (!target || isIpAddress(target)) continue;
       const hostname = normalizeDomain(target);
       if (hostname) candidates.add(hostname);
     }
+    const controller = new AbortController();
     let cancelled = false;
     (async () => {
-      const runKey = `${recordsFingerprint}|${zoneName}|${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${Math.max(1, Math.min(15, Math.round(maxResolutionHops)))}|${disablePtrLookups ? "noptr" : "ptr"}|${disableGeoLookups ? "nogeo" : `geo:${geoProvider}`}|${scanResolutionChain ? "chain" : "nochain"}|${manualRefreshTick}`;
+      const runKey = `${recordsFingerprint}|${zoneName}|${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${topologyMaxResolutionHops}|${disablePtrLookups ? "noptr" : "ptr"}|${disableGeoLookups ? "nogeo" : `geo:${geoProvider}`}|${scanResolutionChain ? "chain" : "nochain"}|${manualRefreshTick}`;
       if (
         topologyResolutionReady &&
         lastResolutionRunKeyRef.current === runKey
@@ -1545,11 +2205,10 @@ export function ZoneTopologyTab({
         return;
       }
       lastResolutionRunKeyRef.current = runKey;
-      const queue = Array.from(candidates);
-      const clampedHops = Math.max(
-        1,
-        Math.min(15, Math.round(maxResolutionHops)),
-      );
+      const queue = Array.from(candidates)
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, TOPOLOGY_RESOLUTION_TARGET_LIMIT);
+      const clampedHops = topologyMaxResolutionHops;
       let total = queue.length;
       let done = 0;
       const seenTopologyNodes = new Set(
@@ -1627,16 +2286,22 @@ export function ZoneTopologyTab({
           geoProvider,
           scanResolutionChain,
         );
+        if (cancelled || controller.signal.aborted) return;
         if (backendBatch) {
-          for (const resolved of backendBatch.resolutions) {
+          for (const rawResolved of backendBatch.resolutions) {
+            const resolved = boundExternalResolution(rawResolved);
             done += 1;
             const requested = normalizeDomain(resolved.requestedName || "");
             if (requested) {
               byName.set(requested, resolved);
-              resolutionCacheRef.current.set(`${cachePrefix}${requested}`, {
-                value: resolved,
-                ts: Date.now(),
-              });
+              setBoundedCache(
+                resolutionCacheRef.current,
+                `${cachePrefix}${requested}`,
+                {
+                  value: resolved,
+                  ts: Date.now(),
+                },
+              );
             }
             absorbResolved(resolved);
             const term = normalizeDomain(resolved.terminal || "");
@@ -1647,27 +2312,35 @@ export function ZoneTopologyTab({
             }
           }
         } else {
-          const fallback = await Promise.all(
-            unresolvedQueue.map(async (name) => {
+          const fallback = await mapWithConcurrency(
+            unresolvedQueue,
+            TOPOLOGY_LOOKUP_CONCURRENCY,
+            async (name) => {
               const resolved = await resolveExternalCnameToAddress(
                 name,
                 clampedHops,
                 dohEndpoints,
                 lookupTimeoutMs,
                 scanResolutionChain,
+                controller.signal,
               );
               return [name, resolved] as const;
-            }),
+            },
+            controller.signal,
           );
           for (const [name, resolved] of fallback) {
             done += 1;
             const requested = normalizeDomain(name);
             if (requested) {
               byName.set(requested, resolved);
-              resolutionCacheRef.current.set(`${cachePrefix}${requested}`, {
-                value: resolved,
-                ts: Date.now(),
-              });
+              setBoundedCache(
+                resolutionCacheRef.current,
+                `${cachePrefix}${requested}`,
+                {
+                  value: resolved,
+                  ts: Date.now(),
+                },
+              );
             }
             absorbResolved(resolved);
             const term = normalizeDomain(resolved.terminal || "");
@@ -1719,8 +2392,7 @@ export function ZoneTopologyTab({
     });
     return () => {
       cancelled = true;
-      setTopologyResolutionProgress((prev) => ({ ...prev, running: false }));
-      setActiveResolutionRequests([]);
+      controller.abort();
     };
   }, [
     resolverMode,
@@ -1728,8 +2400,8 @@ export function ZoneTopologyTab({
     customDnsServer,
     dohCustomUrl,
     dohProvider,
-    maxResolutionHops,
-    records,
+    topologyMaxResolutionHops,
+    topologyRecords,
     dohEndpoints,
     manualRefreshTick,
     recordsFingerprint,
@@ -1843,7 +2515,7 @@ export function ZoneTopologyTab({
   }, [isDarkThemeMode, mermaidCode, themeVersion]);
 
   useEffect(() => {
-    if (!viewportRef.current) return;
+    if (!viewportRef.current || typeof ResizeObserver === "undefined") return;
     const node = viewportRef.current;
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
@@ -2063,15 +2735,20 @@ export function ZoneTopologyTab({
       const rect = viewportRef.current.getBoundingClientRect();
       const x = (event.clientX - rect.left - pan.x) / zoom;
       const y = (event.clientY - rect.top - pan.y) / zoom;
-      setAnnotations((prev) => [
-        ...prev,
-        {
-          id: `ann_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-          x,
-          y,
-          text: annotationDraft.trim() || "Note",
-        },
-      ]);
+      setAnnotations((prev) => {
+        const next = [
+          ...prev,
+          {
+            id: `ann_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            x,
+            y,
+            text: annotationDraft.trim() || "Note",
+          },
+        ];
+        return next.length > TOPOLOGY_ANNOTATION_LIMIT
+          ? next.slice(next.length - TOPOLOGY_ANNOTATION_LIMIT)
+          : next;
+      });
     },
     [annotationDraft, annotationTool, nodeContextMenu.open, pan.x, pan.y, zoom],
   );
@@ -2464,7 +3141,10 @@ export function ZoneTopologyTab({
   }, [annotations, svgMarkup, zoneName]);
 
   const controlsDisabled =
-    isLoading || isRendering || topologyResolutionProgress.running;
+    isLoading ||
+    isRendering ||
+    topologyResolutionProgress.running ||
+    modelBuildProgress.running;
   const hasCopyActionsEnabled = enabledCopyActions.size > 0;
   const hasExportActionsEnabled = enabledExportActions.size > 0;
   const cursorClass = annotationTool
@@ -2481,6 +3161,9 @@ export function ZoneTopologyTab({
   const panX = Math.round(pan.x);
   const panY = Math.round(pan.y);
   const topologyProgressLabel = useMemo(() => {
+    if (modelBuildProgress.running) {
+      return `Building graph model ${modelBuildProgress.completed}/${modelBuildProgress.total} nodes...`;
+    }
     if (discovering)
       return discoveryProgress.label || "Discovering services...";
     if (!topologyResolutionProgress.running) return "Rendering topology...";
@@ -2491,6 +3174,9 @@ export function ZoneTopologyTab({
   }, [
     discovering,
     discoveryProgress.label,
+    modelBuildProgress.completed,
+    modelBuildProgress.running,
+    modelBuildProgress.total,
     topologyResolutionProgress.done,
     topologyResolutionProgress.running,
     topologyResolutionProgress.total,
@@ -2518,79 +3204,82 @@ export function ZoneTopologyTab({
     topologyResolutionProgress.running,
   ]);
   const zoneBase = useMemo(() => normalizeDomain(zoneName), [zoneName]);
-  const emailRecords = useMemo(
-    () =>
-      records.filter((r) => {
-        const n = normalizeDomain(r.name);
-        const txt = String(r.content ?? "").toLowerCase();
-        return (
-          r.type === "MX" ||
-          r.type === "SPF" ||
-          n.includes("_dmarc") ||
-          n.includes("._domainkey") ||
-          n.includes("_bimi") ||
-          (r.type === "TXT" &&
-            (txt.includes("v=spf1") ||
-              txt.includes("v=dmarc1") ||
-              txt.includes("v=dkim1") ||
-              txt.includes("v=bimi1")))
-        );
-      }),
-    [records],
-  );
+  const emailRecordSummary = useMemo(() => {
+    let total = 0;
+    const visible: DNSRecord[] = [];
+    for (const record of records) {
+      const name = normalizeDomain(record.name);
+      const text = String(record.content ?? "").toLowerCase();
+      const matches =
+        record.type === "MX" ||
+        record.type === "SPF" ||
+        name.includes("_dmarc") ||
+        name.includes("._domainkey") ||
+        name.includes("_bimi") ||
+        (record.type === "TXT" &&
+          (text.includes("v=spf1") ||
+            text.includes("v=dmarc1") ||
+            text.includes("v=dkim1") ||
+            text.includes("v=bimi1")));
+      if (!matches) continue;
+      total += 1;
+      if (visible.length < TOPOLOGY_EMAIL_RENDER_LIMIT) visible.push(record);
+    }
+    return { total, visible };
+  }, [records]);
   const mxResolvedRows = useMemo(() => {
     const cnameMap = buildCnameMap(records);
     const { ipv4ByName, ipv6ByName } = buildAddressMaps(records);
-    return records
-      .filter((r) => r.type === "MX")
-      .map((record) => {
-        const from = normalizeDomain(record.name) || normalizeDomain(zoneName);
-        const rawParts = String(record.content ?? "")
-          .trim()
-          .split(/\s+/);
-        const maybePriority = Number(rawParts[0]);
-        const priority = Number.isFinite(maybePriority) ? maybePriority : null;
-        const target = extractTarget(record) || "";
-        const local = resolveNameToTerminal(
-          target,
-          cnameMap,
-          ipv4ByName,
-          ipv6ByName,
-          Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
-        );
-        const best = pickBestResolution(
-          target,
-          local,
-          externalResolutionByName,
-        );
-        const chain = best.chain.length ? best.chain : local.chain;
-        const ipv4 = best.ipv4.length ? best.ipv4 : local.ipv4;
-        const ipv6 = best.ipv6.length ? best.ipv6 : local.ipv6;
-        const terminal = best.terminal || local.terminal || target;
-        const source =
-          local.ipv4.length || local.ipv6.length
-            ? "in-zone"
-            : best.ipv4.length ||
-                best.ipv6.length ||
-                best.chain.length > local.chain.length
-              ? "external"
-              : "none";
-        const reverse = Object.entries(best.reverseHostnamesByIp ?? {}).flatMap(
-          ([ip, hosts]) => hosts.map((host) => `${ip} => ${host}`),
-        );
-        return {
-          id: record.id,
-          from,
-          priority,
-          target,
-          chain,
-          terminal,
-          ipv4,
-          ipv6,
-          reverse,
-          source,
-        };
+    let total = 0;
+    const visible = [];
+    for (const record of records) {
+      if (record.type !== "MX") continue;
+      total += 1;
+      if (visible.length >= TOPOLOGY_SUMMARY_RENDER_LIMIT) continue;
+      const from = normalizeDomain(record.name) || normalizeDomain(zoneName);
+      const rawParts = String(record.content ?? "")
+        .trim()
+        .split(/\s+/);
+      const maybePriority = Number(rawParts[0]);
+      const priority = Number.isFinite(maybePriority) ? maybePriority : null;
+      const target = extractTarget(record) || "";
+      const local = resolveNameToTerminal(
+        target,
+        cnameMap,
+        ipv4ByName,
+        ipv6ByName,
+        Math.max(1, Math.min(15, Math.round(maxResolutionHops))),
+      );
+      const best = pickBestResolution(target, local, externalResolutionByName);
+      const chain = best.chain.length ? best.chain : local.chain;
+      const ipv4 = best.ipv4.length ? best.ipv4 : local.ipv4;
+      const ipv6 = best.ipv6.length ? best.ipv6 : local.ipv6;
+      const terminal = best.terminal || local.terminal || target;
+      const source =
+        local.ipv4.length || local.ipv6.length
+          ? "in-zone"
+          : best.ipv4.length ||
+              best.ipv6.length ||
+              best.chain.length > local.chain.length
+            ? "external"
+            : "none";
+      const reverse = Object.entries(best.reverseHostnamesByIp ?? {}).flatMap(
+        ([ip, hosts]) => hosts.map((host) => `${ip} => ${host}`),
+      );
+      visible.push({
+        id: record.id,
+        from,
+        priority,
+        target,
+        chain,
+        terminal,
+        ipv4,
+        ipv6,
+        reverse,
+        source,
       });
+    }
+    return { total, visible };
   }, [externalResolutionByName, maxResolutionHops, records, zoneName]);
 
   const runDiscovery = useCallback(async () => {
@@ -2601,8 +3290,12 @@ export function ZoneTopologyTab({
       });
       return;
     }
+    discoveryAbortRef.current?.abort();
+    const controller = new AbortController();
+    discoveryAbortRef.current = controller;
     const runId = ++discoveryRunRef.current;
-    const isCurrentRun = () => discoveryRunRef.current === runId;
+    const isCurrentRun = () =>
+      discoveryRunRef.current === runId && !controller.signal.aborted;
     const items: ServiceDiscoveryItem[] = [];
     setDiscovering(true);
     setDiscoveryProgress({
@@ -2612,12 +3305,12 @@ export function ZoneTopologyTab({
       requests: [],
     });
     try {
-      const hasMx = records.some((r) => r.type === "MX");
-      const hasNs = records.some((r) => r.type === "NS");
-      const hasSshHost = records.some((r) =>
+      const hasMx = graphSourceRecords.some((r) => r.type === "MX");
+      const hasNs = graphSourceRecords.some((r) => r.type === "NS");
+      const hasSshHost = graphSourceRecords.some((r) =>
         normalizeDomain(r.name).includes("ssh"),
       );
-      const hasSrv = records.filter((r) => r.type === "SRV");
+      const hasSrv = graphSourceRecords.filter((r) => r.type === "SRV");
       if (hasMx)
         items.push({
           service: "SMTP",
@@ -2649,7 +3342,7 @@ export function ZoneTopologyTab({
       }
 
       const httpTargets = new Set<string>([zoneBase, `www.${zoneBase}`]);
-      for (const r of records) {
+      for (const r of graphSourceRecords) {
         if (!["A", "AAAA", "CNAME"].includes(r.type)) continue;
         const n = normalizeDomain(r.name);
         if (
@@ -2672,10 +3365,7 @@ export function ZoneTopologyTab({
         });
       };
       setProgress("Building discovery probe plan...", probeHosts);
-      const clampedHops = Math.max(
-        1,
-        Math.min(15, Math.round(maxResolutionHops)),
-      );
+      const clampedHops = topologyMaxResolutionHops;
       const probePrefix = `${resolverMode}|${dnsServer}|${customDnsServer.trim()}|${dohProvider}|${dohCustomUrl.trim()}|${clampedHops}|probe|`;
       const now = Date.now();
       const probeMap = new Map<
@@ -2721,7 +3411,7 @@ export function ZoneTopologyTab({
             httpsUp: probe.httpsUp,
             httpUp: probe.httpUp,
           });
-          probeCacheRef.current.set(`${probePrefix}${norm}`, {
+          setBoundedCache(probeCacheRef.current, `${probePrefix}${norm}`, {
             host: norm,
             httpsUp: probe.httpsUp,
             httpUp: probe.httpUp,
@@ -2755,7 +3445,11 @@ export function ZoneTopologyTab({
       } else {
         for (const host of probeHosts) {
           setProgress(`Probing ${host}...`, [host]);
-          const httpsStatus = await probeHttp(`https://${host}`);
+          const httpsStatus = await probeHttp(
+            `https://${host}`,
+            5000,
+            controller.signal,
+          );
           if (!isCurrentRun()) return;
           items.push({
             service: `HTTPS (${host})`,
@@ -2763,7 +3457,11 @@ export function ZoneTopologyTab({
             details:
               httpsStatus === "up" ? "Probe reachable" : "Probe failed/blocked",
           });
-          const httpStatus = await probeHttp(`http://${host}`);
+          const httpStatus = await probeHttp(
+            `http://${host}`,
+            5000,
+            controller.signal,
+          );
           if (!isCurrentRun()) return;
           items.push({
             service: `HTTP (${host})`,
@@ -2818,6 +3516,7 @@ export function ZoneTopologyTab({
       if (isCurrentRun()) {
         setDiscovering(false);
         setDiscoveryProgress({ label: "", done: 0, total: 0, requests: [] });
+        discoveryAbortRef.current = null;
       }
     }
   }, [
@@ -2827,8 +3526,8 @@ export function ZoneTopologyTab({
     customDnsServer,
     dohCustomUrl,
     dohProvider,
-    maxResolutionHops,
-    records,
+    topologyMaxResolutionHops,
+    graphSourceRecords,
     toast,
     zoneBase,
     lookupTimeoutMs,
@@ -3192,7 +3891,8 @@ export function ZoneTopologyTab({
                   </div>
                 </div>
 
-                {(isRendering ||
+                {(modelBuildProgress.running ||
+                  isRendering ||
                   isLoading ||
                   topologyResolutionProgress.running ||
                   discovering) && (
@@ -3340,160 +4040,431 @@ export function ZoneTopologyTab({
         <CardTitle className="text-lg">Topology</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {renderGraphControls(false)}
-
-        <div>
+        {topologyModel.status === "refused" && (
           <div
-            ref={!expandGraph ? viewportRef : undefined}
-            className={cn(
-              "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
-              graphBackgroundClass,
-              "h-[560px]",
-              cursorClass,
-            )}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onWheelCapture={(event) => {
-              handleWheelCapture(event);
-            }}
-            onTouchMoveCapture={(event) => {
-              event.stopPropagation();
-            }}
-            onPointerDownCapture={(event) => {
-              event.stopPropagation();
-            }}
-            onAuxClick={(event) => {
-              if (event.button === 1) {
-                event.preventDefault();
-                event.stopPropagation();
-              }
-            }}
-            onKeyDownCapture={(event) => {
-              if (
-                [
-                  "ArrowUp",
-                  "ArrowDown",
-                  "ArrowLeft",
-                  "ArrowRight",
-                  "PageUp",
-                  "PageDown",
-                  "Home",
-                  "End",
-                  " ",
-                ].includes(event.key)
-              ) {
-                event.preventDefault();
-                event.stopPropagation();
-              }
-            }}
-            tabIndex={0}
-            onClick={handleViewportClick}
-            onContextMenu={handleNodeContextMenu}
+            role="alert"
+            data-testid="topology-model-refusal"
+            className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100"
           >
-            <div
-              className="absolute left-0 top-0"
-              style={{
-                transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
-                transformOrigin: "0 0",
+            Graph construction is limited to {TOPOLOGY_MODEL_NODE_LIMIT} nodes.
+            Current filters match {topologyModel.sourceRecords.length} of{" "}
+            {records.length} source records, so no graph nodes were constructed
+            or silently omitted. Enter more specific search text or choose a
+            record type until the result contains {TOPOLOGY_MODEL_NODE_LIMIT}{" "}
+            records or fewer.
+          </div>
+        )}
+        {modelBuildProgress.running && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="topology-model-progress"
+            className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground"
+          >
+            Building graph model progressively: {modelBuildProgress.completed}{" "}
+            of {modelBuildProgress.total} nodes completed.
+          </div>
+        )}
+        {topologyModel.status === "ready" && !modelBuildProgress.running && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="topology-model-count"
+            className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+          >
+            Graph model retains all {topologyModel.nodes.length} matching nodes
+            and {topologyModel.edges.length} edges from{" "}
+            {topologyModel.sourceRecords.length} source records
+            {records.length !== topologyModel.sourceRecords.length
+              ? `; the complete ${records.length}-record source remains unchanged`
+              : ""}
+            . The active graph viewport renders at most{" "}
+            {TOPOLOGY_GRAPH_DOM_NODE_LIMIT} nodes,{" "}
+            {TOPOLOGY_GRAPH_DOM_EDGE_LIMIT} edges, and labels of at most{" "}
+            {TOPOLOGY_NODE_LABEL_MAX_CHARS} characters.
+          </div>
+        )}
+
+        <section
+          aria-label="Topology node search and filters"
+          className="space-y-3 rounded-lg border border-border/60 bg-card/55 p-3"
+        >
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_14rem_auto]">
+            <div className="space-y-1">
+              <label
+                htmlFor="topology-node-search"
+                className="text-xs font-medium"
+              >
+                Search nodes
+              </label>
+              <Input
+                id="topology-node-search"
+                aria-label="Search topology nodes"
+                value={modelSearch}
+                onChange={(event) => setModelSearch(event.target.value)}
+                placeholder="Name, content, record ID, or type"
+              />
+            </div>
+            <div className="space-y-1">
+              <label
+                htmlFor="topology-record-type"
+                className="text-xs font-medium"
+              >
+                Record type
+              </label>
+              <select
+                id="topology-record-type"
+                aria-label="Filter topology record type"
+                value={modelRecordType}
+                onChange={(event) => setModelRecordType(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="">All record types</option>
+                {topologyRecordTypes.map((recordType) => (
+                  <option key={recordType} value={recordType}>
+                    {recordType}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="self-end"
+              disabled={!modelSearch && !modelRecordType}
+              onClick={() => {
+                setModelSearch("");
+                setModelRecordType("");
               }}
             >
-              <div className="relative p-4">
-                {renderError ? (
-                  <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive-foreground">
-                    Mermaid render failed: {renderError}
+              Clear filters
+            </Button>
+          </div>
+
+          {topologyModel.status === "ready" && (
+            <>
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="topology-result-count"
+                className="text-xs text-muted-foreground"
+              >
+                {matchingModelNodes.length} matching node
+                {matchingModelNodes.length === 1 ? "" : "s"} in the complete{" "}
+                {topologyModel.nodes.length}-node graph model.
+              </div>
+              <div
+                aria-label="Topology node results"
+                className="max-h-72 space-y-1 overflow-auto rounded-md border border-border/50 p-2"
+              >
+                {visibleModelResults.length === 0 ? (
+                  <div className="px-2 py-3 text-xs text-muted-foreground">
+                    No nodes match the current filters.
                   </div>
                 ) : (
-                  <div
-                    className="topology-svg-wrapper"
-                    dangerouslySetInnerHTML={{ __html: svgMarkup }}
-                  />
+                  visibleModelResults.map((node) => (
+                    <button
+                      key={node.id}
+                      type="button"
+                      data-testid="topology-result-select"
+                      className={cn(
+                        "flex w-full items-center justify-between gap-3 rounded-md border px-2 py-1.5 text-left text-xs hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selectedModelNodeId === node.id
+                          ? "border-primary bg-primary/10"
+                          : "border-border/50",
+                      )}
+                      onClick={() => selectAndRevealModelNode(node)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        selectAndRevealModelNode(node);
+                      }}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">
+                          {node.label}
+                        </span>
+                        <span className="block truncate text-muted-foreground">
+                          {node.content.length > TOPOLOGY_NODE_LABEL_MAX_CHARS
+                            ? `${node.content.slice(0, TOPOLOGY_NODE_LABEL_MAX_CHARS - 1)}…`
+                            : node.content}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[10px] uppercase text-muted-foreground">
+                        Focus in graph
+                      </span>
+                    </button>
+                  ))
                 )}
-
-                {annotations.map((ann) => (
-                  <div
-                    key={ann.id}
-                    className="absolute rounded-md border border-primary/40 bg-card/90 px-2 py-1 text-[11px] shadow-lg"
-                    style={{ left: ann.x, top: ann.y }}
-                    onClick={(event) => event.stopPropagation()}
+              </div>
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>
+                  Results page {currentModelResultPage} of{" "}
+                  {modelResultPageCount}; at most {TOPOLOGY_RESULT_PAGE_SIZE}{" "}
+                  rows are mounted.
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={currentModelResultPage <= 1}
+                    onClick={() =>
+                      setModelResultPage((page) => Math.max(1, page - 1))
+                    }
                   >
-                    <div className="flex items-center gap-2">
-                      <span>{ann.text}</span>
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:text-foreground"
-                        onClick={() =>
-                          setAnnotations((prev) =>
-                            prev.filter((x) => x.id !== ann.id),
-                          )
-                        }
-                      >
-                        x
-                      </button>
-                    </div>
-                  </div>
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={currentModelResultPage >= modelResultPageCount}
+                    onClick={() =>
+                      setModelResultPage((page) =>
+                        Math.min(modelResultPageCount, page + 1),
+                      )
+                    }
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        {topologyModel.status === "ready" && (
+          <section
+            role="region"
+            aria-label="Topology graph viewport"
+            data-testid="topology-model-graph"
+            className="space-y-2 rounded-lg border border-border/60 bg-muted/15 p-3"
+          >
+            <div className="text-xs text-muted-foreground">
+              Graph viewport shows nodes{" "}
+              {visibleGraphNodes.length > 0
+                ? `${visibleGraphNodes[0].recordIndex + 1}-${visibleGraphNodes[visibleGraphNodes.length - 1].recordIndex + 1}`
+                : "0"}{" "}
+              of {topologyModel.nodes.length}. Selecting any search result
+              reveals and focuses its node here.
+            </div>
+            <div className="h-[560px] overflow-auto rounded-md border border-border/50 bg-background/40">
+              <div className="relative h-[660px] min-w-[944px]">
+                <svg
+                  aria-hidden="true"
+                  data-testid="topology-graph-edges"
+                  className="absolute inset-0 h-full w-full text-border"
+                >
+                  {visibleGraphEdges.map((edge) => {
+                    const sourceX = 70 + (edge.sourceIndex % 8) * 116;
+                    const sourceY = 42 + Math.floor(edge.sourceIndex / 8) * 64;
+                    const targetX = 70 + (edge.targetIndex % 8) * 116;
+                    const targetY = 42 + Math.floor(edge.targetIndex / 8) * 64;
+                    return (
+                      <line
+                        key={edge.id}
+                        data-testid="topology-graph-edge"
+                        x1={sourceX}
+                        y1={sourceY}
+                        x2={targetX}
+                        y2={targetY}
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      />
+                    );
+                  })}
+                </svg>
+                {visibleGraphNodes.map((node, index) => (
+                  <button
+                    key={node.id}
+                    id={`topology-model-node-${node.recordIndex}`}
+                    type="button"
+                    data-testid="topology-graph-node"
+                    aria-pressed={selectedModelNodeId === node.id}
+                    aria-label={`${node.label}; ${node.nodeType} node`}
+                    className={cn(
+                      "absolute z-10 h-11 w-[108px] overflow-hidden rounded-md border bg-card px-1.5 py-1 text-left text-[10px] shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                      selectedModelNodeId === node.id
+                        ? "border-primary bg-primary/15"
+                        : "border-border/70",
+                    )}
+                    style={{
+                      left: 16 + (index % 8) * 116,
+                      top: 20 + Math.floor(index / 8) * 64,
+                    }}
+                    onClick={() => selectAndRevealModelNode(node)}
+                  >
+                    <span className="block truncate font-semibold">
+                      {node.label}
+                    </span>
+                    <span className="block truncate text-muted-foreground">
+                      {node.nodeType}
+                    </span>
+                  </button>
                 ))}
               </div>
             </div>
+          </section>
+        )}
 
-            {(isRendering ||
-              isLoading ||
-              topologyResolutionProgress.running ||
-              discovering) && (
+        {topologyRecords.length > 0 && renderGraphControls(false)}
+
+        {topologyRecords.length > 0 && (
+          <div>
+            <div
+              ref={!expandGraph ? viewportRef : undefined}
+              className={cn(
+                "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
+                graphBackgroundClass,
+                "h-[560px]",
+                cursorClass,
+              )}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onWheelCapture={(event) => {
+                handleWheelCapture(event);
+              }}
+              onTouchMoveCapture={(event) => {
+                event.stopPropagation();
+              }}
+              onPointerDownCapture={(event) => {
+                event.stopPropagation();
+              }}
+              onAuxClick={(event) => {
+                if (event.button === 1) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              onKeyDownCapture={(event) => {
+                if (
+                  [
+                    "ArrowUp",
+                    "ArrowDown",
+                    "ArrowLeft",
+                    "ArrowRight",
+                    "PageUp",
+                    "PageDown",
+                    "Home",
+                    "End",
+                    " ",
+                  ].includes(event.key)
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              tabIndex={0}
+              onClick={handleViewportClick}
+              onContextMenu={handleNodeContextMenu}
+            >
               <div
-                className={cn(
-                  "absolute inset-0 z-20 flex items-center justify-center",
-                  loadingOverlayClass,
-                )}
+                className="absolute left-0 top-0"
+                style={{
+                  transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
+                  transformOrigin: "0 0",
+                }}
               >
-                <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
-                  <div className="flex items-center gap-2">
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                    {topologyProgressLabel}
-                  </div>
-                  {activeRequestPreview ? (
-                    <div className="line-clamp-2 text-[11px] text-muted-foreground">
-                      {activeRequestPreview}
+                <div className="relative p-4">
+                  {renderError ? (
+                    <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+                      Mermaid render failed: {renderError}
                     </div>
-                  ) : null}
-                  {(topologyResolutionProgress.running || discovering) && (
-                    <div className="h-1.5 w-full rounded bg-primary/20">
-                      <div
-                        className="h-full rounded bg-primary transition-all duration-200"
-                        style={{
-                          width: `${Math.round(
-                            (Math.min(
-                              Math.max(
-                                discovering
-                                  ? discoveryProgress.done
-                                  : topologyResolutionProgress.done,
-                                0,
-                              ),
-                              Math.max(
-                                discovering
-                                  ? discoveryProgress.total
-                                  : topologyResolutionProgress.total,
-                                1,
-                              ),
-                            ) /
-                              Math.max(
-                                discovering
-                                  ? discoveryProgress.total
-                                  : topologyResolutionProgress.total,
-                                1,
-                              )) *
-                              100,
-                          )}%`,
-                        }}
-                      />
-                    </div>
+                  ) : (
+                    <div
+                      className="topology-svg-wrapper"
+                      dangerouslySetInnerHTML={{ __html: svgMarkup }}
+                    />
                   )}
+
+                  {annotations.map((ann) => (
+                    <div
+                      key={ann.id}
+                      className="absolute rounded-md border border-primary/40 bg-card/90 px-2 py-1 text-[11px] shadow-lg"
+                      style={{ left: ann.x, top: ann.y }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>{ann.text}</span>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground"
+                          onClick={() =>
+                            setAnnotations((prev) =>
+                              prev.filter((x) => x.id !== ann.id),
+                            )
+                          }
+                        >
+                          x
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            )}
+
+              {(modelBuildProgress.running ||
+                isRendering ||
+                isLoading ||
+                topologyResolutionProgress.running ||
+                discovering) && (
+                <div
+                  className={cn(
+                    "absolute inset-0 z-20 flex items-center justify-center",
+                    loadingOverlayClass,
+                  )}
+                >
+                  <div className="flex min-w-[280px] flex-col gap-2 rounded-lg border border-primary/40 bg-card/85 px-3 py-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      {topologyProgressLabel}
+                    </div>
+                    {activeRequestPreview ? (
+                      <div className="line-clamp-2 text-[11px] text-muted-foreground">
+                        {activeRequestPreview}
+                      </div>
+                    ) : null}
+                    {(topologyResolutionProgress.running || discovering) && (
+                      <div className="h-1.5 w-full rounded bg-primary/20">
+                        <div
+                          className="h-full rounded bg-primary transition-all duration-200"
+                          style={{
+                            width: `${Math.round(
+                              (Math.min(
+                                Math.max(
+                                  discovering
+                                    ? discoveryProgress.done
+                                    : topologyResolutionProgress.done,
+                                  0,
+                                ),
+                                Math.max(
+                                  discovering
+                                    ? discoveryProgress.total
+                                    : topologyResolutionProgress.total,
+                                  1,
+                                ),
+                              ) /
+                                Math.max(
+                                  discovering
+                                    ? discoveryProgress.total
+                                    : topologyResolutionProgress.total,
+                                  1,
+                                )) *
+                                100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         {fullscreenLightbox}
         {nodeContextMenuPortal}
         <div className="space-y-2">
@@ -3560,41 +4531,59 @@ export function ZoneTopologyTab({
             open
           >
             <summary className="cursor-pointer select-none font-semibold">
-              MX records resolved ({mxResolvedRows.length})
+              MX records resolved ({mxResolvedRows.total})
             </summary>
             <div className="mt-2 space-y-1 text-muted-foreground">
-              {mxResolvedRows.length === 0 ? (
+              {mxResolvedRows.total === 0 ? (
                 <div>No MX records found.</div>
               ) : (
-                mxResolvedRows.map((mx) => (
-                  <div key={mx.id}>
-                    {mx.from} | prio {mx.priority ?? "—"} | target{" "}
-                    {mx.target || "—"} | chain{" "}
-                    {mx.chain.length ? mx.chain.join(" -> ") : "—"} | end{" "}
-                    {mx.terminal || "—"} | A {mx.ipv4.join(", ") || "none"} |
-                    AAAA {mx.ipv6.join(", ") || "none"} | source {mx.source}
-                    {mx.reverse.length > 0
-                      ? ` | PTR ${mx.reverse.join("; ")}`
-                      : ""}
-                  </div>
-                ))
+                <>
+                  {mxResolvedRows.total > mxResolvedRows.visible.length && (
+                    <div role="status">
+                      Rendering {mxResolvedRows.visible.length} of{" "}
+                      {mxResolvedRows.total} MX detail rows.
+                    </div>
+                  )}
+                  {mxResolvedRows.visible.map((mx) => (
+                    <div key={mx.id}>
+                      {mx.from} | prio {mx.priority ?? "—"} | target{" "}
+                      {mx.target || "—"} | chain{" "}
+                      {mx.chain.length ? mx.chain.join(" -> ") : "—"} | end{" "}
+                      {mx.terminal || "—"} | A {mx.ipv4.join(", ") || "none"} |
+                      AAAA {mx.ipv6.join(", ") || "none"} | source {mx.source}
+                      {mx.reverse.length > 0
+                        ? ` | PTR ${mx.reverse.join("; ")}`
+                        : ""}
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           </details>
 
           <details className="rounded-lg border border-border/60 bg-card/55 p-3 text-xs">
             <summary className="cursor-pointer select-none font-semibold">
-              Email and related records ({emailRecords.length})
+              Email and related records ({emailRecordSummary.total})
             </summary>
             <div className="mt-2 space-y-1 text-muted-foreground">
-              {emailRecords.length === 0 ? (
+              {emailRecordSummary.total === 0 ? (
                 <div>No email records found.</div>
               ) : (
-                emailRecords.slice(0, 40).map((r) => (
-                  <div key={r.id} className="truncate">
-                    {r.type} {r.name} {"->"} {String(r.content ?? "—")}
-                  </div>
-                ))
+                <>
+                  {emailRecordSummary.total >
+                    emailRecordSummary.visible.length && (
+                    <div role="status">
+                      Rendering {emailRecordSummary.visible.length} of{" "}
+                      {emailRecordSummary.total} email detail rows.
+                    </div>
+                  )}
+                  {emailRecordSummary.visible.map((record) => (
+                    <div key={record.id} className="truncate">
+                      {record.type} {record.name} {"->"}{" "}
+                      {String(record.content ?? "—")}
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           </details>
@@ -3605,7 +4594,13 @@ export function ZoneTopologyTab({
                 Basic service discovery ({discovery.length})
               </summary>
               <div className="mt-2 space-y-1 text-muted-foreground">
-                {discovery.map((item) => (
+                {discovery.length > visibleDiscovery.length && (
+                  <div role="status">
+                    Rendering {visibleDiscovery.length} of {discovery.length}{" "}
+                    discovery results.
+                  </div>
+                )}
+                {visibleDiscovery.map((item) => (
                   <div key={`${item.service}:${item.details}`}>
                     {item.service}: {item.status} ({item.details})
                   </div>
@@ -3619,7 +4614,13 @@ export function ZoneTopologyTab({
               Nodes ({summary.nodeSummaries.length})
             </summary>
             <div className="mt-2 space-y-2 max-h-72 overflow-auto pr-1">
-              {summary.nodeSummaries.map((node) => (
+              {summary.nodeSummaries.length > visibleNodeSummaries.length && (
+                <div role="status" className="text-muted-foreground">
+                  Rendering {visibleNodeSummaries.length} of{" "}
+                  {summary.nodeSummaries.length} node summaries.
+                </div>
+              )}
+              {visibleNodeSummaries.map((node) => (
                 <div
                   key={node.name}
                   className="rounded-md border border-border/50 bg-background/25 p-2"
@@ -3705,3 +4706,7 @@ export function ZoneTopologyTab({
 
 ZoneTopologyTab.copyTopologyText = copyTopologyText;
 ZoneTopologyTab.runTopologyRefresh = runTopologyRefresh;
+ZoneTopologyTab.buildTopologyGraphModelProgressively =
+  buildTopologyGraphModelProgressively;
+ZoneTopologyTab.filterTopologyModelNodes = filterTopologyModelNodes;
+ZoneTopologyTab.yieldTopologyConstruction = yieldTopologyConstruction;

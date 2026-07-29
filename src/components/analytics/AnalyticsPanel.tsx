@@ -2,7 +2,7 @@
  * Zone Analytics panel — displays traffic, bandwidth, threats and
  * pageview statistics fetched from the Cloudflare Analytics API.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/hooks/use-i18n";
@@ -42,6 +42,91 @@ const TIME_RANGES: { value: TimeRange; label: string }[] = [
   { value: "30d", label: "Last 30 days" },
 ];
 
+export const ANALYTICS_POINT_LIMIT = 5_000;
+export const ANALYTICS_TABLE_ROW_LIMIT = 250;
+
+const ANALYTICS_METRICS: Array<keyof AnalyticsDataPoint> = [
+  "requests",
+  "bandwidth",
+  "threats",
+  "pageviews",
+  "uniques",
+];
+
+/**
+ * Selects a deterministic bounded view while retaining the first and last
+ * points plus global extrema for each metric whenever the limit permits.
+ */
+function downsampleAnalyticsTimeseries(
+  points: AnalyticsTimeseries[],
+  limit = ANALYTICS_POINT_LIMIT,
+): AnalyticsTimeseries[] {
+  const boundedLimit = Number.isFinite(limit)
+    ? Math.max(0, Math.floor(limit))
+    : ANALYTICS_POINT_LIMIT;
+  if (points.length <= boundedLimit) return points;
+  if (boundedLimit === 0) return [];
+  if (boundedLimit === 1) return [points[0]];
+
+  const selected = new Set<number>([0, points.length - 1]);
+  for (const metric of ANALYTICS_METRICS) {
+    let minIndex = -1;
+    let maxIndex = -1;
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < points.length; index += 1) {
+      const value = points[index]?.[metric];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      if (value < min) {
+        min = value;
+        minIndex = index;
+      }
+      if (value > max) {
+        max = value;
+        maxIndex = index;
+      }
+    }
+    for (const index of [minIndex, maxIndex]) {
+      if (index >= 0 && selected.size < boundedLimit) selected.add(index);
+    }
+  }
+
+  const evenlySpacedSlots = Math.max(1, boundedLimit - selected.size);
+  for (
+    let slot = 1;
+    slot <= evenlySpacedSlots && selected.size < boundedLimit;
+    slot += 1
+  ) {
+    selected.add(
+      Math.round((slot * (points.length - 1)) / (evenlySpacedSlots + 1)),
+    );
+  }
+  if (selected.size < boundedLimit) {
+    const stride = Math.max(1, Math.floor(points.length / boundedLimit));
+    for (
+      let index = stride;
+      index < points.length - 1 && selected.size < boundedLimit;
+      index += stride
+    ) {
+      selected.add(index);
+    }
+  }
+  if (selected.size < boundedLimit) {
+    for (
+      let index = 1;
+      index < points.length - 1 && selected.size < boundedLimit;
+      index += 1
+    ) {
+      selected.add(index);
+    }
+  }
+
+  return Array.from(selected)
+    .sort((a, b) => a - b)
+    .slice(0, boundedLimit)
+    .map((index) => points[index]);
+}
+
 function sinceFromRange(range: TimeRange): string {
   const now = new Date();
   const map: Record<TimeRange, number> = {
@@ -68,31 +153,46 @@ function formatBytes(bytes: number): string {
 
 /** Simple SVG sparkline for timeseries data */
 function Sparkline({
-  data,
+  points: sourcePoints,
+  metric,
   width = 280,
   height = 60,
   color = "currentColor",
 }: {
-  data: number[];
+  points: AnalyticsTimeseries[];
+  metric: "requests" | "bandwidth";
   width?: number;
   height?: number;
   color?: string;
 }) {
-  if (data.length < 2) return null;
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data);
+  if (sourcePoints.length < 2) return null;
+  let max = 1;
+  let min = Number.POSITIVE_INFINITY;
+  for (const point of sourcePoints) {
+    const value = point[metric];
+    if (value > max) max = value;
+    if (value < min) min = value;
+  }
+  if (!Number.isFinite(min)) min = 0;
   const range = max - min || 1;
-  const step = width / (data.length - 1);
-  const points = data
-    .map(
-      (v, i) =>
-        `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height * 0.9 - height * 0.05).toFixed(1)}`,
-    )
-    .join(" ");
-  const areaPoints = `0,${height} ${points} ${width},${height}`;
+  const step = width / (sourcePoints.length - 1);
+  const coordinates: string[] = [];
+  for (let index = 0; index < sourcePoints.length; index += 1) {
+    const value = sourcePoints[index][metric];
+    coordinates.push(
+      `${(index * step).toFixed(1)},${(height - ((value - min) / range) * height * 0.9 - height * 0.05).toFixed(1)}`,
+    );
+  }
+  const polylinePoints = coordinates.join(" ");
+  const areaPoints = `0,${height} ${polylinePoints} ${width},${height}`;
   return (
     <svg width={width} height={height} className="overflow-visible">
-      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        points={polylinePoints}
+      />
       <polygon fill={color} fillOpacity="0.1" points={areaPoints} />
     </svg>
   );
@@ -117,46 +217,86 @@ function AnalyticsPanelInner({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<TimeRange>("24h");
-
-  const fetchData = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const since = sinceFromRange(range);
-        const result = (await getZoneAnalytics(
-          zoneId,
-          since,
-          undefined,
-          signal,
-        )) as ZoneAnalyticsData;
-        if (!signal?.aborted) setData(result);
-      } catch (err) {
-        if (!signal?.aborted) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : t("Failed to load analytics", "Failed to load analytics"),
-          );
-        }
-      } finally {
-        if (!signal?.aborted) setLoading(false);
-      }
-    },
-    [zoneId, range, getZoneAnalytics],
+  const [sourcePointCount, setSourcePointCount] = useState(0);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  const requestVersionRef = useRef(0);
+  const loadFailureMessage = t(
+    "Failed to load analytics",
+    "Failed to load analytics",
   );
 
-  useEffect(() => {
+  const fetchData = useCallback(async () => {
+    activeRequestRef.current?.abort();
     const controller = new AbortController();
-    fetchData(controller.signal);
-    return () => controller.abort();
+    activeRequestRef.current = controller;
+    const version = ++requestVersionRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const since = sinceFromRange(range);
+      const result = (await getZoneAnalytics(
+        zoneId,
+        since,
+        undefined,
+        controller.signal,
+      )) as ZoneAnalyticsData;
+      if (controller.signal.aborted || requestVersionRef.current !== version) {
+        return;
+      }
+      const timeseries = Array.isArray(result?.timeseries)
+        ? result.timeseries
+        : [];
+      setSourcePointCount(timeseries.length);
+      setData({
+        totals: result?.totals ?? {
+          requests: 0,
+          bandwidth: 0,
+          threats: 0,
+          pageviews: 0,
+        },
+        timeseries: downsampleAnalyticsTimeseries(timeseries),
+      });
+    } catch (err) {
+      if (!controller.signal.aborted && requestVersionRef.current === version) {
+        setError(err instanceof Error ? err.message : loadFailureMessage);
+      }
+    } finally {
+      if (!controller.signal.aborted && requestVersionRef.current === version) {
+        setLoading(false);
+      }
+    }
+  }, [zoneId, range, getZoneAnalytics, loadFailureMessage]);
+
+  useEffect(() => {
+    void fetchData();
+    return () => {
+      requestVersionRef.current += 1;
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
+    };
   }, [fetchData]);
+
+  const tableTimeseries = useMemo(
+    () =>
+      data
+        ? downsampleAnalyticsTimeseries(
+            data.timeseries,
+            ANALYTICS_TABLE_ROW_LIMIT,
+          )
+        : [],
+    [data],
+  );
 
   if (error) {
     return (
       <div className="flex flex-col items-center gap-2 py-12 text-center">
         <p className="text-sm text-destructive">{error}</p>
-        <Button size="sm" variant="outline" onClick={() => fetchData()}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => void fetchData()}
+        >
           {t("Retry", "Retry")}
         </Button>
       </div>
@@ -183,9 +323,10 @@ function AnalyticsPanelInner({
             </SelectContent>
           </Select>
           <Button
+            type="button"
             size="sm"
             variant="outline"
-            onClick={() => fetchData()}
+            onClick={() => void fetchData()}
             disabled={loading}
           >
             {loading ? t("Loading…", "Loading…") : t("Refresh", "Refresh")}
@@ -195,6 +336,22 @@ function AnalyticsPanelInner({
 
       {data && (
         <>
+          {sourcePointCount > data.timeseries.length && (
+            <div
+              role="status"
+              data-testid="analytics-sampling-notice"
+              className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100"
+            >
+              {t(
+                "Large result sampled to {{shown}} of {{total}} points. First, last, and metric extremes are retained.",
+                {
+                  shown: data.timeseries.length,
+                  total: sourcePointCount,
+                  defaultValue: `Large result sampled to ${data.timeseries.length} of ${sourcePointCount} points. First, last, and metric extremes are retained.`,
+                },
+              )}
+            </div>
+          )}
           {/* Summary cards */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Card>
@@ -258,7 +415,8 @@ function AnalyticsPanelInner({
                 </CardHeader>
                 <CardContent>
                   <Sparkline
-                    data={data.timeseries.map((p) => p.requests)}
+                    points={data.timeseries}
+                    metric="requests"
                     color="var(--color-primary, #3b82f6)"
                   />
                 </CardContent>
@@ -271,7 +429,8 @@ function AnalyticsPanelInner({
                 </CardHeader>
                 <CardContent>
                   <Sparkline
-                    data={data.timeseries.map((p) => p.bandwidth)}
+                    points={data.timeseries}
+                    metric="bandwidth"
                     color="var(--color-primary, #10b981)"
                   />
                 </CardContent>
@@ -286,6 +445,18 @@ function AnalyticsPanelInner({
                 <CardTitle className="text-sm">
                   {t("Timeseries", "Timeseries")}
                 </CardTitle>
+                {data.timeseries.length > tableTimeseries.length && (
+                  <p className="text-xs font-normal text-muted-foreground">
+                    {t(
+                      "Table shows a representative {{shown}} of {{total}} retained points.",
+                      {
+                        shown: tableTimeseries.length,
+                        total: data.timeseries.length,
+                        defaultValue: `Table shows a representative ${tableTimeseries.length} of ${data.timeseries.length} retained points.`,
+                      },
+                    )}
+                  </p>
+                )}
               </CardHeader>
               <CardContent>
                 <div className="max-h-64 overflow-auto">
@@ -308,8 +479,12 @@ function AnalyticsPanelInner({
                       </tr>
                     </thead>
                     <tbody>
-                      {data.timeseries.map((point, i) => (
-                        <tr key={i} className="border-b last:border-0">
+                      {tableTimeseries.map((point, i) => (
+                        <tr
+                          key={`${point.since}:${point.until}:${i}`}
+                          data-testid="analytics-timeseries-row"
+                          className="border-b last:border-0"
+                        >
                           <td className="py-1 pr-3 font-mono">
                             {new Date(point.since).toLocaleString(undefined, {
                               month: "short",
@@ -351,6 +526,8 @@ function AnalyticsPanelInner({
     </div>
   );
 }
+
+AnalyticsPanel.downsampleAnalyticsTimeseries = downsampleAnalyticsTimeseries;
 
 export function AnalyticsPanel(props: AnalyticsPanelProps) {
   return (

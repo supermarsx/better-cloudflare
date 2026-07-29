@@ -64,7 +64,6 @@ import { TauriClient, type McpServerStatus } from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
-import { filterRecords } from "@/lib/dns/dns-utils";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import {
   Dialog,
@@ -225,6 +224,8 @@ type ZoneTab = {
   zoneName: string;
   status?: string;
   records: DNSRecord[];
+  recordsLimited: boolean;
+  sourceRecordCount: number;
   isLoading: boolean;
   editingRecord: string | null;
   searchTerm: string;
@@ -378,6 +379,93 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
   proxied: false,
 });
 
+const DNS_RECORD_MEMORY_LIMIT = 5_000;
+const DNS_RECORD_RENDER_LIMIT = 200;
+const DNS_API_PAGE_SIZE_LIMIT = 500;
+const DNS_EXPORT_PAGE_SIZE = DNS_API_PAGE_SIZE_LIMIT;
+const DNS_EXPORT_PAGE_LIMIT = 10_000;
+const DNS_MIN_PAGE_SIZE = 25;
+const DNS_DEFAULT_PAGE_SIZE = 50;
+
+function clampDnsPageSize(
+  value: unknown,
+  fallback = DNS_DEFAULT_PAGE_SIZE,
+): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (numeric === 0) return 0;
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(
+    DNS_API_PAGE_SIZE_LIMIT,
+    Math.max(DNS_MIN_PAGE_SIZE, Math.round(numeric)),
+  );
+}
+
+function clampZonePerPageMap(
+  value: Record<string, number> | null | undefined,
+): Record<string, number> {
+  if (!value) return {};
+  const next: Record<string, number> = {};
+  for (const [zoneId, pageSize] of Object.entries(value)) {
+    if (!zoneId) continue;
+    next[zoneId] = clampDnsPageSize(pageSize);
+  }
+  return next;
+}
+
+function retainDnsRecordsForUi(records: DNSRecord[]): {
+  records: DNSRecord[];
+  limited: boolean;
+  sourceRecordCount: number;
+} {
+  if (records.length <= DNS_RECORD_MEMORY_LIMIT) {
+    return {
+      records,
+      limited: false,
+      sourceRecordCount: records.length,
+    };
+  }
+  return {
+    records: records.slice(0, DNS_RECORD_MEMORY_LIMIT),
+    limited: true,
+    sourceRecordCount: records.length,
+  };
+}
+
+type DnsRecordPageLoader = (
+  zoneId: string,
+  page: number,
+  perPage: number,
+  signal?: AbortSignal,
+) => Promise<DNSRecord[]>;
+
+function throwIfDnsOperationAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw new DOMException("DNS operation aborted", "AbortError");
+}
+
+/**
+ * Export is intentionally separate from bounded UI retention. It walks every
+ * authoritative API page and either returns the complete record set or throws;
+ * it never turns a partial UI view into a silent partial export.
+ */
+async function loadCompleteDnsRecordsForExport(
+  loadPage: DnsRecordPageLoader,
+  zoneId: string,
+  signal?: AbortSignal,
+): Promise<DNSRecord[]> {
+  const records: DNSRecord[] = [];
+  for (let page = 1; page <= DNS_EXPORT_PAGE_LIMIT; page += 1) {
+    throwIfDnsOperationAborted(signal);
+    const batch = await loadPage(zoneId, page, DNS_EXPORT_PAGE_SIZE, signal);
+    throwIfDnsOperationAborted(signal);
+    records.push(...batch);
+    if (batch.length < DNS_EXPORT_PAGE_SIZE) return records;
+  }
+  throw new Error(
+    `DNS export exceeded the ${DNS_EXPORT_PAGE_LIMIT}-page safety limit; no partial file was created.`,
+  );
+}
+
 const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   kind: "zone",
   id: zone.id,
@@ -385,12 +473,14 @@ const createZoneTab = (zone: Zone, perPage: number): ZoneTab => ({
   zoneName: zone.name,
   status: zone.status,
   records: [],
+  recordsLimited: false,
+  sourceRecordCount: 0,
   isLoading: false,
   editingRecord: null,
   searchTerm: "",
   typeFilter: "",
   page: 1,
-  perPage,
+  perPage: clampDnsPageSize(perPage),
   sortKey: null,
   sortDir: null,
   selectedIds: [],
@@ -407,12 +497,14 @@ const createActionTab = (kind: Exclude<TabKind, "zone">): ZoneTab => ({
   zoneName: ACTION_TAB_LABELS[kind],
   status: undefined,
   records: [],
+  recordsLimited: false,
+  sourceRecordCount: 0,
   isLoading: false,
   editingRecord: null,
   searchTerm: "",
   typeFilter: "",
   page: 1,
-  perPage: 50,
+  perPage: DNS_DEFAULT_PAGE_SIZE,
   sortKey: null,
   sortDir: null,
   selectedIds: [],
@@ -587,6 +679,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const compactTopBarRef = useRef(false);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
+  const exportRequestRef = useRef<AbortController | null>(null);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState("");
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
@@ -594,7 +687,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [actionTab, setActionTab] = useState<ActionTab>("records");
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [globalPerPage, setGlobalPerPage] = useState(50);
+  const [globalPerPage, setGlobalPerPage] = useState(DNS_DEFAULT_PAGE_SIZE);
   const [zonePerPage, setZonePerPage] = useState<Record<string, number>>({});
   const [showUnsupportedRecordTypes, setShowUnsupportedRecordTypes] = useState(
     storageManager.getShowUnsupportedRecordTypes(),
@@ -673,6 +766,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [tagsVersion, setTagsVersion] = useState(0);
   const [tagManagerRecords, setTagManagerRecords] = useState<DNSRecord[]>([]);
   const [tagManagerRecordsLoading, setTagManagerRecordsLoading] =
+    useState(false);
+  const [tagManagerRecordsLimited, setTagManagerRecordsLimited] =
     useState(false);
   const [tagManagerRecordsError, setTagManagerRecordsError] = useState<
     string | null
@@ -817,7 +912,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     updateDNSRecord,
     bulkCreateDNSRecords,
     deleteDNSRecord,
-    exportDNSRecords,
     purgeCache,
     getZoneSetting,
     updateZoneSetting,
@@ -1086,10 +1180,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setAutoRefreshInterval(profile.autoRefreshInterval ?? null);
       }
       if (typeof profile.defaultPerPage === "number") {
-        setGlobalPerPage(profile.defaultPerPage);
+        setGlobalPerPage(clampDnsPageSize(profile.defaultPerPage));
       }
       if (profile.zonePerPage && typeof profile.zonePerPage === "object") {
-        setZonePerPage(profile.zonePerPage);
+        setZonePerPage(clampZonePerPageMap(profile.zonePerPage));
       }
       if (typeof profile.showUnsupportedRecordTypes === "boolean") {
         setShowUnsupportedRecordTypes(profile.showUnsupportedRecordTypes);
@@ -1452,7 +1546,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const updateTab = useCallback(
     (tabId: string, updater: (tab: ZoneTab) => ZoneTab) => {
       setTabs((prev) =>
-        prev.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
+        prev.map((tab) => {
+          if (tab.id !== tabId) return tab;
+          const updated = updater(tab);
+          const bounded = retainDnsRecordsForUi(updated.records);
+          if (!bounded.limited) return updated;
+          return {
+            ...updated,
+            records: bounded.records,
+            recordsLimited: true,
+            sourceRecordCount: Math.max(
+              updated.sourceRecordCount,
+              bounded.sourceRecordCount,
+            ),
+          };
+        }),
       );
     },
     [],
@@ -1464,7 +1572,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (!zone) return;
       setTabs((prev) => {
         if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
-        const perPage = zonePerPage[zoneId] ?? globalPerPage;
+        const perPage = clampDnsPageSize(zonePerPage[zoneId] ?? globalPerPage);
         return [...prev, createZoneTab(zone, perPage)];
       });
       setActiveTabId(zoneId);
@@ -1588,39 +1696,80 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       updateTab(tab.id, (prev) => ({ ...prev, isLoading: true }));
       try {
         let combined: DNSRecord[];
+        let recordsLimited = false;
+        let sourceRecordCount = 0;
         if (tab.perPage === 0) {
-          const pageSize = 500;
+          const pageSize = DNS_API_PAGE_SIZE_LIMIT;
           let currentPage = 1;
+          let lastBatchWasFull = false;
           combined = [];
-          while (true) {
+          while (combined.length < DNS_RECORD_MEMORY_LIMIT) {
             const batch = await getDNSRecords(
               tab.zoneId,
               currentPage,
               pageSize,
               signal,
             );
-            combined = combined.concat(batch);
-            if (batch.length < pageSize) break;
+            sourceRecordCount += batch.length;
+            const available = DNS_RECORD_MEMORY_LIMIT - combined.length;
+            if (batch.length > available) {
+              combined.push(...batch.slice(0, available));
+              recordsLimited = true;
+              break;
+            }
+            combined.push(...batch);
+            lastBatchWasFull = batch.length === pageSize;
+            if (!lastBatchWasFull) break;
             currentPage += 1;
           }
+          if (
+            !recordsLimited &&
+            lastBatchWasFull &&
+            combined.length === DNS_RECORD_MEMORY_LIMIT
+          ) {
+            const overflowBatch = await getDNSRecords(
+              tab.zoneId,
+              currentPage,
+              pageSize,
+              signal,
+            );
+            sourceRecordCount += overflowBatch.length;
+            recordsLimited = overflowBatch.length > 0;
+          }
         } else {
-          combined = await getDNSRecords(
+          const requestedPageSize = clampDnsPageSize(tab.perPage);
+          const result = await getDNSRecords(
             tab.zoneId,
-            tab.page,
-            tab.perPage,
+            Math.max(1, Math.round(tab.page)),
+            requestedPageSize,
             signal,
           );
+          const bounded = retainDnsRecordsForUi(result);
+          combined = bounded.records;
+          recordsLimited = bounded.limited;
+          sourceRecordCount = bounded.sourceRecordCount;
         }
-        updateTab(tab.id, (prev) => ({ ...prev, records: combined }));
+        updateTab(tab.id, (prev) => ({
+          ...prev,
+          records: combined,
+          recordsLimited,
+          sourceRecordCount,
+        }));
         // Persist to offline cache on success
         cacheZoneRecords(tab.zoneId, tab.zoneName, combined);
       } catch (error) {
+        if (signal?.aborted || (error as Error).name === "AbortError") return;
         // Try offline cache fallback
         const cached = getCachedZoneRecords(tab.zoneId);
         if (cached) {
+          const bounded = retainDnsRecordsForUi(cached.records as DNSRecord[]);
+          const cacheReachedUiCap =
+            cached.records.length >= DNS_RECORD_MEMORY_LIMIT;
           updateTab(tab.id, (prev) => ({
             ...prev,
-            records: cached.records as DNSRecord[],
+            records: bounded.records,
+            recordsLimited: bounded.limited || cacheReachedUiCap,
+            sourceRecordCount: bounded.sourceRecordCount,
           }));
           toast({
             title: t("Offline", "Offline"),
@@ -1650,27 +1799,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     async (zoneId: string, signal?: AbortSignal) => {
       if (!zoneId) {
         setTagManagerRecords([]);
+        setTagManagerRecordsLimited(false);
         setTagManagerRecordsError(null);
         return;
       }
       setTagManagerRecordsLoading(true);
+      setTagManagerRecordsLimited(false);
       setTagManagerRecordsError(null);
       try {
-        const pageSize = 500;
+        const pageSize = DNS_API_PAGE_SIZE_LIMIT;
         let currentPage = 1;
-        let combined: DNSRecord[] = [];
-        while (true) {
+        const combined: DNSRecord[] = [];
+        let limited = false;
+        while (combined.length < DNS_RECORD_MEMORY_LIMIT) {
           const batch = await getDNSRecords(
             zoneId,
             currentPage,
             pageSize,
             signal,
           );
-          combined = combined.concat(batch);
+          const available = DNS_RECORD_MEMORY_LIMIT - combined.length;
+          if (batch.length > available) {
+            combined.push(...batch.slice(0, available));
+            limited = true;
+            break;
+          }
+          combined.push(...batch);
           if (batch.length < pageSize) break;
+          if (combined.length >= DNS_RECORD_MEMORY_LIMIT) {
+            limited = true;
+            break;
+          }
           currentPage += 1;
         }
         setTagManagerRecords(combined);
+        setTagManagerRecordsLimited(limited);
       } catch (error) {
         if ((error as Error).name === "AbortError") return;
         setTagManagerRecordsError((error as Error).message);
@@ -1686,6 +1849,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     loadZones(controller.signal);
     return () => controller.abort();
   }, [loadZones]);
+
+  useEffect(
+    () => () => {
+      exportRequestRef.current?.abort();
+      exportRequestRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     let rafId = 0;
@@ -2043,13 +2214,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setAutoRefreshInterval(prefObj.auto_refresh_interval);
           }
           if (typeof prefObj.default_per_page === "number") {
-            setGlobalPerPage(prefObj.default_per_page);
+            setGlobalPerPage(clampDnsPageSize(prefObj.default_per_page));
           }
           if (
             prefObj.zone_per_page &&
             typeof prefObj.zone_per_page === "object"
           ) {
-            setZonePerPage(prefObj.zone_per_page);
+            setZonePerPage(clampZonePerPageMap(prefObj.zone_per_page));
           }
           if (typeof prefObj.show_unsupported_record_types === "boolean") {
             setShowUnsupportedRecordTypes(
@@ -2294,8 +2465,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
-    setGlobalPerPage(storageManager.getDefaultPerPage());
-    setZonePerPage(storageManager.getZonePerPageMap());
+    setGlobalPerPage(clampDnsPageSize(storageManager.getDefaultPerPage()));
+    setZonePerPage(clampZonePerPageMap(storageManager.getZonePerPageMap()));
     setShowUnsupportedRecordTypes(
       storageManager.getShowUnsupportedRecordTypes(),
     );
@@ -2986,18 +3157,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
     const query = activeTab.searchTerm.trim().toLowerCase();
-    const base = activeTab.records.filter((record: DNSRecord) => {
-      if (activeTab.typeFilter && record.type !== activeTab.typeFilter)
-        return false;
-      if (!query) return true;
-      const matchesRecord = filterRecords([record], query).length > 0;
-      if (matchesRecord) return true;
-      const recordTags = storageManager.getRecordTags(
-        activeTab.zoneId,
-        record.id,
-      );
-      return recordTags.some((tag) => tag.toLowerCase().includes(query));
-    });
+    const requiresFilter = Boolean(activeTab.typeFilter || query);
+    const base: DNSRecord[] = requiresFilter ? [] : activeTab.records;
+    if (requiresFilter) {
+      for (const record of activeTab.records) {
+        if (activeTab.typeFilter && record.type !== activeTab.typeFilter)
+          continue;
+        if (!query) {
+          base.push(record);
+          continue;
+        }
+        const matchesRecord =
+          record.name.toLowerCase().includes(query) ||
+          record.type.toLowerCase().includes(query) ||
+          record.content.toLowerCase().includes(query);
+        if (matchesRecord) {
+          base.push(record);
+          continue;
+        }
+        const recordTags = storageManager.getRecordTags(
+          activeTab.zoneId,
+          record.id,
+        );
+        if (recordTags.some((tag) => tag.toLowerCase().includes(query))) {
+          base.push(record);
+        }
+      }
+    }
 
     if (!activeTab.sortKey || !activeTab.sortDir) return base;
     const dir = activeTab.sortDir === "asc" ? 1 : -1;
@@ -3011,27 +3197,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const cmpText = (a: string, b: string) =>
       a.localeCompare(b, undefined, { sensitivity: "base" });
 
-    const sorted = [...base].sort((a, b) => {
-      switch (activeTab.sortKey) {
-        case "type":
-          return dir * cmpText(a.type ?? "", b.type ?? "");
-        case "name":
-          return dir * cmpText(a.name ?? "", b.name ?? "");
-        case "content":
-          return dir * cmpText(a.content ?? "", b.content ?? "");
-        case "ttl":
-          return dir * (getTtl(a) - getTtl(b));
-        case "proxied":
-          return (
-            dir * (Number(Boolean(a.proxied)) - Number(Boolean(b.proxied)))
-          );
-        default:
-          return 0;
-      }
-    });
+    const sorted = (base === activeTab.records ? [...base] : base).sort(
+      (a, b) => {
+        switch (activeTab.sortKey) {
+          case "type":
+            return dir * cmpText(a.type ?? "", b.type ?? "");
+          case "name":
+            return dir * cmpText(a.name ?? "", b.name ?? "");
+          case "content":
+            return dir * cmpText(a.content ?? "", b.content ?? "");
+          case "ttl":
+            return dir * (getTtl(a) - getTtl(b));
+          case "proxied":
+            return (
+              dir * (Number(Boolean(a.proxied)) - Number(Boolean(b.proxied)))
+            );
+          default:
+            return 0;
+        }
+      },
+    );
 
     return sorted;
   }, [activeTab, tagsVersion]);
+
+  const visibleRecords = useMemo(
+    () =>
+      filteredRecords.length > DNS_RECORD_RENDER_LIMIT
+        ? filteredRecords.slice(0, DNS_RECORD_RENDER_LIMIT)
+        : filteredRecords,
+    [filteredRecords],
+  );
+  const selectedRecordIds = useMemo(
+    () => new Set(activeTab?.selectedIds ?? []),
+    [activeTab?.selectedIds],
+  );
 
   const shouldShowRecordsTable =
     activeTab?.kind === "zone" &&
@@ -3759,105 +3959,140 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   };
 
   const handleExport = async (format: "json" | "csv" | "bind") => {
-    if (!activeTab) return;
-    let content = "";
-    let filename = "";
-    let mimeType = "";
+    if (!activeTab || activeTab.kind !== "zone") return;
+    exportRequestRef.current?.abort();
+    const controller = new AbortController();
+    exportRequestRef.current = controller;
 
-    if (isDesktop()) {
-      const records =
-        activeTab.records as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
-      try {
+    try {
+      const completeRecords = await loadCompleteDnsRecordsForExport(
+        getDNSRecords,
+        activeTab.zoneId,
+        controller.signal,
+      );
+      throwIfDnsOperationAborted(controller.signal);
+
+      let content = "";
+      let filename = "";
+      let mimeType = "";
+
+      if (isDesktop()) {
+        const desktopRecords =
+          completeRecords as unknown as import("@/lib/api/tauri-client").TauriDNSRecord[];
+        try {
+          switch (format) {
+            case "json":
+              content = await TauriClient.recordsToJson(desktopRecords);
+              filename = `${activeTab.zoneId}-records.json`;
+              mimeType = "application/json";
+              break;
+            case "csv":
+              content = await TauriClient.recordsToCsv(desktopRecords);
+              filename = `${activeTab.zoneId}-records.csv`;
+              mimeType = "text/csv";
+              break;
+            case "bind":
+              content = await TauriClient.recordsToBind(desktopRecords);
+              filename = `${activeTab.zoneId}.zone`;
+              mimeType = "text/plain";
+              break;
+          }
+        } catch {
+          // Fall back to the frontend serializers using the same complete set.
+        }
+      }
+
+      if (!content) {
         switch (format) {
           case "json":
-            content = await TauriClient.recordsToJson(records);
+            content = JSON.stringify(completeRecords, null, 2);
             filename = `${activeTab.zoneId}-records.json`;
             mimeType = "application/json";
             break;
-          case "csv":
-            content = await TauriClient.recordsToCsv(records);
+          case "csv": {
+            const escapeCSV = (value: unknown) =>
+              `"${String(value ?? "").replace(/"/g, '""')}"`;
+            const rows = [
+              ["Type", "Name", "Content", "TTL", "Priority", "Proxied"]
+                .map(escapeCSV)
+                .join(","),
+            ];
+            for (const record of completeRecords) {
+              rows.push(
+                [
+                  record.type,
+                  record.name,
+                  record.content,
+                  record.ttl,
+                  record.priority ?? "",
+                  record.proxied ?? false,
+                ]
+                  .map(escapeCSV)
+                  .join(","),
+              );
+            }
+            content = rows.join("\n");
             filename = `${activeTab.zoneId}-records.csv`;
             mimeType = "text/csv";
             break;
-          case "bind":
-            content = await TauriClient.recordsToBind(records);
+          }
+          case "bind": {
+            const rows: string[] = [];
+            for (const record of completeRecords) {
+              const ttl = record.ttl || 300;
+              const priority = record.priority ? `${record.priority} ` : "";
+              rows.push(
+                `${record.name}\t${ttl}\tIN\t${record.type}\t${priority}${record.content}`,
+              );
+            }
+            content = rows.join("\n");
             filename = `${activeTab.zoneId}.zone`;
             mimeType = "text/plain";
             break;
-        }
-      } catch {
-        // Fallback to frontend on error — fall through to web path
-      }
-    }
-
-    if (!content) {
-      switch (format) {
-        case "json": {
-          content = JSON.stringify(activeTab.records, null, 2);
-          filename = `${activeTab.zoneId}-records.json`;
-          mimeType = "application/json";
-          break;
-        }
-        case "csv": {
-          const headers = [
-            "Type",
-            "Name",
-            "Content",
-            "TTL",
-            "Priority",
-            "Proxied",
-          ];
-          const escapeCSV = (value: unknown) =>
-            `"${String(value ?? "").replace(/"/g, '""')}"`;
-          const rows = activeTab.records
-            .map((r: DNSRecord) =>
-              [
-                r.type,
-                r.name,
-                r.content,
-                r.ttl,
-                r.priority ?? "",
-                r.proxied ?? false,
-              ]
-                .map(escapeCSV)
-                .join(","),
-            )
-            .join("\n");
-          content = headers.map(escapeCSV).join(",") + "\n" + rows;
-          filename = `${activeTab.zoneId}-records.csv`;
-          mimeType = "text/csv";
-          break;
-        }
-        case "bind": {
-          content = activeTab.records
-            .map((r: DNSRecord) => {
-              const ttl = r.ttl || 300;
-              const priority = r.priority ? `${r.priority} ` : "";
-              return `${r.name}\t${ttl}\tIN\t${r.type}\t${priority}${r.content}`;
-            })
-            .join("\n");
-          filename = `${activeTab.zoneId}.zone`;
-          mimeType = "text/plain";
-          break;
+          }
         }
       }
+
+      throwIfDnsOperationAborted(controller.signal);
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: t("Success", "Success"),
+        description: t(
+          "Exported all {{count}} authoritative records as {{format}}.",
+          {
+            count: completeRecords.length,
+            format: format.toUpperCase(),
+            defaultValue: `Exported all ${completeRecords.length} authoritative records as ${format.toUpperCase()}.`,
+          },
+        ),
+      });
+    } catch (error) {
+      if (controller.signal.aborted || (error as Error).name === "AbortError") {
+        return;
+      }
+      toast({
+        title: t("Error", "Error"),
+        description: t(
+          "Complete DNS export failed; no partial file was created: {{error}}",
+          {
+            error: (error as Error).message,
+            defaultValue: `Complete DNS export failed; no partial file was created: ${(error as Error).message}`,
+          },
+        ),
+        variant: "destructive",
+      });
+    } finally {
+      if (exportRequestRef.current === controller) {
+        exportRequestRef.current = null;
+      }
     }
-
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    toast({
-      title: t("Success", "Success"),
-      description: t("Records exported as {{format}}", {
-        format: format.toUpperCase(),
-        defaultValue: `Records exported as ${format.toUpperCase()}`,
-      }),
-    });
   };
 
   const handleImport = async (
@@ -4905,18 +5140,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Select
                         value={String(activeTab.perPage)}
                         onValueChange={(v) => {
-                          const value = Number(v);
+                          const value = clampDnsPageSize(v);
                           updateTab(activeTab.id, (prev) => ({
                             ...prev,
-                            perPage: Number.isNaN(value) ? 50 : value,
+                            perPage: value,
                             page: 1,
                           }));
-                          if (!Number.isNaN(value)) {
-                            setZonePerPage((prev) => ({
-                              ...prev,
-                              [activeTab.zoneId]: value,
-                            }));
-                          }
+                          setZonePerPage((prev) => ({
+                            ...prev,
+                            [activeTab.zoneId]: value,
+                          }));
                         }}
                       >
                         <SelectTrigger className="w-32">
@@ -4930,7 +5163,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           <SelectItem value="100">100</SelectItem>
                           <SelectItem value="200">200</SelectItem>
                           <SelectItem value="500">500</SelectItem>
-                          <SelectItem value="0">{t("All", "All")}</SelectItem>
+                          <SelectItem value="0">
+                            {t("All (bounded)", "All (bounded)")}
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                       <div className="flex items-center gap-2 justify-start md:justify-end">
@@ -5077,160 +5312,195 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {t("No DNS records found", "No DNS records found")}
                       </div>
                     ) : (
-                      <div
-                        ref={recordsTableRef}
-                        className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
-                        style={{
-                          ["--table-bottom-fade" as string]:
-                            recordsBottomFade.toFixed(3),
-                        }}
-                      >
-                        <div className="ui-table-head">
-                          <span />
-                          <button
-                            type="button"
-                            className="text-left hover:text-foreground"
-                            onClick={() => toggleSort("type")}
+                      <>
+                        {(activeTab.recordsLimited ||
+                          filteredRecords.length > visibleRecords.length) && (
+                          <div
+                            role="status"
+                            aria-live="polite"
+                            data-testid="dns-record-limit-notice"
+                            className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100"
                           >
-                            {t("Type", "Type")}{" "}
-                            <span className="opacity-70">
-                              {sortIndicator("type")}
+                            {activeTab.recordsLimited
+                              ? t(
+                                  "This zone has at least {{source}} source records. The UI retains the first {{retained}} records and renders {{rendered}} matching rows at once. Refine the filters to narrow the view. Exports refetch the complete authoritative zone and never use this bounded UI subset.",
+                                  {
+                                    source: Math.max(
+                                      activeTab.sourceRecordCount,
+                                      activeTab.records.length,
+                                    ),
+                                    retained: activeTab.records.length,
+                                    rendered: visibleRecords.length,
+                                    defaultValue: `This zone has at least ${Math.max(activeTab.sourceRecordCount, activeTab.records.length)} source records. The UI retains the first ${activeTab.records.length} records and renders ${visibleRecords.length} matching rows at once. Refine the filters to narrow the view. Exports refetch the complete authoritative zone and never use this bounded UI subset.`,
+                                  },
+                                )
+                              : t(
+                                  "The UI retained {{retained}} source records for this page and is rendering the first {{shown}} of {{total}} matching rows. Refine the filters to narrow the view.",
+                                  {
+                                    retained: activeTab.records.length,
+                                    shown: visibleRecords.length,
+                                    total: filteredRecords.length,
+                                    defaultValue: `The UI retained ${activeTab.records.length} source records for this page and is rendering the first ${visibleRecords.length} of ${filteredRecords.length} matching rows. Refine the filters to narrow the view.`,
+                                  },
+                                )}
+                          </div>
+                        )}
+                        <div
+                          ref={recordsTableRef}
+                          data-testid="dns-records-table"
+                          className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
+                          style={{
+                            ["--table-bottom-fade" as string]:
+                              recordsBottomFade.toFixed(3),
+                          }}
+                        >
+                          <div className="ui-table-head">
+                            <span />
+                            <button
+                              type="button"
+                              className="text-left hover:text-foreground"
+                              onClick={() => toggleSort("type")}
+                            >
+                              {t("Type", "Type")}{" "}
+                              <span className="opacity-70">
+                                {sortIndicator("type")}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="text-left hover:text-foreground"
+                              onClick={() => toggleSort("name")}
+                            >
+                              {t("Name", "Name")}{" "}
+                              <span className="opacity-70">
+                                {sortIndicator("name")}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="text-left hover:text-foreground"
+                              onClick={() => toggleSort("content")}
+                            >
+                              {t("Content", "Content")}{" "}
+                              <span className="opacity-70">
+                                {sortIndicator("content")}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="text-left hover:text-foreground"
+                              onClick={() => toggleSort("ttl")}
+                            >
+                              {t("TTL", "TTL")}{" "}
+                              <span className="opacity-70">
+                                {sortIndicator("ttl")}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="text-left hover:text-foreground"
+                              onClick={() => toggleSort("proxied")}
+                            >
+                              {t("Proxy", "Proxy")}{" "}
+                              <span className="opacity-70">
+                                {sortIndicator("proxied")}
+                              </span>
+                            </button>
+                            <span className="text-right">
+                              {t("Actions", "Actions")}
                             </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="text-left hover:text-foreground"
-                            onClick={() => toggleSort("name")}
-                          >
-                            {t("Name", "Name")}{" "}
-                            <span className="opacity-70">
-                              {sortIndicator("name")}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="text-left hover:text-foreground"
-                            onClick={() => toggleSort("content")}
-                          >
-                            {t("Content", "Content")}{" "}
-                            <span className="opacity-70">
-                              {sortIndicator("content")}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="text-left hover:text-foreground"
-                            onClick={() => toggleSort("ttl")}
-                          >
-                            {t("TTL", "TTL")}{" "}
-                            <span className="opacity-70">
-                              {sortIndicator("ttl")}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="text-left hover:text-foreground"
-                            onClick={() => toggleSort("proxied")}
-                          >
-                            {t("Proxy", "Proxy")}{" "}
-                            <span className="opacity-70">
-                              {sortIndicator("proxied")}
-                            </span>
-                          </button>
-                          <span className="text-right">
-                            {t("Actions", "Actions")}
-                          </span>
-                        </div>
-                        {filteredRecords.map((record) => {
-                          const isSelected = activeTab.selectedIds.includes(
-                            record.id,
-                          );
-                          return (
-                            <RecordRow
-                              key={record.id}
-                              zoneId={activeTab.zoneId}
-                              zoneName={activeTab.zoneName}
-                              record={record}
-                              isEditing={activeTab.editingRecord === record.id}
-                              isSelected={isSelected}
-                              simulateSPF={simulateSPF}
-                              getSPFGraph={getSPFGraph}
-                              onSelectChange={(checked) =>
-                                updateTab(activeTab.id, (prev) => ({
-                                  ...prev,
-                                  selectedIds: checked
-                                    ? [...prev.selectedIds, record.id]
-                                    : prev.selectedIds.filter(
-                                        (id) => id !== record.id,
-                                      ),
-                                }))
-                              }
-                              onEdit={() =>
-                                updateTab(activeTab.id, (prev) => ({
-                                  ...prev,
-                                  editingRecord: record.id,
-                                }))
-                              }
-                              onSave={(updatedRecord: DNSRecord) =>
-                                handleUpdateRecord(updatedRecord)
-                              }
-                              onCancel={() =>
-                                updateTab(activeTab.id, (prev) => ({
-                                  ...prev,
-                                  editingRecord: null,
-                                }))
-                              }
-                              onDelete={() => handleDeleteRecord(record.id)}
-                              onToggleProxy={(next) =>
-                                handleToggleProxy(record, next)
-                              }
-                              onCopy={() => handleCopySingle(record)}
-                              onClone={async () => {
-                                try {
-                                  const cloned = await createDNSRecord(
-                                    activeTab.zoneId,
-                                    {
-                                      ...record,
-                                      name: `${record.name}-copy`,
-                                    },
-                                  );
+                          </div>
+                          {visibleRecords.map((record) => {
+                            const isSelected = selectedRecordIds.has(record.id);
+                            return (
+                              <RecordRow
+                                key={record.id}
+                                zoneId={activeTab.zoneId}
+                                zoneName={activeTab.zoneName}
+                                record={record}
+                                isEditing={
+                                  activeTab.editingRecord === record.id
+                                }
+                                isSelected={isSelected}
+                                simulateSPF={simulateSPF}
+                                getSPFGraph={getSPFGraph}
+                                onSelectChange={(checked) =>
                                   updateTab(activeTab.id, (prev) => ({
                                     ...prev,
-                                    records: [cloned, ...prev.records],
-                                  }));
-                                  pushUndo({
-                                    description: `Clone ${record.type} ${record.name}`,
-                                    forward: {
-                                      kind: "create",
-                                      zoneId: activeTab.zoneId,
-                                      record: cloned,
-                                    },
-                                    reverse: {
-                                      kind: "delete",
-                                      zoneId: activeTab.zoneId,
-                                      recordId: cloned.id,
-                                      record: cloned,
-                                    },
-                                  });
-                                  toast({
-                                    title: t("Cloned", "Cloned"),
-                                    description: `${cloned.type} ${cloned.name}`,
-                                  });
-                                } catch (err) {
-                                  toast({
-                                    title: t("Error", "Error"),
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : "Clone failed",
-                                    variant: "destructive",
-                                  });
+                                    selectedIds: checked
+                                      ? [...prev.selectedIds, record.id]
+                                      : prev.selectedIds.filter(
+                                          (id) => id !== record.id,
+                                        ),
+                                  }))
                                 }
-                              }}
-                            />
-                          );
-                        })}
-                      </div>
+                                onEdit={() =>
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    editingRecord: record.id,
+                                  }))
+                                }
+                                onSave={(updatedRecord: DNSRecord) =>
+                                  handleUpdateRecord(updatedRecord)
+                                }
+                                onCancel={() =>
+                                  updateTab(activeTab.id, (prev) => ({
+                                    ...prev,
+                                    editingRecord: null,
+                                  }))
+                                }
+                                onDelete={() => handleDeleteRecord(record.id)}
+                                onToggleProxy={(next) =>
+                                  handleToggleProxy(record, next)
+                                }
+                                onCopy={() => handleCopySingle(record)}
+                                onClone={async () => {
+                                  try {
+                                    const cloned = await createDNSRecord(
+                                      activeTab.zoneId,
+                                      {
+                                        ...record,
+                                        name: `${record.name}-copy`,
+                                      },
+                                    );
+                                    updateTab(activeTab.id, (prev) => ({
+                                      ...prev,
+                                      records: [cloned, ...prev.records],
+                                    }));
+                                    pushUndo({
+                                      description: `Clone ${record.type} ${record.name}`,
+                                      forward: {
+                                        kind: "create",
+                                        zoneId: activeTab.zoneId,
+                                        record: cloned,
+                                      },
+                                      reverse: {
+                                        kind: "delete",
+                                        zoneId: activeTab.zoneId,
+                                        recordId: cloned.id,
+                                        record: cloned,
+                                      },
+                                    });
+                                    toast({
+                                      title: t("Cloned", "Cloned"),
+                                      description: `${cloned.type} ${cloned.name}`,
+                                    });
+                                  } catch (err) {
+                                    toast({
+                                      title: t("Error", "Error"),
+                                      description:
+                                        err instanceof Error
+                                          ? err.message
+                                          : "Clone failed",
+                                      variant: "destructive",
+                                    });
+                                  }
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </>
                     )}
                   </div>
                   <BulkEditBar
@@ -5371,52 +5641,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         onImport={(items, dryRun) =>
                           handleImport(activeTab, items, dryRun)
                         }
-                        serverExport={async (format) => {
-                          try {
-                            const res = await exportDNSRecords(
-                              activeTab.zoneId,
-                              format,
-                              activeTab.page,
-                              activeTab.perPage,
-                            );
-                            const blob = new Blob([res], {
-                              type:
-                                format === "json"
-                                  ? "application/json"
-                                  : format === "csv"
-                                    ? "text/csv"
-                                    : "text/plain",
-                            });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `${activeTab.zoneId}-records.${format === "json" ? "json" : format === "csv" ? "csv" : "zone"}`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                            toast({
-                              title: t("Success", "Success"),
-                              description: t(
-                                "Server export {{format}} completed",
-                                {
-                                  format: format.toUpperCase(),
-                                  defaultValue: `Server export ${format.toUpperCase()} completed`,
-                                },
-                              ),
-                            });
-                          } catch (err) {
-                            toast({
-                              title: t("Error", "Error"),
-                              description: t(
-                                "Server export failed: {{error}}",
-                                {
-                                  error: (err as Error).message,
-                                  defaultValue: `Server export failed: ${(err as Error).message}`,
-                                },
-                              ),
-                              variant: "destructive",
-                            });
-                          }
-                        }}
+                        serverExport={handleExport}
                         onExport={handleExport}
                       />
                     </CardContent>
@@ -5509,8 +5734,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               );
                               return;
                             }
-                            const value = Number(v);
-                            if (Number.isNaN(value)) return;
+                            const value = clampDnsPageSize(v);
                             setZonePerPage((prev) => ({
                               ...prev,
                               [activeTab.zoneId]: value,
@@ -7925,6 +8149,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               })}
                             </div>
                           )}
+                          {tagManagerRecordsLimited && (
+                            <div
+                              role="status"
+                              className="text-xs text-amber-800 dark:text-amber-200"
+                            >
+                              {t(
+                                "Tag management is using the first {{count}} records to keep this large zone responsive.",
+                                {
+                                  count: DNS_RECORD_MEMORY_LIMIT,
+                                  defaultValue: `Tag management is using the first ${DNS_RECORD_MEMORY_LIMIT} records to keep this large zone responsive.`,
+                                },
+                              )}
+                            </div>
+                          )}
                           {filteredTagManagerRecords.length >
                             visibleTagManagerRecords.length && (
                             <div className="text-xs text-muted-foreground">
@@ -8058,8 +8296,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             <Select
                               value={String(globalPerPage)}
                               onValueChange={(v) => {
-                                const value = Number(v);
-                                const next = Number.isNaN(value) ? 50 : value;
+                                const next = clampDnsPageSize(v);
                                 setGlobalPerPage(next);
                                 notifySaved(
                                   t("Default per-page set to {{count}}.", {
@@ -10005,3 +10242,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     </div>
   );
 }
+
+DNSManager.clampDnsPageSize = clampDnsPageSize;
+DNSManager.retainDnsRecordsForUi = retainDnsRecordsForUi;
+DNSManager.loadCompleteDnsRecordsForExport = loadCompleteDnsRecordsForExport;
+DNSManager.DNS_RECORD_MEMORY_LIMIT = DNS_RECORD_MEMORY_LIMIT;
+DNSManager.DNS_RECORD_RENDER_LIMIT = DNS_RECORD_RENDER_LIMIT;
+DNSManager.DNS_API_PAGE_SIZE_LIMIT = DNS_API_PAGE_SIZE_LIMIT;
