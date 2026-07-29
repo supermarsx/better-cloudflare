@@ -102,19 +102,35 @@ function mockFetch(response: {
   let bodyReads = 0;
   globalThis.fetch = async (url: string | URL, init?: RequestInit) => {
     called = { url, init };
-    return {
-      ok: response.ok,
+    const responseText =
+      response.text ??
+      (response.body === undefined ? "" : JSON.stringify(response.body));
+    const bytes = new TextEncoder().encode(responseText);
+    assert.ok(
+      bytes.byteLength <= RESOURCE_LIMITS.responseBody.hardBytes,
+      "mock response must remain within the production response-body limit",
+    );
+    const body =
+      bytes.byteLength === 0
+        ? null
+        : new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+              bodyReads += 1;
+            },
+          });
+    const actualResponse = new Response(body, {
       status: response.status,
       statusText: response.statusText ?? "",
-      headers: new Headers(response.headers),
-      text: async () => {
-        bodyReads += 1;
-        return (
-          response.text ??
-          (response.body === undefined ? "" : JSON.stringify(response.body))
-        );
-      },
-    } as Response;
+      headers: response.headers,
+    });
+    assert.equal(
+      actualResponse.ok,
+      response.ok,
+      "mock status and expected ok value must agree",
+    );
+    return actualResponse;
   };
   return () => {
     globalThis.fetch = originalFetch;
