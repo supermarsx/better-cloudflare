@@ -52,9 +52,22 @@ export interface McpToolPermissionsStorage {
   ): void;
 }
 
+export interface McpToolPermissionsApplication {
+  /**
+   * Provisional applications publish the conservative confirmed subset while
+   * a requested high-risk selection remains staged for confirmation.
+   */
+  synchronization: "provisional" | "final";
+}
+
 export interface McpToolPermissionsProps {
   client?: McpToolPermissionsClient;
   storage?: McpToolPermissionsStorage;
+  /**
+   * Whether confirmation UI and permission controls are currently available
+   * for user interaction. Reconciliation continues while this is false.
+   */
+  interactive?: boolean;
   /**
    * Optional parent-owned desired selection. Changes are treated as permission
    * requests, so imported/profile values use the same reconciliation and
@@ -63,10 +76,15 @@ export interface McpToolPermissionsProps {
   enabledTools?: readonly string[];
   /**
    * Called only after the desktop service has applied the reconciled selection.
-   * The parent should replace its source-of-truth selection and status with
-   * these exact values.
+   * Provisional applications update confirmed state and readiness without
+   * replacing an outstanding requested high-risk selection. Final
+   * applications synchronize the parent's requested selection as well.
    */
-  onApplied?: (enabledTools: string[], status: McpServerStatus) => void;
+  onApplied?: (
+    enabledTools: string[],
+    status: McpServerStatus,
+    application: McpToolPermissionsApplication,
+  ) => void;
 }
 
 interface PendingPermissionChange {
@@ -313,6 +331,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 export function McpToolPermissions({
   client = defaultClient,
   storage = storageManager,
+  interactive = true,
   enabledTools: controlledEnabledTools,
   onApplied,
 }: McpToolPermissionsProps) {
@@ -542,13 +561,14 @@ export function McpToolPermissions({
       nextEnabledTools: readonly string[],
       status: McpServerStatus,
       generation: number,
+      synchronization: McpToolPermissionsApplication["synchronization"] = "final",
     ) => {
       if (!isCurrentGeneration(generation)) return;
       const reconciledTools = reconcileMcpEnabledToolIds(nextEnabledTools);
       appliedToolsRef.current = reconciledTools;
       lastStatusRef.current = status;
       setAppliedTools(reconciledTools);
-      onAppliedRef.current?.([...reconciledTools], status);
+      onAppliedRef.current?.([...reconciledTools], status, { synchronization });
     },
     [isCurrentGeneration],
   );
@@ -645,6 +665,7 @@ export function McpToolPermissions({
         onAppliedRef.current?.(
           [...appliedToolsRef.current],
           lastStatusRef.current,
+          { synchronization: "final" },
         );
       }
 
@@ -843,10 +864,7 @@ export function McpToolPermissions({
         const pendingHighRiskTools = nextCatalog.filter((tool) =>
           unconfirmedHighRiskIds.has(tool.id),
         );
-        const stagedPendingIds =
-          controlledRequest === null
-            ? pendingHighRiskTools.map((tool) => tool.id)
-            : [];
+        const stagedPendingIds = pendingHighRiskTools.map((tool) => tool.id);
 
         try {
           persistApplied(
@@ -870,7 +888,12 @@ export function McpToolPermissions({
         removedToolIdsRef.current = loadRemovedToolIds;
         setSaveError(storageReadError);
         setCatalog(resolveCatalog(appliedStatus));
-        publishApplied(confirmedAppliedTools, appliedStatus, generation);
+        publishApplied(
+          confirmedAppliedTools,
+          appliedStatus,
+          generation,
+          pendingHighRiskTools.length > 0 ? "provisional" : "final",
+        );
         setLoadState("ready");
 
         if (pendingHighRiskTools.length > 0) {
@@ -921,10 +944,10 @@ export function McpToolPermissions({
   }, [beginGeneration, loadPermissions]);
 
   React.useEffect(() => {
-    if (pending) cancelConfirmationRef.current?.focus();
-  }, [pending]);
+    if (interactive && pending) cancelConfirmationRef.current?.focus();
+  }, [interactive, pending]);
 
-  const modalOpen = pending !== null;
+  const modalOpen = interactive && pending !== null;
 
   React.useLayoutEffect(() => {
     if (!modalOpen || !modalPortalHost || typeof document === "undefined")
@@ -1026,8 +1049,10 @@ export function McpToolPermissions({
     async (
       requestedTools: readonly string[],
       generation = beginGeneration(),
-    ) => {
-      if (!isCurrentGeneration(generation)) return;
+      synchronization: McpToolPermissionsApplication["synchronization"] = "final",
+      pendingHighRiskToolIds: readonly string[] = [],
+    ): Promise<boolean> => {
+      if (!isCurrentGeneration(generation)) return false;
       const nextRequestedTools =
         reconcileMcpEnabledToolIdsDetailed(requestedTools);
       mergeRemovedToolIds(nextRequestedTools.removedToolIds);
@@ -1053,7 +1078,11 @@ export function McpToolPermissions({
           throw new StalePermissionOperation();
         }
         try {
-          persistApplied(applied, [], removedToolIdsRef.current);
+          persistApplied(
+            applied,
+            pendingHighRiskToolIds,
+            removedToolIdsRef.current,
+          );
         } catch (error) {
           await rollbackServerSelection(
             previousEnabledTools,
@@ -1067,17 +1096,19 @@ export function McpToolPermissions({
           throw new StalePermissionOperation();
         }
         setCatalog(resolveCatalog(status));
-        publishApplied(applied, status, generation);
+        publishApplied(applied, status, generation, synchronization);
+        return true;
       } catch (error) {
         if (
           error instanceof StalePermissionOperation ||
           !isCurrentGeneration(generation)
         ) {
-          return;
+          return false;
         }
         setSaveError(
           `MCP permissions could not be saved. No local selection was changed: ${errorMessage(error)}`,
         );
+        return false;
       } finally {
         if (isCurrentGeneration(generation)) setSaving(false);
       }
@@ -1116,6 +1147,29 @@ export function McpToolPermissions({
       const highRiskTools = catalog.filter((tool) => highRiskIds.has(tool.id));
 
       if (highRiskTools.length > 0) {
+        const conservativeTools = plan.enabledToolIds.filter(
+          (toolId) => !highRiskIds.has(toolId),
+        );
+        if (!sameToolIds(conservativeTools, appliedToolsRef.current)) {
+          void savePermissions(
+            conservativeTools,
+            generation,
+            "provisional",
+            plan.newlyEnabledHighRiskToolIds,
+          ).then((applied) => {
+            if (!applied || !isCurrentGeneration(generation)) return;
+            openConfirmation(
+              plan.enabledToolIds,
+              heading,
+              highRiskTools,
+              trigger,
+              notifyParentOnCancel,
+              controlledRequestKey,
+              generation,
+            );
+          });
+          return;
+        }
         openConfirmation(
           plan.enabledToolIds,
           heading,
@@ -1177,10 +1231,11 @@ export function McpToolPermissions({
         void savePermissions(requested.enabledToolIds, generation);
         return;
       }
-      if (requested.removedToolIds.length > 0 && lastStatusRef.current) {
+      if (lastStatusRef.current) {
         onAppliedRef.current?.(
           [...appliedToolsRef.current],
           lastStatusRef.current,
+          { synchronization: "final" },
         );
       }
       return;
@@ -1470,7 +1525,8 @@ export function McpToolPermissions({
         )}
       </div>
 
-      {pending &&
+      {modalOpen &&
+        pending &&
         modalPortalHost &&
         createPortal(
           <div

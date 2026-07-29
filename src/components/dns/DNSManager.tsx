@@ -10,6 +10,7 @@ import {
   useRef,
   type ChangeEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,7 +98,10 @@ import {
 } from "@/lib/errors/runtime-reporting";
 import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
 import { DnsAppCommandBar } from "./DnsAppCommandBar";
-import { McpToolPermissions } from "@/components/mcp/McpToolPermissions";
+import {
+  McpToolPermissions,
+  type McpToolPermissionsApplication,
+} from "@/components/mcp/McpToolPermissions";
 import {
   DnsWorkspaceTabs,
   getDnsWorkspacePanelId,
@@ -107,6 +111,22 @@ import {
 
 function reportDnsManagerFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
+}
+
+function normalizeMcpToolIds(values: readonly unknown[]): string[] {
+  return Array.from(
+    new Set(values.map((value) => String(value).trim()).filter(Boolean)),
+  );
+}
+
+function sameMcpToolIds(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((toolId) => right.includes(toolId))
+  );
 }
 
 type ActionTab =
@@ -916,6 +936,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpActionError, setMcpActionError] = useState<string | null>(null);
+  const mcpEnabledToolsRef = useRef(mcpEnabledTools);
+  const mcpRequestedToolsRef = useRef(mcpRequestedTools);
+  const mcpPermissionsParkingRef = useRef<HTMLDivElement | null>(null);
+  const mcpPermissionsViewRef = useRef<HTMLDivElement | null>(null);
+  const [mcpPermissionsPortalHost, setMcpPermissionsPortalHost] =
+    useState<HTMLDivElement | null>(null);
   const [loadingOverlayTimeoutMs, setLoadingOverlayTimeoutMs] = useState(
     storageManager.getLoadingOverlayTimeoutMs(),
   );
@@ -1369,16 +1395,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         );
       }
       if (Array.isArray(profile.mcpEnabledTools)) {
-        setMcpPermissionsReady(false);
-        setMcpRequestedTools(
-          Array.from(
-            new Set(
-              profile.mcpEnabledTools
-                .map((v) => String(v).trim())
-                .filter(Boolean),
-            ),
-          ),
-        );
+        const requestedTools = normalizeMcpToolIds(profile.mcpEnabledTools);
+        if (!sameMcpToolIds(requestedTools, mcpEnabledToolsRef.current)) {
+          setMcpPermissionsReady(false);
+        }
+        mcpRequestedToolsRef.current = requestedTools;
+        setMcpRequestedTools(requestedTools);
       }
       if (typeof profile.loadingOverlayTimeoutMs === "number") {
         setLoadingOverlayTimeoutMs(
@@ -2109,10 +2131,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   const handleMcpPermissionsApplied = useCallback(
-    (enabledTools: string[], status: McpServerStatus) => {
+    (
+      enabledTools: string[],
+      status: McpServerStatus,
+      application: McpToolPermissionsApplication,
+    ) => {
       const confirmedTools = [...enabledTools];
+      mcpEnabledToolsRef.current = confirmedTools;
       setMcpEnabledTools(confirmedTools);
-      setMcpRequestedTools(confirmedTools);
+      if (application.synchronization === "final") {
+        mcpRequestedToolsRef.current = confirmedTools;
+        setMcpRequestedTools(confirmedTools);
+      }
       setMcpStatus(status);
       setMcpActionError(null);
       setMcpPermissionsReady(true);
@@ -2448,16 +2478,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             );
           }
           if (Array.isArray(prefObj.mcp_enabled_tools)) {
-            setMcpPermissionsReady(false);
-            setMcpRequestedTools(
-              Array.from(
-                new Set(
-                  prefObj.mcp_enabled_tools
-                    .map((v) => String(v).trim())
-                    .filter(Boolean),
-                ),
-              ),
+            const confirmedTools = normalizeMcpToolIds(
+              prefObj.mcp_enabled_tools,
             );
+            const persistedPermissionSnapshot =
+              storageManager.getMcpEnabledToolsSnapshot();
+            const requestedTools = normalizeMcpToolIds([
+              ...confirmedTools,
+              ...persistedPermissionSnapshot.pendingHighRiskToolIds,
+            ]);
+            if (
+              !sameMcpToolIds(
+                confirmedTools,
+                mcpEnabledToolsRef.current,
+              ) ||
+              !sameMcpToolIds(
+                requestedTools,
+                mcpRequestedToolsRef.current,
+              )
+            ) {
+              setMcpPermissionsReady(false);
+            }
+            mcpEnabledToolsRef.current = confirmedTools;
+            mcpRequestedToolsRef.current = requestedTools;
+            setMcpEnabledTools(confirmedTools);
+            setMcpRequestedTools(requestedTools);
           }
           if (typeof prefObj.loading_overlay_timeout_ms === "number") {
             setLoadingOverlayTimeoutMs(
@@ -2660,15 +2705,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setMcpServerHost(storageManager.getMcpServerHost());
     setMcpServerPort(storageManager.getMcpServerPort());
     const permissionSnapshot = storageManager.getMcpEnabledToolsSnapshot();
+    mcpEnabledToolsRef.current = permissionSnapshot.enabledTools;
     setMcpEnabledTools(permissionSnapshot.enabledTools);
-    setMcpRequestedTools(
-      Array.from(
-        new Set([
-          ...permissionSnapshot.enabledTools,
-          ...permissionSnapshot.pendingHighRiskToolIds,
-        ]),
-      ),
-    );
+    const requestedTools = normalizeMcpToolIds([
+      ...permissionSnapshot.enabledTools,
+      ...permissionSnapshot.pendingHighRiskToolIds,
+    ]);
+    mcpRequestedToolsRef.current = requestedTools;
+    setMcpRequestedTools(requestedTools);
     setMcpPermissionsReady(false);
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
@@ -4793,6 +4837,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpLastError =
     mcpActionError ??
     (rawMcpLastError ? sanitizeRuntimeText(rawMcpLastError) : null);
+  const mcpPermissionsInteractive =
+    isDesktop() &&
+    activeTab?.kind === "settings" &&
+    settingsSubtab === "mcp";
+
+  useEffect(() => {
+    const portalHost = document.createElement("div");
+    portalHost.dataset.mcpPermissionsMount = "true";
+    setMcpPermissionsPortalHost(portalHost);
+    return () => {
+      portalHost.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mcpPermissionsPortalHost) return;
+    const destination = mcpPermissionsInteractive
+      ? mcpPermissionsViewRef.current
+      : mcpPermissionsParkingRef.current;
+    destination?.appendChild(mcpPermissionsPortalHost);
+  }, [mcpPermissionsInteractive, mcpPermissionsPortalHost]);
 
   return (
     <AuthenticatedAppShell
@@ -9829,10 +9894,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <div className="font-medium">
                                 {t("Tool access", "Tool access")}
                               </div>
-                              <McpToolPermissions
-                                enabledTools={mcpRequestedTools}
-                                onApplied={handleMcpPermissionsApplied}
-                              />
+                              <div ref={mcpPermissionsViewRef} />
                             </div>
                             {mcpLastError && (
                               <div className="px-4 py-3">
@@ -9945,6 +10007,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </Card>
         )}
       </div>
+      <div
+        ref={mcpPermissionsParkingRef}
+        data-testid="mcp-permissions-parking"
+        hidden
+        inert
+        aria-hidden="true"
+      />
+      {mcpPermissionsPortalHost &&
+        isDesktop() &&
+        createPortal(
+          <McpToolPermissions
+            enabledTools={mcpRequestedTools}
+            interactive={mcpPermissionsInteractive}
+            onApplied={handleMcpPermissionsApplied}
+          />,
+          mcpPermissionsPortalHost,
+        )}
       <Dialog
         open={showClearAuditConfirm}
         onOpenChange={setShowClearAuditConfirm}

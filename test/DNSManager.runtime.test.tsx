@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { DNSManager } from "../src/components/dns/DNSManager";
 import {
@@ -20,6 +21,8 @@ import {
   getRuntimeDiagnostics,
   resetRuntimeReportingForTests,
 } from "../src/lib/errors/runtime-reporting";
+import { storageManager } from "../src/lib/storage/storage";
+import { MCP_PERMISSION_POLICY_VERSION } from "../src/lib/mcp/tool-permissions";
 
 const {
   DNS_API_PAGE_SIZE_LIMIT,
@@ -64,6 +67,20 @@ function createMcpStatus(enabledTools: string[] = []): McpServerStatus {
   };
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function mockDnsRuntime(
   getPreferences: () => Promise<Record<string, unknown>>,
   setTools: (tools: string[]) => Promise<McpServerStatus> = async (tools) =>
@@ -77,6 +94,13 @@ function mockDnsRuntime(
       page?: number,
       perPage?: number,
     ) => Promise<TauriDNSRecord[]>;
+    getMcpServerStatus?: () => Promise<McpServerStatus>;
+    startMcpServer?: (
+      host: string,
+      port: number,
+      enabledTools: string[],
+    ) => Promise<McpServerStatus>;
+    stopMcpServer?: () => Promise<McpServerStatus>;
   } = {},
 ): void {
   mock.method(TauriClient, "getPreferences", getPreferences);
@@ -89,9 +113,21 @@ function mockDnsRuntime(
   );
   mock.method(TauriClient, "getAuditEntries", async () => []);
   mock.method(TauriClient, "setMcpEnabledTools", setTools);
-  mock.method(TauriClient, "startMcpServer", async () => createMcpStatus());
-  mock.method(TauriClient, "stopMcpServer", async () => createMcpStatus());
-  mock.method(TauriClient, "getMcpServerStatus", async () => createMcpStatus());
+  mock.method(
+    TauriClient,
+    "startMcpServer",
+    overrides.startMcpServer ?? (async () => createMcpStatus()),
+  );
+  mock.method(
+    TauriClient,
+    "stopMcpServer",
+    overrides.stopMcpServer ?? (async () => createMcpStatus()),
+  );
+  mock.method(
+    TauriClient,
+    "getMcpServerStatus",
+    overrides.getMcpServerStatus ?? (async () => createMcpStatus()),
+  );
   globalThis.fetch = async () =>
     new Response(JSON.stringify([]), {
       status: 200,
@@ -492,6 +528,122 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
   });
   assert.equal(attempts, 1);
   assert.ok(screen.getByRole("button", { name: "Settings" }));
+});
+
+test("login-time MCP reconciliation stays mounted off-view, preserves staged high-risk requests, and defers confirmation", async () => {
+  setDesktopWindow();
+  const statusLoad = deferred<McpServerStatus>();
+  const setToolCalls: string[][] = [];
+  const startCalls: string[][] = [];
+  let snapshotReads = 0;
+
+  mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => {
+    snapshotReads += 1;
+    return {
+      enabledTools: ["cf_list_zones"],
+      removedToolIds: [],
+      pendingHighRiskToolIds: ["cf_create_dns_record"],
+      configured: true,
+      permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+    };
+  });
+  mock.method(storageManager, "setMcpEnabledTools", () => {});
+  mock.method(storageManager, "stageMcpEnabledTools", () => {});
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_enabled_tools: [],
+    }),
+    async (tools) => {
+      setToolCalls.push([...tools]);
+      return createMcpStatus(tools);
+    },
+    {
+      getMcpServerStatus: () => statusLoad.promise,
+      startMcpServer: async (_host, _port, enabledTools) => {
+        startCalls.push([...enabledTools]);
+        return createMcpStatus(enabledTools);
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+
+  await waitFor(() => assert.ok(snapshotReads >= 3));
+  statusLoad.resolve(createMcpStatus(["cf_list_zones"]));
+  await waitFor(() => {
+    assert.deepEqual(setToolCalls, [[]]);
+    assert.deepEqual(startCalls, [[]]);
+  });
+
+  const parking = screen.getByTestId("mcp-permissions-parking");
+  assert.equal(parking.hidden, true);
+  assert.ok(
+    parking.querySelector('[data-mcp-permissions-mount="true"]'),
+    "the single MCP permission instance remains mounted in the hidden parking host",
+  );
+  assert.equal(screen.queryByRole("alertdialog"), null);
+  assert.equal(
+    screen.queryByRole("heading", { name: "MCP tool permissions" }),
+    null,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+
+  const confirmation = await screen.findByRole("alertdialog");
+  assert.ok(within(confirmation).getByText(/Create DNS record/));
+  assert.deepEqual(setToolCalls, [[]]);
+});
+
+test("an equal hydrated session profile preserves MCP readiness after reconciliation", async () => {
+  setDesktopWindow();
+  const preferences = deferred<Record<string, unknown>>();
+  const setToolCalls: string[][] = [];
+  const currentSessionId = storageManager.getCurrentSession() ?? "__default";
+
+  mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => ({
+    enabledTools: ["cf_list_zones"],
+    removedToolIds: [],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  }));
+  mock.method(storageManager, "setMcpEnabledTools", () => {});
+  mock.method(storageManager, "stageMcpEnabledTools", () => {});
+  mockDnsRuntime(
+    () => preferences.promise,
+    async (tools) => {
+      setToolCalls.push([...tools]);
+      return createMcpStatus(tools);
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => {
+    assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
+  });
+
+  preferences.resolve({
+    mcp_server_enabled: false,
+    mcp_enabled_tools: ["cf_list_zones"],
+    session_settings_profiles: {
+      [currentSessionId]: {
+        mcpEnabledTools: ["cf_list_zones"],
+      },
+    },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+  const serverSetting = await screen.findByText("Enable MCP server");
+  const serverSettingRow = serverSetting.parentElement;
+  assert.ok(serverSettingRow);
+  const serverSwitch = within(serverSettingRow).getByRole("switch");
+  await waitFor(() => {
+    assert.equal(serverSwitch.hasAttribute("disabled"), false);
+  });
+  assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
 });
 
 test("rejected MCP tool mutation rolls back selection and shows sanitized context", async () => {

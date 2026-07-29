@@ -12,6 +12,7 @@ import {
 
 import {
   McpToolPermissions,
+  type McpToolPermissionsApplication,
   type McpToolPermissionsClient,
   type McpToolPermissionsStorage,
   type McpToolPermissionsStorageSnapshot,
@@ -857,6 +858,149 @@ test("initial controlled/imported high-risk values cannot bypass confirmation", 
     ]);
     assert.deepEqual(applied.at(-1), ["cf_list_zones", "cf_create_dns_record"]);
   });
+});
+
+test("provisional conservative application preserves the requested high-risk selection and stable modal", async () => {
+  const { client, saveCalls } = clientFor(status([]));
+  const storage = new PermissionStorage();
+  const applications: Array<{
+    enabledTools: string[];
+    synchronization: McpToolPermissionsApplication["synchronization"];
+  }> = [];
+
+  function ControlledPermissions() {
+    const [requestedTools, setRequestedTools] = React.useState([
+      "cf_list_zones",
+      "cf_create_dns_record",
+    ]);
+
+    return (
+      <>
+        <output data-testid="requested-mcp-tools">
+          {requestedTools.join(",")}
+        </output>
+        <McpToolPermissions
+          client={client}
+          storage={storage}
+          enabledTools={requestedTools}
+          onApplied={(enabledTools, _status, application) => {
+            applications.push({
+              enabledTools: [...enabledTools],
+              synchronization: application.synchronization,
+            });
+            if (application.synchronization === "final") {
+              setRequestedTools([...enabledTools]);
+            }
+          }}
+        />
+      </>
+    );
+  }
+
+  render(<ControlledPermissions />);
+
+  const confirmation = await screen.findByRole("alertdialog");
+  assert.deepEqual(saveCalls, [["cf_list_zones"]]);
+  assert.equal(
+    screen.getByTestId("requested-mcp-tools").textContent,
+    "cf_list_zones,cf_create_dns_record",
+  );
+  assert.deepEqual(applications, [
+    {
+      enabledTools: ["cf_list_zones"],
+      synchronization: "provisional",
+    },
+  ]);
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(screen.getByRole("alertdialog"), confirmation);
+
+  fireEvent.click(
+    within(confirmation).getByRole("button", { name: "Confirm enable" }),
+  );
+  await waitFor(() => {
+    assert.deepEqual(saveCalls, [
+      ["cf_list_zones"],
+      ["cf_list_zones", "cf_create_dns_record"],
+    ]);
+    assert.deepEqual(applications.at(-1), {
+      enabledTools: ["cf_list_zones", "cf_create_dns_record"],
+      synchronization: "final",
+    });
+  });
+});
+
+test("noninteractive reconciliation applies the safe subset and defers confirmation UI", async () => {
+  const storage = new PermissionStorage(["cf_list_zones"], true, [
+    "cf_create_dns_record",
+  ]);
+  const { client, saveCalls } = clientFor(status([]));
+  const props = {
+    client,
+    storage,
+    enabledTools: ["cf_list_zones", "cf_create_dns_record"],
+  };
+  const { rerender } = render(
+    <McpToolPermissions {...props} interactive={false} />,
+  );
+
+  await waitUntilReady();
+  assert.deepEqual(saveCalls, [["cf_list_zones"]]);
+  assert.equal(screen.queryByRole("alertdialog"), null);
+
+  rerender(<McpToolPermissions {...props} interactive />);
+  const confirmation = await screen.findByRole("alertdialog");
+  assert.ok(within(confirmation).getByText(/Create DNS record/));
+  assert.deepEqual(saveCalls, [["cf_list_zones"]]);
+});
+
+test("a late hidden high-risk request first synchronizes its conservative selection", async () => {
+  const storage = new PermissionStorage(["cf_list_zones"]);
+  const { client, saveCalls } = clientFor(status(["cf_list_zones"]));
+  const applications: McpToolPermissionsApplication["synchronization"][] = [];
+  const onApplied = (
+    _enabledTools: string[],
+    _status: McpServerStatus,
+    application: McpToolPermissionsApplication,
+  ) => applications.push(application.synchronization);
+  const { rerender } = render(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_list_zones"]}
+      interactive={false}
+      onApplied={onApplied}
+    />,
+  );
+  await waitUntilReady();
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_create_dns_record"]}
+      interactive={false}
+      onApplied={onApplied}
+    />,
+  );
+  await waitFor(() => {
+    assert.deepEqual(saveCalls, [["cf_list_zones"], []]);
+    assert.deepEqual(applications, ["final", "provisional"]);
+  });
+  assert.equal(screen.queryByRole("alertdialog"), null);
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_create_dns_record"]}
+      interactive
+      onApplied={onApplied}
+    />,
+  );
+  assert.ok(await screen.findByRole("alertdialog"));
+  assert.deepEqual(saveCalls, [["cf_list_zones"], []]);
 });
 
 test("storage-imported high-risk values stay staged until the same confirmation path approves them", async () => {

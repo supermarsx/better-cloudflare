@@ -16,9 +16,15 @@ function sourceBetween(start: string, end: string): string {
 }
 
 test("mounts categorized MCP permissions and removes the legacy flat controls", () => {
+  assert.equal(
+    DNS_MANAGER_SOURCE.match(/<McpToolPermissions/g)?.length,
+    1,
+    "DNSManager must keep exactly one permission component instance",
+  );
+  assert.match(DNS_MANAGER_SOURCE, /createPortal\(\s*<McpToolPermissions/);
   assert.match(
     DNS_MANAGER_SOURCE,
-    /<McpToolPermissions\s+enabledTools=\{mcpRequestedTools\}\s+onApplied=\{handleMcpPermissionsApplied\}\s*\/>/,
+    /interactive=\{mcpPermissionsInteractive\}/,
   );
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /applyMcpEnabledTools/);
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /mcpToolCatalog/);
@@ -40,7 +46,10 @@ test("treats an explicit empty onApplied selection as authoritative and ready", 
 
   assert.match(handler, /const confirmedTools = \[\.\.\.enabledTools\];/);
   assert.match(handler, /setMcpEnabledTools\(confirmedTools\);/);
-  assert.match(handler, /setMcpRequestedTools\(confirmedTools\);/);
+  assert.match(
+    handler,
+    /if \(application\.synchronization === "final"\) \{[\s\S]*setMcpRequestedTools\(confirmedTools\);/,
+  );
   assert.match(handler, /setMcpStatus\(status\);/);
   assert.match(handler, /setMcpPermissionsReady\(true\);/);
   assert.doesNotMatch(handler, /enabledTools\.length/);
@@ -92,7 +101,7 @@ test("stages persisted, profile, and imported permission requests for reconcilia
   );
   assert.match(
     profileApplication,
-    /if \(Array\.isArray\(profile\.mcpEnabledTools\)\) \{\s*setMcpPermissionsReady\(false\);\s*setMcpRequestedTools\(/,
+    /if \(!sameMcpToolIds\(requestedTools, mcpEnabledToolsRef\.current\)\) \{\s*setMcpPermissionsReady\(false\);/,
   );
   assert.doesNotMatch(
     profileApplication,
@@ -100,8 +109,11 @@ test("stages persisted, profile, and imported permission requests for reconcilia
   );
   assert.match(
     desktopPreferenceImport,
-    /setMcpPermissionsReady\(false\);\s*setMcpRequestedTools\(/,
+    /\.\.\.persistedPermissionSnapshot\.pendingHighRiskToolIds/,
   );
-  assert.doesNotMatch(desktopPreferenceImport, /setMcpEnabledTools\(/);
+  assert.match(
+    desktopPreferenceImport,
+    /setMcpEnabledTools\(confirmedTools\);/,
+  );
   assert.match(fileImport, /applySessionSettingsProfile\(profile\);/);
 });
