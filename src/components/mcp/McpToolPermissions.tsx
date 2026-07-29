@@ -1216,7 +1216,16 @@ export function McpToolPermissions({
     setSaving(false);
     setSaveError(null);
     if (pending !== null) {
-      closeConfirmation(false, false, false, false);
+      const supersededByAppliedSelection =
+        loadState === "ready" &&
+        requested !== null &&
+        sameToolIds(requested.enabledToolIds, appliedToolsRef.current);
+      closeConfirmation(
+        false,
+        false,
+        supersededByAppliedSelection,
+        false,
+      );
     }
 
     if (loadState !== "ready" || requested === null) {

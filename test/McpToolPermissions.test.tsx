@@ -1173,6 +1173,83 @@ test("the latest controlled request supersedes a stale high-risk confirmation", 
   assert.equal(container.style.pointerEvents, "");
 });
 
+test("a confirmed-safe profile clears superseded staged permissions before restart", async () => {
+  const { client, saveCalls } = clientFor(status([]));
+  const storage = new PermissionStorage();
+  const applications: Array<{
+    enabledTools: string[];
+    pendingHighRiskToolIds: string[];
+    synchronization: McpToolPermissionsApplication["synchronization"];
+  }> = [];
+  const onApplied = (
+    enabledTools: string[],
+    _status: McpServerStatus,
+    application: McpToolPermissionsApplication,
+  ) => {
+    applications.push({
+      enabledTools: [...enabledTools],
+      pendingHighRiskToolIds: [...storage.pendingHighRiskToolIds],
+      synchronization: application.synchronization,
+    });
+  };
+  const { rerender, unmount } = render(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={[]}
+      onApplied={onApplied}
+    />,
+  );
+  await waitUntilReady();
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_list_zones", "cf_create_dns_record"]}
+      onApplied={onApplied}
+    />,
+  );
+  assert.ok(await screen.findByRole("alertdialog"));
+  assert.deepEqual(saveCalls, [[], ["cf_list_zones"]]);
+  assert.deepEqual(storage.pendingHighRiskToolIds, [
+    "cf_create_dns_record",
+  ]);
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_list_zones"]}
+      onApplied={onApplied}
+    />,
+  );
+  await waitFor(() => {
+    assert.equal(screen.queryByRole("alertdialog"), null);
+    assert.deepEqual(storage.pendingHighRiskToolIds, []);
+    assert.deepEqual(applications.at(-1), {
+      enabledTools: ["cf_list_zones"],
+      pendingHighRiskToolIds: [],
+      synchronization: "final",
+    });
+  });
+  assert.deepEqual(storage.writes, [["cf_list_zones"]]);
+
+  unmount();
+  const restartedClient = clientFor(status(["cf_list_zones"]));
+  render(
+    <McpToolPermissions
+      client={restartedClient.client}
+      storage={storage}
+    />,
+  );
+  await waitUntilReady();
+
+  assert.deepEqual(storage.pendingHighRiskToolIds, []);
+  assert.equal(screen.queryByRole("alertdialog"), null);
+  assert.deepEqual(restartedClient.saveCalls, [["cf_list_zones"]]);
+});
+
 test("cancelling high-risk C after in-flight B completes reasserts the last confirmed selection", async () => {
   const inFlightB = deferred<McpServerStatus>();
   const restoredA = deferred<McpServerStatus>();
