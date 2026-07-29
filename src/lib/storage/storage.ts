@@ -11,6 +11,9 @@ import {
 import { CryptoManager } from "../auth/crypto";
 import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
+  MCP_PERMISSION_POLICY_VERSION,
+  capMcpPermissionDiagnosticIds,
+  partitionMcpPermissionPolicySelection,
   planMcpPermissionChange,
   reconcileMcpEnabledToolIds,
   reconcileMcpEnabledToolIdsDetailed,
@@ -50,6 +53,7 @@ interface StorageData {
   mcpEnabledTools?: string[];
   mcpPendingHighRiskTools?: string[];
   mcpRemovedImportedToolIds?: string[];
+  mcpPermissionPolicyVersion?: number;
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -865,16 +869,19 @@ export class StorageManager {
       enabledTools: this.data.mcpEnabledTools,
       pendingHighRiskTools: this.data.mcpPendingHighRiskTools,
       removedImportedToolIds: this.data.mcpRemovedImportedToolIds,
+      permissionPolicyVersion: this.data.mcpPermissionPolicyVersion,
     };
     this.data.mcpEnabledTools = reconcileMcpEnabledToolIds(tools);
     delete this.data.mcpPendingHighRiskTools;
     delete this.data.mcpRemovedImportedToolIds;
+    this.data.mcpPermissionPolicyVersion = MCP_PERMISSION_POLICY_VERSION;
     try {
       this.save(true);
     } catch (error) {
       this.data.mcpEnabledTools = previous.enabledTools;
       this.data.mcpPendingHighRiskTools = previous.pendingHighRiskTools;
       this.data.mcpRemovedImportedToolIds = previous.removedImportedToolIds;
+      this.data.mcpPermissionPolicyVersion = previous.permissionPolicyVersion;
       throw error;
     }
     this.dispatchPreferencesChanged({
@@ -891,6 +898,7 @@ export class StorageManager {
       enabledTools: this.data.mcpEnabledTools,
       pendingHighRiskTools: this.data.mcpPendingHighRiskTools,
       removedImportedToolIds: this.data.mcpRemovedImportedToolIds,
+      permissionPolicyVersion: this.data.mcpPermissionPolicyVersion,
     };
     const enabledReconciliation = reconcileMcpEnabledToolIdsDetailed(tools);
     const pendingReconciliation = reconcileMcpEnabledToolIdsDetailed(
@@ -901,13 +909,11 @@ export class StorageManager {
       ...enabledTools,
       ...pendingReconciliation.enabledToolIds,
     ]).newlyEnabledHighRiskToolIds;
-    const removedTools = [
-      ...new Set([
-        ...enabledReconciliation.removedToolIds,
-        ...pendingReconciliation.removedToolIds,
-        ...reconcileMcpEnabledToolIdsDetailed(removedToolIds).removedToolIds,
-      ]),
-    ];
+    const removedTools = capMcpPermissionDiagnosticIds([
+      ...enabledReconciliation.removedToolIds,
+      ...pendingReconciliation.removedToolIds,
+      ...reconcileMcpEnabledToolIdsDetailed(removedToolIds).removedToolIds,
+    ]);
 
     this.data.mcpEnabledTools = enabledTools;
     if (pendingTools.length > 0) {
@@ -920,6 +926,7 @@ export class StorageManager {
     } else {
       delete this.data.mcpRemovedImportedToolIds;
     }
+    this.data.mcpPermissionPolicyVersion = MCP_PERMISSION_POLICY_VERSION;
 
     try {
       this.save(true);
@@ -927,6 +934,7 @@ export class StorageManager {
       this.data.mcpEnabledTools = previous.enabledTools;
       this.data.mcpPendingHighRiskTools = previous.pendingHighRiskTools;
       this.data.mcpRemovedImportedToolIds = previous.removedImportedToolIds;
+      this.data.mcpPermissionPolicyVersion = previous.permissionPolicyVersion;
       throw error;
     }
     this.dispatchPreferencesChanged({
@@ -944,7 +952,9 @@ export class StorageManager {
     removedToolIds: string[];
     pendingHighRiskToolIds: string[];
     configured: boolean;
+    permissionPolicyVersion: number;
   } {
+    this.migrateMcpPermissionPolicy();
     const storedTools = this.data.mcpEnabledTools;
     const configured = Array.isArray(storedTools);
     const reconciliation = reconcileMcpEnabledToolIdsDetailed(
@@ -955,16 +965,64 @@ export class StorageManager {
     );
     return {
       enabledTools: reconciliation.enabledToolIds,
-      removedToolIds: [
-        ...new Set([
-          ...reconciliation.removedToolIds,
-          ...pendingReconciliation.removedToolIds,
-          ...(this.data.mcpRemovedImportedToolIds ?? []),
-        ]),
-      ],
+      removedToolIds: capMcpPermissionDiagnosticIds([
+        ...reconciliation.removedToolIds,
+        ...pendingReconciliation.removedToolIds,
+        ...(this.data.mcpRemovedImportedToolIds ?? []),
+      ]),
       pendingHighRiskToolIds: pendingReconciliation.enabledToolIds,
       configured,
+      permissionPolicyVersion:
+        this.data.mcpPermissionPolicyVersion ?? MCP_PERMISSION_POLICY_VERSION,
     };
+  }
+
+  private migrateMcpPermissionPolicy(): void {
+    if (!Array.isArray(this.data.mcpEnabledTools)) return;
+    const storedVersion = this.data.mcpPermissionPolicyVersion;
+    if (storedVersion === MCP_PERMISSION_POLICY_VERSION) {
+      return;
+    }
+
+    const previous = {
+      enabledTools: this.data.mcpEnabledTools,
+      pendingHighRiskTools: this.data.mcpPendingHighRiskTools,
+      removedImportedToolIds: this.data.mcpRemovedImportedToolIds,
+      permissionPolicyVersion: this.data.mcpPermissionPolicyVersion,
+    };
+    const partition = partitionMcpPermissionPolicySelection([
+      ...this.data.mcpEnabledTools,
+      ...(this.data.mcpPendingHighRiskTools ?? []),
+    ]);
+    const removedToolIds = capMcpPermissionDiagnosticIds([
+      ...partition.removedToolIds,
+      ...reconcileMcpEnabledToolIdsDetailed(
+        this.data.mcpRemovedImportedToolIds,
+      ).removedToolIds,
+    ]);
+
+    this.data.mcpEnabledTools = partition.enabledToolIds;
+    if (partition.pendingHighRiskToolIds.length > 0) {
+      this.data.mcpPendingHighRiskTools = partition.pendingHighRiskToolIds;
+    } else {
+      delete this.data.mcpPendingHighRiskTools;
+    }
+    if (removedToolIds.length > 0) {
+      this.data.mcpRemovedImportedToolIds = removedToolIds;
+    } else {
+      delete this.data.mcpRemovedImportedToolIds;
+    }
+    this.data.mcpPermissionPolicyVersion = MCP_PERMISSION_POLICY_VERSION;
+
+    try {
+      this.save(true);
+    } catch (error) {
+      this.data.mcpEnabledTools = previous.enabledTools;
+      this.data.mcpPendingHighRiskTools = previous.pendingHighRiskTools;
+      this.data.mcpRemovedImportedToolIds = previous.removedImportedToolIds;
+      this.data.mcpPermissionPolicyVersion = previous.permissionPolicyVersion;
+      throw error;
+    }
   }
 
   setLoadingOverlayTimeoutMs(ms: number): void {
@@ -1475,6 +1533,7 @@ export class StorageManager {
     delete this.data.mcpEnabledTools;
     delete this.data.mcpPendingHighRiskTools;
     delete this.data.mcpRemovedImportedToolIds;
+    delete this.data.mcpPermissionPolicyVersion;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;
@@ -1575,11 +1634,13 @@ export class StorageManager {
             ),
             mcpPendingHighRiskTools: importedHighRiskToolIds,
             mcpRemovedImportedToolIds: importedMcpSelection.removedToolIds,
+            mcpPermissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
           }
         : {
             mcpEnabledTools: undefined,
             mcpPendingHighRiskTools: undefined,
             mcpRemovedImportedToolIds: undefined,
+            mcpPermissionPolicyVersion: undefined,
           }),
     };
     this.save();

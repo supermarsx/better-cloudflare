@@ -8,9 +8,13 @@ import { CryptoManager } from "../src/lib/auth/crypto";
 import { TauriClient } from "../src/lib/api/tauri-client";
 import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
+  MAX_MCP_PERMISSION_DIAGNOSTIC_IDS,
+  MAX_MCP_PERMISSION_TOOL_ID_LENGTH,
+  MCP_PERMISSION_POLICY_VERSION,
   MCP_TOOL_CATEGORIES,
   MCP_TOOL_FALLBACKS,
   STABLE_MCP_TOOL_IDS,
+  capMcpPermissionDiagnosticIds,
   planMcpPermissionChange,
   reconcileMcpEnabledToolIds,
   reconcileMcpEnabledToolIdsDetailed,
@@ -47,6 +51,7 @@ function rustRegistryToolIds(): string[] {
 class LocalStorageMock {
   private store: Record<string, string> = {};
   failWrites = false;
+  writes = 0;
 
   getItem(key: string): string | null {
     return Object.prototype.hasOwnProperty.call(this.store, key)
@@ -56,6 +61,7 @@ class LocalStorageMock {
 
   setItem(key: string, value: string): void {
     if (this.failWrites) throw new Error("storage quota exceeded");
+    this.writes += 1;
     this.store[key] = String(value);
   }
 
@@ -150,6 +156,40 @@ test("reconciliation preserves every current registry ID and reports unknown IDs
   assert.deepEqual(reconcileMcpEnabledToolIds(undefined), []);
 });
 
+test("unknown permission diagnostics use an independent capped set with bounded identifiers", () => {
+  const unknownIds = Array.from(
+    { length: MAX_MCP_PERMISSION_DIAGNOSTIC_IDS + 32 },
+    (_, index) =>
+      `unknown_${String(index).padStart(3, "0")}_${"x".repeat(
+        MAX_MCP_PERMISSION_TOOL_ID_LENGTH * 2,
+      )}`,
+  );
+  const reconciliation = reconcileMcpEnabledToolIdsDetailed([
+    ...unknownIds,
+    "cf_list_zones",
+  ]);
+
+  assert.deepEqual(reconciliation.enabledToolIds, ["cf_list_zones"]);
+  assert.equal(
+    reconciliation.removedToolIds.length,
+    MAX_MCP_PERMISSION_DIAGNOSTIC_IDS,
+  );
+  assert.equal(
+    reconciliation.removedToolIds.every(
+      (id) => id.length <= MAX_MCP_PERMISSION_TOOL_ID_LENGTH,
+    ),
+    true,
+  );
+  assert.equal(reconciliation.removedToolIds[0].endsWith("…"), true);
+  assert.equal(
+    capMcpPermissionDiagnosticIds([
+      ...reconciliation.removedToolIds,
+      "one_more_unknown_tool",
+    ]).length,
+    MAX_MCP_PERMISSION_DIAGNOSTIC_IDS,
+  );
+});
+
 test("all permission-change entry paths identify every newly enabled high-risk tool", () => {
   const readTool = MCP_TOOL_FALLBACKS.find(({ risk }) => risk === "read");
   const highRiskTools = MCP_TOOL_FALLBACKS.filter(
@@ -190,6 +230,7 @@ test("MCP storage uses conservative defaults and preserves all legitimate migrat
     removedToolIds: [],
     pendingHighRiskToolIds: [],
     configured: false,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
 
   const migratedStorage = new LocalStorageMock();
@@ -208,12 +249,38 @@ test("MCP storage uses conservative defaults and preserves all legitimate migrat
     new CryptoManager({}, migratedStorage),
   );
 
+  const expectedLegacyActiveIds = MCP_TOOL_FALLBACKS.filter(
+    ({ risk }) => risk === "read",
+  ).map(({ id }) => id);
+  const expectedLegacyPendingIds = MCP_TOOL_FALLBACKS.filter(
+    ({ risk }) => risk !== "read",
+  ).map(({ id }) => id);
+  const writesBeforeMigration = migratedStorage.writes;
   assert.deepEqual(migratedManager.getMcpEnabledToolsSnapshot(), {
-    enabledTools: STABLE_MCP_TOOL_IDS,
+    enabledTools: expectedLegacyActiveIds,
     removedToolIds: ["legacy_removed_tool"],
-    pendingHighRiskToolIds: [],
+    pendingHighRiskToolIds: expectedLegacyPendingIds,
     configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
+  assert.equal(migratedStorage.writes, writesBeforeMigration + 1);
+  assert.equal(
+    JSON.parse(migratedStorage.getItem(STORAGE_KEY) ?? "{}")
+      .mcpPermissionPolicyVersion,
+    MCP_PERMISSION_POLICY_VERSION,
+  );
+  assert.deepEqual(migratedManager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: expectedLegacyActiveIds,
+    removedToolIds: ["legacy_removed_tool"],
+    pendingHighRiskToolIds: expectedLegacyPendingIds,
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+  assert.equal(
+    migratedStorage.writes,
+    writesBeforeMigration + 1,
+    "a current policy version is not migrated repeatedly",
+  );
 
   migratedManager.setMcpEnabledTools([...STABLE_MCP_TOOL_IDS]);
   assert.deepEqual(migratedManager.getMcpEnabledTools(), STABLE_MCP_TOOL_IDS);
@@ -224,6 +291,119 @@ test("MCP storage uses conservative defaults and preserves all legitimate migrat
 
   migratedManager.setMcpEnabledTools([]);
   assert.deepEqual(migratedManager.getMcpEnabledTools(), []);
+  assert.deepEqual(migratedManager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: [],
+    removedToolIds: [],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+  const intentionallyEmpty = JSON.parse(
+    migratedStorage.getItem(STORAGE_KEY) ?? "{}",
+  );
+  assert.deepEqual(intentionallyEmpty.mcpEnabledTools, []);
+  assert.equal(
+    intentionallyEmpty.mcpPermissionPolicyVersion,
+    MCP_PERMISSION_POLICY_VERSION,
+  );
+});
+
+test("legacy staged permissions persist explicit decline and approval decisions", () => {
+  const legacyPayload = {
+    apiKeys: [],
+    mcpEnabledTools: [
+      "cf_list_zones",
+      "cf_create_dns_record",
+      "unknown_legacy_tool",
+    ],
+  };
+
+  const declinedStorage = new LocalStorageMock();
+  declinedStorage.setItem(STORAGE_KEY, JSON.stringify(legacyPayload));
+  const declinedManager = new StorageManager(
+    declinedStorage,
+    new CryptoManager({}, declinedStorage),
+  );
+  const declinedSnapshot = declinedManager.getMcpEnabledToolsSnapshot();
+  assert.deepEqual(declinedSnapshot, {
+    enabledTools: ["cf_list_zones"],
+    removedToolIds: ["unknown_legacy_tool"],
+    pendingHighRiskToolIds: ["cf_create_dns_record"],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+  declinedManager.setMcpEnabledTools(declinedSnapshot.enabledTools);
+  assert.deepEqual(declinedManager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: ["cf_list_zones"],
+    removedToolIds: [],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+
+  const approvedStorage = new LocalStorageMock();
+  approvedStorage.setItem(STORAGE_KEY, JSON.stringify(legacyPayload));
+  const approvedManager = new StorageManager(
+    approvedStorage,
+    new CryptoManager({}, approvedStorage),
+  );
+  const approvedSnapshot = approvedManager.getMcpEnabledToolsSnapshot();
+  approvedManager.setMcpEnabledTools([
+    ...approvedSnapshot.enabledTools,
+    ...approvedSnapshot.pendingHighRiskToolIds,
+  ]);
+  assert.deepEqual(approvedManager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: ["cf_list_zones", "cf_create_dns_record"],
+    removedToolIds: [],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+});
+
+test("current-version approved permissions are not migrated or staged again", () => {
+  const storage = new LocalStorageMock();
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      apiKeys: [],
+      mcpEnabledTools: ["cf_list_zones", "cf_create_dns_record"],
+      mcpRemovedImportedToolIds: ["unknown_current_tool"],
+      mcpPermissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+    }),
+  );
+  const writesBeforeRead = storage.writes;
+  const manager = new StorageManager(storage, new CryptoManager({}, storage));
+
+  assert.deepEqual(manager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: ["cf_list_zones", "cf_create_dns_record"],
+    removedToolIds: ["unknown_current_tool"],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+  assert.equal(storage.writes, writesBeforeRead);
+});
+
+test("unknown permission-policy versions are migrated conservatively", () => {
+  const storage = new LocalStorageMock();
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      apiKeys: [],
+      mcpEnabledTools: ["cf_list_zones", "cf_create_dns_record"],
+      mcpPermissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION + 1,
+    }),
+  );
+  const manager = new StorageManager(storage, new CryptoManager({}, storage));
+
+  assert.deepEqual(manager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: ["cf_list_zones"],
+    removedToolIds: [],
+    pendingHighRiskToolIds: ["cf_create_dns_record"],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
 });
 
 test("storage imports stage high-risk permissions for confirmation and retain unknown-ID diagnostics", () => {
@@ -239,6 +419,7 @@ test("storage imports stage high-risk permissions for confirmation and retain un
         "cf_bulk_create_dns_records",
         "unknown_imported_tool",
       ],
+      mcpPermissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
     }),
   );
 
@@ -250,6 +431,7 @@ test("storage imports stage high-risk permissions for confirmation and retain un
       "cf_bulk_create_dns_records",
     ],
     configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
   assert.deepEqual(manager.getMcpEnabledTools(), ["cf_list_zones"]);
   const persisted = JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}");
@@ -261,6 +443,10 @@ test("storage imports stage high-risk permissions for confirmation and retain un
   assert.deepEqual(persisted.mcpRemovedImportedToolIds, [
     "unknown_imported_tool",
   ]);
+  assert.equal(
+    persisted.mcpPermissionPolicyVersion,
+    MCP_PERMISSION_POLICY_VERSION,
+  );
 });
 
 test("profile storage preserves legitimate high-risk requests for the controlled confirmation path while denying unknown IDs", () => {
@@ -300,6 +486,7 @@ test("staged permission persistence cannot smuggle read-only or unknown IDs into
     ],
     pendingHighRiskToolIds: ["cf_create_dns_record"],
     configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
 });
 
@@ -329,6 +516,51 @@ test("failed MCP persistence restores the storage manager's previous in-memory p
     removedToolIds: [],
     pendingHighRiskToolIds: [],
     configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  });
+});
+
+test("failed legacy policy migration restores every prior in-memory field atomically", () => {
+  const storage = new LocalStorageMock();
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      apiKeys: [],
+      mcpEnabledTools: ["cf_list_zones", "cf_create_dns_record"],
+      mcpPendingHighRiskTools: ["cf_update_dns_record"],
+      mcpRemovedImportedToolIds: ["unknown_legacy_tool"],
+    }),
+  );
+  const manager = new StorageManager(storage, new CryptoManager({}, storage));
+  storage.failWrites = true;
+
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    assert.throws(
+      () => manager.getMcpEnabledToolsSnapshot(),
+      /storage quota exceeded/,
+    );
+  } finally {
+    console.error = originalConsoleError;
+    storage.failWrites = false;
+  }
+
+  const legacyPersisted = JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}");
+  assert.deepEqual(legacyPersisted.mcpEnabledTools, [
+    "cf_list_zones",
+    "cf_create_dns_record",
+  ]);
+  assert.deepEqual(legacyPersisted.mcpPendingHighRiskTools, [
+    "cf_update_dns_record",
+  ]);
+  assert.equal(legacyPersisted.mcpPermissionPolicyVersion, undefined);
+  assert.deepEqual(manager.getMcpEnabledToolsSnapshot(), {
+    enabledTools: ["cf_list_zones"],
+    removedToolIds: ["unknown_legacy_tool"],
+    pendingHighRiskToolIds: ["cf_create_dns_record", "cf_update_dns_record"],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
 });
 
@@ -349,6 +581,7 @@ test("an imported transient staging payload is ignored unless it is derived from
     removedToolIds: [],
     pendingHighRiskToolIds: [],
     configured: false,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
   });
 });
 

@@ -36,6 +36,12 @@ export interface McpPermissionChangePlan extends McpToolIdReconciliation {
   newlyEnabledHighRiskToolIds: string[];
 }
 
+export interface McpPermissionPolicyPartition extends McpToolIdReconciliation {
+  pendingHighRiskToolIds: string[];
+}
+
+export const MCP_PERMISSION_POLICY_VERSION = 1;
+
 export const MCP_TOOL_CATEGORIES: readonly McpToolCategory[] = [
   {
     id: "access",
@@ -513,6 +519,9 @@ export const STABLE_MCP_TOOL_IDS: readonly string[] = MCP_TOOL_FALLBACKS.map(
   ({ id }) => id,
 );
 
+export const MAX_MCP_PERMISSION_DIAGNOSTIC_IDS = 64;
+export const MAX_MCP_PERMISSION_TOOL_ID_LENGTH = 160;
+
 export const DEFAULT_MCP_ENABLED_TOOL_IDS: readonly string[] =
   MCP_TOOL_FALLBACKS.filter(({ risk }) => risk === "read").map(({ id }) => id);
 
@@ -523,6 +532,24 @@ const stableToolIds = new Set(STABLE_MCP_TOOL_IDS);
 
 function normalizeMcpToolId(value: unknown): string {
   return typeof value === "string" ? value.trim() : String(value ?? "").trim();
+}
+
+function boundedMcpPermissionDiagnosticId(id: string): string {
+  if (id.length <= MAX_MCP_PERMISSION_TOOL_ID_LENGTH) return id;
+  return `${id.slice(0, MAX_MCP_PERMISSION_TOOL_ID_LENGTH - 1)}…`;
+}
+
+export function capMcpPermissionDiagnosticIds(
+  values: readonly unknown[] | null | undefined,
+): string[] {
+  const diagnostics = new Set<string>();
+  for (const value of values ?? []) {
+    const id = normalizeMcpToolId(value);
+    if (!id) continue;
+    diagnostics.add(boundedMcpPermissionDiagnosticId(id));
+    if (diagnostics.size >= MAX_MCP_PERMISSION_DIAGNOSTIC_IDS) break;
+  }
+  return [...diagnostics];
 }
 
 export function isStableMcpToolId(id: string): boolean {
@@ -539,7 +566,9 @@ export function reconcileMcpEnabledToolIdsDetailed(
     const id = normalizeMcpToolId(value);
     if (!id) continue;
     if (stableToolIds.has(id)) requested.add(id);
-    else removed.add(id);
+    else if (removed.size < MAX_MCP_PERMISSION_DIAGNOSTIC_IDS) {
+      removed.add(boundedMcpPermissionDiagnosticId(id));
+    }
   }
 
   return {
@@ -556,6 +585,25 @@ export function reconcileMcpEnabledToolIds(
 
 export function requiresMcpPermissionConfirmation(risk: McpToolRisk): boolean {
   return risk !== "read";
+}
+
+export function partitionMcpPermissionPolicySelection(
+  enabledToolIds: readonly unknown[] | null | undefined,
+): McpPermissionPolicyPartition {
+  const reconciliation = reconcileMcpEnabledToolIdsDetailed(enabledToolIds);
+  const pendingHighRiskToolIds = reconciliation.enabledToolIds.filter((id) => {
+    const tool = fallbackById.get(id);
+    return tool !== undefined && requiresMcpPermissionConfirmation(tool.risk);
+  });
+  const pendingHighRiskSet = new Set(pendingHighRiskToolIds);
+
+  return {
+    enabledToolIds: reconciliation.enabledToolIds.filter(
+      (id) => !pendingHighRiskSet.has(id),
+    ),
+    pendingHighRiskToolIds,
+    removedToolIds: reconciliation.removedToolIds,
+  };
 }
 
 export function planMcpPermissionChange(
@@ -580,8 +628,8 @@ export function planMcpPermissionChange(
 }
 
 export function resolveMcpTool(backend: McpToolDescriptor): ResolvedMcpTool {
-  const id = normalizeMcpToolId(backend.name);
-  const fallback = fallbackById.get(id);
+  const normalizedId = normalizeMcpToolId(backend.name);
+  const fallback = fallbackById.get(normalizedId);
   if (fallback) {
     return {
       ...fallback,
@@ -590,6 +638,7 @@ export function resolveMcpTool(backend: McpToolDescriptor): ResolvedMcpTool {
     };
   }
 
+  const id = boundedMcpPermissionDiagnosticId(normalizedId);
   return {
     id,
     categoryId: "unclassified",

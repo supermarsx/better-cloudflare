@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,13 +9,23 @@ import { Tag } from "@/components/ui/tag";
 import {
   MCP_TOOL_CATEGORIES,
   MCP_TOOL_FALLBACKS,
+  MAX_MCP_PERMISSION_DIAGNOSTIC_IDS,
+  MAX_MCP_PERMISSION_TOOL_ID_LENGTH,
+  MCP_PERMISSION_POLICY_VERSION,
+  capMcpPermissionDiagnosticIds,
+  partitionMcpPermissionPolicySelection,
   planMcpPermissionChange,
   reconcileMcpEnabledToolIds,
   reconcileMcpEnabledToolIdsDetailed,
   resolveMcpTool,
+  type McpToolIdReconciliation,
   type ResolvedMcpTool,
 } from "@/lib/mcp/tool-permissions";
-import { TauriClient, type McpServerStatus } from "@/lib/api/tauri-client";
+import {
+  TauriClient,
+  type McpServerStatus,
+  type McpToolDescriptor,
+} from "@/lib/api/tauri-client";
 import { storageManager } from "@/lib/storage/storage";
 
 export interface McpToolPermissionsClient {
@@ -27,6 +38,7 @@ export interface McpToolPermissionsStorageSnapshot {
   removedToolIds: string[];
   pendingHighRiskToolIds?: string[];
   configured: boolean;
+  permissionPolicyVersion?: number;
 }
 
 export interface McpToolPermissionsStorage {
@@ -64,6 +76,20 @@ interface PendingPermissionChange {
   notifyParentOnCancel: boolean;
   controlledRequestKey: string | null;
   appliedRequestKey: string;
+  generation: number;
+  reconcileOnCancel: boolean;
+}
+
+interface ScheduledServerSave {
+  enabledTools: string[];
+  generation: number;
+  resolve(status: McpServerStatus): void;
+  reject(error: unknown): void;
+}
+
+interface McpCatalogueInspection {
+  backendById: Map<string, McpToolDescriptor>;
+  completeReviewedCatalogue: boolean;
 }
 
 const defaultClient: McpToolPermissionsClient = {
@@ -86,6 +112,10 @@ const RISK_LABELS = {
   credential: "Credential access",
   admin: "Administrative",
 } as const;
+
+const REVIEWED_MCP_TOOL_IDS = new Set(
+  MCP_TOOL_FALLBACKS.map(({ id }) => id),
+);
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -116,12 +146,58 @@ function reconciliationKey(reconciliation: {
   )}`;
 }
 
+function inspectStatusCatalogue(
+  status: McpServerStatus,
+): McpCatalogueInspection {
+  const tools = Array.isArray(status.tools) ? status.tools : [];
+  const maximumCatalogueSize =
+    MCP_TOOL_FALLBACKS.length + MAX_MCP_PERMISSION_DIAGNOSTIC_IDS;
+  if (tools.length > maximumCatalogueSize) {
+    throw new Error(
+      `The desktop service reported ${tools.length} MCP tool descriptors; the reviewed and diagnostic limit is ${maximumCatalogueSize}.`,
+    );
+  }
+
+  const backendById = new Map<string, McpToolDescriptor>();
+  let unknownDescriptorCount = 0;
+  for (const tool of tools) {
+    const id = String(tool.name ?? "").trim();
+    if (!id || id.length > MAX_MCP_PERMISSION_TOOL_ID_LENGTH) {
+      throw new Error(
+        "The desktop service reported an empty or oversized MCP tool identifier.",
+      );
+    }
+    if (typeof tool.enabled !== "boolean") {
+      throw new Error(
+        `The desktop service reported a non-boolean enabled state for MCP tool ${id}.`,
+      );
+    }
+    if (backendById.has(id)) {
+      throw new Error(
+        `The desktop service reported duplicate or contradictory MCP tool descriptors for ${id}.`,
+      );
+    }
+    if (!REVIEWED_MCP_TOOL_IDS.has(id)) {
+      unknownDescriptorCount += 1;
+      if (unknownDescriptorCount > MAX_MCP_PERMISSION_DIAGNOSTIC_IDS) {
+        throw new Error(
+          `The desktop service reported more than ${MAX_MCP_PERMISSION_DIAGNOSTIC_IDS} unreviewed MCP tool descriptors; excess diagnostic catalogue entries were denied.`,
+        );
+      }
+    }
+    backendById.set(id, tool);
+  }
+
+  return {
+    backendById,
+    completeReviewedCatalogue: MCP_TOOL_FALLBACKS.every(({ id }) =>
+      backendById.has(id),
+    ),
+  };
+}
+
 function resolveCatalog(status: McpServerStatus): ResolvedMcpTool[] {
-  const backendById = new Map(
-    (Array.isArray(status.tools) ? status.tools : [])
-      .map((tool) => [String(tool.name ?? "").trim(), tool] as const)
-      .filter(([id]) => id),
-  );
+  const { backendById } = inspectStatusCatalogue(status);
   const knownTools = MCP_TOOL_FALLBACKS.map((fallback) =>
     resolveMcpTool(
       backendById.get(fallback.id) ?? {
@@ -133,29 +209,59 @@ function resolveCatalog(status: McpServerStatus): ResolvedMcpTool[] {
     ),
   );
   const unknownTools = [...backendById.entries()]
-    .filter(([id]) => !MCP_TOOL_FALLBACKS.some((tool) => tool.id === id))
+    .filter(([id]) => !REVIEWED_MCP_TOOL_IDS.has(id))
     .map(([, backend]) => resolveMcpTool(backend));
   return [...knownTools, ...unknownTools];
 }
 
-function statusEnabledSelection(
-  status: McpServerStatus,
-  fallback: readonly string[],
-) {
+function authoritativeStatusSelection(status: McpServerStatus) {
+  const candidates: ReturnType<
+    typeof reconcileMcpEnabledToolIdsDetailed
+  >[] = [];
+
   if (Array.isArray(status.enabledTools)) {
-    return reconcileMcpEnabledToolIdsDetailed(status.enabledTools);
+    candidates.push(reconcileMcpEnabledToolIdsDetailed(status.enabledTools));
   }
   if (Array.isArray(status.enabled_tools)) {
-    return reconcileMcpEnabledToolIdsDetailed(status.enabled_tools);
+    candidates.push(reconcileMcpEnabledToolIdsDetailed(status.enabled_tools));
   }
-  if (Array.isArray(status.tools) && status.tools.length > 0) {
-    return reconcileMcpEnabledToolIdsDetailed(
-      status.tools
-        .filter((tool) => tool.enabled === true)
-        .map((tool) => tool.name),
+
+  const catalogue = inspectStatusCatalogue(status);
+  if (
+    Array.isArray(status.tools) &&
+    status.tools.length > 0 &&
+    catalogue.completeReviewedCatalogue
+  ) {
+    candidates.push(
+      reconcileMcpEnabledToolIdsDetailed(
+        status.tools
+          .filter((tool) => tool.enabled === true)
+          .map((tool) => tool.name),
+      ),
     );
   }
-  return reconcileMcpEnabledToolIdsDetailed(fallback);
+
+  const first = candidates[0];
+  if (!first) return null;
+  const sameSelection = candidates.every(
+    (candidate) =>
+      sameToolIds(candidate.enabledToolIds, first.enabledToolIds) &&
+      candidate.removedToolIds.length === first.removedToolIds.length &&
+      candidate.removedToolIds.every((id) =>
+        first.removedToolIds.includes(id),
+      ),
+  );
+  return sameSelection ? first : null;
+}
+
+function requireAuthoritativeStatusSelection(status: McpServerStatus) {
+  const selection = authoritativeStatusSelection(status);
+  if (!selection) {
+    throw new Error(
+      "The desktop service response did not report authoritative MCP permission state. Expected enabledTools/enabled_tools or a complete reviewed tool catalogue.",
+    );
+  }
+  return selection;
 }
 
 function exactAppliedSelection(
@@ -163,7 +269,7 @@ function exactAppliedSelection(
   requestedTools: readonly string[],
 ): string[] {
   const requested = reconcileMcpEnabledToolIds(requestedTools);
-  const applied = statusEnabledSelection(status, requested);
+  const applied = requireAuthoritativeStatusSelection(status);
   if (
     applied.removedToolIds.length > 0 ||
     !sameToolIds(applied.enabledToolIds, requested)
@@ -178,6 +284,8 @@ function exactAppliedSelection(
   }
   return applied.enabledToolIds;
 }
+
+class StalePermissionOperation extends Error {}
 
 function matchesSearch(tool: ResolvedMcpTool, query: string): boolean {
   if (!query) return true;
@@ -221,25 +329,174 @@ export function McpToolPermissions({
   const [pending, setPending] = React.useState<PendingPermissionChange | null>(
     null,
   );
+  const controlledSelection = React.useMemo<McpToolIdReconciliation | null>(
+    () =>
+      controlledEnabledTools === undefined
+        ? null
+        : reconcileMcpEnabledToolIdsDetailed(controlledEnabledTools),
+    [controlledEnabledTools],
+  );
 
   const appliedToolsRef = React.useRef<string[]>([]);
   const lastStatusRef = React.useRef<McpServerStatus | null>(null);
-  const controlledEnabledToolsRef = React.useRef(controlledEnabledTools);
+  const removedToolIdsRef = React.useRef<string[]>([]);
+  const latestControlledSelectionRef =
+    React.useRef<McpToolIdReconciliation | null>(controlledSelection);
   const onAppliedRef = React.useRef(onApplied);
+  const clientRef = React.useRef(client);
+  const mountedRef = React.useRef(true);
+  const mountCleanupEpochRef = React.useRef(0);
+  const generationRef = React.useRef(0);
+  const inFlightClientLoadRef =
+    React.useRef<Promise<McpServerStatus> | null>(null);
+  const inFlightServerSaveRef = React.useRef<ScheduledServerSave | null>(null);
+  const latestQueuedServerSaveRef = React.useRef<ScheduledServerSave | null>(
+    null,
+  );
+  const drainServerSaveQueueRef = React.useRef<() => void>(() => {});
   const lastControlledRequestRef = React.useRef<string | null>(
-    controlledEnabledTools === undefined
-      ? null
-      : reconciliationKey(
-          reconcileMcpEnabledToolIdsDetailed(controlledEnabledTools),
-        ),
+    controlledSelection === null ? null : reconciliationKey(controlledSelection),
+  );
+  const observedControlledRequestRef = React.useRef<string | null>(
+    lastControlledRequestRef.current,
   );
   const dialogRef = React.useRef<HTMLDivElement>(null);
   const cancelConfirmationRef = React.useRef<HTMLButtonElement>(null);
   const confirmationTriggerRef = React.useRef<HTMLElement | null>(null);
+  const reassertConfirmedSelectionRef = React.useRef<
+    (generation: number) => void
+  >(() => {});
+  const modalPortalHost = React.useMemo(() => {
+    if (typeof document === "undefined") return null;
+    const host = document.createElement("div");
+    host.dataset.mcpPermissionModalPortal = "true";
+    return host;
+  }, []);
+
+  const beginGeneration = React.useCallback(() => {
+    generationRef.current += 1;
+    return generationRef.current;
+  }, []);
+
+  const isCurrentGeneration = React.useCallback(
+    (generation: number) =>
+      mountedRef.current && generationRef.current === generation,
+    [],
+  );
+
+  const drainServerSaveQueue = React.useCallback(() => {
+    if (inFlightServerSaveRef.current) return;
+    const scheduled = latestQueuedServerSaveRef.current;
+    if (!scheduled) return;
+    latestQueuedServerSaveRef.current = null;
+
+    if (!isCurrentGeneration(scheduled.generation)) {
+      scheduled.reject(new StalePermissionOperation());
+      return;
+    }
+
+    inFlightServerSaveRef.current = scheduled;
+    const finishScheduledSave = () => {
+      if (inFlightServerSaveRef.current === scheduled) {
+        inFlightServerSaveRef.current = null;
+      }
+      drainServerSaveQueueRef.current();
+    };
+    void Promise.resolve()
+      .then(() => clientRef.current.save([...scheduled.enabledTools]))
+      .then(
+        (status) => {
+          finishScheduledSave();
+          scheduled.resolve(status);
+        },
+        (error) => {
+          finishScheduledSave();
+          scheduled.reject(error);
+        },
+      );
+  }, [isCurrentGeneration]);
+  drainServerSaveQueueRef.current = drainServerSaveQueue;
+
+  const enqueueServerSave = React.useCallback(
+    (enabledTools: readonly string[], generation: number) =>
+      new Promise<McpServerStatus>((resolve, reject) => {
+        const superseded = latestQueuedServerSaveRef.current;
+        if (superseded) {
+          superseded.reject(new StalePermissionOperation());
+        }
+        latestQueuedServerSaveRef.current = {
+          enabledTools: reconcileMcpEnabledToolIds(enabledTools),
+          generation,
+          resolve,
+          reject,
+        };
+        drainServerSaveQueueRef.current();
+      }),
+    [],
+  );
+
+  const hasPendingServerSave = React.useCallback(
+    () =>
+      inFlightServerSaveRef.current !== null ||
+      latestQueuedServerSaveRef.current !== null,
+    [],
+  );
+
+  const loadClientStatus = React.useCallback(() => {
+    const inFlight = inFlightClientLoadRef.current;
+    if (inFlight) return inFlight;
+
+    const requestedLoad = Promise.resolve().then(() =>
+      clientRef.current.load(),
+    );
+    let sharedLoad: Promise<McpServerStatus>;
+    sharedLoad = requestedLoad.then(
+      (status) => {
+        if (inFlightClientLoadRef.current === sharedLoad) {
+          inFlightClientLoadRef.current = null;
+        }
+        return status;
+      },
+      (error) => {
+        if (inFlightClientLoadRef.current === sharedLoad) {
+          inFlightClientLoadRef.current = null;
+        }
+        throw error;
+      },
+    );
+    inFlightClientLoadRef.current = sharedLoad;
+    return sharedLoad;
+  }, []);
 
   React.useEffect(() => {
-    controlledEnabledToolsRef.current = controlledEnabledTools;
-  }, [controlledEnabledTools]);
+    mountCleanupEpochRef.current += 1;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      generationRef.current += 1;
+      const queued = latestQueuedServerSaveRef.current;
+      latestQueuedServerSaveRef.current = null;
+      queued?.reject(new StalePermissionOperation());
+      const cleanupEpoch = ++mountCleanupEpochRef.current;
+      queueMicrotask(() => {
+        if (
+          !mountedRef.current &&
+          mountCleanupEpochRef.current === cleanupEpoch
+        ) {
+          inFlightClientLoadRef.current = null;
+          latestControlledSelectionRef.current = null;
+        }
+      });
+    };
+  }, []);
+
+  React.useEffect(() => {
+    clientRef.current = client;
+  }, [client]);
+
+  React.useEffect(() => {
+    latestControlledSelectionRef.current = controlledSelection;
+  }, [controlledSelection]);
 
   React.useEffect(() => {
     onAppliedRef.current = onApplied;
@@ -247,7 +504,12 @@ export function McpToolPermissions({
 
   const mergeRemovedToolIds = React.useCallback((ids: readonly string[]) => {
     if (ids.length === 0) return;
-    setRemovedToolIds((current) => [...new Set([...current, ...ids])]);
+    const merged = capMcpPermissionDiagnosticIds([
+      ...removedToolIdsRef.current,
+      ...ids,
+    ]);
+    removedToolIdsRef.current = merged;
+    setRemovedToolIds(merged);
   }, []);
 
   const persistApplied = React.useCallback(
@@ -261,12 +523,13 @@ export function McpToolPermissions({
         ...reconciledTools,
         ...pendingHighRiskToolIds,
       ]).newlyEnabledHighRiskToolIds;
-      if (pending.length > 0 && storage.stageMcpEnabledTools) {
-        storage.stageMcpEnabledTools(
-          reconciledTools,
-          pending,
-          reconcileMcpEnabledToolIdsDetailed(removedIds).removedToolIds,
-        );
+      const removed =
+        reconcileMcpEnabledToolIdsDetailed(removedIds).removedToolIds;
+      if (
+        storage.stageMcpEnabledTools &&
+        (pending.length > 0 || removed.length > 0)
+      ) {
+        storage.stageMcpEnabledTools(reconciledTools, pending, removed);
       } else {
         storage.setMcpEnabledTools(reconciledTools);
       }
@@ -275,26 +538,44 @@ export function McpToolPermissions({
   );
 
   const publishApplied = React.useCallback(
-    (nextEnabledTools: readonly string[], status: McpServerStatus) => {
+    (
+      nextEnabledTools: readonly string[],
+      status: McpServerStatus,
+      generation: number,
+    ) => {
+      if (!isCurrentGeneration(generation)) return;
       const reconciledTools = reconcileMcpEnabledToolIds(nextEnabledTools);
       appliedToolsRef.current = reconciledTools;
       lastStatusRef.current = status;
       setAppliedTools(reconciledTools);
       onAppliedRef.current?.([...reconciledTools], status);
     },
-    [],
+    [isCurrentGeneration],
   );
 
   const rollbackServerSelection = React.useCallback(
     async (
       previousEnabledTools: readonly string[],
       cause: unknown,
+      generation: number,
     ): Promise<never> => {
+      if (!isCurrentGeneration(generation)) {
+        throw new StalePermissionOperation();
+      }
       const previous = reconcileMcpEnabledToolIds(previousEnabledTools);
       try {
-        const rollbackStatus = await client.save(previous);
+        const rollbackStatus = await enqueueServerSave(previous, generation);
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
         exactAppliedSelection(rollbackStatus, previous);
       } catch (rollbackError) {
+        if (
+          rollbackError instanceof StalePermissionOperation ||
+          !isCurrentGeneration(generation)
+        ) {
+          throw new StalePermissionOperation();
+        }
         throw new Error(
           `${errorMessage(cause)} Automatic rollback to the previous MCP server selection also failed: ${errorMessage(rollbackError)}`,
         );
@@ -303,7 +584,7 @@ export function McpToolPermissions({
         `${errorMessage(cause)} The previous MCP server selection was restored.`,
       );
     },
-    [client],
+    [enqueueServerSave, isCurrentGeneration],
   );
 
   const verifyAppliedOrRollback = React.useCallback(
@@ -311,14 +592,21 @@ export function McpToolPermissions({
       status: McpServerStatus,
       requestedEnabledTools: readonly string[],
       previousEnabledTools: readonly string[],
+      generation: number,
     ): Promise<string[]> => {
+      if (!isCurrentGeneration(generation)) {
+        throw new StalePermissionOperation();
+      }
       try {
         return exactAppliedSelection(status, requestedEnabledTools);
       } catch (error) {
-        return rollbackServerSelection(previousEnabledTools, error);
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
+        return rollbackServerSelection(previousEnabledTools, error, generation);
       }
     },
-    [rollbackServerSelection],
+    [isCurrentGeneration, rollbackServerSelection],
   );
 
   const closeConfirmation = React.useCallback(
@@ -326,14 +614,26 @@ export function McpToolPermissions({
       notifyParent: boolean,
       restoreFocus = true,
       clearStagedRequest = true,
+      invalidateGeneration = true,
     ): HTMLElement | null => {
+      const shouldReassertConfirmedSelection =
+        invalidateGeneration &&
+        clearStagedRequest &&
+        (pending?.reconcileOnCancel === true || hasPendingServerSave());
+      const generation = invalidateGeneration
+        ? beginGeneration()
+        : generationRef.current;
       const trigger = confirmationTriggerRef.current;
       confirmationTriggerRef.current = null;
       setPending(null);
 
       if (clearStagedRequest) {
         try {
-          persistApplied(appliedToolsRef.current);
+          persistApplied(
+            appliedToolsRef.current,
+            [],
+            removedToolIdsRef.current,
+          );
         } catch (error) {
           setSaveError(
             `The pending MCP permission request was cancelled, but its local staging state could not be cleared: ${errorMessage(error)}`,
@@ -348,6 +648,10 @@ export function McpToolPermissions({
         );
       }
 
+      if (shouldReassertConfirmedSelection) {
+        reassertConfirmedSelectionRef.current(generation);
+      }
+
       if (restoreFocus) {
         queueMicrotask(() => {
           if (trigger?.isConnected) trigger.focus();
@@ -355,7 +659,7 @@ export function McpToolPermissions({
       }
       return trigger;
     },
-    [persistApplied],
+    [beginGeneration, hasPendingServerSave, pending, persistApplied],
   );
 
   const openConfirmation = React.useCallback(
@@ -366,7 +670,9 @@ export function McpToolPermissions({
       trigger: HTMLElement | null,
       notifyParentOnCancel: boolean,
       controlledRequestKey: string | null = null,
+      generation: number,
     ) => {
+      if (!isCurrentGeneration(generation)) return;
       confirmationTriggerRef.current =
         trigger ??
         (document.activeElement instanceof HTMLElement
@@ -381,196 +687,405 @@ export function McpToolPermissions({
         appliedRequestKey: reconciliationKey(
           reconcileMcpEnabledToolIdsDetailed(appliedToolsRef.current),
         ),
+        generation,
+        reconcileOnCancel: hasPendingServerSave(),
       });
     },
-    [],
+    [hasPendingServerSave, isCurrentGeneration],
   );
 
-  const loadPermissions = React.useCallback(async () => {
-    setLoadState("loading");
-    setLoadError(null);
-    setSaveError(null);
-    setRemovedToolIds([]);
-    setPending(null);
+  const loadPermissions = React.useCallback(
+    async (generation: number) => {
+      if (!isCurrentGeneration(generation)) return;
+      setLoadState("loading");
+      setLoadError(null);
+      setSaveError(null);
+      setRemovedToolIds([]);
+      removedToolIdsRef.current = [];
+      setPending(null);
+      setSaving(false);
 
-    let persistedSnapshot: McpToolPermissionsStorageSnapshot;
-    try {
-      if (storage.getMcpEnabledToolsSnapshot) {
-        persistedSnapshot = storage.getMcpEnabledToolsSnapshot();
-      } else {
-        const reconciled = reconcileMcpEnabledToolIdsDetailed(
-          storage.getMcpEnabledTools(),
-        );
+      let persistedSnapshot: McpToolPermissionsStorageSnapshot;
+      let storageReadError: string | null = null;
+      try {
+        if (storage.getMcpEnabledToolsSnapshot) {
+          persistedSnapshot = storage.getMcpEnabledToolsSnapshot();
+        } else {
+          const reconciled = reconcileMcpEnabledToolIdsDetailed(
+            storage.getMcpEnabledTools(),
+          );
+          persistedSnapshot = {
+            enabledTools: reconciled.enabledToolIds,
+            removedToolIds: reconciled.removedToolIds,
+            pendingHighRiskToolIds: [],
+            configured: true,
+          };
+        }
+      } catch (error) {
         persistedSnapshot = {
-          enabledTools: reconciled.enabledToolIds,
-          removedToolIds: reconciled.removedToolIds,
+          enabledTools: [],
+          removedToolIds: [],
           pendingHighRiskToolIds: [],
-          configured: true,
+          configured: false,
         };
+        storageReadError = `Saved MCP permissions could not be read: ${errorMessage(error)}`;
       }
-      mergeRemovedToolIds(persistedSnapshot.removedToolIds);
-    } catch (error) {
-      persistedSnapshot = {
-        enabledTools: [],
-        removedToolIds: [],
-        pendingHighRiskToolIds: [],
-        configured: false,
-      };
-      setSaveError(
-        `Saved MCP permissions could not be read: ${errorMessage(error)}`,
-      );
-    }
 
-    try {
-      const loadedStatus = await client.load();
-      const nextCatalog = resolveCatalog(loadedStatus);
-      const controlledRequest = controlledEnabledToolsRef.current;
-      const stagedImportedTools =
-        persistedSnapshot.pendingHighRiskToolIds ?? [];
-      const desiredReconciliation = reconcileMcpEnabledToolIdsDetailed(
-        controlledRequest ?? [
+      if (
+        persistedSnapshot.permissionPolicyVersion !==
+        MCP_PERMISSION_POLICY_VERSION
+      ) {
+        const legacyPartition = partitionMcpPermissionPolicySelection([
           ...persistedSnapshot.enabledTools,
-          ...stagedImportedTools,
-        ],
-      );
-      const serverReconciliation = statusEnabledSelection(loadedStatus, []);
-      const loadRemovedToolIds = [
-        ...desiredReconciliation.removedToolIds,
-        ...serverReconciliation.removedToolIds,
-        ...nextCatalog.filter((tool) => !tool.known).map((tool) => tool.id),
-      ];
-      mergeRemovedToolIds(loadRemovedToolIds);
+          ...(persistedSnapshot.pendingHighRiskToolIds ?? []),
+        ]);
+        const legacyRemovedToolIds = capMcpPermissionDiagnosticIds([
+          ...persistedSnapshot.removedToolIds,
+          ...legacyPartition.removedToolIds,
+        ]);
+        persistedSnapshot = {
+          ...persistedSnapshot,
+          enabledTools: legacyPartition.enabledToolIds,
+          pendingHighRiskToolIds: legacyPartition.pendingHighRiskToolIds,
+          removedToolIds: legacyRemovedToolIds,
+          permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+        };
 
-      const controlledPlan =
-        controlledRequest === undefined
-          ? null
-          : planMcpPermissionChange(
-              persistedSnapshot.enabledTools,
-              desiredReconciliation.enabledToolIds,
-            );
-      const candidateTools = desiredReconciliation.enabledToolIds;
-      const unconfirmedHighRiskIds = new Set([
-        ...(controlledPlan?.newlyEnabledHighRiskToolIds ?? []),
-        ...(controlledRequest === undefined ? stagedImportedTools : []),
-      ]);
-      const conservativeTools = candidateTools.filter(
-        (id) => !unconfirmedHighRiskIds.has(id),
-      );
-
-      lastControlledRequestRef.current =
-        controlledRequest === undefined
-          ? null
-          : reconciliationKey(desiredReconciliation);
-
-      const appliedStatus = await client.save(conservativeTools);
-      const confirmedAppliedTools = await verifyAppliedOrRollback(
-        appliedStatus,
-        conservativeTools,
-        serverReconciliation.enabledToolIds,
-      );
-      const pendingHighRiskTools = nextCatalog.filter((tool) =>
-        unconfirmedHighRiskIds.has(tool.id),
-      );
-      const stagedPendingIds =
-        controlledRequest === undefined
-          ? pendingHighRiskTools.map((tool) => tool.id)
-          : [];
+        if (legacyPartition.pendingHighRiskToolIds.length > 0) {
+          try {
+            if (storage.stageMcpEnabledTools) {
+              storage.stageMcpEnabledTools(
+                legacyPartition.enabledToolIds,
+                legacyPartition.pendingHighRiskToolIds,
+                legacyRemovedToolIds,
+              );
+            } else {
+              storage.setMcpEnabledTools(legacyPartition.enabledToolIds);
+            }
+          } catch (error) {
+            const migrationError = `Legacy MCP permissions were restricted for this session, but their confirmation state could not be staged locally: ${errorMessage(error)}`;
+            storageReadError = storageReadError
+              ? `${storageReadError} ${migrationError}`
+              : migrationError;
+          }
+        }
+      }
 
       try {
-        persistApplied(
-          confirmedAppliedTools,
-          stagedPendingIds,
-          loadRemovedToolIds,
-        );
-      } catch (error) {
-        await rollbackServerSelection(
-          serverReconciliation.enabledToolIds,
-          new Error(
-            `The reconciled MCP selection could not be persisted locally: ${errorMessage(error)}`,
-          ),
-        );
-      }
-      setCatalog(resolveCatalog(appliedStatus));
-      publishApplied(confirmedAppliedTools, appliedStatus);
-      setLoadState("ready");
+        const loadedStatus = await loadClientStatus();
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
+        const controlledRequest = latestControlledSelectionRef.current;
+        if (
+          isCurrentGeneration(generation) &&
+          latestControlledSelectionRef.current === controlledRequest
+        ) {
+          latestControlledSelectionRef.current = null;
+        }
+        const serverReconciliation =
+          requireAuthoritativeStatusSelection(loadedStatus);
+        const nextCatalog = resolveCatalog(loadedStatus);
+        const stagedImportedTools =
+          persistedSnapshot.pendingHighRiskToolIds ?? [];
+        const desiredReconciliation =
+          controlledRequest ??
+          reconcileMcpEnabledToolIdsDetailed([
+            ...persistedSnapshot.enabledTools,
+            ...stagedImportedTools,
+          ]);
+        const loadRemovedToolIds = capMcpPermissionDiagnosticIds([
+          ...persistedSnapshot.removedToolIds,
+          ...desiredReconciliation.removedToolIds,
+          ...serverReconciliation.removedToolIds,
+          ...nextCatalog.filter((tool) => !tool.known).map((tool) => tool.id),
+        ]);
 
-      if (pendingHighRiskTools.length > 0) {
-        openConfirmation(
-          candidateTools,
-          "Apply imported or parent MCP permissions?",
-          pendingHighRiskTools,
-          null,
-          false,
-          controlledRequest === undefined
+        const controlledPlan =
+          controlledRequest === null
             ? null
-            : reconciliationKey(desiredReconciliation),
+            : planMcpPermissionChange(
+                persistedSnapshot.enabledTools,
+                desiredReconciliation.enabledToolIds,
+              );
+        const candidateTools = desiredReconciliation.enabledToolIds;
+        const unconfirmedHighRiskIds = new Set([
+          ...(controlledPlan?.newlyEnabledHighRiskToolIds ?? []),
+          ...(controlledRequest === null ? stagedImportedTools : []),
+        ]);
+        const conservativeTools = candidateTools.filter(
+          (id) => !unconfirmedHighRiskIds.has(id),
         );
+
+        const controlledRequestKey =
+          controlledRequest === null
+            ? null
+            : reconciliationKey(desiredReconciliation);
+        lastControlledRequestRef.current = controlledRequestKey;
+        observedControlledRequestRef.current = controlledRequestKey;
+
+        const appliedStatus = await enqueueServerSave(
+          conservativeTools,
+          generation,
+        );
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
+        const confirmedAppliedTools = await verifyAppliedOrRollback(
+          appliedStatus,
+          conservativeTools,
+          serverReconciliation.enabledToolIds,
+          generation,
+        );
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
+        const pendingHighRiskTools = nextCatalog.filter((tool) =>
+          unconfirmedHighRiskIds.has(tool.id),
+        );
+        const stagedPendingIds =
+          controlledRequest === null
+            ? pendingHighRiskTools.map((tool) => tool.id)
+            : [];
+
+        try {
+          persistApplied(
+            confirmedAppliedTools,
+            stagedPendingIds,
+            loadRemovedToolIds,
+          );
+        } catch (error) {
+          await rollbackServerSelection(
+            serverReconciliation.enabledToolIds,
+            new Error(
+              `The reconciled MCP selection could not be persisted locally: ${errorMessage(error)}`,
+            ),
+            generation,
+          );
+        }
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
+        setRemovedToolIds(loadRemovedToolIds);
+        removedToolIdsRef.current = loadRemovedToolIds;
+        setSaveError(storageReadError);
+        setCatalog(resolveCatalog(appliedStatus));
+        publishApplied(confirmedAppliedTools, appliedStatus, generation);
+        setLoadState("ready");
+
+        if (pendingHighRiskTools.length > 0) {
+          openConfirmation(
+            candidateTools,
+            "Apply imported or parent MCP permissions?",
+            pendingHighRiskTools,
+            null,
+            false,
+            controlledRequest === null
+              ? null
+              : reconciliationKey(desiredReconciliation),
+            generation,
+          );
+        }
+      } catch (error) {
+        if (
+          error instanceof StalePermissionOperation ||
+          !isCurrentGeneration(generation)
+        ) {
+          return;
+        }
+        setCatalog([]);
+        appliedToolsRef.current = [];
+        setAppliedTools([]);
+        setLoadError(
+          `MCP permissions could not be loaded and reconciled: ${errorMessage(error)}`,
+        );
+        setLoadState("error");
       }
-    } catch (error) {
-      setCatalog([]);
-      appliedToolsRef.current = [];
-      setAppliedTools([]);
-      setLoadError(
-        `MCP permissions could not be loaded and reconciled: ${errorMessage(error)}`,
-      );
-      setLoadState("error");
-    }
-  }, [
-    client,
-    mergeRemovedToolIds,
-    openConfirmation,
-    persistApplied,
-    publishApplied,
-    rollbackServerSelection,
-    storage,
-    verifyAppliedOrRollback,
-  ]);
+    },
+    [
+      enqueueServerSave,
+      isCurrentGeneration,
+      loadClientStatus,
+      openConfirmation,
+      persistApplied,
+      publishApplied,
+      rollbackServerSelection,
+      storage,
+      verifyAppliedOrRollback,
+    ],
+  );
 
   React.useEffect(() => {
-    void loadPermissions();
-  }, [loadPermissions]);
+    const generation = beginGeneration();
+    void loadPermissions(generation);
+  }, [beginGeneration, loadPermissions]);
 
   React.useEffect(() => {
     if (pending) cancelConfirmationRef.current?.focus();
   }, [pending]);
 
+  const modalOpen = pending !== null;
+
+  React.useLayoutEffect(() => {
+    if (!modalOpen || !modalPortalHost || typeof document === "undefined")
+      return;
+
+    const restoredState = new Map<
+      HTMLElement,
+      {
+        inertAttribute: string | null;
+        ariaHiddenAttribute: string | null;
+        pointerEvents: string;
+        supportsInertProperty: boolean;
+        inertProperty: boolean | undefined;
+      }
+    >();
+    const ignoredTags = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT"]);
+    const inertApplicationSibling = (element: Element) => {
+      if (
+        !(element instanceof HTMLElement) ||
+        element === modalPortalHost ||
+        ignoredTags.has(element.tagName) ||
+        restoredState.has(element)
+      ) {
+        return;
+      }
+
+      const inertTarget = element as HTMLElement & { inert?: boolean };
+      const supportsInertProperty = "inert" in inertTarget;
+      restoredState.set(element, {
+        inertAttribute: element.getAttribute("inert"),
+        ariaHiddenAttribute: element.getAttribute("aria-hidden"),
+        pointerEvents: element.style.pointerEvents,
+        supportsInertProperty,
+        inertProperty: inertTarget.inert,
+      });
+      element.setAttribute("inert", "");
+      element.setAttribute("aria-hidden", "true");
+      element.style.pointerEvents = "none";
+      if (supportsInertProperty) inertTarget.inert = true;
+    };
+
+    document.body.appendChild(modalPortalHost);
+    for (const child of Array.from(document.body.children)) {
+      inertApplicationSibling(child);
+    }
+
+    const mutationObserver =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of Array.from(record.addedNodes)) {
+                if (node instanceof Element) inertApplicationSibling(node);
+              }
+            }
+          });
+    mutationObserver?.observe(document.body, { childList: true });
+
+    const keepFocusInDialog = (event: FocusEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !modalPortalHost.contains(target) &&
+        cancelConfirmationRef.current
+      ) {
+        cancelConfirmationRef.current.focus();
+      }
+    };
+    document.addEventListener("focusin", keepFocusInDialog, true);
+
+    return () => {
+      mutationObserver?.disconnect();
+      document.removeEventListener("focusin", keepFocusInDialog, true);
+      for (const [element, previous] of restoredState) {
+        const inertTarget = element as HTMLElement & { inert?: boolean };
+        if (
+          previous.supportsInertProperty &&
+          typeof previous.inertProperty === "boolean"
+        ) {
+          inertTarget.inert = previous.inertProperty;
+        }
+        if (previous.inertAttribute === null)
+          element.removeAttribute("inert");
+        else element.setAttribute("inert", previous.inertAttribute);
+        if (previous.ariaHiddenAttribute === null)
+          element.removeAttribute("aria-hidden");
+        else
+          element.setAttribute(
+            "aria-hidden",
+            previous.ariaHiddenAttribute,
+          );
+        element.style.pointerEvents = previous.pointerEvents;
+      }
+      modalPortalHost.remove();
+    };
+  }, [modalOpen, modalPortalHost]);
+
   const savePermissions = React.useCallback(
-    async (requestedTools: readonly string[]) => {
+    async (
+      requestedTools: readonly string[],
+      generation = beginGeneration(),
+    ) => {
+      if (!isCurrentGeneration(generation)) return;
       const nextRequestedTools =
         reconcileMcpEnabledToolIdsDetailed(requestedTools);
       mergeRemovedToolIds(nextRequestedTools.removedToolIds);
+      const previousEnabledTools = [...appliedToolsRef.current];
       setSaving(true);
       setSaveError(null);
 
       try {
-        const status = await client.save(nextRequestedTools.enabledToolIds);
+        const status = await enqueueServerSave(
+          nextRequestedTools.enabledToolIds,
+          generation,
+        );
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
         const applied = await verifyAppliedOrRollback(
           status,
           nextRequestedTools.enabledToolIds,
-          appliedToolsRef.current,
+          previousEnabledTools,
+          generation,
         );
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
         try {
-          persistApplied(applied);
+          persistApplied(applied, [], removedToolIdsRef.current);
         } catch (error) {
           await rollbackServerSelection(
-            appliedToolsRef.current,
+            previousEnabledTools,
             new Error(
               `The applied MCP selection could not be persisted locally: ${errorMessage(error)}`,
             ),
+            generation,
           );
         }
+        if (!isCurrentGeneration(generation)) {
+          throw new StalePermissionOperation();
+        }
         setCatalog(resolveCatalog(status));
-        publishApplied(applied, status);
+        publishApplied(applied, status, generation);
       } catch (error) {
+        if (
+          error instanceof StalePermissionOperation ||
+          !isCurrentGeneration(generation)
+        ) {
+          return;
+        }
         setSaveError(
           `MCP permissions could not be saved. No local selection was changed: ${errorMessage(error)}`,
         );
       } finally {
-        setSaving(false);
+        if (isCurrentGeneration(generation)) setSaving(false);
       }
     },
     [
-      client,
+      beginGeneration,
+      enqueueServerSave,
+      isCurrentGeneration,
       mergeRemovedToolIds,
       persistApplied,
       publishApplied,
@@ -578,6 +1093,9 @@ export function McpToolPermissions({
       verifyAppliedOrRollback,
     ],
   );
+  reassertConfirmedSelectionRef.current = (generation) => {
+    void savePermissions(appliedToolsRef.current, generation);
+  };
 
   const requestPermissionChange = React.useCallback(
     (
@@ -586,7 +1104,9 @@ export function McpToolPermissions({
       trigger: HTMLElement | null,
       notifyParentOnCancel = false,
       controlledRequestKey: string | null = null,
+      generation = beginGeneration(),
     ) => {
+      if (!isCurrentGeneration(generation)) return;
       const plan = planMcpPermissionChange(
         appliedToolsRef.current,
         requestedTools,
@@ -603,42 +1123,60 @@ export function McpToolPermissions({
           trigger,
           notifyParentOnCancel,
           controlledRequestKey,
+          generation,
         );
         return;
       }
 
-      void savePermissions(plan.enabledToolIds);
+      void savePermissions(plan.enabledToolIds, generation);
     },
-    [catalog, mergeRemovedToolIds, openConfirmation, savePermissions],
+    [
+      beginGeneration,
+      catalog,
+      isCurrentGeneration,
+      mergeRemovedToolIds,
+      openConfirmation,
+      savePermissions,
+    ],
   );
 
   React.useEffect(() => {
-    if (
-      loadState !== "ready" ||
-      controlledEnabledTools === undefined ||
-      saving
-    ) {
+    const requested = controlledSelection;
+    const requestKey = requested === null ? null : reconciliationKey(requested);
+    if (loadState === "loading") {
       return;
     }
 
-    const requested = reconcileMcpEnabledToolIdsDetailed(
-      controlledEnabledTools,
-    );
-    mergeRemovedToolIds(requested.removedToolIds);
-    const requestKey = reconciliationKey(requested);
-    if (lastControlledRequestRef.current === requestKey) return;
-    if (pending !== null) {
-      if (
-        pending.controlledRequestKey === requestKey ||
-        pending.appliedRequestKey === requestKey
-      ) {
-        return;
+    if (observedControlledRequestRef.current === requestKey) {
+      if (latestControlledSelectionRef.current === requested) {
+        latestControlledSelectionRef.current = null;
       }
-      closeConfirmation(false);
       return;
     }
+
+    if (latestControlledSelectionRef.current === requested) {
+      latestControlledSelectionRef.current = null;
+    }
+    observedControlledRequestRef.current = requestKey;
+    const generation = beginGeneration();
+    setSaving(false);
+    setSaveError(null);
+    if (pending !== null) {
+      closeConfirmation(false, false, false, false);
+    }
+
+    if (loadState !== "ready" || requested === null) {
+      void loadPermissions(generation);
+      return;
+    }
+
+    mergeRemovedToolIds(requested.removedToolIds);
     lastControlledRequestRef.current = requestKey;
     if (sameToolIds(requested.enabledToolIds, appliedToolsRef.current)) {
+      if (hasPendingServerSave()) {
+        void savePermissions(requested.enabledToolIds, generation);
+        return;
+      }
       if (requested.removedToolIds.length > 0 && lastStatusRef.current) {
         onAppliedRef.current?.(
           [...appliedToolsRef.current],
@@ -654,15 +1192,19 @@ export function McpToolPermissions({
       null,
       true,
       requestKey,
+      generation,
     );
   }, [
-    controlledEnabledTools,
+    beginGeneration,
+    controlledSelection,
     closeConfirmation,
+    hasPendingServerSave,
     loadState,
+    loadPermissions,
     mergeRemovedToolIds,
     pending,
     requestPermissionChange,
-    saving,
+    savePermissions,
   ]);
 
   const normalizedSearch = search.trim().toLocaleLowerCase();
@@ -700,7 +1242,10 @@ export function McpToolPermissions({
           type="button"
           size="sm"
           variant="outline"
-          onClick={loadPermissions}
+          onClick={() => {
+            const generation = beginGeneration();
+            void loadPermissions(generation);
+          }}
         >
           Retry loading tools
         </Button>
@@ -709,305 +1254,337 @@ export function McpToolPermissions({
   }
 
   return (
-    <section
-      className="min-w-0 space-y-4"
-      aria-labelledby="mcp-tool-permissions-heading"
-    >
-      <div className="space-y-1">
-        <h3 id="mcp-tool-permissions-heading" className="font-medium">
-          MCP tool permissions
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          Grant only the Cloudflare actions that connected MCP clients should be
-          allowed to use.
-        </p>
-      </div>
-
-      <div className="space-y-1">
-        <label htmlFor="mcp-tool-search" className="text-xs font-medium">
-          Search tools
-        </label>
-        <Input
-          id="mcp-tool-search"
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by tool, capability, category, risk, or ID"
-          autoComplete="off"
-          disabled={saving}
-        />
-      </div>
-
-      <output
-        className="block rounded-md border border-border/60 bg-card/50 px-3 py-2 text-xs"
-        aria-live="polite"
+    <section className="min-w-0" aria-labelledby="mcp-tool-permissions-heading">
+      <div
+        className="space-y-4"
+        data-testid="mcp-permission-surrounding-content"
       >
-        <span className="font-medium">
-          {enabledKnownCount} of {knownTools.length} classified tools enabled.
-        </span>{" "}
-        {unknownTools.length > 0
-          ? `${unknownTools.length} unclassified ${unknownTools.length === 1 ? "tool is" : "tools are"} denied.`
-          : "No unclassified tools reported."}
-      </output>
-
-      {removedToolIds.length > 0 && (
-        <div
-          className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs break-words [overflow-wrap:anywhere]"
-          role="alert"
-        >
-          Removed {removedToolIds.length} unknown MCP tool{" "}
-          {removedToolIds.length === 1 ? "ID" : "IDs"} during reconciliation:{" "}
-          {removedToolIds.join(", ")}. Unknown permissions remain denied.
+        <div className="space-y-1">
+          <h3 id="mcp-tool-permissions-heading" className="font-medium">
+            MCP tool permissions
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            Grant only the Cloudflare actions that connected MCP clients should
+            be allowed to use.
+          </p>
         </div>
-      )}
 
-      {saveError && (
-        <div
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs break-words [overflow-wrap:anywhere]"
-          role="alert"
-        >
-          {saveError}
+        <div className="space-y-1">
+          <label htmlFor="mcp-tool-search" className="text-xs font-medium">
+            Search tools
+          </label>
+          <Input
+            id="mcp-tool-search"
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search by tool, capability, category, risk, or ID"
+            autoComplete="off"
+            disabled={saving || pending !== null}
+          />
         </div>
-      )}
 
-      {pending && (
-        <div
-          ref={dialogRef}
-          className="space-y-3 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="mcp-permission-confirmation-heading"
-          aria-describedby="mcp-permission-confirmation-description"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              closeConfirmation(pending.notifyParentOnCancel);
-              return;
-            }
-            if (event.key !== "Tab" || !dialogRef.current) return;
-
-            const focusable = focusableElements(dialogRef.current);
-            if (focusable.length === 0) {
-              event.preventDefault();
-              return;
-            }
-            const first = focusable[0];
-            const last = focusable.at(-1);
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault();
-              last?.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault();
-              first.focus();
-            }
-          }}
+        <output
+          className="block rounded-md border border-border/60 bg-card/50 px-3 py-2 text-xs"
+          aria-live="polite"
         >
-          <div className="space-y-1">
-            <h4
-              id="mcp-permission-confirmation-heading"
-              className="text-sm font-semibold"
-            >
-              {pending.heading}
-            </h4>
-            <p
-              id="mcp-permission-confirmation-description"
-              className="text-xs text-muted-foreground"
-            >
-              Confirm before granting these write, bulk, destructive,
-              credential, or administrative capabilities:
-            </p>
+          <span className="font-medium">
+            {enabledKnownCount} of {knownTools.length} classified tools enabled.
+          </span>{" "}
+          {unknownTools.length > 0
+            ? `${unknownTools.length} unclassified ${unknownTools.length === 1 ? "tool is" : "tools are"} denied.`
+            : "No unclassified tools reported."}
+        </output>
+
+        {removedToolIds.length > 0 && (
+          <div
+            className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs break-words [overflow-wrap:anywhere]"
+            role="alert"
+          >
+            Removed {removedToolIds.length} unknown MCP tool{" "}
+            {removedToolIds.length === 1 ? "ID" : "IDs"} during reconciliation:{" "}
+            {removedToolIds.join(", ")}. Unknown permissions remain denied.
           </div>
-          <ul className="list-disc space-y-1 pl-5 text-xs">
-            {pending.highRiskTools.map((tool) => (
-              <li
-                key={tool.id}
-                className="break-words [overflow-wrap:anywhere]"
-              >
-                {tool.label} ({RISK_LABELS[tool.risk]})
-              </li>
-            ))}
-          </ul>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              ref={cancelConfirmationRef}
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => closeConfirmation(pending.notifyParentOnCancel)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              onClick={() => {
-                const nextEnabledTools = pending.enabledTools;
-                const trigger = closeConfirmation(false, false, false);
-                void savePermissions(nextEnabledTools).finally(() => {
-                  setTimeout(() => {
-                    if (trigger?.isConnected) trigger.focus();
-                  }, 0);
-                });
+        )}
+
+        {saveError && (
+          <div
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs break-words [overflow-wrap:anywhere]"
+            role="alert"
+          >
+            {saveError}
+          </div>
+        )}
+
+        {visibleTools.length === 0 ? (
+          <div className="rounded-lg border border-border/60 bg-card/40 px-4 py-6 text-sm text-muted-foreground">
+            No MCP tools match “{search.trim()}”.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {categories.map((category) => {
+              const visibleCategoryTools = visibleTools.filter(
+                (tool) => tool.categoryId === category.id,
+              );
+              if (visibleCategoryTools.length === 0) return null;
+
+              const enabledVisibleCount = visibleCategoryTools.filter((tool) =>
+                enabledToolSet.has(tool.id),
+              ).length;
+              const categoryIsClassified = category.id !== "unclassified";
+              const newlyEnabledVisibleTools = visibleCategoryTools.filter(
+                (tool) => tool.known && !enabledToolSet.has(tool.id),
+              );
+
+              return (
+                <fieldset
+                  key={category.id}
+                  className="min-w-0 space-y-3 rounded-lg border border-border/60 bg-card/30 p-3"
+                >
+                  <legend className="w-full px-1">
+                    <span className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
+                      <span className="font-medium">{category.label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {enabledVisibleCount} / {visibleCategoryTools.length}{" "}
+                        visible enabled
+                      </span>
+                    </span>
+                  </legend>
+                  <p className="text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
+                    {category.description}
+                  </p>
+
+                  {categoryIsClassified && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          saving ||
+                          pending !== null ||
+                          newlyEnabledVisibleTools.length === 0
+                        }
+                        onClick={(event) => {
+                          const nextTools = [
+                            ...appliedTools,
+                            ...visibleCategoryTools
+                              .filter((tool) => tool.known)
+                              .map((tool) => tool.id),
+                          ];
+                          requestPermissionChange(
+                            nextTools,
+                            `Enable visible ${category.label}?`,
+                            event.currentTarget,
+                          );
+                        }}
+                      >
+                        Select visible
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          saving ||
+                          pending !== null ||
+                          enabledVisibleCount === 0
+                        }
+                        onClick={() => {
+                          const visibleIds = new Set(
+                            visibleCategoryTools.map((tool) => tool.id),
+                          );
+                          void savePermissions(
+                            appliedTools.filter((id) => !visibleIds.has(id)),
+                          );
+                        }}
+                      >
+                        Clear visible
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="grid min-w-0 gap-2">
+                    {visibleCategoryTools.map((tool) => {
+                      const enabled = tool.known && enabledToolSet.has(tool.id);
+                      const descriptionId = `mcp-tool-${tool.id}-description`;
+                      return (
+                        <label
+                          key={tool.id}
+                          className="flex min-w-0 items-start gap-3 rounded-md border border-border/50 bg-card/50 px-3 py-2"
+                        >
+                          <input
+                            type="checkbox"
+                            className="checkbox-themed mt-1 shrink-0"
+                            checked={enabled}
+                            disabled={saving || pending !== null || !tool.known}
+                            aria-describedby={descriptionId}
+                            onChange={(event) => {
+                              const nextTools = event.target.checked
+                                ? [...appliedTools, tool.id]
+                                : appliedTools.filter((id) => id !== tool.id);
+                              requestPermissionChange(
+                                nextTools,
+                                `Enable ${tool.label}?`,
+                                event.currentTarget,
+                              );
+                            }}
+                          />
+                          <span className="min-w-0 flex-1 space-y-1">
+                            <span className="flex min-w-0 flex-wrap items-center gap-2">
+                              <span className="font-medium break-words [overflow-wrap:anywhere]">
+                                {tool.label}
+                              </span>
+                              <Tag
+                                className={
+                                  tool.known
+                                    ? undefined
+                                    : "border-destructive/50 text-destructive"
+                                }
+                              >
+                                {tool.known
+                                  ? RISK_LABELS[tool.risk]
+                                  : "Unclassified · denied"}
+                              </Tag>
+                            </span>
+                            <span
+                              id={descriptionId}
+                              className="block text-xs text-muted-foreground break-words [overflow-wrap:anywhere]"
+                            >
+                              {tool.description}
+                              {!tool.known &&
+                                " It cannot be enabled until reviewed frontend metadata is added."}
+                            </span>
+                            <code className="block text-[11px] text-muted-foreground/80 break-all">
+                              {tool.id}
+                            </code>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {pending &&
+        modalPortalHost &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[1000] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
+            data-testid="mcp-permission-modal-backdrop"
+            role="presentation"
+          >
+            <div
+              ref={dialogRef}
+              className="max-h-[min(80vh,44rem)] w-full max-w-xl space-y-3 overflow-y-auto rounded-lg border border-destructive/50 bg-background px-4 py-3 shadow-2xl"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="mcp-permission-confirmation-heading"
+              aria-describedby="mcp-permission-confirmation-description"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeConfirmation(pending.notifyParentOnCancel);
+                  return;
+                }
+                if (event.key !== "Tab" || !dialogRef.current) return;
+
+                const focusable = focusableElements(dialogRef.current);
+                if (focusable.length === 0) {
+                  event.preventDefault();
+                  return;
+                }
+                const first = focusable[0];
+                const last = focusable.at(-1);
+                if (event.shiftKey && document.activeElement === first) {
+                  event.preventDefault();
+                  last?.focus();
+                } else if (
+                  !event.shiftKey &&
+                  document.activeElement === last
+                ) {
+                  event.preventDefault();
+                  first.focus();
+                }
               }}
             >
-              Confirm enable
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {visibleTools.length === 0 ? (
-        <div className="rounded-lg border border-border/60 bg-card/40 px-4 py-6 text-sm text-muted-foreground">
-          No MCP tools match “{search.trim()}”.
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {categories.map((category) => {
-            const visibleCategoryTools = visibleTools.filter(
-              (tool) => tool.categoryId === category.id,
-            );
-            if (visibleCategoryTools.length === 0) return null;
-
-            const enabledVisibleCount = visibleCategoryTools.filter((tool) =>
-              enabledToolSet.has(tool.id),
-            ).length;
-            const categoryIsClassified = category.id !== "unclassified";
-            const newlyEnabledVisibleTools = visibleCategoryTools.filter(
-              (tool) => tool.known && !enabledToolSet.has(tool.id),
-            );
-
-            return (
-              <fieldset
-                key={category.id}
-                className="min-w-0 space-y-3 rounded-lg border border-border/60 bg-card/30 p-3"
-              >
-                <legend className="w-full px-1">
-                  <span className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
-                    <span className="font-medium">{category.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {enabledVisibleCount} / {visibleCategoryTools.length}{" "}
-                      visible enabled
-                    </span>
-                  </span>
-                </legend>
-                <p className="text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
-                  {category.description}
+              <div className="space-y-1">
+                <h4
+                  id="mcp-permission-confirmation-heading"
+                  className="text-sm font-semibold"
+                >
+                  {pending.heading}
+                </h4>
+                <p
+                  id="mcp-permission-confirmation-description"
+                  className="text-xs text-muted-foreground"
+                >
+                  Confirm before granting these write, bulk, destructive,
+                  credential, or administrative capabilities:
                 </p>
-
-                {categoryIsClassified && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={
-                        saving ||
-                        pending !== null ||
-                        newlyEnabledVisibleTools.length === 0
-                      }
-                      onClick={(event) => {
-                        const nextTools = [
-                          ...appliedTools,
-                          ...visibleCategoryTools
-                            .filter((tool) => tool.known)
-                            .map((tool) => tool.id),
-                        ];
-                        requestPermissionChange(
-                          nextTools,
-                          `Enable visible ${category.label}?`,
-                          event.currentTarget,
-                        );
-                      }}
-                    >
-                      Select visible
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={
-                        saving || pending !== null || enabledVisibleCount === 0
-                      }
-                      onClick={() => {
-                        const visibleIds = new Set(
-                          visibleCategoryTools.map((tool) => tool.id),
-                        );
-                        void savePermissions(
-                          appliedTools.filter((id) => !visibleIds.has(id)),
-                        );
-                      }}
-                    >
-                      Clear visible
-                    </Button>
-                  </div>
-                )}
-
-                <div className="grid min-w-0 gap-2">
-                  {visibleCategoryTools.map((tool) => {
-                    const enabled = tool.known && enabledToolSet.has(tool.id);
-                    const descriptionId = `mcp-tool-${tool.id}-description`;
-                    return (
-                      <label
-                        key={tool.id}
-                        className="flex min-w-0 items-start gap-3 rounded-md border border-border/50 bg-card/50 px-3 py-2"
-                      >
-                        <input
-                          type="checkbox"
-                          className="checkbox-themed mt-1 shrink-0"
-                          checked={enabled}
-                          disabled={saving || pending !== null || !tool.known}
-                          aria-describedby={descriptionId}
-                          onChange={(event) => {
-                            const nextTools = event.target.checked
-                              ? [...appliedTools, tool.id]
-                              : appliedTools.filter((id) => id !== tool.id);
-                            requestPermissionChange(
-                              nextTools,
-                              `Enable ${tool.label}?`,
-                              event.currentTarget,
-                            );
-                          }}
-                        />
-                        <span className="min-w-0 flex-1 space-y-1">
-                          <span className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span className="font-medium break-words [overflow-wrap:anywhere]">
-                              {tool.label}
-                            </span>
-                            <Tag
-                              className={
-                                tool.known
-                                  ? undefined
-                                  : "border-destructive/50 text-destructive"
-                              }
-                            >
-                              {tool.known
-                                ? RISK_LABELS[tool.risk]
-                                : "Unclassified · denied"}
-                            </Tag>
-                          </span>
-                          <span
-                            id={descriptionId}
-                            className="block text-xs text-muted-foreground break-words [overflow-wrap:anywhere]"
-                          >
-                            {tool.description}
-                            {!tool.known &&
-                              " It cannot be enabled until reviewed frontend metadata is added."}
-                          </span>
-                          <code className="block text-[11px] text-muted-foreground/80 break-all">
-                            {tool.id}
-                          </code>
-                        </span>
-                      </label>
+              </div>
+              <ul className="list-disc space-y-1 pl-5 text-xs">
+                {pending.highRiskTools.map((tool) => (
+                  <li
+                    key={tool.id}
+                    className="break-words [overflow-wrap:anywhere]"
+                  >
+                    {tool.label} ({RISK_LABELS[tool.risk]})
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  ref={cancelConfirmationRef}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    closeConfirmation(pending.notifyParentOnCancel)
+                  }
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    const nextEnabledTools = pending.enabledTools;
+                    const generation = pending.generation;
+                    const trigger = closeConfirmation(
+                      false,
+                      false,
+                      false,
+                      false,
                     );
-                  })}
-                </div>
-              </fieldset>
-            );
-          })}
-        </div>
-      )}
+                    void savePermissions(nextEnabledTools, generation).finally(
+                      () => {
+                        if (!isCurrentGeneration(generation)) return;
+                        setTimeout(() => {
+                          if (
+                            isCurrentGeneration(generation) &&
+                            trigger?.isConnected
+                          ) {
+                            trigger.focus();
+                          }
+                        }, 0);
+                      },
+                    );
+                  }}
+                >
+                  Confirm enable
+                </Button>
+              </div>
+            </div>
+          </div>,
+          modalPortalHost,
+        )}
     </section>
   );
 }
