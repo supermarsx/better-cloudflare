@@ -503,6 +503,7 @@ test("rejected desktop DNS preferences are reported without destroying the manag
 test("login-time MCP synchronization is contained and attempted only once", async () => {
   setDesktopWindow();
   let attempts = 0;
+  let serverStopAttempts = 0;
   mockDnsRuntime(
     async () => ({
       mcp_server_enabled: false,
@@ -511,8 +512,14 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
     async () => {
       attempts += 1;
       throw new Error(
-        "invalid args `enabledTools` for command `mcp_set_enabled_tools`",
+        "invalid args `enabledTools` for command `mcp_set_enabled_tools` token=bootstrap-secret",
       );
+    },
+    {
+      stopMcpServer: async () => {
+        serverStopAttempts += 1;
+        return createMcpStatus();
+      },
     },
   );
 
@@ -527,6 +534,17 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
     );
   });
   assert.equal(attempts, 1);
+  const synchronizationDiagnostics = getRuntimeDiagnostics().filter(
+    (diagnostic) =>
+      diagnostic.label === "Synchronize MCP server preferences",
+  );
+  assert.equal(synchronizationDiagnostics.length, 1);
+  assert.match(synchronizationDiagnostics[0].message, /token=\[redacted\]/);
+  assert.doesNotMatch(
+    synchronizationDiagnostics[0].message,
+    /bootstrap-secret/,
+  );
+  assert.equal(serverStopAttempts, 0);
   assert.ok(screen.getByRole("button", { name: "Settings" }));
 });
 
@@ -572,8 +590,8 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
   await waitFor(() => assert.ok(snapshotReads >= 3));
   statusLoad.resolve(createMcpStatus(["cf_list_zones"]));
   await waitFor(() => {
-    assert.deepEqual(setToolCalls, [[]]);
-    assert.deepEqual(startCalls, [[]]);
+    assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
+    assert.deepEqual(startCalls, [["cf_list_zones"]]);
   });
 
   const parking = screen.getByTestId("mcp-permissions-parking");
@@ -666,15 +684,24 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
   fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
 
-  const enableAll = await screen.findByRole("button", { name: "Enable all" });
-  await waitFor(() => assert.equal(enableAll.hasAttribute("disabled"), false));
+  const accessGroup = await screen.findByRole("group", {
+    name: /Access and zones/,
+  });
+  const selectVisible = within(accessGroup).getByRole("button", {
+    name: "Select visible",
+  });
+  await waitFor(() =>
+    assert.equal(selectVisible.hasAttribute("disabled"), false),
+  );
   rejectToolMutation = true;
-  fireEvent.click(enableAll);
+  fireEvent.click(selectVisible);
 
   await waitFor(() => {
     assert.ok(screen.getByText("MCP tools failed token=[redacted]"));
   });
-  const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+  const checkbox = within(accessGroup).getByRole("checkbox", {
+    name: /^List zones/,
+  }) as HTMLInputElement;
   assert.equal(checkbox.checked, false);
   assert.ok(
     getRuntimeDiagnostics().some(

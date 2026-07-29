@@ -26,6 +26,7 @@ test("mounts categorized MCP permissions and removes the legacy flat controls", 
     DNS_MANAGER_SOURCE,
     /interactive=\{mcpPermissionsInteractive\}/,
   );
+  assert.match(DNS_MANAGER_SOURCE, /onError=\{handleMcpPermissionsError\}/);
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /applyMcpEnabledTools/);
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /mcpToolCatalog/);
   assert.doesNotMatch(
@@ -55,6 +56,22 @@ test("treats an explicit empty onApplied selection as authoritative and ready", 
   assert.doesNotMatch(handler, /enabledTools\.length/);
 });
 
+test("bootstrap permission failures stay unready and report one owned diagnostic", () => {
+  const handler = sourceBetween(
+    "const handleMcpPermissionsError = useCallback(",
+    "const setMcpServerRunning = useCallback(",
+  );
+
+  assert.match(
+    handler,
+    /failure\.operation === "bootstrap"[\s\S]*setMcpPermissionsReady\(false\);/,
+  );
+  assert.match(handler, /"Synchronize MCP server preferences"/);
+  assert.match(handler, /"Update MCP tool access"/);
+  assert.match(handler, /setMcpActionError\(diagnostic\.message\);/);
+  assert.doesNotMatch(handler, /setMcpPermissionsReady\(true\)/);
+});
+
 test("starts and restarts MCP with confirmed permissions only", () => {
   const serverControl = sourceBetween(
     "const setMcpServerRunning = useCallback(",
@@ -72,7 +89,7 @@ test("starts and restarts MCP with confirmed permissions only", () => {
   assert.doesNotMatch(serverControl, /mcpRequestedTools/);
   assert.match(
     startupSynchronization,
-    /TauriClient\.startMcpServer\(\s*mcpServerHost,\s*mcpServerPort,\s*mcpEnabledTools,\s*\)/,
+    /TauriClient\.startMcpServer\(\s*mcpServerHostRef\.current,\s*mcpServerPortRef\.current,\s*mcpEnabledToolsRef\.current,\s*\)/,
   );
   assert.doesNotMatch(startupSynchronization, /mcpRequestedTools/);
 });

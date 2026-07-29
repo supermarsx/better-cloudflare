@@ -381,9 +381,7 @@ for (const [label, permissionPolicyVersion] of [
     );
 
     render(<McpToolPermissions client={client} storage={storage} />);
-    await waitUntilReady();
-
-    const confirmation = screen.getByRole("alertdialog");
+    const confirmation = await screen.findByRole("alertdialog");
     assert.ok(within(confirmation).getByText(/Create DNS record/));
     assert.deepEqual(saveCalls, [["cf_list_zones"]]);
     assert.deepEqual(storage.current, ["cf_list_zones"]);
@@ -465,6 +463,39 @@ test("unknown tools are listed, warned, denied, and removed from server and stor
     }),
     null,
   );
+});
+
+test("unknown explicit IDs omitted by the reviewed catalogue do not invalidate known authority", async () => {
+  const storage = new PermissionStorage(["cf_list_zones"]);
+  const loadedStatus = {
+    ...status(["cf_list_zones"]),
+    enabledTools: ["cf_list_zones", "omitted_unknown_tool"],
+    tools: STABLE_MCP_TOOL_IDS.map((id) =>
+      descriptor(id, id === "cf_list_zones"),
+    ),
+  };
+  const saveCalls: string[][] = [];
+  const client: McpToolPermissionsClient = {
+    load: async () => loadedStatus,
+    save: async (enabledTools) => {
+      saveCalls.push([...enabledTools]);
+      return status(enabledTools);
+    },
+  };
+
+  render(<McpToolPermissions client={client} storage={storage} />);
+  await waitUntilReady();
+
+  assert.deepEqual(saveCalls, [["cf_list_zones"]]);
+  assert.deepEqual(storage.stageWrites, [
+    {
+      enabledTools: ["cf_list_zones"],
+      pendingHighRiskToolIds: [],
+      removedToolIds: ["omitted_unknown_tool"],
+    },
+  ]);
+  assert.ok(screen.getByText(/omitted_unknown_tool/));
+  assert.equal(screen.queryByRole("alertdialog"), null);
 });
 
 test("unknown permission diagnostics remain count- and length-bounded in UI staging", async () => {
@@ -575,21 +606,24 @@ test("an incomplete catalogue exceeding the unknown-descriptor cap fails closed 
 
 test("every newly enabled write tool requires confirmation and cancel changes nothing", async () => {
   const { client, saveCalls } = clientFor(status());
-  const { container } = render(
+  render(
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
   assert.deepEqual(saveCalls, [[]]);
+  const surrounding = screen.getByTestId(
+    "mcp-permission-surrounding-content",
+  );
 
   const checkbox = screen.getByRole("checkbox", {
     name: /^Create DNS record/,
   });
   fireEvent.click(checkbox);
 
-  let confirmation = screen.getByRole("alertdialog");
-  assert.equal(container.getAttribute("inert"), "");
-  assert.equal(container.getAttribute("aria-hidden"), "true");
-  assert.equal(container.style.pointerEvents, "none");
+  let confirmation = await screen.findByRole("alertdialog");
+  assert.equal(surrounding.getAttribute("inert"), "");
+  assert.equal(surrounding.getAttribute("aria-hidden"), "true");
+  assert.equal(surrounding.style.pointerEvents, "none");
   assert.ok(within(confirmation).getByText("Enable Create DNS record?"));
   assert.ok(within(confirmation).getByText(/Changes data/));
   assert.equal(
@@ -602,14 +636,14 @@ test("every newly enabled write tool requires confirmation and cancel changes no
   fireEvent.click(within(confirmation).getByRole("button", { name: "Cancel" }));
   await waitFor(() => assert.equal(document.activeElement === checkbox, true));
   assert.equal(screen.queryByRole("alertdialog"), null);
-  assert.equal(container.hasAttribute("inert"), false);
-  assert.equal(container.hasAttribute("aria-hidden"), false);
-  assert.equal(container.style.pointerEvents, "");
+  assert.equal(surrounding.hasAttribute("inert"), false);
+  assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+  assert.equal(surrounding.style.pointerEvents, "");
   assert.deepEqual(saveCalls, [[]]);
   assert.equal((checkbox as HTMLInputElement).checked, false);
 
   fireEvent.click(checkbox);
-  confirmation = screen.getByRole("alertdialog");
+  confirmation = await screen.findByRole("alertdialog");
   fireEvent.click(
     within(confirmation).getByRole("button", { name: "Confirm enable" }),
   );
@@ -618,24 +652,27 @@ test("every newly enabled write tool requires confirmation and cancel changes no
     assert.deepEqual(saveCalls, [[], ["cf_create_dns_record"]]);
     assert.equal((checkbox as HTMLInputElement).checked, true);
     assert.equal(document.activeElement === checkbox, true);
-    assert.equal(container.hasAttribute("inert"), false);
-    assert.equal(container.hasAttribute("aria-hidden"), false);
-    assert.equal(container.style.pointerEvents, "");
+    assert.equal(surrounding.hasAttribute("inert"), false);
+    assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+    assert.equal(surrounding.style.pointerEvents, "");
   });
 });
 
 test("confirmation modal traps focus, Escape cancels, and restores the trigger", async () => {
   const { client, saveCalls } = clientFor(status());
-  const { container } = render(
+  render(
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
+  const surrounding = screen.getByTestId(
+    "mcp-permission-surrounding-content",
+  );
 
   const trigger = screen.getByRole("checkbox", {
     name: /^Delete DNS record/,
   });
   fireEvent.click(trigger);
-  const dialog = screen.getByRole("alertdialog");
+  const dialog = await screen.findByRole("alertdialog");
   const cancel = within(dialog).getByRole("button", { name: "Cancel" });
   const confirm = within(dialog).getByRole("button", {
     name: "Confirm enable",
@@ -650,19 +687,22 @@ test("confirmation modal traps focus, Escape cancels, and restores the trigger",
   fireEvent.keyDown(dialog, { key: "Escape" });
   await waitFor(() => assert.equal(document.activeElement === trigger, true));
   assert.equal(screen.queryByRole("alertdialog"), null);
-  assert.equal(container.hasAttribute("inert"), false);
-  assert.equal(container.hasAttribute("aria-hidden"), false);
-  assert.equal(container.style.pointerEvents, "");
+  assert.equal(surrounding.hasAttribute("inert"), false);
+  assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+  assert.equal(surrounding.style.pointerEvents, "");
   assert.deepEqual(saveCalls, [[]]);
 });
 
 test("confirmation makes surrounding search, bulk controls, and checkboxes genuinely inert", async () => {
   const { client, saveCalls } = clientFor(status());
-  const { container } = render(
+  render(
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
 
+  const surrounding = screen.getByTestId(
+    "mcp-permission-surrounding-content",
+  );
   const search = screen.getByRole("searchbox", { name: "Search tools" });
   const dnsGroup = screen.getByRole("group", { name: /DNS records/ });
   const selectVisible = within(dnsGroup).getByRole("button", {
@@ -676,11 +716,11 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
   });
 
   fireEvent.click(highRiskTrigger);
-  const dialog = screen.getByRole("alertdialog");
+  const dialog = await screen.findByRole("alertdialog");
   const cancel = within(dialog).getByRole("button", { name: "Cancel" });
-  assert.equal(container.getAttribute("inert"), "");
-  assert.equal(container.getAttribute("aria-hidden"), "true");
-  assert.equal(container.style.pointerEvents, "none");
+  assert.equal(surrounding.getAttribute("inert"), "");
+  assert.equal(surrounding.getAttribute("aria-hidden"), "true");
+  assert.equal(surrounding.style.pointerEvents, "none");
 
   search.focus();
   assert.equal(document.activeElement === cancel, true);
@@ -692,9 +732,9 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
 
   fireEvent.click(cancel);
   await waitFor(() => assert.equal(document.activeElement, highRiskTrigger));
-  assert.equal(container.hasAttribute("inert"), false);
-  assert.equal(container.hasAttribute("aria-hidden"), false);
-  assert.equal(container.style.pointerEvents, "");
+  assert.equal(surrounding.hasAttribute("inert"), false);
+  assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+  assert.equal(surrounding.style.pointerEvents, "");
 
   search.focus();
   assert.equal(document.activeElement, search);
@@ -711,14 +751,18 @@ test("modal isolation restores the exact surrounding DOM state on unmount", asyn
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
+  const surrounding = screen.getByTestId(
+    "mcp-permission-surrounding-content",
+  );
 
   fireEvent.click(screen.getByRole("checkbox", { name: /^Create DNS record/ }));
-  assert.equal(rendered.container.getAttribute("inert"), "");
+  await screen.findByRole("alertdialog");
+  assert.equal(surrounding.getAttribute("inert"), "");
   rendered.unmount();
 
-  assert.equal(rendered.container.hasAttribute("inert"), false);
-  assert.equal(rendered.container.hasAttribute("aria-hidden"), false);
-  assert.equal(rendered.container.style.pointerEvents, "");
+  assert.equal(surrounding.hasAttribute("inert"), false);
+  assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+  assert.equal(surrounding.style.pointerEvents, "");
 });
 
 test("the portal modal inerts and restores external application siblings", async () => {
@@ -739,7 +783,7 @@ test("the portal modal inerts and restores external application siblings", async
       name: /^Create DNS record/,
     });
     fireEvent.click(trigger);
-    const dialog = screen.getByRole("alertdialog");
+    const dialog = await screen.findByRole("alertdialog");
     const cancel = within(dialog).getByRole("button", { name: "Cancel" });
 
     assert.ok(screen.getByTestId("mcp-permission-modal-backdrop"));
@@ -775,7 +819,7 @@ test("filtered category bulk actions affect only the currently visible tools", a
   fireEvent.click(
     within(dnsGroup).getByRole("button", { name: "Select visible" }),
   );
-  const confirmation = screen.getByRole("alertdialog");
+  const confirmation = await screen.findByRole("alertdialog");
   assert.ok(within(confirmation).getByText("Enable visible DNS records?"));
   assert.equal(within(confirmation).queryByText(/Bulk create/), null);
   fireEvent.click(
@@ -810,7 +854,7 @@ test("unfiltered category selection confirms every newly enabled high-risk tier"
   fireEvent.click(
     within(dnsGroup).getByRole("button", { name: "Select visible" }),
   );
-  const confirmation = screen.getByRole("alertdialog");
+  const confirmation = await screen.findByRole("alertdialog");
   assert.ok(within(confirmation).getByText(/Create DNS record/));
   assert.ok(within(confirmation).getByText(/Bulk create DNS records/));
   assert.ok(within(confirmation).getByText(/Bulk delete DNS records/));
@@ -839,10 +883,9 @@ test("initial controlled/imported high-risk values cannot bypass confirmation", 
     />,
   );
 
-  await waitUntilReady();
+  const confirmation = await screen.findByRole("alertdialog");
   assert.deepEqual(saveCalls, [["cf_list_zones"]]);
   assert.deepEqual(applied, [["cf_list_zones"]]);
-  const confirmation = screen.getByRole("alertdialog");
   assert.ok(
     within(confirmation).getByText("Apply imported or parent MCP permissions?"),
   );
@@ -1011,7 +1054,7 @@ test("storage-imported high-risk values stay staged until the same confirmation 
   const { client, saveCalls } = clientFor(status([]));
   render(<McpToolPermissions client={client} storage={storage} />);
 
-  await waitUntilReady();
+  const confirmation = await screen.findByRole("alertdialog");
   assert.deepEqual(saveCalls, [["cf_list_zones"]]);
   assert.deepEqual(storage.writes, []);
   assert.deepEqual(storage.stageWrites, [
@@ -1028,7 +1071,6 @@ test("storage-imported high-risk values stay staged until the same confirmation 
     "cf_create_dns_record",
     "cf_bulk_create_dns_records",
   ]);
-  const confirmation = screen.getByRole("alertdialog");
   assert.ok(within(confirmation).getByText(/Create DNS record/));
   assert.ok(within(confirmation).getByText(/Bulk create DNS records/));
 
@@ -1054,8 +1096,7 @@ test("cancelling a staged import clears it without ever applying its high-risk t
   const { client, saveCalls } = clientFor(status([]));
   render(<McpToolPermissions client={client} storage={storage} />);
 
-  await waitUntilReady();
-  const confirmation = screen.getByRole("alertdialog");
+  const confirmation = await screen.findByRole("alertdialog");
   fireEvent.click(within(confirmation).getByRole("button", { name: "Cancel" }));
 
   await waitFor(() => {
@@ -1132,7 +1173,7 @@ test("controlled changes use onApplied as the single parent synchronization cont
 test("the latest controlled request supersedes a stale high-risk confirmation", async () => {
   const { client, saveCalls } = clientFor(status([]));
   const storage = new PermissionStorage();
-  const { container, rerender } = render(
+  const { rerender } = render(
     <McpToolPermissions
       client={client}
       storage={storage}
@@ -1141,6 +1182,9 @@ test("the latest controlled request supersedes a stale high-risk confirmation", 
     />,
   );
   await waitUntilReady();
+  const surrounding = screen.getByTestId(
+    "mcp-permission-surrounding-content",
+  );
 
   rerender(
     <McpToolPermissions
@@ -1152,7 +1196,7 @@ test("the latest controlled request supersedes a stale high-risk confirmation", 
   );
   const staleConfirmation = await screen.findByRole("alertdialog");
   assert.ok(within(staleConfirmation).getByText(/Create DNS record/));
-  assert.equal(container.getAttribute("inert"), "");
+  assert.equal(surrounding.getAttribute("inert"), "");
 
   rerender(
     <McpToolPermissions
@@ -1168,9 +1212,9 @@ test("the latest controlled request supersedes a stale high-risk confirmation", 
     assert.deepEqual(saveCalls, [[], ["cf_list_zones"]]);
   });
   assert.deepEqual(storage.current, ["cf_list_zones"]);
-  assert.equal(container.hasAttribute("inert"), false);
-  assert.equal(container.hasAttribute("aria-hidden"), false);
-  assert.equal(container.style.pointerEvents, "");
+  assert.equal(surrounding.hasAttribute("inert"), false);
+  assert.equal(surrounding.hasAttribute("aria-hidden"), false);
+  assert.equal(surrounding.style.pointerEvents, "");
 });
 
 test("a confirmed-safe profile clears superseded staged permissions before restart", async () => {
@@ -1748,6 +1792,13 @@ for (const [label, nonAuthoritativeStatus] of [
     {
       ...status(["cf_list_zones"]),
       enabled_tools: ["cf_list_dns_records"],
+    },
+  ],
+  [
+    "complete catalogue contradicting explicit known enablement",
+    {
+      ...status(["cf_list_zones"]),
+      tools: STABLE_MCP_TOOL_IDS.map((id) => descriptor(id, false)),
     },
   ],
 ] as const) {

@@ -26,6 +26,7 @@ import {
   type McpServerStatus,
   type McpToolDescriptor,
 } from "@/lib/api/tauri-client";
+import { sanitizeRuntimeText } from "@/lib/errors/runtime-reporting";
 import { storageManager } from "@/lib/storage/storage";
 
 export interface McpToolPermissionsClient {
@@ -60,6 +61,10 @@ export interface McpToolPermissionsApplication {
   synchronization: "provisional" | "final";
 }
 
+export interface McpToolPermissionsFailure {
+  operation: "bootstrap" | "update";
+}
+
 export interface McpToolPermissionsProps {
   client?: McpToolPermissionsClient;
   storage?: McpToolPermissionsStorage;
@@ -85,6 +90,11 @@ export interface McpToolPermissionsProps {
     status: McpServerStatus,
     application: McpToolPermissionsApplication,
   ) => void;
+  /**
+   * Reports a failed reconciliation without allowing the permission controller
+   * to mark itself ready. The parent owns user-visible runtime diagnostics.
+   */
+  onError?: (error: unknown, failure: McpToolPermissionsFailure) => void;
 }
 
 interface PendingPermissionChange {
@@ -136,8 +146,12 @@ const REVIEWED_MCP_TOOL_IDS = new Set(
 );
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message;
-  if (typeof error === "string" && error.trim()) return error;
+  if (error instanceof Error && error.message.trim()) {
+    return sanitizeRuntimeText(error.message);
+  }
+  if (typeof error === "string" && error.trim()) {
+    return sanitizeRuntimeText(error);
+  }
   return "An unexpected MCP permissions error occurred.";
 }
 
@@ -262,14 +276,15 @@ function authoritativeStatusSelection(status: McpServerStatus) {
   const first = candidates[0];
   if (!first) return null;
   const sameSelection = candidates.every(
-    (candidate) =>
-      sameToolIds(candidate.enabledToolIds, first.enabledToolIds) &&
-      candidate.removedToolIds.length === first.removedToolIds.length &&
-      candidate.removedToolIds.every((id) =>
-        first.removedToolIds.includes(id),
-      ),
+    (candidate) => sameToolIds(candidate.enabledToolIds, first.enabledToolIds),
   );
-  return sameSelection ? first : null;
+  if (!sameSelection) return null;
+  return {
+    enabledToolIds: first.enabledToolIds,
+    removedToolIds: capMcpPermissionDiagnosticIds(
+      candidates.flatMap((candidate) => candidate.removedToolIds),
+    ),
+  };
 }
 
 function requireAuthoritativeStatusSelection(status: McpServerStatus) {
@@ -305,6 +320,64 @@ function exactAppliedSelection(
 
 class StalePermissionOperation extends Error {}
 
+interface ModalIsolationState {
+  owners: Set<symbol>;
+  inertAttribute: string | null;
+  ariaHiddenAttribute: string | null;
+  pointerEvents: string;
+  supportsInertProperty: boolean;
+  inertProperty: boolean | undefined;
+}
+
+const modalIsolationStates = new WeakMap<HTMLElement, ModalIsolationState>();
+
+function acquireModalIsolation(element: HTMLElement, owner: symbol): void {
+  const existing = modalIsolationStates.get(element);
+  if (existing) {
+    existing.owners.add(owner);
+    return;
+  }
+
+  const inertTarget = element as HTMLElement & { inert?: boolean };
+  const supportsInertProperty = "inert" in inertTarget;
+  modalIsolationStates.set(element, {
+    owners: new Set([owner]),
+    inertAttribute: element.getAttribute("inert"),
+    ariaHiddenAttribute: element.getAttribute("aria-hidden"),
+    pointerEvents: element.style.pointerEvents,
+    supportsInertProperty,
+    inertProperty: inertTarget.inert,
+  });
+  element.setAttribute("inert", "");
+  element.setAttribute("aria-hidden", "true");
+  element.style.pointerEvents = "none";
+  if (supportsInertProperty) inertTarget.inert = true;
+}
+
+function releaseModalIsolation(element: HTMLElement, owner: symbol): void {
+  const state = modalIsolationStates.get(element);
+  if (!state) return;
+  state.owners.delete(owner);
+  if (state.owners.size > 0) return;
+
+  const inertTarget = element as HTMLElement & { inert?: boolean };
+  if (
+    state.supportsInertProperty &&
+    typeof state.inertProperty === "boolean"
+  ) {
+    inertTarget.inert = state.inertProperty;
+  }
+  if (state.inertAttribute === null) element.removeAttribute("inert");
+  else element.setAttribute("inert", state.inertAttribute);
+  if (state.ariaHiddenAttribute === null) {
+    element.removeAttribute("aria-hidden");
+  } else {
+    element.setAttribute("aria-hidden", state.ariaHiddenAttribute);
+  }
+  element.style.pointerEvents = state.pointerEvents;
+  modalIsolationStates.delete(element);
+}
+
 function matchesSearch(tool: ResolvedMcpTool, query: string): boolean {
   if (!query) return true;
   const category = MCP_TOOL_CATEGORIES.find(({ id }) => id === tool.categoryId);
@@ -334,6 +407,7 @@ export function McpToolPermissions({
   interactive = true,
   enabledTools: controlledEnabledTools,
   onApplied,
+  onError,
 }: McpToolPermissionsProps) {
   const [loadState, setLoadState] = React.useState<
     "loading" | "ready" | "error"
@@ -362,6 +436,7 @@ export function McpToolPermissions({
   const latestControlledSelectionRef =
     React.useRef<McpToolIdReconciliation | null>(controlledSelection);
   const onAppliedRef = React.useRef(onApplied);
+  const onErrorRef = React.useRef(onError);
   const clientRef = React.useRef(client);
   const mountedRef = React.useRef(true);
   const mountCleanupEpochRef = React.useRef(0);
@@ -468,8 +543,7 @@ export function McpToolPermissions({
     const requestedLoad = Promise.resolve().then(() =>
       clientRef.current.load(),
     );
-    let sharedLoad: Promise<McpServerStatus>;
-    sharedLoad = requestedLoad.then(
+    const sharedLoad = requestedLoad.then(
       (status) => {
         if (inFlightClientLoadRef.current === sharedLoad) {
           inFlightClientLoadRef.current = null;
@@ -520,6 +594,24 @@ export function McpToolPermissions({
   React.useEffect(() => {
     onAppliedRef.current = onApplied;
   }, [onApplied]);
+
+  React.useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  const reportFailure = React.useCallback(
+    (
+      error: unknown,
+      operation: McpToolPermissionsFailure["operation"],
+    ) => {
+      try {
+        onErrorRef.current?.(error, { operation });
+      } catch {
+        // A diagnostic callback must never take down permission recovery.
+      }
+    },
+    [],
+  );
 
   const mergeRemovedToolIds = React.useCallback((ids: readonly string[]) => {
     if (ids.length === 0) return;
@@ -923,6 +1015,7 @@ export function McpToolPermissions({
           `MCP permissions could not be loaded and reconciled: ${errorMessage(error)}`,
         );
         setLoadState("error");
+        reportFailure(error, "bootstrap");
       }
     },
     [
@@ -932,6 +1025,7 @@ export function McpToolPermissions({
       openConfirmation,
       persistApplied,
       publishApplied,
+      reportFailure,
       rollbackServerSelection,
       storage,
       verifyAppliedOrRollback,
@@ -952,46 +1046,40 @@ export function McpToolPermissions({
   React.useLayoutEffect(() => {
     if (!modalOpen || !modalPortalHost || typeof document === "undefined")
       return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
 
-    const restoredState = new Map<
-      HTMLElement,
-      {
-        inertAttribute: string | null;
-        ariaHiddenAttribute: string | null;
-        pointerEvents: string;
-        supportsInertProperty: boolean;
-        inertProperty: boolean | undefined;
-      }
-    >();
+    const portalContainsDialog = modalPortalHost.contains(dialog);
+    if (
+      portalContainsDialog &&
+      modalPortalHost.parentElement !== document.body
+    ) {
+      document.body.appendChild(modalPortalHost);
+    }
+
+    const isolationOwner = Symbol("mcp-permission-modal");
+    const isolatedElements = new Set<HTMLElement>();
     const ignoredTags = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT"]);
-    const inertApplicationSibling = (element: Element) => {
+    const isolateApplicationSibling = (element: Element) => {
       if (
         !(element instanceof HTMLElement) ||
-        element === modalPortalHost ||
         ignoredTags.has(element.tagName) ||
-        restoredState.has(element)
+        isolatedElements.has(element)
       ) {
         return;
       }
-
-      const inertTarget = element as HTMLElement & { inert?: boolean };
-      const supportsInertProperty = "inert" in inertTarget;
-      restoredState.set(element, {
-        inertAttribute: element.getAttribute("inert"),
-        ariaHiddenAttribute: element.getAttribute("aria-hidden"),
-        pointerEvents: element.style.pointerEvents,
-        supportsInertProperty,
-        inertProperty: inertTarget.inert,
-      });
-      element.setAttribute("inert", "");
-      element.setAttribute("aria-hidden", "true");
-      element.style.pointerEvents = "none";
-      if (supportsInertProperty) inertTarget.inert = true;
+      isolatedElements.add(element);
+      acquireModalIsolation(element, isolationOwner);
     };
 
-    document.body.appendChild(modalPortalHost);
-    for (const child of Array.from(document.body.children)) {
-      inertApplicationSibling(child);
+    let modalBranch: Element = dialog;
+    while (modalBranch.parentElement) {
+      const parent = modalBranch.parentElement;
+      for (const sibling of Array.from(parent.children)) {
+        if (sibling !== modalBranch) isolateApplicationSibling(sibling);
+      }
+      if (parent === document.body) break;
+      modalBranch = parent;
     }
 
     const mutationObserver =
@@ -1000,7 +1088,13 @@ export function McpToolPermissions({
         : new MutationObserver((records) => {
             for (const record of records) {
               for (const node of Array.from(record.addedNodes)) {
-                if (node instanceof Element) inertApplicationSibling(node);
+                if (
+                  node instanceof Element &&
+                  node !== modalBranch &&
+                  !node.contains(dialog)
+                ) {
+                  isolateApplicationSibling(node);
+                }
               }
             }
           });
@@ -1010,7 +1104,7 @@ export function McpToolPermissions({
       const target = event.target;
       if (
         target instanceof Node &&
-        !modalPortalHost.contains(target) &&
+        !dialog.contains(target) &&
         cancelConfirmationRef.current
       ) {
         cancelConfirmationRef.current.focus();
@@ -1021,27 +1115,15 @@ export function McpToolPermissions({
     return () => {
       mutationObserver?.disconnect();
       document.removeEventListener("focusin", keepFocusInDialog, true);
-      for (const [element, previous] of restoredState) {
-        const inertTarget = element as HTMLElement & { inert?: boolean };
-        if (
-          previous.supportsInertProperty &&
-          typeof previous.inertProperty === "boolean"
-        ) {
-          inertTarget.inert = previous.inertProperty;
-        }
-        if (previous.inertAttribute === null)
-          element.removeAttribute("inert");
-        else element.setAttribute("inert", previous.inertAttribute);
-        if (previous.ariaHiddenAttribute === null)
-          element.removeAttribute("aria-hidden");
-        else
-          element.setAttribute(
-            "aria-hidden",
-            previous.ariaHiddenAttribute,
-          );
-        element.style.pointerEvents = previous.pointerEvents;
+      for (const element of isolatedElements) {
+        releaseModalIsolation(element, isolationOwner);
       }
-      modalPortalHost.remove();
+      if (
+        portalContainsDialog &&
+        modalPortalHost.parentElement === document.body
+      ) {
+        modalPortalHost.remove();
+      }
     };
   }, [modalOpen, modalPortalHost]);
 
@@ -1108,6 +1190,7 @@ export function McpToolPermissions({
         setSaveError(
           `MCP permissions could not be saved. No local selection was changed: ${errorMessage(error)}`,
         );
+        reportFailure(error, "update");
         return false;
       } finally {
         if (isCurrentGeneration(generation)) setSaving(false);
@@ -1120,6 +1203,7 @@ export function McpToolPermissions({
       mergeRemovedToolIds,
       persistApplied,
       publishApplied,
+      reportFailure,
       rollbackServerSelection,
       verifyAppliedOrRollback,
     ],

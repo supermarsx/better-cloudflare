@@ -101,6 +101,7 @@ import { DnsAppCommandBar } from "./DnsAppCommandBar";
 import {
   McpToolPermissions,
   type McpToolPermissionsApplication,
+  type McpToolPermissionsFailure,
 } from "@/components/mcp/McpToolPermissions";
 import {
   DnsWorkspaceTabs,
@@ -938,6 +939,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [mcpActionError, setMcpActionError] = useState<string | null>(null);
   const mcpEnabledToolsRef = useRef(mcpEnabledTools);
   const mcpRequestedToolsRef = useRef(mcpRequestedTools);
+  const mcpServerEnabledRef = useRef(mcpServerEnabled);
+  const mcpServerHostRef = useRef(mcpServerHost);
+  const mcpServerPortRef = useRef(mcpServerPort);
+  mcpServerEnabledRef.current = mcpServerEnabled;
+  mcpServerHostRef.current = mcpServerHost;
+  mcpServerPortRef.current = mcpServerPort;
   const mcpPermissionsParkingRef = useRef<HTMLDivElement | null>(null);
   const mcpPermissionsViewRef = useRef<HTMLDivElement | null>(null);
   const [mcpPermissionsPortalHost, setMcpPermissionsPortalHost] =
@@ -2150,6 +2157,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
 
+  const handleMcpPermissionsError = useCallback(
+    (error: unknown, failure: McpToolPermissionsFailure) => {
+      if (failure.operation === "bootstrap") {
+        setMcpPermissionsReady(false);
+      }
+      const diagnostic = reportDnsManagerFailure(
+        error,
+        failure.operation === "bootstrap"
+          ? "Synchronize MCP server preferences"
+          : "Update MCP tool access",
+      );
+      setMcpActionError(diagnostic.message);
+    },
+    [],
+  );
+
   const setMcpServerRunning = useCallback(
     async (enabled: boolean, host?: string, port?: number) => {
       if (!isDesktop() || !mcpPermissionsReady) return;
@@ -2775,11 +2798,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setMcpActionError(null);
     void (async () => {
       try {
-        if (mcpServerEnabled) {
+        if (mcpServerEnabledRef.current) {
           await TauriClient.startMcpServer(
-            mcpServerHost,
-            mcpServerPort,
-            mcpEnabledTools,
+            mcpServerHostRef.current,
+            mcpServerPortRef.current,
+            mcpEnabledToolsRef.current,
           );
         } else {
           await TauriClient.stopMcpServer();
@@ -10021,6 +10044,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             enabledTools={mcpRequestedTools}
             interactive={mcpPermissionsInteractive}
             onApplied={handleMcpPermissionsApplied}
+            onError={handleMcpPermissionsError}
           />,
           mcpPermissionsPortalHost,
         )}
