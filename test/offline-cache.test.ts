@@ -675,6 +675,7 @@ test("deferred rollback does not resurrect an entry deleted by a second tab", as
   });
   let indexFailureArmed = true;
   let restorationFailureArmed = true;
+  let interleavingArmed = true;
   storagePrototype.setItem = function failWriteAndRestoration(
     this: Storage,
     key: string,
@@ -690,17 +691,23 @@ test("deferred rollback does not resurrect an entry deleted by a second tab", as
       throw new Error("forced restoration failure");
     }
     originalSetItem.call(this, key, value);
+    if (key === oldestKey && value === oldestRaw && interleavingArmed) {
+      interleavingArmed = false;
+      localStorage.removeItem(CACHE_COORDINATION_KEY);
+      secondTab.removeCachedZone("delete-race-0");
+    }
   };
   try {
     cacheZoneRecords(`delete-race-${hardLimit}`, "Incoming", []);
+
+    assert.equal(localStorage.getItem(oldestKey), null);
+    t.mock.timers.tick(10);
+    t.mock.timers.tick(20);
   } finally {
     storagePrototype.setItem = originalSetItem;
   }
 
-  assert.equal(localStorage.getItem(oldestKey), null);
-  secondTab.removeCachedZone("delete-race-0");
-  t.mock.timers.tick(10);
-
+  assert.equal(interleavingArmed, false);
   assert.equal(localStorage.getItem(oldestKey), null);
   assert.equal(getCacheIndex().includes("delete-race-0"), false);
   assert.equal(getCacheIndex().includes(`delete-race-${hardLimit}`), false);
