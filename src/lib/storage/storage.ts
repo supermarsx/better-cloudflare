@@ -11,7 +11,9 @@ import {
 import { CryptoManager } from "../auth/crypto";
 import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
+  planMcpPermissionChange,
   reconcileMcpEnabledToolIds,
+  reconcileMcpEnabledToolIdsDetailed,
 } from "../mcp/tool-permissions";
 import { getStorage, type StorageLike } from "./storage-util";
 import { generateUUID } from "../utils";
@@ -46,6 +48,8 @@ interface StorageData {
   mcpServerHost?: string;
   mcpServerPort?: number;
   mcpEnabledTools?: string[];
+  mcpPendingHighRiskTools?: string[];
+  mcpRemovedImportedToolIds?: string[];
   loadingOverlayTimeoutMs?: number;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
@@ -296,11 +300,12 @@ export class StorageManager {
   /**
    * Persist the in-memory data to storage as JSON.
    */
-  private save(): void {
+  private save(throwOnError = false): void {
     try {
       this.storage.setItem(STORAGE_KEY, JSON.stringify(this.data));
     } catch (error) {
       console.error("Failed to save storage data:", error);
+      if (throwOnError) throw error;
     }
   }
 
@@ -856,17 +861,110 @@ export class StorageManager {
   }
 
   setMcpEnabledTools(tools: string[]): void {
+    const previous = {
+      enabledTools: this.data.mcpEnabledTools,
+      pendingHighRiskTools: this.data.mcpPendingHighRiskTools,
+      removedImportedToolIds: this.data.mcpRemovedImportedToolIds,
+    };
     this.data.mcpEnabledTools = reconcileMcpEnabledToolIds(tools);
-    this.save();
+    delete this.data.mcpPendingHighRiskTools;
+    delete this.data.mcpRemovedImportedToolIds;
+    try {
+      this.save(true);
+    } catch (error) {
+      this.data.mcpEnabledTools = previous.enabledTools;
+      this.data.mcpPendingHighRiskTools = previous.pendingHighRiskTools;
+      this.data.mcpRemovedImportedToolIds = previous.removedImportedToolIds;
+      throw error;
+    }
     this.dispatchPreferencesChanged({
       mcpEnabledTools: this.data.mcpEnabledTools,
     });
   }
 
+  stageMcpEnabledTools(
+    tools: string[],
+    pendingHighRiskToolIds: string[],
+    removedToolIds: string[],
+  ): void {
+    const previous = {
+      enabledTools: this.data.mcpEnabledTools,
+      pendingHighRiskTools: this.data.mcpPendingHighRiskTools,
+      removedImportedToolIds: this.data.mcpRemovedImportedToolIds,
+    };
+    const enabledReconciliation = reconcileMcpEnabledToolIdsDetailed(tools);
+    const pendingReconciliation = reconcileMcpEnabledToolIdsDetailed(
+      pendingHighRiskToolIds,
+    );
+    const enabledTools = enabledReconciliation.enabledToolIds;
+    const pendingTools = planMcpPermissionChange(enabledTools, [
+      ...enabledTools,
+      ...pendingReconciliation.enabledToolIds,
+    ]).newlyEnabledHighRiskToolIds;
+    const removedTools = [
+      ...new Set([
+        ...enabledReconciliation.removedToolIds,
+        ...pendingReconciliation.removedToolIds,
+        ...reconcileMcpEnabledToolIdsDetailed(removedToolIds).removedToolIds,
+      ]),
+    ];
+
+    this.data.mcpEnabledTools = enabledTools;
+    if (pendingTools.length > 0) {
+      this.data.mcpPendingHighRiskTools = pendingTools;
+    } else {
+      delete this.data.mcpPendingHighRiskTools;
+    }
+    if (removedTools.length > 0) {
+      this.data.mcpRemovedImportedToolIds = removedTools;
+    } else {
+      delete this.data.mcpRemovedImportedToolIds;
+    }
+
+    try {
+      this.save(true);
+    } catch (error) {
+      this.data.mcpEnabledTools = previous.enabledTools;
+      this.data.mcpPendingHighRiskTools = previous.pendingHighRiskTools;
+      this.data.mcpRemovedImportedToolIds = previous.removedImportedToolIds;
+      throw error;
+    }
+    this.dispatchPreferencesChanged({
+      mcpEnabledTools: enabledTools,
+      mcpPendingHighRiskTools: pendingTools,
+    });
+  }
+
   getMcpEnabledTools(): string[] {
-    const tools = this.data.mcpEnabledTools;
-    if (!Array.isArray(tools)) return [...DEFAULT_MCP_ENABLED_TOOL_IDS];
-    return reconcileMcpEnabledToolIds(tools);
+    return this.getMcpEnabledToolsSnapshot().enabledTools;
+  }
+
+  getMcpEnabledToolsSnapshot(): {
+    enabledTools: string[];
+    removedToolIds: string[];
+    pendingHighRiskToolIds: string[];
+    configured: boolean;
+  } {
+    const storedTools = this.data.mcpEnabledTools;
+    const configured = Array.isArray(storedTools);
+    const reconciliation = reconcileMcpEnabledToolIdsDetailed(
+      configured ? storedTools : DEFAULT_MCP_ENABLED_TOOL_IDS,
+    );
+    const pendingReconciliation = reconcileMcpEnabledToolIdsDetailed(
+      this.data.mcpPendingHighRiskTools,
+    );
+    return {
+      enabledTools: reconciliation.enabledToolIds,
+      removedToolIds: [
+        ...new Set([
+          ...reconciliation.removedToolIds,
+          ...pendingReconciliation.removedToolIds,
+          ...(this.data.mcpRemovedImportedToolIds ?? []),
+        ]),
+      ],
+      pendingHighRiskToolIds: pendingReconciliation.enabledToolIds,
+      configured,
+    };
   }
 
   setLoadingOverlayTimeoutMs(ms: number): void {
@@ -1241,7 +1339,16 @@ export class StorageManager {
     if (!id) return;
     if (!this.data.sessionSettingsProfiles)
       this.data.sessionSettingsProfiles = {};
-    this.data.sessionSettingsProfiles[id] = { ...profile };
+    this.data.sessionSettingsProfiles[id] = {
+      ...profile,
+      ...(Array.isArray(profile.mcpEnabledTools)
+        ? {
+            mcpEnabledTools: reconcileMcpEnabledToolIds(
+              profile.mcpEnabledTools,
+            ),
+          }
+        : {}),
+    };
     this.save();
     this.dispatchPreferencesChanged({
       sessionSettingsProfiles: this.data.sessionSettingsProfiles,
@@ -1366,6 +1473,8 @@ export class StorageManager {
     delete this.data.mcpServerHost;
     delete this.data.mcpServerPort;
     delete this.data.mcpEnabledTools;
+    delete this.data.mcpPendingHighRiskTools;
+    delete this.data.mcpRemovedImportedToolIds;
     delete this.data.loadingOverlayTimeoutMs;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;
@@ -1447,10 +1556,31 @@ export class StorageManager {
       recordTags?: unknown;
       tagCatalog?: unknown;
     };
+    const importedMcpSelection = Array.isArray(obj.mcpEnabledTools)
+      ? reconcileMcpEnabledToolIdsDetailed(obj.mcpEnabledTools)
+      : null;
+    const importedHighRiskToolIds = importedMcpSelection
+      ? planMcpPermissionChange([], importedMcpSelection.enabledToolIds)
+          .newlyEnabledHighRiskToolIds
+      : [];
+    const importedHighRiskToolIdSet = new Set(importedHighRiskToolIds);
     this.data = {
       ...obj,
       recordTags: parseRecordTags(obj.recordTags),
       tagCatalog: parseTagCatalog(obj.tagCatalog),
+      ...(importedMcpSelection
+        ? {
+            mcpEnabledTools: importedMcpSelection.enabledToolIds.filter(
+              (id) => !importedHighRiskToolIdSet.has(id),
+            ),
+            mcpPendingHighRiskTools: importedHighRiskToolIds,
+            mcpRemovedImportedToolIds: importedMcpSelection.removedToolIds,
+          }
+        : {
+            mcpEnabledTools: undefined,
+            mcpPendingHighRiskTools: undefined,
+            mcpRemovedImportedToolIds: undefined,
+          }),
     };
     this.save();
   }
