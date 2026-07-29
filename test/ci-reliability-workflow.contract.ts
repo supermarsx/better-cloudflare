@@ -175,6 +175,10 @@ test("package scripts expose truthful lint and reliability gates", () => {
     legacySourceLintDebt.every((path) => path.startsWith("src/")),
     "Source lint debt must stay scoped to src",
   );
+  assert.ok(
+    !legacySourceLintDebt.includes("src/components/layout/WindowTitleBar.tsx"),
+    "The titlebar reliability path must remain covered by source lint",
+  );
   const changedSources = changedSourceFiles();
   assert.deepEqual(
     changedSources.filter(

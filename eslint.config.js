@@ -14,7 +14,6 @@ export const legacySourceLintDebt = [
   "src/components/dns/builders/SpfBuilder.tsx",
   "src/components/dns/builders/SvcbBuilder.tsx",
   "src/components/layout/WindowControls.tsx",
-  "src/components/layout/WindowTitleBar.tsx",
   "src/lib/audit/audit.ts",
   "src/lib/audit/domain-audit.ts",
   "src/lib/auth/credential-store.ts",
