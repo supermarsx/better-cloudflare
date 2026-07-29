@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
+import { withObjectUrl } from "@/lib/runtime/resource-scope";
 
 type AuditEntry = {
   timestamp?: string;
@@ -26,20 +27,46 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(false);
+  const loadGenerationRef = useRef(0);
 
   const exportAudit = async (format: "json" | "csv") => {
-    const data = await TauriClient.exportAuditEntries(format);
-    const mime = format === "json" ? "application/json" : "text/csv";
-    const blob = new Blob([data], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `audit-log.${format}`;
-    link.click();
-    URL.revokeObjectURL(url);
+    try {
+      const data = await TauriClient.exportAuditEntries(format);
+      if (!mountedRef.current) return;
+      const mime = format === "json" ? "application/json" : "text/csv";
+      const blob = new Blob([data], { type: mime });
+      withObjectUrl(blob, (url) => {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `audit-log.${format}`;
+        document.body.append(link);
+        try {
+          link.click();
+        } finally {
+          link.remove();
+        }
+      });
+    } catch (exportError) {
+      if (!mountedRef.current) return;
+      setError(
+        exportError instanceof Error
+          ? exportError.message
+          : "Audit export failed unexpectedly.",
+      );
+    }
   };
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadGenerationRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    const generation = ++loadGenerationRef.current;
     if (!open) return;
     if (!isDesktop()) {
       setError("Audit log is only available in the desktop app.");
@@ -47,15 +74,28 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
     }
     setLoading(true);
     setError(null);
-    TauriClient.getAuditEntries()
+    let active = true;
+    void TauriClient.getAuditEntries()
       .then((list) => {
+        if (!active || loadGenerationRef.current !== generation) return;
         const items = Array.isArray(list) ? (list as AuditEntry[]) : [];
         setEntries(items);
       })
       .catch((err) => {
-        setError((err as Error).message);
+        if (!active || loadGenerationRef.current !== generation) return;
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Audit entries could not be loaded.",
+        );
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!active || loadGenerationRef.current !== generation) return;
+        setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [open]);
 
   return (
@@ -108,10 +148,16 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
           <div className="flex items-center justify-between">
             {entries.length > 0 && (
               <div className="flex gap-2">
-                <Button variant="outline" onClick={() => exportAudit("json")}>
+                <Button
+                  variant="outline"
+                  onClick={() => void exportAudit("json")}
+                >
                   Export JSON
                 </Button>
-                <Button variant="outline" onClick={() => exportAudit("csv")}>
+                <Button
+                  variant="outline"
+                  onClick={() => void exportAudit("csv")}
+                >
                   Export CSV
                 </Button>
               </div>

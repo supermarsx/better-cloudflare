@@ -12,6 +12,7 @@ import {
 import { Toaster } from "../src/components/ui/toaster";
 import {
   reducer,
+  resetToastRuntimeForTests,
   toast,
   TOAST_LIMIT,
   type ToastState,
@@ -24,6 +25,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  resetToastRuntimeForTests();
   resetRuntimeReportingForTests();
 });
 

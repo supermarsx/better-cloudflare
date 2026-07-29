@@ -25,7 +25,7 @@ export function createPlaywrightConfig(
     ],
     timeout: 30_000,
     expect: { timeout: 5000 },
-    fullyParallel: true,
+    fullyParallel: !isCI,
     forbidOnly: isCI,
     retries: 0,
     workers: isCI ? 1 : undefined,

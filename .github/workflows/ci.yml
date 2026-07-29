@@ -20,6 +20,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+
 jobs:
   ci_contract:
     name: CI reliability contract
@@ -41,6 +44,8 @@ jobs:
         env:
           CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: npm run test:ci-contract
+      - name: Test deterministic resource disposal
+        run: npm run test:resource-safety
 
   unit_tests:
     name: Unit tests (${{ matrix.driver }})
@@ -105,6 +110,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      CARGO_BUILD_JOBS: "2"
+      RUST_TEST_THREADS: "2"
       TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
     steps:
       - name: Checkout

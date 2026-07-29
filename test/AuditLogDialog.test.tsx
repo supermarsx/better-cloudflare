@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import React from "react";
-import { afterEach, test, beforeEach } from "node:test";
+import { afterEach, test, beforeEach, mock } from "node:test";
 import {
   render,
   screen,
@@ -25,6 +25,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  mock.restoreAll();
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
   TauriClient.exportAuditEntries = originalExport;
   TauriClient.getAuditEntries = originalGet;
@@ -86,6 +87,7 @@ test("AuditLogDialog calls backend export", async () => {
     called.push(format);
     return "{}";
   };
+  mock.method(HTMLAnchorElement.prototype, "click", () => {});
 
   await act(async () => {
     render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
@@ -119,4 +121,66 @@ test("AuditLogDialog handles load errors", async () => {
   await waitFor(() => {
     assert.ok(screen.getByText(/boom/i));
   });
+});
+
+test("AuditLogDialog ignores stale loads across close and reopen", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  let resolveFirst: ((entries: unknown[]) => void) | undefined;
+  let calls = 0;
+  TauriClient.getAuditEntries = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Promise<unknown[]>((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return [{ operation: "fresh-entry", timestamp: "2026-01-02T00:00:00Z" }];
+  };
+
+  const view = render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  view.rerender(<AuditLogDialog open={false} onOpenChange={() => {}} />);
+  view.rerender(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("fresh-entry"));
+  });
+
+  await act(async () => {
+    resolveFirst?.([
+      { operation: "stale-entry", timestamp: "2026-01-01T00:00:00Z" },
+    ]);
+    await Promise.resolve();
+  });
+
+  assert.equal(screen.queryByText("stale-entry"), null);
+  assert.ok(screen.getByText("fresh-entry"));
+});
+
+test("AuditLogDialog revokes export URLs and removes links when click fails", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => [
+    { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
+  ];
+  TauriClient.exportAuditEntries = async () => "{}";
+  const revoked: string[] = [];
+  mock.method(URL, "createObjectURL", () => "blob:audit-export");
+  mock.method(URL, "revokeObjectURL", (url: string) => {
+    revoked.push(url);
+  });
+  mock.method(HTMLAnchorElement.prototype, "click", () => {
+    throw new Error("download click failed");
+  });
+
+  render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: "Export JSON" }));
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("download click failed"));
+  });
+  assert.deepEqual(revoked, ["blob:audit-export"]);
+  assert.equal(document.querySelector("a[download='audit-log.json']"), null);
 });

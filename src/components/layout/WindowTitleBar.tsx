@@ -19,6 +19,10 @@ import { Button } from "@/components/ui/button";
 import { storageManager } from "@/lib/storage/storage";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+import {
+  createTrackedRuntimeResources,
+  type TrackedRuntimeResources,
+} from "@/lib/runtime/resource-scope";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   executeWindowAction,
@@ -117,7 +121,22 @@ export function WindowTitleBar() {
     readConfirmWindowCloseSafely,
   );
   const allowCloseRef = useRef(false);
+  const contextMenuFrameRef = useRef<number | null>(null);
+  const runtimeResourcesRef = useRef<TrackedRuntimeResources | null>(null);
   const dragRegion = useWindowDragRegion();
+
+  if (!runtimeResourcesRef.current) {
+    runtimeResourcesRef.current = createTrackedRuntimeResources(window);
+  }
+  const runtimeResources = runtimeResourcesRef.current;
+
+  useEffect(
+    () => () => {
+      runtimeResources.dispose();
+      contextMenuFrameRef.current = null;
+    },
+    [runtimeResources],
+  );
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -205,8 +224,11 @@ export function WindowTitleBar() {
 
         try {
           const current = await appWindow.isAlwaysOnTop();
-          if (typeof current === "boolean") setIsTopmost(current);
+          if (!disposed && typeof current === "boolean") {
+            setIsTopmost(current);
+          }
         } catch (error) {
+          if (disposed) return;
           reportTitlebarFailure(
             error,
             "Read titlebar always-on-top state",
@@ -215,6 +237,7 @@ export function WindowTitleBar() {
         }
 
         const stopListening = await appWindow.onCloseRequested((event) => {
+          if (disposed) return;
           if (allowCloseRef.current) {
             allowCloseRef.current = false;
             return;
@@ -231,6 +254,7 @@ export function WindowTitleBar() {
           unlisten = stopListening;
         }
       } catch (error) {
+        if (disposed) return;
         enableSafeCloseFallback(
           error,
           "Register titlebar close-request listener",
@@ -264,9 +288,17 @@ export function WindowTitleBar() {
       setWindowMenuPos({ x, y });
 
       // Ensure position state is committed before opening.
-      requestAnimationFrame(() => setWindowMenuOpen(true));
+      if (contextMenuFrameRef.current !== null) {
+        runtimeResources.cancelAnimationFrame(contextMenuFrameRef.current);
+      }
+      contextMenuFrameRef.current = runtimeResources.requestAnimationFrame(
+        () => {
+          contextMenuFrameRef.current = null;
+          setWindowMenuOpen(true);
+        },
+      );
     },
-    [],
+    [runtimeResources],
   );
 
   const handleToggleTopmost = useCallback(() => {

@@ -220,6 +220,14 @@ test("package scripts expose truthful lint and reliability gates", () => {
     scripts["test:release-contract"],
     "node --test .github/scripts/release-contract.test.mjs",
   );
+  assert.equal(
+    scripts["test:resource-safety"],
+    "tsx --test --import ./test/node-test-env.ts test/resource-disposal.test.tsx test/AuditLogDialog.test.tsx",
+  );
+  assert.equal(
+    scripts["memory:smoke:manual"],
+    "node --expose-gc --import tsx scripts/memory-growth-smoke.mjs",
+  );
 });
 
 test("CI changed-source lint uses the event base with complete history", () => {
@@ -262,6 +270,8 @@ test("Playwright structurally separates CI static export from local development"
   assert.equal(ciConfig.forbidOnly, true);
   assert.equal(ciConfig.retries, 0);
   assert.equal(ciConfig.workers, 1);
+  assert.equal(ciConfig.fullyParallel, false);
+  assert.equal(localConfig.fullyParallel, true);
   assert.equal(ciConfig.use?.trace, "retain-on-failure");
   assert.deepEqual(ciConfig.testMatch, [
     "e2e/**/*.spec.ts",
@@ -431,6 +441,28 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
     "test_package",
     "release_contract",
   ]);
+});
+
+test("CI bounds build concurrency and gates deterministic disposal checks", () => {
+  const workflow = read(".github/workflows/ci.yml");
+  const contractJob = workflowJob(workflow, "ci_contract");
+  const nativeJob = workflowJob(workflow, "native_reliability");
+
+  assert.match(
+    workflow,
+    /env:\r?\n  NODE_OPTIONS: --max-old-space-size=4096\r?\n\r?\njobs:/,
+  );
+  assert.equal(
+    stepRun(workflowStep(contractJob, "Test deterministic resource disposal")),
+    "npm run test:resource-safety",
+  );
+  assert.match(nativeJob, /CARGO_BUILD_JOBS: "2"/);
+  assert.match(nativeJob, /RUST_TEST_THREADS: "2"/);
+  assert.doesNotMatch(
+    workflow,
+    /memory:smoke:manual/,
+    "Heap-growth sampling must remain manual until its variance is proven stable",
+  );
 });
 
 test("Pages deployment is gated by a project-base-path browser check", () => {

@@ -15,6 +15,10 @@ import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
 import { RuntimeDiagnosticDetails } from "@/components/layout/RuntimeDiagnosticDetails";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+import {
+  createTrackedRuntimeResources,
+  type TrackedRuntimeResources,
+} from "@/lib/runtime/resource-scope";
 
 function reportAppFailure(error: unknown, label: string): void {
   reportRuntimeError(error, { source: "runtime", label });
@@ -76,8 +80,14 @@ function App() {
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [prefsDockOpen, setPrefsDockOpen] = useState(false);
-  const timeouts = useRef<number[]>([]);
+  const runtimeResourcesRef = useRef<TrackedRuntimeResources | null>(null);
   const prefsDockHideTimeout = useRef<number | null>(null);
+  const transitionInFlight = useRef(false);
+
+  if (!runtimeResourcesRef.current) {
+    runtimeResourcesRef.current = createTrackedRuntimeResources(window);
+  }
+  const runtimeResources = runtimeResourcesRef.current;
 
   useEffect(() => {
     // Check if there's an active session
@@ -140,34 +150,32 @@ function App() {
 
   useEffect(() => {
     return () => {
-      timeouts.current.forEach((id) => clearTimeout(id));
-      timeouts.current = [];
-      if (prefsDockHideTimeout.current) {
-        window.clearTimeout(prefsDockHideTimeout.current);
-        prefsDockHideTimeout.current = null;
-      }
+      runtimeResources.dispose();
+      prefsDockHideTimeout.current = null;
+      transitionInFlight.current = false;
     };
-  }, []);
+  }, [runtimeResources]);
 
   const clearPrefsDockHideTimer = () => {
-    if (!prefsDockHideTimeout.current) return;
-    window.clearTimeout(prefsDockHideTimeout.current);
+    if (prefsDockHideTimeout.current === null) return;
+    runtimeResources.clearTimeout(prefsDockHideTimeout.current);
     prefsDockHideTimeout.current = null;
   };
 
   const schedulePrefsDockHide = () => {
     clearPrefsDockHideTimer();
-    prefsDockHideTimeout.current = window.setTimeout(() => {
+    prefsDockHideTimeout.current = runtimeResources.setTimeout(() => {
       setPrefsDockOpen(false);
       prefsDockHideTimeout.current = null;
     }, 1800);
   };
 
   const beginTransition = (nextView: "login" | "app") => {
-    if (isTransitioning) return;
+    if (transitionInFlight.current || isTransitioning) return;
+    transitionInFlight.current = true;
     setIsTransitioning(true);
     setIsVisible(false);
-    const outId = window.setTimeout(() => {
+    runtimeResources.setTimeout(() => {
       setActiveView(nextView);
       if (nextView === "login") {
         setApiKey("");
@@ -176,13 +184,12 @@ function App() {
       } else {
         setIsAuthenticated(true);
       }
-      requestAnimationFrame(() => setIsVisible(true));
-      const inId = window.setTimeout(() => {
+      runtimeResources.requestAnimationFrame(() => setIsVisible(true));
+      runtimeResources.setTimeout(() => {
+        transitionInFlight.current = false;
         setIsTransitioning(false);
       }, 220);
-      timeouts.current.push(inId);
     }, 220);
-    timeouts.current.push(outId);
   };
 
   const handleLogin = (decryptedApiKey: string, keyEmail?: string) => {
