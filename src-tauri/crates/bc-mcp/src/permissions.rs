@@ -54,6 +54,7 @@ impl PermissionEffect {
 pub enum PermissionRisk {
     Low,
     High,
+    Critical,
 }
 
 impl PermissionRisk {
@@ -61,8 +62,19 @@ impl PermissionRisk {
         match self {
             Self::Low => "low",
             Self::High => "high",
+            Self::Critical => "critical",
         }
     }
+}
+
+/// High-risk acknowledgement is required for every high-risk or destructive
+/// permission. Keeping this decision at the registry boundary prevents new
+/// handlers from accidentally omitting the acknowledgement check.
+pub const fn requires_high_risk_confirmation(permission: &PermissionDefinition) -> bool {
+    matches!(
+        permission.risk,
+        PermissionRisk::High | PermissionRisk::Critical
+    ) || matches!(permission.effect, PermissionEffect::Destructive)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -666,64 +678,12 @@ pub const PERMISSION_REGISTRY: &[PermissionDefinition] = &[
     ),
 ];
 
-/// Explicit compatibility defaults for the tools that existed when canonical
-/// permissions were introduced. Adding a registry entry does not silently
-/// grant it: a new tool must be deliberately added here after security review.
-const DEFAULT_PERMISSION_IDS: &[&str] = &[
-    "bc.mcp.v1.cf.verify_token",
-    "bc.mcp.v1.cf.list_zones",
-    "bc.mcp.v1.cf.list_dns_records",
-    "bc.mcp.v1.cf.create_dns_record",
-    "bc.mcp.v1.cf.update_dns_record",
-    "bc.mcp.v1.cf.delete_dns_record",
-    "bc.mcp.v1.cf.bulk_create_dns_records",
-    "bc.mcp.v1.cf.bulk_delete_dns_records",
-    "bc.mcp.v1.cf.export_dns_records",
-    "bc.mcp.v1.cf.purge_cache",
-    "bc.mcp.v1.cf.get_zone_setting",
-    "bc.mcp.v1.cf.update_zone_setting",
-    "bc.mcp.v1.cf.get_dnssec",
-    "bc.mcp.v1.cf.update_dnssec",
-    "bc.mcp.v1.cf.get_zone_analytics",
-    "bc.mcp.v1.cf.get_dns_analytics",
-    "bc.mcp.v1.cf.list_firewall_rules",
-    "bc.mcp.v1.cf.create_firewall_rule",
-    "bc.mcp.v1.cf.update_firewall_rule",
-    "bc.mcp.v1.cf.delete_firewall_rule",
-    "bc.mcp.v1.cf.list_ip_access_rules",
-    "bc.mcp.v1.cf.create_ip_access_rule",
-    "bc.mcp.v1.cf.delete_ip_access_rule",
-    "bc.mcp.v1.cf.list_waf_rulesets",
-    "bc.mcp.v1.cf.list_worker_routes",
-    "bc.mcp.v1.cf.create_worker_route",
-    "bc.mcp.v1.cf.delete_worker_route",
-    "bc.mcp.v1.cf.get_email_routing_settings",
-    "bc.mcp.v1.cf.list_email_routing_rules",
-    "bc.mcp.v1.cf.create_email_routing_rule",
-    "bc.mcp.v1.cf.delete_email_routing_rule",
-    "bc.mcp.v1.cf.list_page_rules",
-    "bc.mcp.v1.spf.simulate",
-    "bc.mcp.v1.spf.graph",
-    "bc.mcp.v1.spf.parse",
-    "bc.mcp.v1.dns.validate_record",
-    "bc.mcp.v1.dns.check_propagation",
-    "bc.mcp.v1.dns.resolve_topology",
-    "bc.mcp.v1.dns.parse_csv",
-    "bc.mcp.v1.dns.parse_bind",
-    "bc.mcp.v1.dns.export_csv",
-    "bc.mcp.v1.dns.export_bind",
-    "bc.mcp.v1.dns.export_json",
-    "bc.mcp.v1.dns.parse_srv",
-    "bc.mcp.v1.dns.compose_srv",
-    "bc.mcp.v1.dns.parse_tlsa",
-    "bc.mcp.v1.dns.compose_tlsa",
-    "bc.mcp.v1.dns.parse_sshfp",
-    "bc.mcp.v1.dns.compose_sshfp",
-    "bc.mcp.v1.dns.parse_naptr",
-    "bc.mcp.v1.dns.compose_naptr",
-    "bc.mcp.v1.dns.parse_spf",
-    "bc.mcp.v1.audit.run_domain",
-];
+/// The default permission set is deliberately empty. Even nominally read-only
+/// Cloudflare tools handle credentials, while network and local-analysis tools
+/// can still consume attacker-controlled input or perform outbound lookups.
+/// Every tool therefore requires an explicit grant, and future registry entries
+/// remain denied until a caller opts into their stable permission ID.
+const DEFAULT_PERMISSION_IDS: &[&str] = &[];
 
 pub fn permission_registry() -> &'static [PermissionDefinition] {
     PERMISSION_REGISTRY
@@ -908,10 +868,9 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_defaults_are_explicit_and_new_permissions_default_deny() {
+    fn defaults_are_empty_and_new_permissions_default_deny() {
         let defaults = PermissionGrantSet::defaults();
-        assert_eq!(defaults.len(), DEFAULT_PERMISSION_IDS.len());
-        assert_eq!(defaults.len(), PERMISSION_REGISTRY.len());
+        assert!(defaults.is_empty());
 
         let future = PermissionDefinition {
             id: "bc.mcp.v1.cf.future_mutation",
@@ -919,11 +878,12 @@ mod tests {
             legacy_aliases: &[],
             category: PermissionCategory::Cloudflare,
             effect: PermissionEffect::Write,
-            risk: PermissionRisk::High,
+            risk: PermissionRisk::Critical,
             network_access: true,
             credential_access: true,
             argument_profile: MUTATION,
         };
         assert!(!defaults.allows(&future));
+        assert!(requires_high_risk_confirmation(&future));
     }
 }

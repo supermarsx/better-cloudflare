@@ -6,6 +6,8 @@
 
 use serde_json::{json, Value};
 
+use crate::permissions::{permission_for_invocation, requires_high_risk_confirmation};
+
 /// Shared schema fragment: Cloudflare authentication fields.
 fn cf_auth_properties() -> Value {
     json!({
@@ -77,7 +79,7 @@ fn cf_auth_only_schema(extra_props: Value, extra_required: &[&str]) -> Value {
 
 /// Returns the input schema for a given tool name.
 pub fn tool_input_schema(name: &str) -> Value {
-    match name {
+    let mut schema = match name {
         // ── DNS Core ────────────────────────────────────────────────────
         "cf_verify_token" => cf_auth_only_schema(json!({}), &[]),
 
@@ -674,5 +676,33 @@ pub fn tool_input_schema(name: &str) -> Value {
 
         // Default fallback
         _ => json!({ "type": "object" }),
+    };
+
+    if permission_for_invocation(name).is_some_and(requires_high_risk_confirmation) {
+        let confirmation = json!({
+            "type": "boolean",
+            "const": true,
+            "description": "Required acknowledgement for this high-risk operation. Must be exactly true."
+        });
+        if let Some(object) = schema.as_object_mut() {
+            let properties = object
+                .entry("properties")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("tool schema properties must be an object");
+            properties.insert("confirmHighRisk".to_string(), confirmation);
+            let required = object
+                .entry("required")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .expect("tool schema required must be an array");
+            if !required
+                .iter()
+                .any(|field| field.as_str() == Some("confirmHighRisk"))
+            {
+                required.push(json!("confirmHighRisk"));
+            }
+        }
     }
+    schema
 }

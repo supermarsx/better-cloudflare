@@ -142,6 +142,12 @@ pub(crate) fn authoritative_zone_from_lookup(
             record_type,
         });
     }
+    validate_dname_hierarchy(
+        authoritative
+            .iter()
+            .map(|record| (record.owner.as_str(), record.record_type.as_str())),
+    )
+    .map_err(|error| format!("Authoritative DNS lookup failed closed: {error}"))?;
 
     Ok(AuthoritativeDnsZone {
         zone_id: requested_zone_id.to_string(),
@@ -154,8 +160,17 @@ pub(crate) fn validate_create(args: &Value, zone: &AuthoritativeDnsZone) -> Resu
     validate_optional_zone_claim(args, zone)?;
     let record = validate_record(required_object(args, "record")?, &zone.name)?;
     let mut types = zone.record_types_at_owner(&record.owner, None);
-    types.push(record.record_type);
-    validate_coexistence(&record.owner, &types, &zone.name)
+    types.push(record.record_type.clone());
+    validate_coexistence(&record.owner, &types, &zone.name)?;
+    validate_dname_hierarchy(
+        zone.records
+            .iter()
+            .map(|record| (record.owner.as_str(), record.record_type.as_str()))
+            .chain(std::iter::once((
+                record.owner.as_str(),
+                record.record_type.as_str(),
+            ))),
+    )
 }
 
 pub(crate) fn validate_update(args: &Value, zone: &AuthoritativeDnsZone) -> Result<(), String> {
@@ -170,8 +185,18 @@ pub(crate) fn validate_update(args: &Value, zone: &AuthoritativeDnsZone) -> Resu
 
     let replacement = validate_record(required_object(args, "record")?, &zone.name)?;
     let mut types = zone.record_types_at_owner(&replacement.owner, Some(record_id));
-    types.push(replacement.record_type);
-    validate_coexistence(&replacement.owner, &types, &zone.name)
+    types.push(replacement.record_type.clone());
+    validate_coexistence(&replacement.owner, &types, &zone.name)?;
+    validate_dname_hierarchy(
+        zone.records
+            .iter()
+            .filter(|record| record.id != record_id)
+            .map(|record| (record.owner.as_str(), record.record_type.as_str()))
+            .chain(std::iter::once((
+                replacement.owner.as_str(),
+                replacement.record_type.as_str(),
+            ))),
+    )
 }
 
 pub(crate) fn validate_delete(args: &Value, zone: &AuthoritativeDnsZone) -> Result<(), String> {
@@ -195,22 +220,36 @@ pub(crate) fn validate_bulk_create(
         return Err("DNS bulk mutation field 'records' must not be empty.".to_string());
     }
 
-    let mut additions: HashMap<String, Vec<String>> = HashMap::new();
+    let mut additions = Vec::with_capacity(records.len());
     for (index, value) in records.iter().enumerate() {
         let record = validate_record(value, &zone.name)
             .map_err(|error| format!("DNS bulk record at index {index}: {error}"))?;
-        additions
-            .entry(record.owner)
-            .or_default()
-            .push(record.record_type);
+        additions.push(record);
     }
 
-    for (owner, new_types) in additions {
+    let mut additions_by_owner: HashMap<String, Vec<String>> = HashMap::new();
+    for record in &additions {
+        additions_by_owner
+            .entry(record.owner.clone())
+            .or_default()
+            .push(record.record_type.clone());
+    }
+
+    for (owner, new_types) in additions_by_owner {
         let mut types = zone.record_types_at_owner(&owner, None);
         types.extend(new_types);
         validate_coexistence(&owner, &types, &zone.name)?;
     }
-    Ok(())
+    validate_dname_hierarchy(
+        zone.records
+            .iter()
+            .map(|record| (record.owner.as_str(), record.record_type.as_str()))
+            .chain(
+                additions
+                    .iter()
+                    .map(|record| (record.owner.as_str(), record.record_type.as_str())),
+            ),
+    )
 }
 
 pub(crate) fn validated_bulk_delete_ids(
@@ -674,6 +713,30 @@ fn validate_dname_owner_and_target(owner: &str, target: &str) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_dname_hierarchy<'a>(
+    records: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), String> {
+    let records = records.into_iter().collect::<Vec<_>>();
+    let dname_owners = records
+        .iter()
+        .filter(|(_, record_type)| *record_type == "DNAME")
+        .map(|(owner, _)| *owner)
+        .collect::<HashSet<_>>();
+
+    for (owner, _) in records {
+        let mut ancestor = owner;
+        while let Some((_, parent)) = ancestor.split_once('.') {
+            ancestor = parent;
+            if dname_owners.contains(ancestor) {
+                return Err(format!(
+                    "RFC 6672 forbids record owner '{owner}' beneath DNAME owner '{ancestor}'."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_coexistence(owner: &str, record_types: &[String], zone: &str) -> Result<(), String> {
     let cname_count = record_types
         .iter()
@@ -1040,6 +1103,119 @@ mod tests {
             &apex
         )
         .is_ok());
+    }
+
+    #[test]
+    fn rfc6672_dname_subtree_rules_cover_create_update_and_canonical_names() {
+        let dname_state = zone(vec![provider_record(
+            "dname",
+            "zone-1",
+            "EXAMPLE.COM.",
+            "Redirect.Example.COM.",
+            "dname",
+        )]);
+        let beneath_existing = create_args(record("WWW.REDIRECT.EXAMPLE.COM.", "A", "192.0.2.1"));
+        assert!(validate_create(&beneath_existing, &dname_state)
+            .unwrap_err()
+            .contains("RFC 6672"));
+
+        let descendant_state = zone(vec![provider_record(
+            "descendant",
+            "zone-1",
+            "example.com",
+            "www.redirect.example.com",
+            "A",
+        )]);
+        let above_descendant =
+            create_args(record("REDIRECT.EXAMPLE.COM.", "DNAME", "example.net."));
+        assert!(validate_create(&above_descendant, &descendant_state)
+            .unwrap_err()
+            .contains("RFC 6672"));
+
+        let update_beneath_state = zone(vec![
+            provider_record(
+                "dname",
+                "zone-1",
+                "example.com",
+                "redirect.example.com",
+                "DNAME",
+            ),
+            provider_record(
+                "victim",
+                "zone-1",
+                "example.com",
+                "outside.example.com",
+                "A",
+            ),
+        ]);
+        let update_beneath = json!({
+            "record_id": "victim",
+            "record": record("child.redirect.example.com.", "AAAA", "2001:db8::1")
+        });
+        assert!(validate_update(&update_beneath, &update_beneath_state)
+            .unwrap_err()
+            .contains("RFC 6672"));
+
+        let update_above_state = zone(vec![
+            provider_record(
+                "descendant",
+                "zone-1",
+                "example.com",
+                "child.redirect.example.com",
+                "A",
+            ),
+            provider_record(
+                "victim",
+                "zone-1",
+                "example.com",
+                "outside.example.com",
+                "A",
+            ),
+        ]);
+        let update_above = json!({
+            "record_id": "victim",
+            "record": record("Redirect.Example.Com.", "dname", "example.net")
+        });
+        assert!(validate_update(&update_above, &update_above_state)
+            .unwrap_err()
+            .contains("RFC 6672"));
+    }
+
+    #[test]
+    fn rfc6672_dname_subtree_rules_cover_bulk_and_provider_snapshots() {
+        let state = base_zone();
+        let bulk = json!({
+            "records": [
+                record("redirect.example.com", "DNAME", "example.net"),
+                record("child.redirect.example.com", "A", "192.0.2.1")
+            ]
+        });
+        assert!(validate_bulk_create(&bulk, &state)
+            .unwrap_err()
+            .contains("RFC 6672"));
+
+        let malformed_snapshot = authoritative_zone_from_lookup(
+            "zone-1",
+            Ok(vec![
+                provider_record(
+                    "dname",
+                    "zone-1",
+                    "EXAMPLE.COM.",
+                    "Redirect.Example.Com.",
+                    "DNAME",
+                ),
+                provider_record(
+                    "child",
+                    "zone-1",
+                    "example.com",
+                    "Child.Redirect.Example.Com",
+                    "A",
+                ),
+            ]),
+        )
+        .unwrap_err();
+        assert!(malformed_snapshot.contains("failed closed"));
+        assert!(malformed_snapshot.contains("RFC 6672"));
     }
 
     #[test]

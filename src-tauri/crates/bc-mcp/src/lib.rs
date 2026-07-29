@@ -154,6 +154,13 @@ fn generate_auth_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+fn effective_auth_token(auth_token: Option<String>) -> String {
+    auth_token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))
+        .unwrap_or_else(generate_auth_token)
+}
+
 pub fn build_status(
     running: bool,
     host: String,
@@ -271,8 +278,8 @@ impl McpServerManager {
             self.config_grants.read().await.clone()
         };
         let grants_ref = Arc::new(RwLock::new(desired_enabled.clone()));
-        // Auto-generate a cryptographically random bearer token if none provided
-        let effective_token = Some(auth_token.unwrap_or_else(generate_auth_token));
+        // Missing or blank credentials are never valid expected tokens.
+        let effective_token = Some(effective_auth_token(auth_token));
         let token_ref = Arc::new(RwLock::new(effective_token.clone()));
 
         let bind_addr = format!("{}:{}", normalized_host, normalized_port);
@@ -296,6 +303,10 @@ impl McpServerManager {
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 bearer_auth_middleware,
+            ))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                origin_validation_middleware,
             ))
             .with_state(state);
 
@@ -332,7 +343,6 @@ impl McpServerManager {
 
 async fn bearer_auth_middleware(
     AxumState(state): AxumState<HttpRuntimeState>,
-    headers: HeaderMap,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
@@ -340,12 +350,7 @@ async fn bearer_auth_middleware(
     // server-local bearer token and not an OAuth access-token flow.
     let token = state.auth_token.read().await;
     if let Some(expected) = token.as_deref() {
-        let auth_header = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let provided = auth_header.strip_prefix("Bearer ").unwrap_or("");
-        if provided != expected {
+        if expected.is_empty() || bearer_token(request.headers()) != Some(expected) {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(error_response(
@@ -358,6 +363,23 @@ async fn bearer_auth_middleware(
         }
     }
     next.run(request).await
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all("authorization").iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let value = value.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer")
+        || token.is_empty()
+        || token.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(token)
 }
 
 // ─── HTTP handlers ─────────────────────────────────────────────────────────
@@ -443,6 +465,17 @@ fn origin_rejection(reason: &str) -> Response {
         .into_response()
 }
 
+async fn origin_validation_middleware(
+    AxumState(state): AxumState<HttpRuntimeState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if let Err(reason) = validate_origin(request.headers(), &state.bind_host, state.bind_port) {
+        return origin_rejection(reason);
+    }
+    next.run(request).await
+}
+
 async fn handle_health() -> impl IntoResponse {
     // Minimal health check — do not leak server metadata to unauthenticated callers
     Json(json!({ "status": "ok" }))
@@ -451,13 +484,8 @@ async fn handle_health() -> impl IntoResponse {
 /// Full MCP JSON-RPC 2.0 handler with all spec methods.
 async fn handle_mcp_rpc(
     AxumState(state): AxumState<HttpRuntimeState>,
-    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Response {
-    if let Err(reason) = validate_origin(&headers, &state.bind_host, state.bind_port) {
-        return origin_rejection(reason);
-    }
-
     // ── Parse incoming request ──────────────────────────────────────────
     let request = match serde_json::from_value::<JsonRpcRequest>(payload) {
         Ok(req) => req,
@@ -471,6 +499,18 @@ async fn handle_mcp_rpc(
             return (StatusCode::BAD_REQUEST, body).into_response();
         }
     };
+
+    if !matches!(
+        request.jsonrpc.as_ref(),
+        Some(Value::String(version)) if version == "2.0"
+    ) {
+        let body = Json(error_response(
+            request.id.clone(),
+            RpcErrorCode::InvalidRequest.code(),
+            "Invalid JSON-RPC version: expected exactly '2.0'".to_string(),
+        ));
+        return (StatusCode::BAD_REQUEST, body).into_response();
+    }
 
     let id = request.id.clone();
     let params = request.params.unwrap_or_else(|| json!({}));
@@ -689,6 +729,7 @@ async fn handle_mcp_rpc(
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
 
@@ -753,10 +794,295 @@ mod tests {
         let mut repeated = headers_with_origin("http://127.0.0.1:8787");
         repeated.append("origin", HeaderValue::from_static("http://127.0.0.1:8787"));
         assert!(validate_origin(&repeated, "127.0.0.1", 8787).is_err());
+
+        let mut non_ascii = HeaderMap::new();
+        non_ascii.insert(
+            "origin",
+            HeaderValue::from_bytes(b"http://127.0.0.1:8787\xff").unwrap(),
+        );
+        assert!(validate_origin(&non_ascii, "127.0.0.1", 8787).is_err());
+    }
+
+    fn test_runtime_state() -> HttpRuntimeState {
+        HttpRuntimeState {
+            grants: Arc::new(RwLock::new(PermissionGrantSet::all())),
+            auth_token: Arc::new(RwLock::new(Some("test-token".to_string()))),
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 8787,
+        }
     }
 
     #[tokio::test]
-    async fn handler_rejects_origin_before_rpc_dispatch() {
+    async fn jsonrpc_version_must_be_exactly_2_0_before_dispatch() {
+        for version in [
+            None,
+            Some(Value::Null),
+            Some(json!(2.0)),
+            Some(json!("2")),
+            Some(json!("2.0 ")),
+            Some(json!("JSON-RPC 2.0")),
+        ] {
+            let mut payload = json!({
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "cf_bulk_delete_dns_records",
+                    "arguments": {"confirmHighRisk": true}
+                }
+            });
+            if let Some(version) = version {
+                payload["jsonrpc"] = version;
+            }
+            let response = handle_mcp_rpc(AxumState(test_runtime_state()), Json(payload)).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        let response = handle_mcp_rpc(
+            AxumState(test_runtime_state()),
+            Json(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn blank_tokens_are_replaced_with_fresh_random_credentials() {
+        let first = effective_auth_token(None);
+        let second = effective_auth_token(Some(" \t\r\n ".to_string()));
+        let malformed = effective_auth_token(Some("not a bearer token".to_string()));
+        assert_eq!(first.len(), 64);
+        assert_eq!(second.len(), 64);
+        assert_eq!(malformed.len(), 64);
+        assert_ne!(first, second);
+        assert_ne!(second, malformed);
+        assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
+        assert!(second
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()));
+        assert_eq!(
+            effective_auth_token(Some("  configured-token  ".to_string())),
+            "configured-token"
+        );
+    }
+
+    #[test]
+    fn missing_or_malformed_authorization_never_yields_a_token() {
+        assert!(bearer_token(&HeaderMap::new()).is_none());
+
+        for value in [
+            "",
+            "Bearer",
+            "Bearer ",
+            "Bearer  token",
+            "Bearer token ",
+            "Bearer token extra",
+            "Basic token",
+            "token",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", HeaderValue::from_str(value).unwrap());
+            assert!(bearer_token(&headers).is_none(), "{value}");
+        }
+
+        let mut valid = HeaderMap::new();
+        valid.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer configured-token"),
+        );
+        assert_eq!(bearer_token(&valid), Some("configured-token"));
+
+        let mut case_insensitive_scheme = HeaderMap::new();
+        case_insensitive_scheme.insert(
+            "authorization",
+            HeaderValue::from_static("bearer configured-token"),
+        );
+        assert_eq!(
+            bearer_token(&case_insensitive_scheme),
+            Some("configured-token")
+        );
+
+        valid.append(
+            "authorization",
+            HeaderValue::from_static("Bearer configured-token"),
+        );
+        assert!(bearer_token(&valid).is_none());
+    }
+
+    fn reserve_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    async fn raw_mcp_request(
+        port: u16,
+        authorization: Option<&str>,
+        extra_headers: &[(&str, &str)],
+        body: &str,
+    ) -> String {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let mut headers = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        if let Some(authorization) = authorization {
+            headers.push_str(&format!("Authorization: {authorization}\r\n"));
+        }
+        for (name, value) in extra_headers {
+            headers.push_str(&format!("{name}: {value}\r\n"));
+        }
+        let request = format!("{headers}\r\n{body}");
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    fn assert_http_status(response: &str, status: u16) {
+        let status_line = response.lines().next().unwrap_or("");
+        assert!(
+            status_line.contains(&format!(" {status} ")),
+            "unexpected response: {status_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_middleware_runs_before_json_extraction() {
+        let manager = McpServerManager::default();
+        let port = reserve_local_port();
+        let status = manager
+            .start(
+                Some("127.0.0.1".to_string()),
+                Some(port),
+                Some(Vec::new()),
+                Some("test-token".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.port, port);
+
+        let foreign = raw_mcp_request(
+            port,
+            Some("Bearer test-token"),
+            &[("Origin", "http://evil.example:8787")],
+            "not-json",
+        )
+        .await;
+        assert_http_status(&foreign, 403);
+
+        let repeated = raw_mcp_request(
+            port,
+            Some("Bearer test-token"),
+            &[
+                ("Origin", &format!("http://127.0.0.1:{port}")),
+                ("Origin", &format!("http://127.0.0.1:{port}")),
+            ],
+            "not-json",
+        )
+        .await;
+        assert_http_status(&repeated, 403);
+
+        let exact_origin = format!("http://127.0.0.1:{port}");
+        let valid_origin_bad_body = raw_mcp_request(
+            port,
+            Some("Bearer test-token"),
+            &[("Origin", &exact_origin)],
+            "not-json",
+        )
+        .await;
+        assert_http_status(&valid_origin_bad_body, 400);
+
+        let native_bad_body =
+            raw_mcp_request(port, Some("Bearer test-token"), &[], "not-json").await;
+        assert_http_status(&native_bad_body, 400);
+
+        manager.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_authorization_is_rejected_by_the_running_server() {
+        let manager = McpServerManager::default();
+        let port = reserve_local_port();
+        manager
+            .start(
+                Some("127.0.0.1".to_string()),
+                Some(port),
+                Some(Vec::new()),
+                Some("test-token".to_string()),
+            )
+            .await
+            .unwrap();
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        for authorization in [
+            None,
+            Some("Bearer"),
+            Some("Bearer "),
+            Some("Bearer test-token extra"),
+            Some("Basic test-token"),
+        ] {
+            let response = raw_mcp_request(port, authorization, &[], body).await;
+            assert_http_status(&response, 401);
+        }
+        let authorized = raw_mcp_request(port, Some("Bearer test-token"), &[], body).await;
+        assert_http_status(&authorized, 200);
+        manager.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_empty_grants_survive_start_set_stop_and_restart() {
+        let manager = McpServerManager::default();
+        assert!(manager.get_status().await.enabled_tools.is_empty());
+        let port = reserve_local_port();
+
+        let started = manager
+            .start(
+                Some("127.0.0.1".to_string()),
+                Some(port),
+                Some(Vec::new()),
+                Some("test-token".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(started.enabled_tools.is_empty());
+
+        let enabled = manager
+            .set_enabled_tools(vec!["dns_validate_record".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(enabled.enabled_tools, ["dns_validate_record"]);
+        let emptied = manager.set_enabled_tools(Vec::new()).await.unwrap();
+        assert!(emptied.enabled_tools.is_empty());
+
+        manager.stop().await.unwrap();
+        let restarted = manager
+            .start(
+                None,
+                Some(port),
+                None,
+                Some("replacement-token".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(restarted.enabled_tools.is_empty());
+
+        let explicitly_restarted = manager
+            .start(
+                None,
+                Some(port),
+                Some(Vec::new()),
+                Some("third-token".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(explicitly_restarted.enabled_tools.is_empty());
+        manager.stop().await.unwrap();
+        assert!(manager.get_status().await.enabled_tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_wrong_jsonrpc_before_rpc_dispatch() {
         let state = HttpRuntimeState {
             grants: Arc::new(RwLock::new(PermissionGrantSet::all())),
             auth_token: Arc::new(RwLock::new(Some("not-used-here".to_string()))),
@@ -764,7 +1090,7 @@ mod tests {
             bind_port: 8787,
         };
         let payload = json!({
-            "jsonrpc": "2.0",
+            "jsonrpc": "1.0",
             "id": 1,
             "method": "tools/call",
             "params": {
@@ -772,12 +1098,7 @@ mod tests {
                 "arguments": {}
             }
         });
-        let response = handle_mcp_rpc(
-            AxumState(state),
-            headers_with_origin("http://evil.example:8787"),
-            Json(payload),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = handle_mcp_rpc(AxumState(state), Json(payload)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

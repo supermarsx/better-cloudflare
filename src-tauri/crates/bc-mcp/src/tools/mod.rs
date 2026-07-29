@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::permissions::{
-    permission_for_invocation, validate_arguments, ArgumentProfile, PermissionGrantSet,
+    permission_for_invocation, requires_high_risk_confirmation, validate_arguments,
+    ArgumentProfile, PermissionDefinition, PermissionGrantSet,
 };
 use crate::schemas;
 
@@ -173,7 +174,8 @@ pub(crate) async fn execute_tool_with_grants(
             permission.invocation_name
         ));
     }
-    validate_arguments(permission, args)?;
+    let handler_args = prepare_handler_arguments(permission, args)?;
+    let args = &handler_args;
 
     let canonical_name = permission.invocation_name;
     if canonical_name.starts_with("cf_") {
@@ -193,6 +195,30 @@ pub(crate) async fn execute_tool_with_grants(
     }
 
     Err("Tool dispatch denied: registered tool has no handler.".to_string())
+}
+
+fn prepare_handler_arguments(
+    permission: &PermissionDefinition,
+    args: &Value,
+) -> Result<Value, String> {
+    validate_arguments(permission, args)?;
+    if requires_high_risk_confirmation(permission)
+        && args.get("confirmHighRisk") != Some(&Value::Bool(true))
+    {
+        return Err(format!(
+            "Tool '{}' requires the exact boolean argument confirmHighRisk: true.",
+            permission.invocation_name
+        ));
+    }
+
+    let mut handler_args = args.clone();
+    if requires_high_risk_confirmation(permission) {
+        handler_args
+            .as_object_mut()
+            .expect("argument validation requires an object")
+            .remove("confirmHighRisk");
+    }
+    Ok(handler_args)
 }
 
 #[cfg(test)]
@@ -230,11 +256,110 @@ mod tests {
         assert!(malformed.unwrap_err().contains("JSON object"));
 
         let oversized = json!({
+            "confirmHighRisk": true,
             "record_ids": (0..101).map(|index| format!("id-{index}")).collect::<Vec<_>>()
         });
         let result =
             execute_tool_with_grants(&grants, "cf_bulk_delete_dns_records", &oversized).await;
         assert!(result.unwrap_err().contains("100 item"));
+    }
+
+    #[tokio::test]
+    async fn every_high_risk_permission_requires_confirmation_before_its_handler() {
+        for permission in crate::permissions::permission_registry()
+            .iter()
+            .filter(|permission| requires_high_risk_confirmation(permission))
+        {
+            let grants = PermissionGrantSet::from_requested(&[permission.id.to_string()]);
+            let error = execute_tool_with_grants(&grants, permission.invocation_name, &json!({}))
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("confirmHighRisk: true"),
+                "{} did not enforce acknowledgement: {error}",
+                permission.invocation_name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmation_bypass_values_aliases_and_case_variants_are_rejected() {
+        let grants = PermissionGrantSet::from_requested(&["cf_delete_dns_record".to_string()]);
+        let rejected = [
+            json!({}),
+            json!({"confirmHighRisk": false}),
+            json!({"confirmHighRisk": "true"}),
+            json!({"confirmHighRisk": "TRUE"}),
+            json!({"confirmHighRisk": 1}),
+            json!({"confirmHighRisk": null}),
+            json!({"confirm_high_risk": true}),
+            json!({"confirmhighrisk": true}),
+            json!({"ConfirmHighRisk": true}),
+            json!({"confirmHighrisk": true}),
+        ];
+
+        for args in rejected {
+            let error = execute_tool_with_grants(&grants, "cf_delete_dns_record", &args)
+                .await
+                .unwrap_err();
+            assert!(error.contains("confirmHighRisk: true"), "{args}: {error}");
+        }
+
+        let case_variant = execute_tool_with_grants(
+            &grants,
+            "CF_DELETE_DNS_RECORD",
+            &json!({
+                "confirmHighRisk": true
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(case_variant.contains("not registered"));
+
+        let stable_id = execute_tool_with_grants(
+            &grants,
+            "bc.mcp.v1.cf.delete_dns_record",
+            &json!({
+                "confirmHighRisk": true
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(stable_id.contains("not registered"));
+    }
+
+    #[tokio::test]
+    async fn bulk_operations_cannot_bypass_confirmation() {
+        for name in ["cf_bulk_create_dns_records", "cf_bulk_delete_dns_records"] {
+            let grants = PermissionGrantSet::from_requested(&[name.to_string()]);
+            for args in [
+                json!({"records": []}),
+                json!({"confirmHighRisk": false, "records": []}),
+                json!({"confirmHighRisk": "true", "records": []}),
+                json!({"confirm_high_risk": true, "records": []}),
+            ] {
+                let error = execute_tool_with_grants(&grants, name, &args)
+                    .await
+                    .unwrap_err();
+                assert!(error.contains("confirmHighRisk: true"), "{name}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn exact_confirmation_is_removed_before_handler_dispatch() {
+        let permission =
+            permission_for_invocation("cf_delete_dns_record").expect("registered tool");
+        let args = json!({
+            "confirmHighRisk": true,
+            "api_key": "secret",
+            "zone_id": "zone",
+            "record_id": "record"
+        });
+        let prepared = prepare_handler_arguments(permission, &args).unwrap();
+        assert!(prepared.get("confirmHighRisk").is_none());
+        assert_eq!(prepared["api_key"], "secret");
+        assert_eq!(prepared["record_id"], "record");
     }
 
     #[tokio::test]

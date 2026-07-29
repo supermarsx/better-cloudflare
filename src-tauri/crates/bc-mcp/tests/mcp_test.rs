@@ -60,15 +60,14 @@ fn all_tools_have_categories() {
 }
 
 #[test]
-fn default_tool_set_matches_definitions() {
-    let defs = available_tool_definitions();
-    let enabled = default_enabled_tool_set();
-    assert_eq!(defs.len(), enabled.len());
-    for tool in &defs {
+fn default_tool_set_is_empty_and_least_privilege() {
+    let defaults = default_enabled_tool_set();
+    assert!(defaults.is_empty());
+    for permission in bc_mcp::permissions::permission_registry() {
         assert!(
-            enabled.allows_id(&tool.permission_id),
-            "Tool {} missing from default set",
-            tool.name,
+            !defaults.allows(permission),
+            "{} unexpectedly enabled by default",
+            permission.invocation_name
         );
     }
 }
@@ -110,10 +109,15 @@ fn sanitize_empty_returns_empty() {
 
 #[test]
 fn sanitize_preserves_all_valid() {
-    let enabled = default_enabled_tool_set();
-    let input: Vec<String> = enabled.permission_ids().map(str::to_string).collect();
+    let input: Vec<String> = bc_mcp::permissions::permission_registry()
+        .iter()
+        .map(|permission| permission.id.to_string())
+        .collect();
     let result = sanitize_enabled_tools(&input);
-    assert_eq!(result.len(), enabled.len());
+    assert_eq!(
+        result.len(),
+        bc_mcp::permissions::permission_registry().len()
+    );
 }
 
 #[test]
@@ -341,6 +345,40 @@ fn schema_standalone_function() {
         .as_object()
         .unwrap()
         .contains_key("api_key"));
+}
+
+#[test]
+fn high_risk_schemas_require_exact_boolean_confirmation() {
+    for tool in available_tool_definitions() {
+        let permission =
+            bc_mcp::permissions::permission_for_invocation(&tool.name).expect("registered tool");
+        let requires_confirmation =
+            bc_mcp::permissions::requires_high_risk_confirmation(permission);
+        let properties = tool.input_schema["properties"].as_object();
+        let required = tool.input_schema["required"].as_array();
+        let confirmation = properties.and_then(|properties| properties.get("confirmHighRisk"));
+
+        if requires_confirmation {
+            let confirmation =
+                confirmation.unwrap_or_else(|| panic!("{} is missing confirmHighRisk", tool.name));
+            assert_eq!(confirmation["type"], "boolean", "{}", tool.name);
+            assert_eq!(confirmation["const"], true, "{}", tool.name);
+            assert!(
+                required
+                    .expect("high-risk schemas expose required fields")
+                    .iter()
+                    .any(|field| field.as_str() == Some("confirmHighRisk")),
+                "{} does not require confirmHighRisk",
+                tool.name
+            );
+        } else {
+            assert!(
+                confirmation.is_none(),
+                "{} unexpectedly exposes high-risk confirmation",
+                tool.name
+            );
+        }
+    }
 }
 
 #[test]

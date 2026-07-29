@@ -767,7 +767,7 @@ impl CloudflareClient {
             "parsed DNS records",
             usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
         )?;
-        records.extend(source.iter().filter_map(parse_dns_record));
+        extend_dns_records_fail_closed(&mut records, source)?;
 
         Ok(records)
     }
@@ -789,7 +789,6 @@ impl CloudflareClient {
         let json: Value = read_json_response(response).await?;
 
         parse_dns_record(&json["result"])
-            .ok_or_else(|| CloudflareError::ApiError("Invalid response format".to_string()))
     }
 
     pub async fn update_dns_record(
@@ -810,7 +809,6 @@ impl CloudflareClient {
         let json: Value = read_json_response(response).await?;
 
         parse_dns_record(&json["result"])
-            .ok_or_else(|| CloudflareError::ApiError("Invalid response format".to_string()))
     }
 
     pub async fn delete_dns_record(
@@ -1610,21 +1608,24 @@ fn sanitize_error_text(value: &str) -> String {
 
 // ── Parsing helper ──────────────────────────────────────────────────────────
 
-fn parse_dns_record(value: &Value) -> Option<DNSRecord> {
-    Some(DNSRecord {
-        id: value["id"].as_str().map(|s| s.to_string()),
-        r#type: value["type"].as_str()?.to_string(),
-        name: value["name"].as_str()?.to_string(),
-        content: value["content"].as_str()?.to_string(),
-        comment: value["comment"].as_str().map(|s| s.to_string()),
-        ttl: value["ttl"].as_u64().map(|n| n as u32),
-        priority: value["priority"].as_u64().map(|n| n as u16),
-        proxied: value["proxied"].as_bool(),
-        zone_id: value["zone_id"].as_str().unwrap_or("").to_string(),
-        zone_name: value["zone_name"].as_str().unwrap_or("").to_string(),
-        created_on: value["created_on"].as_str().unwrap_or("").to_string(),
-        modified_on: value["modified_on"].as_str().unwrap_or("").to_string(),
-    })
+fn parse_dns_record(value: &Value) -> Result<DNSRecord, CloudflareError> {
+    serde_json::from_value(value.clone())
+        .map_err(|_| CloudflareError::ApiError("Invalid DNS record response format".to_string()))
+}
+
+fn extend_dns_records_fail_closed(
+    output: &mut Vec<DNSRecord>,
+    source: &[Value],
+) -> Result<(), CloudflareError> {
+    for (index, value) in source.iter().enumerate() {
+        let record = parse_dns_record(value).map_err(|_| {
+            CloudflareError::ApiError(format!(
+                "Invalid DNS record response at result index {index}"
+            ))
+        })?;
+        output.push(record);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1633,6 +1634,43 @@ mod auth_verification_tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn valid_dns_record_value(id: &str) -> Value {
+        json!({
+            "id": id,
+            "type": "A",
+            "name": "www.example.com",
+            "content": "192.0.2.1",
+            "comment": null,
+            "ttl": 300,
+            "priority": null,
+            "proxied": false,
+            "zone_id": "zone-1",
+            "zone_name": "example.com",
+            "created_on": "2026-01-01T00:00:00Z",
+            "modified_on": "2026-01-01T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn dns_record_pages_fail_closed_on_any_malformed_provider_record() {
+        let source = vec![
+            valid_dns_record_value("valid"),
+            json!({
+                "id": "malformed",
+                "type": "A",
+                "name": "broken.example.com",
+                "content": 123,
+                "zone_id": "zone-1",
+                "zone_name": "example.com",
+                "created_on": "2026-01-01T00:00:00Z",
+                "modified_on": "2026-01-01T00:00:00Z"
+            }),
+        ];
+        let mut output = Vec::new();
+        let error = extend_dns_records_fail_closed(&mut output, &source).unwrap_err();
+        assert!(error.to_string().contains("result index 1"));
+    }
 
     fn spawn_response(
         status: u16,

@@ -40,6 +40,7 @@ impl RpcErrorCode {
 /// Inbound JSON-RPC 2.0 request.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
+    pub jsonrpc: Option<Value>,
     pub id: Option<Value>,
     pub method: String,
     pub params: Option<Value>,
