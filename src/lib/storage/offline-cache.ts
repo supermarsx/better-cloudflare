@@ -438,141 +438,151 @@ function rollbackGenerationIsCurrent(
 
 function scheduleRollback(): void {
   if (rollbackTimer !== undefined || !pendingRollback) return;
+  const rollback = pendingRollback;
   const delay = Math.min(
-    ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(pendingRollback.attempts, 6),
+    ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(rollback.attempts, 6),
     1_000,
   );
   rollbackTimer = setTimeout(() => {
     rollbackTimer = undefined;
-    const rollback = pendingRollback;
-    if (!rollback) return;
+    if (pendingRollback !== rollback) {
+      scheduleRollback();
+      return;
+    }
     rollback.attempts += 1;
-    const lease = tryAcquireCacheLease();
     let cleanupComplete = true;
     let rollbackFinished = false;
-    if (lease) {
-      try {
-        let checkedIndexRaw: string | null | undefined;
+    try {
+      const lease = tryAcquireCacheLease();
+      if (lease) {
         try {
-          checkedIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
-        } catch (error) {
-          reportCacheFailure(
-            error,
-            "Verify DNS offline cache rollback generation",
-          );
-        }
-        const indexMatchesRollbackGeneration =
-          checkedIndexRaw === rollback.previousIndexRaw ||
-          checkedIndexRaw === rollback.attemptedIndexRaw;
-        if (checkedIndexRaw !== undefined && !indexMatchesRollbackGeneration) {
-          rollbackFinished = true;
-          cleanupComplete = cleanupRollbackRestorations(
-            rollback,
-            "Remove superseded DNS offline cache rollback restoration",
-          );
-        }
-        let generationStillCurrent = false;
-        let rollbackSuperseded = false;
-        let rollbackIndexRaw: string | null | undefined;
-        if (indexMatchesRollbackGeneration && checkedIndexRaw !== undefined) {
-          generationStillCurrent = true;
-          rollbackIndexRaw = checkedIndexRaw;
-          for (const entry of rollback.removedEntries) {
-            const guardOperation =
-              "Verify DNS offline cache rollback entry generation";
-            if (
-              !rollbackGenerationIsCurrent(
-                lease,
-                rollbackIndexRaw,
-                guardOperation,
-              )
-            ) {
-              generationStillCurrent = false;
-              break;
-            }
-            const result = restoreIfUnchanged(
-              entry.key,
-              null,
-              entry.raw,
-              "Retry removed DNS offline cache entry rollback",
-            );
-            if (result === "restored") {
-              rollback.restoredEntryKeys.add(entry.key);
-            } else if (result === "changed") {
-              rollbackSuperseded = true;
-              generationStillCurrent = false;
-              break;
-            }
-            if (
-              result === "failed" ||
-              !rollbackGenerationIsCurrent(
-                lease,
-                rollbackIndexRaw,
-                guardOperation,
-              )
-            ) {
-              generationStillCurrent = false;
-              break;
-            }
-          }
-        }
-
-        if (
-          generationStillCurrent &&
-          rollbackIndexRaw !== undefined
-        ) {
-          const indexResult = restoreIfUnchanged(
-            CACHE_INDEX_KEY,
-            rollbackIndexRaw,
-            rollback.previousIndexRaw,
-            "Retry DNS offline cache index rollback",
-          );
-          if (indexResult === "changed") {
-            rollbackSuperseded = true;
-          }
+          let checkedIndexRaw: string | null | undefined;
           try {
-            rollbackFinished =
-              (indexResult === "restored" ||
-                indexResult === "already-restored") &&
-              localStorage.getItem(CACHE_INDEX_KEY) ===
-                rollback.previousIndexRaw &&
-              rollback.removedEntries.every(
-                (entry) => localStorage.getItem(entry.key) === entry.raw,
-              );
+            checkedIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
           } catch (error) {
             reportCacheFailure(
               error,
-              "Verify restored DNS offline cache rollback generation",
+              "Verify DNS offline cache rollback generation",
             );
           }
-        }
+          const indexMatchesRollbackGeneration =
+            checkedIndexRaw === rollback.previousIndexRaw ||
+            checkedIndexRaw === rollback.attemptedIndexRaw;
+          if (checkedIndexRaw !== undefined && !indexMatchesRollbackGeneration) {
+            rollbackFinished = true;
+            cleanupComplete = cleanupRollbackRestorations(
+              rollback,
+              "Remove superseded DNS offline cache rollback restoration",
+            );
+          }
+          let generationStillCurrent = false;
+          let rollbackSuperseded = false;
+          let rollbackIndexRaw: string | null | undefined;
+          if (indexMatchesRollbackGeneration && checkedIndexRaw !== undefined) {
+            generationStillCurrent = true;
+            rollbackIndexRaw = checkedIndexRaw;
+            for (const entry of rollback.removedEntries) {
+              const guardOperation =
+                "Verify DNS offline cache rollback entry generation";
+              if (
+                !rollbackGenerationIsCurrent(
+                  lease,
+                  rollbackIndexRaw,
+                  guardOperation,
+                )
+              ) {
+                generationStillCurrent = false;
+                break;
+              }
+              const result = restoreIfUnchanged(
+                entry.key,
+                null,
+                entry.raw,
+                "Retry removed DNS offline cache entry rollback",
+              );
+              if (result === "restored") {
+                rollback.restoredEntryKeys.add(entry.key);
+              } else if (result === "changed") {
+                rollbackSuperseded = true;
+                generationStillCurrent = false;
+                break;
+              }
+              if (
+                result === "failed" ||
+                !rollbackGenerationIsCurrent(
+                  lease,
+                  rollbackIndexRaw,
+                  guardOperation,
+                )
+              ) {
+                generationStillCurrent = false;
+                break;
+              }
+            }
+          }
 
-        if (rollbackSuperseded) rollbackFinished = true;
-        if (!rollbackFinished) {
-          cleanupComplete = cleanupRollbackRestorations(
-            rollback,
-            "Remove stale DNS offline cache rollback restoration",
-          );
-        } else if (rollbackSuperseded) {
-          cleanupComplete = cleanupRollbackRestorations(
-            rollback,
-            "Remove superseded DNS offline cache rollback restoration",
-          );
+          if (generationStillCurrent && rollbackIndexRaw !== undefined) {
+            const indexResult = restoreIfUnchanged(
+              CACHE_INDEX_KEY,
+              rollbackIndexRaw,
+              rollback.previousIndexRaw,
+              "Retry DNS offline cache index rollback",
+            );
+            if (indexResult === "changed") {
+              rollbackSuperseded = true;
+            }
+            try {
+              rollbackFinished =
+                (indexResult === "restored" ||
+                  indexResult === "already-restored") &&
+                localStorage.getItem(CACHE_INDEX_KEY) ===
+                  rollback.previousIndexRaw &&
+                rollback.removedEntries.every(
+                  (entry) => localStorage.getItem(entry.key) === entry.raw,
+                );
+            } catch (error) {
+              reportCacheFailure(
+                error,
+                "Verify restored DNS offline cache rollback generation",
+              );
+            }
+          }
+
+          if (rollbackSuperseded) rollbackFinished = true;
+          if (!rollbackFinished) {
+            cleanupComplete = cleanupRollbackRestorations(
+              rollback,
+              "Remove stale DNS offline cache rollback restoration",
+            );
+          } else if (rollbackSuperseded) {
+            cleanupComplete = cleanupRollbackRestorations(
+              rollback,
+              "Remove superseded DNS offline cache rollback restoration",
+            );
+          }
+          if (rollbackFinished && cleanupComplete) {
+            const incomingResult = restoreIfUnchanged(
+              rollback.incomingKey,
+              rollback.incomingRaw,
+              null,
+              "Retry incoming DNS offline cache entry rollback",
+            );
+            cleanupComplete = incomingResult !== "failed";
+          }
+        } finally {
+          releaseCacheLease(lease);
         }
-        if (rollbackFinished && cleanupComplete) {
-          const incomingResult = restoreIfUnchanged(
-            rollback.incomingKey,
-            rollback.incomingRaw,
-            null,
-            "Retry incoming DNS offline cache entry rollback",
-          );
-          cleanupComplete = incomingResult !== "failed";
-        }
-      } finally {
-        releaseCacheLease(lease);
+      } else {
+        cleanupComplete = false;
       }
-    } else {
+    } catch (error) {
       cleanupComplete = false;
+      reportCacheFailure(error, "Retry DNS offline cache rollback");
+    }
+
+    if (pendingRollback !== rollback) {
+      scheduleRollback();
+      return;
     }
 
     if (rollbackFinished && cleanupComplete) {

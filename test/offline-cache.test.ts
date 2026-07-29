@@ -606,7 +606,7 @@ test("restores deleted entries when eviction fails after data and index writes",
   assert.equal(getCacheIndex().length, hardLimit);
 });
 
-test("retries an evicted durable entry restoration after the first rollback failure", async () => {
+test("retries an evicted durable entry restoration after the first rollback failure", (t) => {
   const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
   for (let index = 0; index < hardLimit; index += 1) {
     cacheZoneRecords(`retry-${index}`, `Retry ${index}`, []);
@@ -618,6 +618,10 @@ test("retries an evicted durable entry restoration after the first rollback fail
   assert.ok(oldestRaw);
   assert.ok(previousIndex);
 
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
   const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
   const originalSetItem = storagePrototype.setItem;
   let indexFailureArmed = true;
@@ -647,7 +651,9 @@ test("retries an evicted durable entry restoration after the first rollback fail
   assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
   assert.equal(rawIndexZoneIds().includes(`retry-${hardLimit}`), false);
   assert.equal(localStorage.getItem(oldestKey), null);
-  await waitFor(() => localStorage.getItem(oldestKey) === oldestRaw);
+  t.mock.timers.tick(10);
+  assert.equal(localStorage.getItem(oldestKey), oldestRaw);
+  assert.equal(localStorage.getItem(CACHE_COORDINATION_KEY), null);
   assert.equal(entryKeyForZone(`retry-${hardLimit}`), undefined);
   assert.deepEqual(getCacheIndex(), rawIndexZoneIds());
   assert.equal(getCacheIndex()[0], "retry-0");
