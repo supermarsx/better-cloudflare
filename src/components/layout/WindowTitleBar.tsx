@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { storageManager } from "@/lib/storage/storage";
 import { TauriClient } from "@/lib/api/tauri-client";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   executeWindowAction,
@@ -27,6 +28,79 @@ import {
 } from "./WindowControls";
 
 const TITLEBAR_HEIGHT_PX = 36;
+
+interface ClosePreferencePersistence {
+  persistLocal: (enabled: boolean) => void;
+  persistNative?: (enabled: boolean) => Promise<void>;
+}
+
+function failureReason(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "The desktop runtime returned an unknown error.";
+}
+
+function reportTitlebarFailure(
+  error: unknown,
+  label: string,
+  guidance: string,
+): void {
+  reportRuntimeError(new Error(`${guidance} Reason: ${failureReason(error)}`), {
+    source: "runtime",
+    label,
+  });
+}
+
+function readConfirmWindowCloseSafely(
+  readPreference: () => boolean = () => storageManager.getConfirmWindowClose(),
+): boolean {
+  try {
+    return readPreference();
+  } catch (error) {
+    reportTitlebarFailure(
+      error,
+      "Read titlebar close confirmation preference",
+      "The close confirmation preference could not be read. Confirmation remains enabled for safety.",
+    );
+    return true;
+  }
+}
+
+async function persistClosePreference(
+  enabled: boolean,
+  persistence: ClosePreferencePersistence,
+): Promise<boolean> {
+  try {
+    await persistence.persistNative?.(enabled);
+    persistence.persistLocal(enabled);
+    return true;
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      persistence.persistLocal(true);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      await persistence.persistNative?.(true);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+
+    const rollbackGuidance =
+      rollbackErrors.length === 0
+        ? "Close confirmation remains enabled for safety. Retry the preference change."
+        : `Close confirmation was enabled in the UI, but some persistence rollback steps failed. Restart the app before retrying. Rollback errors: ${rollbackErrors
+            .map(failureReason)
+            .join("; ")}`;
+    reportTitlebarFailure(
+      error,
+      "Save titlebar close confirmation preference",
+      rollbackGuidance,
+    );
+    return false;
+  }
+}
 
 export function WindowTitleBar() {
   const { t } = useI18n();
@@ -40,7 +114,7 @@ export function WindowTitleBar() {
   const [confirmRestartOpen, setConfirmRestartOpen] = useState(false);
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [confirmWindowClose, setConfirmWindowClose] = useState(
-    storageManager.getConfirmWindowClose(),
+    readConfirmWindowCloseSafely,
   );
   const allowCloseRef = useRef(false);
   const dragRegion = useWindowDragRegion();
@@ -83,41 +157,99 @@ export function WindowTitleBar() {
   }, [confirmWindowClose]);
 
   const persistConfirmWindowClose = useCallback(async (enabled: boolean) => {
-    storageManager.setConfirmWindowClose(enabled);
-    setConfirmWindowClose(enabled);
-    if (!TauriClient.isTauri()) return;
-    await TauriClient.updatePreferenceFields({
-      confirm_window_close: enabled,
-    }).catch(() => {});
+    const persisted = await persistClosePreference(enabled, {
+      persistLocal: (next) => storageManager.setConfirmWindowClose(next),
+      ...(TauriClient.isTauri()
+        ? {
+            persistNative: (next: boolean) =>
+              TauriClient.updatePreferenceFields({
+                confirm_window_close: next,
+              }),
+          }
+        : {}),
+    });
+    setConfirmWindowClose(persisted ? enabled : true);
   }, []);
+
+  const enableSafeCloseFallback = useCallback(
+    (error: unknown, label: string) => {
+      setConfirmWindowClose(true);
+      let fallbackError: unknown;
+      try {
+        storageManager.setConfirmWindowClose(true);
+      } catch (storageError) {
+        fallbackError = storageError;
+      }
+      reportTitlebarFailure(
+        error,
+        label,
+        fallbackError
+          ? `Close interception failed, so confirmation was enabled in the UI. Persisting that safe fallback also failed: ${failureReason(
+              fallbackError,
+            )}. Restart the app before closing the window.`
+          : "Close interception failed. Confirmation remains enabled for the custom close controls; retry or restart the app before closing.",
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!TauriClient.isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const appWindow = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void | Promise<void>) | undefined;
 
+    void (async () => {
       try {
-        const current = await (appWindow as any).isAlwaysOnTop?.();
-        if (typeof current === "boolean") setIsTopmost(current);
-      } catch {
-        // ignore
-      }
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const appWindow = getCurrentWindow();
 
-      unlisten = await appWindow.onCloseRequested((event) => {
-        if (allowCloseRef.current) {
-          allowCloseRef.current = false;
-          return;
+        try {
+          const current = await appWindow.isAlwaysOnTop();
+          if (typeof current === "boolean") setIsTopmost(current);
+        } catch (error) {
+          reportTitlebarFailure(
+            error,
+            "Read titlebar always-on-top state",
+            "The always-on-top state could not be read. It was left disabled in the UI.",
+          );
         }
-        event.preventDefault();
-        void requestClose();
-      });
-    })().catch(() => {});
+
+        const stopListening = await appWindow.onCloseRequested((event) => {
+          if (allowCloseRef.current) {
+            allowCloseRef.current = false;
+            return;
+          }
+          event.preventDefault();
+          void requestClose().catch((error) => {
+            enableSafeCloseFallback(error, "Handle titlebar close request");
+          });
+        });
+
+        if (disposed) {
+          await stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      } catch (error) {
+        enableSafeCloseFallback(
+          error,
+          "Register titlebar close-request listener",
+        );
+      }
+    })();
+
     return () => {
-      if (unlisten) unlisten();
+      disposed = true;
+      if (!unlisten) return;
+      void Promise.resolve(unlisten()).catch((error) => {
+        reportTitlebarFailure(
+          error,
+          "Remove titlebar close-request listener",
+          "The close-request listener could not be removed cleanly. Restart the app before continuing.",
+        );
+      });
     };
-  }, [requestClose]);
+  }, [enableSafeCloseFallback, requestClose]);
 
   const handleWindowContextMenu = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -145,7 +277,7 @@ export function WindowTitleBar() {
         try {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
           const appWindow = getCurrentWindow();
-          await (appWindow as any).setAlwaysOnTop?.(next);
+          await appWindow.setAlwaysOnTop(next);
         } catch (error) {
           setIsTopmost(prev);
           reportWindowActionError("toggle-always-on-top", error);
@@ -414,3 +546,6 @@ export function WindowTitleBar() {
     </div>
   );
 }
+
+WindowTitleBar.persistClosePreference = persistClosePreference;
+WindowTitleBar.readConfirmWindowCloseSafely = readConfirmWindowCloseSafely;

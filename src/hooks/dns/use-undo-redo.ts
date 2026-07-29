@@ -14,6 +14,7 @@
  * ```
  */
 import { useState, useCallback, useRef } from "react";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
 export interface UndoRedoEntry<T> {
   /** Unique id for the entry */
@@ -58,6 +59,28 @@ export interface UndoRedoResult<T> {
 
 let nextId = 1;
 
+function failureReason(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "The operation returned an unknown error.";
+}
+
+function reportHistoryFailure<T>(
+  action: "undo" | "redo",
+  entry: UndoRedoEntry<T>,
+  error: unknown,
+): void {
+  reportRuntimeError(
+    new Error(
+      `Could not ${action} "${entry.description}". History was left unchanged, so you can retry. Reason: ${failureReason(error)}`,
+    ),
+    {
+      source: "runtime",
+      label: `${action === "undo" ? "Undo" : "Redo"} DNS history operation`,
+    },
+  );
+}
+
 export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
   const { maxHistory = 50 } = options;
   const optionsRef = useRef(options);
@@ -65,7 +88,19 @@ export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
 
   const [undoStack, setUndoStack] = useState<UndoRedoEntry<T>[]>([]);
   const [redoStack, setRedoStack] = useState<UndoRedoEntry<T>[]>([]);
-  const [, setTick] = useState(0);
+  const undoStackRef = useRef<UndoRedoEntry<T>[]>([]);
+  const redoStackRef = useRef<UndoRedoEntry<T>[]>([]);
+  const historyActionInFlightRef = useRef(false);
+
+  const replaceUndoStack = useCallback((next: UndoRedoEntry<T>[]) => {
+    undoStackRef.current = next;
+    setUndoStack(next);
+  }, []);
+
+  const replaceRedoStack = useCallback((next: UndoRedoEntry<T>[]) => {
+    redoStackRef.current = next;
+    setRedoStack(next);
+  }, []);
 
   const push = useCallback(
     (entry: Omit<UndoRedoEntry<T>, "id" | "timestamp">) => {
@@ -74,50 +109,74 @@ export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
         id: `undo-${nextId++}`,
         timestamp: Date.now(),
       };
-      setUndoStack((prev) => {
-        const next = [full, ...prev];
-        return next.length > maxHistory ? next.slice(0, maxHistory) : next;
-      });
+      const next = [full, ...undoStackRef.current];
+      replaceUndoStack(
+        next.length > maxHistory ? next.slice(0, maxHistory) : next,
+      );
       // Push clears redo stack (new branch)
-      setRedoStack([]);
+      replaceRedoStack([]);
     },
-    [maxHistory],
+    [maxHistory, replaceRedoStack, replaceUndoStack],
   );
 
   const undo = useCallback(async () => {
-    setUndoStack((prev) => {
-      if (prev.length === 0) return prev;
-      const [entry, ...rest] = prev;
-      // Move to redo stack
-      setRedoStack((r) => [entry, ...r]);
-      // Fire the undo callback asynchronously
-      Promise.resolve(optionsRef.current.onUndo(entry.reverse, entry)).catch(
-        (err) => console.error("[useUndoRedo] undo failed:", err),
-      );
-      setTick((t) => t + 1);
-      return rest;
-    });
-  }, []);
+    if (historyActionInFlightRef.current) return;
+    const entry = undoStackRef.current[0];
+    if (!entry) return;
+
+    historyActionInFlightRef.current = true;
+    try {
+      await optionsRef.current.onUndo(entry.reverse, entry);
+    } catch (error) {
+      reportHistoryFailure("undo", entry, error);
+      return;
+    } finally {
+      historyActionInFlightRef.current = false;
+    }
+
+    const currentIndex = undoStackRef.current.findIndex(
+      (candidate) => candidate.id === entry.id,
+    );
+    if (currentIndex < 0) return;
+
+    replaceUndoStack([
+      ...undoStackRef.current.slice(0, currentIndex),
+      ...undoStackRef.current.slice(currentIndex + 1),
+    ]);
+    replaceRedoStack([entry, ...redoStackRef.current]);
+  }, [replaceRedoStack, replaceUndoStack]);
 
   const redo = useCallback(async () => {
-    setRedoStack((prev) => {
-      if (prev.length === 0) return prev;
-      const [entry, ...rest] = prev;
-      // Move back to undo stack
-      setUndoStack((u) => [entry, ...u]);
-      // Fire the redo callback asynchronously
-      Promise.resolve(optionsRef.current.onRedo(entry.forward, entry)).catch(
-        (err) => console.error("[useUndoRedo] redo failed:", err),
-      );
-      setTick((t) => t + 1);
-      return rest;
-    });
-  }, []);
+    if (historyActionInFlightRef.current) return;
+    const entry = redoStackRef.current[0];
+    if (!entry) return;
+
+    historyActionInFlightRef.current = true;
+    try {
+      await optionsRef.current.onRedo(entry.forward, entry);
+    } catch (error) {
+      reportHistoryFailure("redo", entry, error);
+      return;
+    } finally {
+      historyActionInFlightRef.current = false;
+    }
+
+    const currentIndex = redoStackRef.current.findIndex(
+      (candidate) => candidate.id === entry.id,
+    );
+    if (currentIndex < 0) return;
+
+    replaceRedoStack([
+      ...redoStackRef.current.slice(0, currentIndex),
+      ...redoStackRef.current.slice(currentIndex + 1),
+    ]);
+    replaceUndoStack([entry, ...undoStackRef.current]);
+  }, [replaceRedoStack, replaceUndoStack]);
 
   const clear = useCallback(() => {
-    setUndoStack([]);
-    setRedoStack([]);
-  }, []);
+    replaceUndoStack([]);
+    replaceRedoStack([]);
+  }, [replaceRedoStack, replaceUndoStack]);
 
   return {
     push,
