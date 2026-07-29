@@ -612,7 +612,7 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
 
   const confirmation = await screen.findByRole("alertdialog");
   assert.ok(within(confirmation).getByText(/Create DNS record/));
-  assert.deepEqual(setToolCalls, [[]]);
+  assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
 });
 
 test("an equal hydrated session profile preserves MCP readiness after reconciliation", async () => {
