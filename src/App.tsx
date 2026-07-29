@@ -202,61 +202,68 @@ function App() {
     beginTransition("login");
   };
 
+  const showingAuthenticatedApp = activeView === "app" && isAuthenticated;
   const languageSelectorTop = isDesktopEnv ? "top-12" : "top-3";
-
-  const mainOffset = isDesktopEnv ? "top-9" : "top-0";
+  const mainOffset = isDesktopEnv ? "top-10" : "top-0";
 
   return (
-    <div className="h-screen bg-background text-foreground">
+    <div className="h-screen overflow-hidden bg-background text-foreground">
       {isDesktopEnv ? <WindowTitleBar /> : null}
-      <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
-        <div
-          className="flex items-center rounded-full border border-transparent bg-transparent px-1 py-0.5 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100"
-          onMouseEnter={() => {
-            clearPrefsDockHideTimer();
-            setPrefsDockOpen(true);
-          }}
-          onMouseLeave={schedulePrefsDockHide}
-        >
-          <Button
-            variant="ghost"
-            size="icon"
-            className="ui-icon-button h-6 w-6"
-            aria-label="Preferences"
-            onClick={() => {
-              clearPrefsDockHideTimer();
-              setPrefsDockOpen((prev) => !prev);
-            }}
-          >
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 transition-transform duration-200",
-                prefsDockOpen && "rotate-90",
-              )}
-            />
-          </Button>
+      {!showingAuthenticatedApp ? (
+        <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
           <div
-            className={cn(
-              "flex items-center gap-2 overflow-hidden transition-all duration-300",
-              prefsDockOpen
-                ? "ml-1 max-w-[140px] opacity-100"
-                : "ml-0 max-w-0 opacity-0 pointer-events-none",
-            )}
+            className="flex items-center rounded-full border border-transparent bg-transparent px-1 py-0.5 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100"
+            onMouseEnter={() => {
+              clearPrefsDockHideTimer();
+              setPrefsDockOpen(true);
+            }}
+            onMouseLeave={schedulePrefsDockHide}
           >
-            <LanguageSelector compact />
-            <ThemeToggle compact />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ui-icon-button h-6 w-6"
+              aria-label="Preferences"
+              onClick={() => {
+                clearPrefsDockHideTimer();
+                setPrefsDockOpen((prev) => !prev);
+              }}
+            >
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 transition-transform duration-200",
+                  prefsDockOpen && "rotate-90",
+                )}
+              />
+            </Button>
+            <div
+              className={cn(
+                "flex items-center gap-2 overflow-hidden transition-all duration-300",
+                prefsDockOpen
+                  ? "ml-1 max-w-[140px] opacity-100"
+                  : "ml-0 max-w-0 opacity-0 pointer-events-none",
+              )}
+            >
+              <LanguageSelector compact />
+              <ThemeToggle compact />
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
       <main
-        className={`absolute inset-x-0 bottom-0 ${mainOffset} overflow-y-auto scrollbar-themed scroll-smooth flex`}
+        data-testid="app-viewport"
+        className={`absolute inset-x-0 bottom-0 ${mainOffset} flex min-h-0 overflow-hidden`}
       >
         <div
-          className={`transition-opacity duration-300 ease-out min-h-full flex-1 ${
-            isVisible ? "opacity-100" : "opacity-0"
-          }`}
+          className={cn(
+            "min-h-0 flex-1 transition-opacity duration-300 ease-out",
+            showingAuthenticatedApp
+              ? "h-full overflow-hidden"
+              : "min-h-full overflow-y-auto",
+            isVisible ? "opacity-100" : "opacity-0",
+          )}
         >
-          {activeView === "app" && isAuthenticated ? (
+          {showingAuthenticatedApp ? (
             <DnsWorkspaceSection onReturnToLogin={handleLogout}>
               <DNSManager
                 apiKey={apiKey}

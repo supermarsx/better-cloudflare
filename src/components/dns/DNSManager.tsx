@@ -48,14 +48,9 @@ import {
   FileUp,
   Filter,
   Plus,
-  Globe,
-  GripVertical,
-  LogOut,
   RefreshCw,
   Search,
   Settings,
-  Shield,
-  Tags,
   Trash2,
   X,
 } from "lucide-react";
@@ -74,7 +69,6 @@ import {
 } from "@/components/ui/dialog";
 import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
 import { TOPOLOGY_MODEL_NODE_LIMIT, ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
@@ -101,6 +95,13 @@ import {
   reportRuntimeError,
   sanitizeRuntimeText,
 } from "@/lib/errors/runtime-reporting";
+import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
+import { DnsAppCommandBar } from "./DnsAppCommandBar";
+import {
+  DnsWorkspaceTabs,
+  getDnsWorkspacePanelId,
+  getDnsWorkspaceTabId,
+} from "./DnsWorkspaceTabs";
 
 function reportDnsManagerFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
@@ -346,22 +347,6 @@ function extractMcpEnabledTools(status: McpServerStatus | null): string[] {
   );
 }
 
-function getScrollParent(node: HTMLElement | null): HTMLElement | Window {
-  if (!node || typeof window === "undefined") return window;
-  let parent: HTMLElement | null = node.parentElement;
-  while (parent) {
-    const style = window.getComputedStyle(parent);
-    const overflowY = style.overflowY;
-    if (
-      (overflowY === "auto" || overflowY === "scroll") &&
-      parent.scrollHeight > parent.clientHeight
-    ) {
-      return parent;
-    }
-    parent = parent.parentElement;
-  }
-  return window;
-}
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
   basic:
     "Standard caching behavior. Query strings are respected for cache variation.",
@@ -805,9 +790,6 @@ function sanitizeDomainAuditCategories(
 export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
-  const topBarRef = useRef<HTMLDivElement | null>(null);
-  const recordsTableRef = useRef<HTMLDivElement | null>(null);
-  const compactTopBarRef = useRef(false);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
   const exportRequestRef = useRef<AbortController | null>(null);
@@ -824,8 +806,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [actionTab, setActionTab] = useState<ActionTab>("records");
   const [topologyRecordState, setTopologyRecordState] =
     useState<DnsTopologyRecordState>(EMPTY_DNS_TOPOLOGY_RECORD_STATE);
-  const [dragTabId, setDragTabId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [globalPerPage, setGlobalPerPage] = useState(DNS_DEFAULT_PAGE_SIZE);
   const [zonePerPage, setZonePerPage] = useState<Record<string, number>>({});
   const [showUnsupportedRecordTypes, setShowUnsupportedRecordTypes] = useState(
@@ -853,8 +833,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [auditLimit, setAuditLimit] = useState("100");
   const [showClearAuditConfirm, setShowClearAuditConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [compactTopBar, setCompactTopBar] = useState(false);
-  const [recordsBottomFade, setRecordsBottomFade] = useState(1);
   const [reopenLastTabs, setReopenLastTabs] = useState(false);
   const [reopenZoneTabs, setReopenZoneTabs] = useState<Record<string, boolean>>(
     {},
@@ -1195,10 +1173,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [undo, redo]);
-
-  useEffect(() => {
-    compactTopBarRef.current = compactTopBar;
-  }, [compactTopBar]);
 
   const availableZones = useMemo(
     () => zones.filter((zone) => zone.id),
@@ -2106,85 +2080,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [],
   );
-
-  useEffect(() => {
-    let rafId = 0;
-    let scrollTarget: HTMLElement | Window | null = null;
-    const COMPACT_ENTER_PX = 220;
-    const COMPACT_EXIT_PX = 8;
-    const EXPAND_STABLE_MS = 180;
-    const SWITCH_COOLDOWN_MS = 240;
-    let lastToggleAt = 0;
-    let expandTimerId = 0;
-    const getScrollTop = () =>
-      scrollTarget && scrollTarget !== window
-        ? (scrollTarget as HTMLElement).scrollTop
-        : window.scrollY || document.documentElement.scrollTop || 0;
-    const clearExpandTimer = () => {
-      if (!expandTimerId) return;
-      window.clearTimeout(expandTimerId);
-      expandTimerId = 0;
-    };
-    const canToggle = () => {
-      const now =
-        typeof performance !== "undefined" ? performance.now() : Date.now();
-      return now - lastToggleAt >= SWITCH_COOLDOWN_MS;
-    };
-    const applyCompactState = (next: boolean) => {
-      if (compactTopBarRef.current === next) return;
-      const now =
-        typeof performance !== "undefined" ? performance.now() : Date.now();
-      lastToggleAt = now;
-      compactTopBarRef.current = next;
-      setCompactTopBar(next);
-    };
-    const updateCompactState = () => {
-      const currentScrollTop = getScrollTop();
-      if (!compactTopBarRef.current) {
-        clearExpandTimer();
-        if (currentScrollTop > COMPACT_ENTER_PX && canToggle()) {
-          applyCompactState(true);
-        }
-        return;
-      }
-      if (currentScrollTop > COMPACT_EXIT_PX) {
-        clearExpandTimer();
-        return;
-      }
-      if (expandTimerId) return;
-      expandTimerId = window.setTimeout(() => {
-        expandTimerId = 0;
-        if (getScrollTop() <= COMPACT_EXIT_PX && canToggle()) {
-          applyCompactState(false);
-        }
-      }, EXPAND_STABLE_MS);
-    };
-    const onScroll = () => {
-      if (rafId) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = 0;
-        updateCompactState();
-      });
-    };
-    scrollTarget = getScrollParent(topBarRef.current);
-    updateCompactState();
-    if (scrollTarget === window) {
-      window.addEventListener("scroll", onScroll, { passive: true });
-    } else {
-      scrollTarget.addEventListener("scroll", onScroll, { passive: true });
-    }
-    window.addEventListener("resize", onScroll, { passive: true });
-    return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
-      clearExpandTimer();
-      if (scrollTarget === window) {
-        window.removeEventListener("scroll", onScroll);
-      } else if (scrollTarget) {
-        scrollTarget.removeEventListener("scroll", onScroll);
-      }
-      window.removeEventListener("resize", onScroll);
-    };
-  }, []);
 
   const refreshMcpStatus = useCallback(async () => {
     if (!isDesktop()) return;
@@ -3520,74 +3415,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     () => new Set(activeTab?.selectedIds ?? []),
     [activeTab?.selectedIds],
   );
-
-  const shouldShowRecordsTable =
-    activeTab?.kind === "zone" &&
-    actionTab === "records" &&
-    !activeTab.isLoading &&
-    filteredRecords.length > 0;
-
-  useEffect(() => {
-    if (!shouldShowRecordsTable) {
-      setRecordsBottomFade(0);
-      return;
-    }
-
-    let rafId = 0;
-    const scrollTarget = getScrollParent(recordsTableRef.current);
-    const getVisibleBottom = () => {
-      if (scrollTarget === window) {
-        return window.innerHeight || document.documentElement.clientHeight;
-      }
-      return (scrollTarget as HTMLElement).getBoundingClientRect().bottom;
-    };
-    const updateFade = () => {
-      const tableEl = recordsTableRef.current;
-      if (!tableEl) {
-        setRecordsBottomFade(0);
-        return;
-      }
-
-      const rect = tableEl.getBoundingClientRect();
-      const hiddenBottomPx = rect.bottom - getVisibleBottom();
-      if (hiddenBottomPx <= 2) {
-        setRecordsBottomFade(0);
-        return;
-      }
-      const fadeWindowPx = Math.max(72, Math.min(220, rect.height * 0.2));
-      const nextFade = Math.max(0, Math.min(1, hiddenBottomPx / fadeWindowPx));
-      setRecordsBottomFade((prev) =>
-        Math.abs(prev - nextFade) < 0.015 ? prev : nextFade,
-      );
-    };
-
-    const onScroll = () => {
-      if (rafId) return;
-      rafId = window.requestAnimationFrame(() => {
-        rafId = 0;
-        updateFade();
-      });
-    };
-
-    updateFade();
-
-    if (scrollTarget === window) {
-      window.addEventListener("scroll", onScroll, { passive: true });
-    } else {
-      scrollTarget.addEventListener("scroll", onScroll, { passive: true });
-    }
-    window.addEventListener("resize", onScroll, { passive: true });
-
-    return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
-      if (scrollTarget === window) {
-        window.removeEventListener("scroll", onScroll);
-      } else {
-        scrollTarget.removeEventListener("scroll", onScroll);
-      }
-      window.removeEventListener("resize", onScroll);
-    };
-  }, [activeTab?.id, filteredRecords.length, shouldShowRecordsTable]);
 
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
@@ -4971,375 +4798,142 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpToolCatalog = Array.isArray(mcpStatus?.tools) ? mcpStatus.tools : [];
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%),radial-gradient(circle_at_bottom,rgba(0,0,0,0.45),transparent_60%)] p-4 text-foreground">
-      <div className={`fixed right-3 z-30 ${isDesktop() ? "top-12" : "top-3"}`}>
-        <div className="flex items-center gap-1 rounded-full border border-transparent bg-transparent px-2 py-1 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100">
-          {isDesktop() && (
-            <Tooltip tip={t("Audit log", "Audit log")} side="bottom">
-              <Button
-                onClick={() => openActionTab("audit")}
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-                aria-label={t("Audit log", "Audit log")}
+    <AuthenticatedAppShell
+      commandBar={
+        <DnsAppCommandBar
+          zoneSelector={
+            <>
+              <Label className="sr-only" htmlFor="zone-select">
+                {t("Domain/Zone", "Domain/Zone")}
+              </Label>
+              <Select
+                value={selectedZoneId || undefined}
+                onValueChange={(value) => {
+                  setSelectedZoneId(value);
+                  openZoneTab(value);
+                }}
               >
-                <Shield className="h-3.5 w-3.5" />
-              </Button>
-            </Tooltip>
-          )}
-          <Tooltip
-            tip={t("Registry Monitoring", "Registry Monitoring")}
-            side="bottom"
-          >
-            <Button
-              onClick={() => openActionTab("registry")}
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label={t("Registry Monitoring", "Registry Monitoring")}
-            >
-              <Globe className="h-3.5 w-3.5" />
-            </Button>
-          </Tooltip>
-          <Tooltip tip={t("Settings", "Settings")} side="bottom">
-            <Button
-              onClick={() => openActionTab("settings")}
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label={t("Settings", "Settings")}
-            >
-              <Settings className="h-3.5 w-3.5" />
-            </Button>
-          </Tooltip>
-          <Tooltip tip={t("Tags", "Tags")} side="bottom">
-            <Button
-              onClick={() => openActionTab("tags")}
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label={t("Tags", "Tags")}
-            >
-              <Tags className="h-3.5 w-3.5" />
-            </Button>
-          </Tooltip>
-          <Tooltip tip={t("Logout", "Logout")} side="bottom">
-            <Button
-              onClick={handleLogout}
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-foreground/70 hover:text-foreground hover:bg-accent/50"
-              aria-label={t("Logout", "Logout")}
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </Button>
-          </Tooltip>
-        </div>
-      </div>
-      <div className="max-w-6xl mx-auto space-y-6 pb-10 fade-in-up">
-        <div ref={topBarRef} className="sticky top-0 z-20">
-          <Card
-            className={cn(
-              "border-border/60 backdrop-blur transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              compactTopBar
-                ? "w-[min(94vw,980px)] bg-card/92 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
-                : "w-full bg-card/85 shadow-[0_18px_50px_rgba(0,0,0,0.25)]",
-            )}
-          >
-            <CardHeader
-              className={cn(
-                "overflow-hidden transition-[max-height,opacity,transform,padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                compactTopBar
-                  ? "max-h-0 -translate-y-1 opacity-0 p-0 pointer-events-none"
-                  : "max-h-48 translate-y-0 opacity-100",
-              )}
-            >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="space-y-2 fade-in">
-                  <CardTitle className="text-xl tracking-tight">
-                    {t("DNS Manager", "DNS Manager")}
-                  </CardTitle>
-                  <p className="text-sm text-muted-foreground">
-                    {t(
-                      "Manage your Cloudflare DNS records",
-                      "Manage your Cloudflare DNS records",
-                    )}
-                  </p>
-                </div>
-                <div />
-              </div>
-            </CardHeader>
-            <CardContent
-              className={cn(
-                compactTopBar ? "space-y-2 px-2 py-2" : "space-y-4",
-              )}
-            >
-              <div
-                className={cn(
-                  "grid gap-4 md:grid-cols-[1fr_auto] md:items-end",
-                  compactTopBar &&
-                    "grid-cols-1 items-start justify-items-start gap-2",
-                )}
-              >
-                <div
-                  className={cn(
-                    "space-y-2",
-                    compactTopBar && "w-full max-w-xs space-y-0",
-                  )}
+                <SelectTrigger
+                  id="zone-select"
+                  aria-label={t("Domain/Zone", "Domain/Zone")}
+                  className="h-8 border-border bg-card/70 text-xs text-foreground"
                 >
-                  <div
-                    className={cn(
-                      "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                      compactTopBar
-                        ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
-                        : "max-h-12 translate-y-0 opacity-100",
-                    )}
-                  >
-                    <Label htmlFor="zone-select">
-                      {t("Domain/Zone", "Domain/Zone")}
-                    </Label>
-                  </div>
-                  <Select
-                    value={selectedZoneId || undefined}
-                    onValueChange={(value) => {
-                      setSelectedZoneId(value);
-                      openZoneTab(value);
-                    }}
-                  >
-                    <SelectTrigger
-                      className={cn(
-                        "bg-card/70 border-border text-foreground",
-                        compactTopBar && "h-8 w-full text-xs",
-                      )}
+                  <SelectValue
+                    placeholder={t("Select a domain", "Select a domain")}
+                  />
+                </SelectTrigger>
+                <SelectContent className="bg-popover/70 text-foreground">
+                  {availableZones.map((zone: Zone) => (
+                    <SelectItem
+                      key={zone.id}
+                      value={zone.id}
+                      className="cursor-pointer"
                     >
-                      <SelectValue
-                        placeholder={t("Select a domain", "Select a domain")}
-                      />
-                    </SelectTrigger>
-                    <SelectContent className="bg-popover/70 text-foreground">
-                      {availableZones.map((zone: Zone) => (
-                        <SelectItem
-                          key={zone.id}
-                          value={zone.id}
-                          className="cursor-pointer"
-                        >
-                          {zone.name} ({zone.status})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div
-                  className={cn(
-                    "overflow-hidden transition-[max-height,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                    compactTopBar || !activeTab
-                      ? "max-h-0 -translate-y-1 opacity-0 pointer-events-none"
-                      : "max-h-20 translate-y-0 opacity-100",
-                  )}
-                >
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                      {t("{{count}} records", {
-                        count: activeTab?.records.length ?? 0,
-                        defaultValue: `${activeTab?.records.length ?? 0} records`,
-                      })}
-                    </div>
-                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                      {t("{{count}} visible", {
-                        count: filteredRecords.length,
-                        defaultValue: `${filteredRecords.length} visible`,
-                      })}
-                    </div>
-                    <div className="rounded-md border border-border bg-card/60 px-3 py-2 text-foreground/80">
-                      {t("Zone: {{name}}", {
-                        name:
-                          selectedZoneData?.name ?? activeTab?.zoneName ?? "",
-                        defaultValue: `Zone: ${selectedZoneData?.name ?? activeTab?.zoneName ?? ""}`,
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {(tabs.length > 0 ||
-                activeTab?.kind === "settings" ||
-                activeTab?.kind === "audit" ||
-                activeTab?.kind === "registry") && (
-                <div
-                  className={cn(
-                    "flex flex-wrap gap-2 fade-in",
-                    compactTopBar &&
-                      "w-full justify-start items-center overflow-x-auto whitespace-nowrap pb-0.5 px-1",
-                  )}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const sourceId =
-                      dragTabId || event.dataTransfer.getData("text/plain");
-                    if (sourceId) {
-                      moveTabToEnd(sourceId);
-                    }
-                    setDragTabId(null);
-                    setDragOverId(null);
-                  }}
-                >
-                  {tabs.map((tab) => {
-                    const isActive = tab.id === activeTabId;
-                    return (
-                      <div
-                        key={tab.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => activateTab(tab.id)}
-                        onAuxClick={(event) => {
-                          if (event.button !== 1) return;
-                          if (!closeTabOnMiddleClick) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          closeTab(tab.id);
-                        }}
-                        onMouseDown={(event) => {
-                          if (event.button !== 1) return;
-                          if (!closeTabOnMiddleClick) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          closeTab(tab.id);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            activateTab(tab.id);
-                          }
-                        }}
-                        draggable
-                        onDragStart={(event) => {
-                          event.stopPropagation();
-                          setDragTabId(tab.id);
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData("text/plain", tab.id);
-                        }}
-                        onDragOver={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          event.dataTransfer.dropEffect = "move";
-                          if (dragOverId !== tab.id) {
-                            setDragOverId(tab.id);
-                          }
-                        }}
-                        onDragEnd={() => {
-                          setDragTabId(null);
-                          setDragOverId(null);
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          const sourceId =
-                            dragTabId ||
-                            event.dataTransfer.getData("text/plain");
-                          if (sourceId) {
-                            reorderTabs(sourceId, tab.id);
-                          }
-                          setDragTabId(null);
-                          setDragOverId(null);
-                        }}
-                        data-active={isActive}
-                        className={cn(
-                          "ui-tab cursor-grab",
-                          compactTopBar && "h-7 min-h-0 gap-1 px-2 text-[11px]",
-                          dragOverId === tab.id && "ring-1 ring-primary/30",
-                        )}
-                      >
-                        {!compactTopBar && (
-                          <GripVertical className="h-3 w-3 text-muted-foreground/60" />
-                        )}
-                        <span
-                          className={cn(
-                            "truncate",
-                            compactTopBar ? "max-w-[112px]" : "max-w-[140px]",
-                          )}
-                        >
-                          {tab.kind === "zone"
-                            ? tab.zoneName
-                            : t(tab.zoneName, tab.zoneName)}
-                        </span>
-                        {!compactTopBar && tab.kind === "zone" && (
-                          <span className="text-[10px] uppercase tracking-widest opacity-60">
-                            {tab.status ?? t("zone", "zone")}
-                          </span>
-                        )}
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            closeTab(tab.id);
-                          }}
-                          className={cn(
-                            "ml-1 rounded-full p-0.5 text-muted-foreground transition hover:text-foreground",
-                            compactTopBar && "ml-0",
-                          )}
-                          aria-label={t("Close tab", "Close tab")}
-                        >
-                          <X
-                            className={cn(
-                              compactTopBar ? "h-2.5 w-2.5" : "h-3 w-3",
-                            )}
-                          />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                      {zone.name} ({zone.status})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          }
+          accountLabel={
+            email?.trim() ||
+            t("Cloudflare API session", "Cloudflare API session")
+          }
+          sessionLabel={
+            currentSessionId === "__default"
+              ? t("Active session", "Active session")
+              : currentSessionId
+          }
+          activeContext={
+            activeTab
+              ? activeTab.kind === "zone"
+                ? activeTab.zoneName
+                : t(activeTab.zoneName, activeTab.zoneName)
+              : t("No workspace selected", "No workspace selected")
+          }
+          activeStatus={
+            activeTab?.kind === "zone"
+              ? activeTab.status
+              : activeTab
+                ? t(ACTION_TAB_LABELS[activeTab.kind], activeTab.kind)
+                : undefined
+          }
+          recordCount={
+            activeTab?.kind === "zone" ? activeTab.records.length : undefined
+          }
+          visibleCount={
+            activeTab?.kind === "zone" ? filteredRecords.length : undefined
+          }
+          showAudit={isDesktop()}
+          onOpenAudit={() => openActionTab("audit")}
+          onOpenRegistry={() => openActionTab("registry")}
+          onOpenSettings={() => openActionTab("settings")}
+          onOpenTags={() => openActionTab("tags")}
+          onLogout={handleLogout}
+        />
+      }
+      workspaceTabs={
+        <DnsWorkspaceTabs
+          items={tabs.map((tab) => ({
+            id: tab.id,
+            label:
+              tab.kind === "zone"
+                ? tab.zoneName
+                : t(tab.zoneName, tab.zoneName),
+            kind: tab.kind,
+            status: tab.status,
+          }))}
+          activeId={activeTabId}
+          closeOnMiddleClick={closeTabOnMiddleClick}
+          onActivate={activateTab}
+          onClose={closeTab}
+          onReorder={reorderTabs}
+          onMoveToEnd={moveTabToEnd}
+        />
+      }
+    >
+      <div
+        id={activeTab ? getDnsWorkspacePanelId(activeTab.id) : undefined}
+        role={activeTab ? "tabpanel" : undefined}
+        aria-labelledby={
+          activeTab ? getDnsWorkspaceTabId(activeTab.id) : undefined
+        }
+        className="mx-auto w-full max-w-6xl space-y-6 p-4 pb-10 fade-in-up"
+      >
         {activeTab ? (
           <Card className="min-h-[70vh] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
-            {(!compactTopBar || activeTab.kind === "zone") && (
-              <CardHeader
-                className={cn("space-y-4", compactTopBar && "space-y-2 py-3")}
-              >
-                {!compactTopBar && (
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <CardTitle className="text-xl">
-                        {activeTab.kind === "zone"
-                          ? activeTab.zoneName
-                          : t(activeTab.zoneName, activeTab.zoneName)}
-                      </CardTitle>
-                      {activeTab.kind === "zone" && (
-                        <p className="text-xs text-muted-foreground">
-                          {actionHint}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2" />
-                  </div>
-                )}
-                {activeTab.kind === "zone" && (
-                  <div
-                    className={cn(
-                      "glass-surface glass-sheen glass-fade ui-segment-group fade-in",
-                      compactTopBar && "gap-1 p-1",
-                    )}
-                  >
-                    {ACTION_TABS.map((tab) => (
-                      <button
-                        key={tab.id}
-                        onClick={() => setActionTab(tab.id)}
-                        data-active={actionTab === tab.id}
-                        className={cn(
-                          "ui-segment",
-                          compactTopBar && "h-7 px-2 text-[11px]",
-                        )}
-                      >
-                        {t(tab.label, tab.label)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </CardHeader>
-            )}
+            <CardHeader className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <CardTitle className="text-xl">
+                    {activeTab.kind === "zone"
+                      ? activeTab.zoneName
+                      : t(activeTab.zoneName, activeTab.zoneName)}
+                  </CardTitle>
+                  {activeTab.kind === "zone" && (
+                    <p className="text-xs text-muted-foreground">
+                      {actionHint}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2" />
+              </div>
+              {activeTab.kind === "zone" && (
+                <div className="glass-surface glass-sheen glass-fade ui-segment-group fade-in">
+                  {ACTION_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActionTab(tab.id)}
+                      data-active={actionTab === tab.id}
+                      className="ui-segment"
+                    >
+                      {t(tab.label, tab.label)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </CardHeader>
             <CardContent>
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <>
@@ -5638,13 +5232,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         )}
                         <div
-                          ref={recordsTableRef}
                           data-testid="dns-records-table"
-                          className="glass-surface glass-sheen glass-fade-table ui-table rounded-xl"
-                          style={{
-                            ["--table-bottom-fade" as string]:
-                              recordsBottomFade.toFixed(3),
-                          }}
+                          className="glass-surface glass-sheen ui-table rounded-xl"
                         >
                           <div className="ui-table-head">
                             <span />
@@ -10648,7 +10237,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         </DialogContent>
       </Dialog>
       <HotkeyHelpDialog />
-    </div>
+    </AuthenticatedAppShell>
   );
 }
 
