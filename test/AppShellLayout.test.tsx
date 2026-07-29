@@ -8,6 +8,7 @@ import {
   DnsWorkspaceTabs,
   getDnsWorkspacePanelId,
   getDnsWorkspaceTabId,
+  getNextActiveTabIdAfterClose,
   type DnsWorkspaceTabItem,
 } from "../src/components/dns/DnsWorkspaceTabs";
 import { AuthenticatedAppShell } from "../src/components/layout/AuthenticatedAppShell";
@@ -127,15 +128,23 @@ const INITIAL_TABS: DnsWorkspaceTabItem[] = [
   { id: "settings", label: "Settings", kind: "settings" },
 ];
 
-function StatefulTabs() {
-  const [items, setItems] = useState(INITIAL_TABS);
-  const [activeId, setActiveId] = useState<string | null>("alpha");
+function StatefulTabs({
+  initialItems = INITIAL_TABS,
+  initialActiveId = "alpha",
+}: {
+  initialItems?: readonly DnsWorkspaceTabItem[];
+  initialActiveId?: string | null;
+} = {}) {
+  const [items, setItems] = useState<DnsWorkspaceTabItem[]>(() => [
+    ...initialItems,
+  ]);
+  const [activeId, setActiveId] = useState<string | null>(initialActiveId);
 
   const closeTab = (id: string) => {
     setItems((currentItems) => {
       const nextItems = currentItems.filter((item) => item.id !== id);
       setActiveId((currentActiveId) =>
-        currentActiveId === id ? (nextItems[0]?.id ?? null) : currentActiveId,
+        getNextActiveTabIdAfterClose(currentItems, currentActiveId, id),
       );
       return nextItems;
     });
@@ -165,6 +174,33 @@ function StatefulTabs() {
   );
 }
 
+test("closing selection prefers the right neighbor, then the previous tab", () => {
+  assert.equal(
+    getNextActiveTabIdAfterClose(INITIAL_TABS, "alpha", "alpha"),
+    "beta",
+  );
+  assert.equal(
+    getNextActiveTabIdAfterClose(INITIAL_TABS, "beta", "beta"),
+    "settings",
+  );
+  assert.equal(
+    getNextActiveTabIdAfterClose(INITIAL_TABS, "settings", "settings"),
+    "beta",
+  );
+  assert.equal(
+    getNextActiveTabIdAfterClose(
+      INITIAL_TABS.slice(0, 1),
+      "alpha",
+      "alpha",
+    ),
+    null,
+  );
+  assert.equal(
+    getNextActiveTabIdAfterClose(INITIAL_TABS, "alpha", "beta"),
+    "alpha",
+  );
+});
+
 test("workspace tabs switch with pointer and roving keyboard focus", () => {
   render(<StatefulTabs />);
 
@@ -190,32 +226,74 @@ test("workspace tabs switch with pointer and roving keyboard focus", () => {
   fireEvent.keyDown(alpha, { key: "End" });
   assert.equal(settings.getAttribute("aria-selected"), "true");
   assert.equal(document.activeElement, settings);
-
-  fireEvent.keyDown(settings, { key: "Delete" });
-  assert.equal(screen.queryByRole("tab", { name: /Settings/ }), null);
-  assert.equal(document.activeElement, alpha);
-
-  const remainingBeta = screen.getByRole("tab", { name: /Beta/ });
-  remainingBeta.focus();
-  fireEvent.mouseDown(remainingBeta, { button: 1 });
-  assert.equal(screen.queryByRole("tab", { name: /Beta/ }), null);
-  assert.equal(document.activeElement, alpha);
 });
 
-test("workspace tabs restore focus after the focused close button removes a tab", () => {
-  render(<StatefulTabs />);
+test("Delete closes the focused first tab and focuses its right neighbor", () => {
+  render(<StatefulTabs initialActiveId="alpha" />);
 
+  const alpha = screen.getByRole("tab", { name: /Alpha/ });
+  alpha.focus();
+  fireEvent.keyDown(alpha, { key: "Delete" });
+
+  assert.equal(screen.queryByRole("tab", { name: /Alpha/ }), null);
   const beta = screen.getByRole("tab", { name: /Beta/ });
-  fireEvent.click(beta);
+  assert.equal(beta.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement, beta);
+});
 
-  const closeBeta = screen.getByRole("button", {
-    name: /Close tab: Beta/,
-  });
+test("the close button closes the active middle tab and focuses right", () => {
+  render(<StatefulTabs initialActiveId="beta" />);
+
+  const closeBeta = screen.getByRole("button", { name: /Close tab: Beta/ });
   closeBeta.focus();
   fireEvent.click(closeBeta);
 
-  const alpha = screen.getByRole("tab", { name: /Alpha/ });
   assert.equal(screen.queryByRole("tab", { name: /Beta/ }), null);
+  const settings = screen.getByRole("tab", { name: /Settings/ });
+  assert.equal(settings.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement, settings);
+});
+
+test("middle-click closes the focused last tab and focuses the previous tab", () => {
+  render(<StatefulTabs initialActiveId="settings" />);
+
+  const settings = screen.getByRole("tab", { name: /Settings/ });
+  settings.focus();
+  fireEvent.mouseDown(settings, { button: 1 });
+
+  assert.equal(screen.queryByRole("tab", { name: /Settings/ }), null);
+  const beta = screen.getByRole("tab", { name: /Beta/ });
+  assert.equal(beta.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement, beta);
+});
+
+test("closing the only tab leaves no active tab or stale focus target", () => {
+  render(
+    <StatefulTabs
+      initialItems={INITIAL_TABS.slice(0, 1)}
+      initialActiveId="alpha"
+    />,
+  );
+
+  const closeAlpha = screen.getByRole("button", {
+    name: /Close tab: Alpha/,
+  });
+  closeAlpha.focus();
+  fireEvent.click(closeAlpha);
+
+  assert.equal(screen.queryByRole("tab"), null);
+  assert.equal(screen.queryByRole("tabpanel"), null);
+});
+
+test("closing a focused inactive tab preserves and focuses the active tab", () => {
+  render(<StatefulTabs initialActiveId="alpha" />);
+
+  const closeBeta = screen.getByRole("button", { name: /Close tab: Beta/ });
+  closeBeta.focus();
+  fireEvent.click(closeBeta);
+
+  assert.equal(screen.queryByRole("tab", { name: /Beta/ }), null);
+  const alpha = screen.getByRole("tab", { name: /Alpha/ });
   assert.equal(alpha.getAttribute("aria-selected"), "true");
   assert.equal(document.activeElement, alpha);
 });

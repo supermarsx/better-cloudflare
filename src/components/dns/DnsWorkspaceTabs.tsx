@@ -36,6 +36,19 @@ export function getDnsWorkspacePanelId(id: string): string {
   return `dns-workspace-panel-${safeDomId(id)}`;
 }
 
+export function getNextActiveTabIdAfterClose(
+  items: readonly { id: string }[],
+  activeId: string | null,
+  closedId: string,
+): string | null {
+  if (activeId !== closedId) return activeId;
+
+  const closedIndex = items.findIndex((item) => item.id === closedId);
+  if (closedIndex < 0) return activeId;
+
+  return items[closedIndex + 1]?.id ?? items[closedIndex - 1]?.id ?? null;
+}
+
 export function DnsWorkspaceTabs({
   items,
   activeId,
@@ -63,8 +76,10 @@ export function DnsWorkspaceTabs({
       return;
     }
 
-    pendingCloseFocusRef.current = null;
     const activeItem = items.find((item) => item.id === activeId);
+    if (activeId !== null && !activeItem) return;
+
+    pendingCloseFocusRef.current = null;
     const nearestItem =
       items[Math.min(pendingFocus.closedIndex, items.length - 1)];
     const targetId = activeItem?.id ?? nearestItem?.id;

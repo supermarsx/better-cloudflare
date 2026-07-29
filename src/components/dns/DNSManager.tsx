@@ -101,6 +101,7 @@ import {
   DnsWorkspaceTabs,
   getDnsWorkspacePanelId,
   getDnsWorkspaceTabId,
+  getNextActiveTabIdAfterClose,
 } from "./DnsWorkspaceTabs";
 
 function reportDnsManagerFailure(error: unknown, label: string) {
@@ -1732,21 +1733,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const closeTab = useCallback(
     (tabId: string) => {
       setTabs((prev) => {
+        if (!prev.some((tab) => tab.id === tabId)) return prev;
+
         const nextTabs = prev.filter((tab) => tab.id !== tabId);
-        if (activeTabId === tabId) {
-          const nextActive = nextTabs[nextTabs.length - 1];
-          setActiveTabId(nextActive?.id ?? null);
+        setActiveTabId((currentActiveId) => {
+          const nextActiveId = getNextActiveTabIdAfterClose(
+            prev,
+            currentActiveId,
+            tabId,
+          );
+          if (nextActiveId === currentActiveId) return currentActiveId;
+
+          const nextActive = nextTabs.find((tab) => tab.id === nextActiveId);
           if (nextActive?.kind === "zone") {
             setSelectedZoneId(nextActive.zoneId);
             setActionTab("records");
           } else {
             setSelectedZoneId("");
           }
-        }
+          return nextActiveId;
+        });
         return nextTabs;
       });
     },
-    [activeTabId],
+    [],
   );
   const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
     const id = `__${kind}`;
