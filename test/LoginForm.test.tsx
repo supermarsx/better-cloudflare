@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 
 import { LoginForm } from "../src/components/auth/LoginForm";
+import { Toaster } from "../src/components/ui/toaster";
 import { useLoginForm } from "../src/hooks/auth/use-login-form";
 import { ServerClient } from "../src/lib/api/server-client";
 import { TauriClient } from "../src/lib/api/tauri-client";
@@ -235,6 +236,37 @@ test("useLoginForm prevents repeated login submissions while verification is pen
   assert.equal(verificationCalls, 1);
   assert.equal(loginCalls, 1);
   assert.equal(view.result.current.isLoading, false);
+});
+
+test("useLoginForm reports a failed login only through the persistent redacted toast", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(TauriClient, "decryptApiKey", async () => {
+    throw new Error(
+      "Decryption failed: aead::Error token=desktop-secret-never-render",
+    );
+  });
+  const view = renderHook(() => useLoginForm(() => {}, true));
+
+  await waitFor(() => assert.equal(view.result.current.apiKeys.length, 1));
+  act(() => {
+    view.result.current.setSelectedKeyId("desktop-key");
+    view.result.current.setPassword("password");
+  });
+  await act(async () => {
+    await view.result.current.handleLogin();
+  });
+  render(<Toaster />);
+
+  assert.equal("loginError" in view.result.current, false);
+  assert.equal(screen.queryByTestId("login-error"), null);
+  assert.equal(screen.getAllByText("Login could not be completed").length, 1);
+  assert.match(document.body.textContent ?? "", /Decryption failed/);
+  assert.match(document.body.textContent ?? "", /Diagnostic ID: REQ-/);
+  assert.doesNotMatch(
+    document.body.textContent ?? "",
+    /desktop-secret-never-render/,
+  );
+  assert.match(document.body.textContent ?? "", /\[redacted\]/);
 });
 
 test("useLoginForm keeps settings open when native persistence rejects", async () => {

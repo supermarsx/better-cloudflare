@@ -60,15 +60,13 @@ export function useLoginForm(
   };
   const formatError = formatRequestError;
   const loginInFlight = useRef(false);
-  const [loginError, setLoginError] = useState<RequestError | null>(null);
   const showLoginFailure = (error: unknown) => {
     const normalized = normalizeRequestError(error, {
       operation: "login",
       ...(desktop ? { command: "verify_token" } : {}),
     });
-    setLoginError(normalized);
     toast({
-      title: "Login failed",
+      title: "Login could not be completed",
       description: formatError(normalized),
       variant: "destructive",
       persistent: true,
@@ -278,7 +276,6 @@ export function useLoginForm(
 
     loginInFlight.current = true;
     let succeeded = false;
-    setLoginError(null);
     setIsLoading(true);
     try {
       const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
@@ -999,8 +996,6 @@ export function useLoginForm(
     password,
     setPassword,
     isLoading,
-    loginError,
-    clearLoginError: () => setLoginError(null),
     showAddKey,
     setShowAddKey,
     showSettings,

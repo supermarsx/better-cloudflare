@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 type AuthFailureMode = "invalid" | "provider-object" | "provider-json";
 
@@ -159,6 +159,27 @@ async function selectDesktopKey(page: Page) {
   await page.locator("#password").fill("password");
 }
 
+function visibleLoginFailureToast(page: Page) {
+  return page
+    .getByText("Login could not be completed", { exact: true })
+    .locator("xpath=ancestor::*[@data-state='open'][1]");
+}
+
+async function openToastDetailsIfAvailable(
+  page: Page,
+  toast: Locator,
+): Promise<Locator> {
+  const moreInfo = toast.getByRole("button", { name: /more info/i });
+  if ((await moreInfo.count()) > 0 && (await moreInfo.first().isVisible())) {
+    await moreInfo.first().click();
+    const modal = page
+      .getByRole("dialog")
+      .filter({ hasText: /safe technical details|diagnostic/i });
+    if ((await modal.count()) > 0) return modal.first();
+  }
+  return toast;
+}
+
 test("invalid and native provider login failures remain actionable and sanitized", async ({
   page,
 }) => {
@@ -167,14 +188,18 @@ test("invalid and native provider login failures remain actionable and sanitized
   await selectDesktopKey(page);
 
   await page.getByRole("button", { name: "Login" }).click();
-  const error = page.getByTestId("login-error");
+  let error = visibleLoginFailureToast(page);
+  await expect(error).toHaveCount(1);
+  await expect(page.getByTestId("login-error")).toHaveCount(0);
   await expect(error).toBeVisible();
+  await expect(error).toContainText("Login could not be completed");
   await expect(error).toContainText("Cloudflare rejected");
   await expect(error).toContainText("Check the token or key");
   await page.waitForTimeout(1_200);
   await expect(error).toBeVisible();
 
-  await page.getByRole("button", { name: "Dismiss login error" }).click();
+  await error.locator("[toast-close]").click();
+  await expect(error).toBeHidden();
   for (const rejectionMode of [
     "provider-object",
     "provider-json",
@@ -186,27 +211,44 @@ test("invalid and native provider login failures remain actionable and sanitized
     }, rejectionMode);
     await page.getByRole("button", { name: "Login" }).click();
 
+    error = visibleLoginFailureToast(page);
+    await expect(error).toHaveCount(1);
     await expect(error).toBeVisible();
+    await expect(page.getByTestId("login-error")).toHaveCount(0);
     await expect(error).toContainText(
       "Cloudflare rejected the supplied credentials",
     );
-    await error.getByText("Safe technical details").click();
-    await expect(error).toContainText("source cloudflare");
-    await expect(error).toContainText("operation auth:verify_token");
-    await expect(error).toContainText("HTTP 403");
-    await expect(error).toContainText("request ID cf-ray-safe-123");
-    await expect(error).toContainText("retry after 7");
-    await expect(error).toContainText("provider codes 10000");
-    await expect(error).toContainText("Authentication error: token=[redacted]");
-    await expect(error).toContainText(
+    const details = await openToastDetailsIfAvailable(page, error);
+    await expect(details).toContainText("source cloudflare");
+    await expect(details).toContainText("operation auth:verify_token");
+    await expect(details).toContainText("HTTP 403");
+    await expect(details).toContainText("request ID cf-ray-safe-123");
+    await expect(details).toContainText("retry after 7");
+    await expect(details).toContainText("provider codes 10000");
+    await expect(details).toContainText(
+      "Authentication error: token=[redacted]",
+    );
+    await expect(details).toContainText(
       "Create a token with the required Cloudflare permissions",
     );
-    await expect(error).not.toContainText(desktopSecret);
+    await expect(page.locator("body")).not.toContainText(desktopSecret);
     await page.waitForTimeout(1_200);
     await expect(error).toBeVisible();
 
+    const detailsModal = page
+      .getByRole("dialog")
+      .filter({ hasText: /safe technical details|diagnostic/i });
+    if (
+      (await detailsModal.count()) > 0 &&
+      (await detailsModal.first().isVisible())
+    ) {
+      await page.keyboard.press("Escape");
+      await expect(detailsModal.first()).toBeHidden();
+    }
+
     if (rejectionMode === "provider-object") {
-      await page.getByRole("button", { name: "Dismiss login error" }).click();
+      await error.locator("[toast-close]").click();
+      await expect(error).toBeHidden();
     }
   }
 });
@@ -229,11 +271,15 @@ test("missing web backend fails locally with visible configuration guidance", as
     .getByRole("button", { name: "Add API Key" })
     .click();
 
-  await page.keyboard.press("Escape");
-  const error = page.getByTestId("login-error");
+  const error = visibleLoginFailureToast(page);
+  await expect(error).toHaveCount(1);
+  await expect(page.getByTestId("login-error")).toHaveCount(0);
   await expect(error).toBeVisible();
-  await expect(error).toContainText("No public server API base");
-  await expect(error).toContainText("NEXT_PUBLIC_SERVER_API_BASE");
-  await expect(error).not.toContainText("web-secret-never-render");
+  const details = await openToastDetailsIfAvailable(page, error);
+  await expect(details).toContainText("No public server API base");
+  await expect(details).toContainText("NEXT_PUBLIC_SERVER_API_BASE");
+  await expect(page.locator("body")).not.toContainText(
+    "web-secret-never-render",
+  );
   expect(requests).toEqual([]);
 });
