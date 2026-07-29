@@ -68,6 +68,84 @@ test("sends MCP tool arguments using Tauri's camel-cased command contract", asyn
   assert.equal("enabled_tools" in (calls[1]?.payload ?? {}), false);
 });
 
+test("sends DNS pagination and export arguments through IPC in camelCase", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown>;
+  }> = [];
+  const records = Array.from({ length: 500 }, (_, index) => ({
+    id: `record-${index + 1}`,
+    type: "A",
+    name: `host-${index + 1}.example.com`,
+    content: "192.0.2.1",
+    zone_id: "zone-id",
+    zone_name: "example.com",
+    created_on: "2026-07-29T00:00:00Z",
+    modified_on: "2026-07-29T00:00:00Z",
+  }));
+  const exportedRecords = JSON.stringify(records);
+
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown>,
+    });
+    if (command === "get_dns_records") return records;
+    if (command === "export_dns_records") return exportedRecords;
+    throw new Error(`Unexpected Tauri command: ${command}`);
+  });
+
+  const listedRecords = await TauriClient.getDNSRecords(
+    "api-key",
+    "owner@example.com",
+    "zone-id",
+    2,
+    500,
+  );
+  const exported = await TauriClient.exportDNSRecords(
+    "api-key",
+    "owner@example.com",
+    "zone-id",
+    "json",
+    2,
+    500,
+  );
+
+  assert.equal(listedRecords.length, 500);
+  assert.equal(listedRecords[499]?.id, "record-500");
+  assert.equal(exported, exportedRecords);
+  assert.deepEqual(calls, [
+    {
+      command: "get_dns_records",
+      payload: {
+        apiKey: "api-key",
+        email: "owner@example.com",
+        zoneId: "zone-id",
+        page: 2,
+        perPage: 500,
+      },
+    },
+    {
+      command: "export_dns_records",
+      payload: {
+        apiKey: "api-key",
+        email: "owner@example.com",
+        zoneId: "zone-id",
+        format: "json",
+        page: 2,
+        perPage: 500,
+      },
+    },
+  ]);
+  for (const { command, payload } of calls) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload, "per_page"),
+      false,
+      `${command} payload must not emit per_page`,
+    );
+  }
+});
+
 test("sends complete bounded and open-ended Analytics payloads", async () => {
   const calls: Array<{
     command: string;

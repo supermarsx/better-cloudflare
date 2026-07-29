@@ -228,15 +228,15 @@ export class TauriClient {
     apiKey: string,
     email: string | undefined,
     zoneId: string,
-    _page?: number,
-    _perPage?: number,
+    page?: number,
+    perPage?: number,
   ): Promise<TauriDNSRecord[]> {
     return invoke("get_dns_records", {
       apiKey,
       email,
       zoneId,
-      page: _page,
-      per_page: _perPage,
+      page,
+      perPage,
     });
   }
 
@@ -304,7 +304,7 @@ export class TauriClient {
       zoneId,
       format,
       page,
-      per_page: perPage,
+      perPage,
     });
   }
 
