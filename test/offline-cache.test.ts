@@ -782,6 +782,156 @@ test("multi-entry rollback cleans its first restoration when generation changes"
   assert.equal(secondDeferredRestorationAttempted, false);
 });
 
+test("later rollback retry cleans an already-restored stale value exactly", (t) => {
+  const payload = "x".repeat(
+    Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 5),
+  );
+  for (let index = 0; index < 4; index += 1) {
+    cacheZoneRecords(`retry-stale-${index}`, `Retry stale ${index}`, [payload]);
+  }
+  const staleKey = entryKeyForZone("retry-stale-0");
+  const newerKey = entryKeyForZone("retry-stale-1");
+  assert.ok(staleKey);
+  assert.ok(newerKey);
+  const staleRaw = localStorage.getItem(staleKey);
+  const replacedRaw = localStorage.getItem(newerKey);
+  assert.ok(staleRaw);
+  assert.ok(replacedRaw);
+  const newerRaw = JSON.stringify({
+    ...(JSON.parse(replacedRaw) as Record<string, unknown>),
+    zoneName: "Newer retry stale value",
+  });
+
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  const fakeSetTimeout = globalThis.setTimeout;
+  const fakeClearTimeout = globalThis.clearTimeout;
+  const pendingRollbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  globalThis.setTimeout = ((
+    callback: TimerHandler,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    const timer = fakeSetTimeout(() => {
+      pendingRollbackTimers.delete(timer);
+      if (typeof callback === "function") callback(...args);
+    }, delay);
+    if ((delay ?? 0) > 0) pendingRollbackTimers.add(timer);
+    return timer;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+    pendingRollbackTimers.delete(timer);
+    fakeClearTimeout(timer);
+  }) as typeof clearTimeout;
+
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalGetItem = storagePrototype.getItem;
+  const originalSetItem = storagePrototype.setItem;
+  const originalRemoveItem = storagePrototype.removeItem;
+  let indexFailureArmed = true;
+  const initialRestorationFailures = new Set([staleKey, newerKey]);
+  let retryPhase: "first" | "first-cleanup" | "second" | "second-restored" =
+    "first";
+  let staleCleanupFailures = 0;
+  let staleRestorationWrites = 0;
+
+  storagePrototype.setItem = function failInitialRollbackWrites(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced retry-stale index write failure");
+    }
+    if (
+      initialRestorationFailures.has(key) &&
+      (value === staleRaw || value === replacedRaw)
+    ) {
+      initialRestorationFailures.delete(key);
+      throw new Error(
+        `forced initial retry-stale restoration failure for ${key}`,
+      );
+    }
+    originalSetItem.call(this, key, value);
+    if (key === staleKey && value === staleRaw) {
+      staleRestorationWrites += 1;
+      if (retryPhase === "first") retryPhase = "first-cleanup";
+    }
+  };
+  storagePrototype.getItem = function changeSecondRetryGeneration(
+    this: Storage,
+    key: string,
+  ): string | null {
+    if (key === CACHE_COORDINATION_KEY && retryPhase === "first-cleanup") {
+      originalSetItem.call(
+        this,
+        CACHE_COORDINATION_KEY,
+        JSON.stringify({
+          owner: "expired-retry-stale-owner",
+          token: "expired-retry-stale-token",
+          expiresAt: Date.now() - 1,
+        }),
+      );
+    }
+    const value = originalGetItem.call(this, key);
+    if (key === staleKey && retryPhase === "second" && value === staleRaw) {
+      retryPhase = "second-restored";
+    } else if (
+      key === CACHE_COORDINATION_KEY &&
+      retryPhase === "second-restored"
+    ) {
+      originalSetItem.call(this, CACHE_INDEX_KEY, "[]");
+    }
+    return value;
+  };
+  storagePrototype.removeItem = function failFirstStaleCleanup(
+    this: Storage,
+    key: string,
+  ): void {
+    if (key === staleKey && retryPhase === "first-cleanup") {
+      retryPhase = "second";
+      staleCleanupFailures += 1;
+      throw new Error("forced first stale rollback cleanup failure");
+    }
+    originalRemoveItem.call(this, key);
+  };
+
+  try {
+    cacheZoneRecords("retry-stale-incoming", "Incoming", [
+      "y".repeat(Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 2)),
+    ]);
+    assert.equal(pendingRollbackTimers.size, 1);
+
+    t.mock.timers.tick(10);
+    assert.equal(originalGetItem.call(localStorage, staleKey), staleRaw);
+    assert.equal(staleCleanupFailures, 1);
+    assert.equal(staleRestorationWrites, 1);
+
+    originalSetItem.call(localStorage, newerKey, newerRaw);
+    t.mock.timers.tick(20);
+    assert.equal(localStorage.getItem(staleKey), null);
+    assert.equal(localStorage.getItem(newerKey), newerRaw);
+    assert.equal(staleRestorationWrites, 1);
+
+    t.mock.timers.tick(40);
+    assert.equal(pendingRollbackTimers.size, 0);
+    t.mock.timers.tick(10_000);
+    assert.equal(pendingRollbackTimers.size, 0);
+    assert.equal(localStorage.getItem(staleKey), null);
+    assert.equal(localStorage.getItem(newerKey), newerRaw);
+  } finally {
+    globalThis.setTimeout = fakeSetTimeout;
+    globalThis.clearTimeout = fakeClearTimeout;
+    storagePrototype.getItem = originalGetItem;
+    storagePrototype.setItem = originalSetItem;
+    storagePrototype.removeItem = originalRemoveItem;
+  }
+});
+
 test("deferred rollback releases its lease after a synchronous storage throw", (t) => {
   const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
   for (let index = 0; index < hardLimit; index += 1) {

@@ -470,7 +470,9 @@ function scheduleRollback(): void {
               entry.raw,
               "Retry removed DNS offline cache entry rollback",
             );
-            if (result === "restored") restoredEntries.push(entry);
+            if (result === "restored" || result === "already-restored") {
+              restoredEntries.push(entry);
+            }
             entriesRestored &&= result !== "failed";
             if (
               result === "failed" ||
