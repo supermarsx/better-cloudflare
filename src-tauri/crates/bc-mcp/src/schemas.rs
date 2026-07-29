@@ -97,12 +97,12 @@ pub fn tool_input_schema(name: &str) -> Value {
             json!({
                 "record": {
                     "type": "object",
-                    "description": "DNS record to create.",
+                    "description": "DNS record to create after authoritative zone-state validation.",
                     "properties": {
                         "type": { "type": "string", "description": "Record type (A, AAAA, CNAME, MX, TXT, etc.)." },
-                        "name": { "type": "string", "description": "Record name (e.g. 'example.com' or 'sub')." },
+                        "name": { "type": "string", "description": "Full record owner name or @ for the zone apex." },
                         "content": { "type": "string", "description": "Record content (IP, hostname, text, etc.)." },
-                        "ttl": { "type": "integer", "description": "TTL in seconds (1 = auto)." },
+                        "ttl": { "type": "integer", "description": "TTL in seconds (1 = auto).", "minimum": 0, "maximum": 2147483647 },
                         "priority": { "type": "integer", "description": "Priority (MX, SRV records)." },
                         "proxied": { "type": "boolean", "description": "Whether to proxy through Cloudflare." },
                         "comment": { "type": "string", "description": "Optional comment." }
@@ -115,7 +115,7 @@ pub fn tool_input_schema(name: &str) -> Value {
 
         "cf_update_dns_record" => cf_zone_schema(
             json!({
-                "record_id": { "type": "string", "description": "ID of the record to update." },
+                "record_id": { "type": "string", "description": "ID of the record to update. Owner/type protections are resolved from Cloudflare before mutation." },
                 "record": {
                     "type": "object",
                     "description": "Updated DNS record fields.",
@@ -123,7 +123,7 @@ pub fn tool_input_schema(name: &str) -> Value {
                         "type": { "type": "string" },
                         "name": { "type": "string" },
                         "content": { "type": "string" },
-                        "ttl": { "type": "integer" },
+                        "ttl": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
                         "priority": { "type": "integer" },
                         "proxied": { "type": "boolean" },
                         "comment": { "type": "string" }
@@ -136,7 +136,7 @@ pub fn tool_input_schema(name: &str) -> Value {
 
         "cf_delete_dns_record" => cf_zone_schema(
             json!({
-                "record_id": { "type": "string", "description": "ID of the DNS record to delete." }
+                "record_id": { "type": "string", "description": "ID of the DNS record to delete. Owner/type protections are resolved from Cloudflare before mutation." }
             }),
             &["record_id"],
         ),
@@ -145,14 +145,14 @@ pub fn tool_input_schema(name: &str) -> Value {
             json!({
                 "records": {
                     "type": "array",
-                    "description": "Array of DNS records to create.",
+                    "description": "Array of DNS records to create after authoritative coexistence validation.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "type": { "type": "string" },
                             "name": { "type": "string" },
                             "content": { "type": "string" },
-                            "ttl": { "type": "integer" },
+                            "ttl": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
                             "priority": { "type": "integer" },
                             "proxied": { "type": "boolean" },
                             "comment": { "type": "string" }
@@ -169,7 +169,7 @@ pub fn tool_input_schema(name: &str) -> Value {
             json!({
                 "record_ids": {
                     "type": "array",
-                    "description": "Array of record IDs to delete.",
+                    "description": "Record IDs to delete. Each ID is resolved against authoritative Cloudflare owner/type state before mutation.",
                     "items": { "type": "string" }
                 }
             }),

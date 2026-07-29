@@ -66,7 +66,7 @@ fn default_tool_set_matches_definitions() {
     assert_eq!(defs.len(), enabled.len());
     for tool in &defs {
         assert!(
-            enabled.contains(&tool.name),
+            enabled.allows_id(&tool.permission_id),
             "Tool {} missing from default set",
             tool.name,
         );
@@ -97,9 +97,8 @@ fn sanitize_filters_invalid_tools() {
         "".to_string(),
     ];
     let result = sanitize_enabled_tools(&input);
-    assert!(result.contains("cf_verify_token"));
-    assert!(!result.contains("nonexistent_tool"));
-    assert!(!result.contains(""));
+    assert!(result.allows_id("bc.mcp.v1.cf.verify_token"));
+    assert!(!result.allows_id("nonexistent_tool"));
     assert_eq!(result.len(), 1);
 }
 
@@ -112,7 +111,7 @@ fn sanitize_empty_returns_empty() {
 #[test]
 fn sanitize_preserves_all_valid() {
     let enabled = default_enabled_tool_set();
-    let input: Vec<String> = enabled.iter().cloned().collect();
+    let input: Vec<String> = enabled.permission_ids().map(str::to_string).collect();
     let result = sanitize_enabled_tools(&input);
     assert_eq!(result.len(), enabled.len());
 }
@@ -122,6 +121,76 @@ fn sanitize_deduplicates() {
     let input = vec!["cf_verify_token".to_string(), "cf_verify_token".to_string()];
     let result = sanitize_enabled_tools(&input);
     assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn stable_permission_ids_and_invocations_are_complete_and_unique() {
+    let definitions = available_tool_definitions();
+    let registry = bc_mcp::permissions::permission_registry();
+    assert_eq!(definitions.len(), registry.len());
+    assert_eq!(bc_mcp::tools::tool_count(), registry.len());
+
+    let mut ids = std::collections::HashSet::new();
+    let mut invocations = std::collections::HashSet::new();
+    for permission in registry {
+        assert!(
+            ids.insert(permission.id),
+            "duplicate stable permission ID: {}",
+            permission.id
+        );
+        assert!(
+            invocations.insert(permission.invocation_name),
+            "duplicate invocation name: {}",
+            permission.invocation_name
+        );
+        assert!(!permission.category.as_str().is_empty());
+        match permission.effect {
+            bc_mcp::permissions::PermissionEffect::Read
+            | bc_mcp::permissions::PermissionEffect::Analysis => {
+                assert_eq!(permission.risk, bc_mcp::permissions::PermissionRisk::Low);
+            }
+            bc_mcp::permissions::PermissionEffect::Write
+            | bc_mcp::permissions::PermissionEffect::Destructive => {
+                assert_eq!(permission.risk, bc_mcp::permissions::PermissionRisk::High);
+            }
+        }
+        if permission.credential_access {
+            assert!(permission.network_access);
+            assert_eq!(
+                permission.category,
+                bc_mcp::permissions::PermissionCategory::Cloudflare
+            );
+        }
+    }
+
+    for tool in definitions {
+        let permission = bc_mcp::permissions::permission_for_invocation(&tool.name)
+            .expect("catalogue tool must resolve exactly once");
+        assert_eq!(tool.permission_id, permission.id);
+        assert_eq!(tool.category, permission.category.as_str());
+        assert_eq!(tool.effect, permission.effect.as_str());
+        assert_eq!(tool.risk, permission.risk.as_str());
+    }
+}
+
+#[test]
+fn unknown_aliases_and_malformed_grant_values_default_deny() {
+    let grants = sanitize_enabled_tools(&[
+        "cf_delete_dns_record ".to_string(),
+        "CF_DELETE_DNS_RECORD".to_string(),
+        "delete_dns_record".to_string(),
+        "bc.mcp.v1.cf.unknown".to_string(),
+    ]);
+    assert!(grants.is_empty());
+}
+
+#[test]
+fn stable_ids_and_legacy_invocation_names_canonicalize_to_same_grant() {
+    let by_name = sanitize_enabled_tools(&["cf_delete_dns_record".to_string()]);
+    let by_id = sanitize_enabled_tools(&["bc.mcp.v1.cf.delete_dns_record".to_string()]);
+    assert!(by_name.allows_id("bc.mcp.v1.cf.delete_dns_record"));
+    assert!(by_id.allows_id("bc.mcp.v1.cf.delete_dns_record"));
+    assert_eq!(by_name.len(), by_id.len());
 }
 
 // ── Status builder ─────────────────────────────────────────────────────────
@@ -412,7 +481,7 @@ fn all_prompts_have_arguments() {
         let args = prompt
             .arguments
             .as_ref()
-            .expect(&format!("Prompt '{}' has no arguments", prompt.name));
+            .unwrap_or_else(|| panic!("Prompt '{}' has no arguments", prompt.name));
         assert!(
             !args.is_empty(),
             "Prompt '{}' has empty arguments",

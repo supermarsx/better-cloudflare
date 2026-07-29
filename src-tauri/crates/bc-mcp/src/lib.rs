@@ -9,16 +9,19 @@
 //! The server manages its own lifecycle (start/stop), tool enable/disable,
 //! bearer-token auth, and graceful shutdown.
 
+mod dns_mutation_validation;
+
+pub mod permissions;
 pub mod prompts;
 pub mod protocol;
 pub mod resources;
 pub mod schemas;
 pub mod tools;
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::State as AxumState;
+use axum::http::uri::Authority;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -31,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
+use permissions::PermissionGrantSet;
 use protocol::{
     error_response, error_response_with_data, initialize_response, success_response, tool_disabled,
     tool_error, tool_success, JsonRpcRequest, RpcErrorCode,
@@ -69,14 +73,16 @@ pub struct McpServerStatus {
 
 #[derive(Debug, Clone)]
 struct HttpRuntimeState {
-    enabled_tools: Arc<RwLock<HashSet<String>>>,
+    grants: Arc<RwLock<PermissionGrantSet>>,
     auth_token: Arc<RwLock<Option<String>>>,
+    bind_host: String,
+    bind_port: u16,
 }
 
 struct RunningMcpServer {
     host: String,
     port: u16,
-    enabled_tools: Arc<RwLock<HashSet<String>>>,
+    grants: Arc<RwLock<PermissionGrantSet>>,
     #[allow(dead_code)]
     auth_token: Arc<RwLock<Option<String>>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
@@ -89,7 +95,7 @@ pub struct McpServerManager {
     runtime: RwLock<Option<RunningMcpServer>>,
     config_host: RwLock<String>,
     config_port: RwLock<u16>,
-    config_enabled_tools: RwLock<HashSet<String>>,
+    config_grants: RwLock<PermissionGrantSet>,
     config_auth_token: RwLock<Option<String>>,
     last_error: Arc<RwLock<Option<String>>>,
 }
@@ -100,7 +106,7 @@ impl Default for McpServerManager {
             runtime: RwLock::new(None),
             config_host: RwLock::new(DEFAULT_MCP_HOST.to_string()),
             config_port: RwLock::new(DEFAULT_MCP_PORT),
-            config_enabled_tools: RwLock::new(default_enabled_tool_set()),
+            config_grants: RwLock::new(default_enabled_tool_set()),
             config_auth_token: RwLock::new(None),
             last_error: Arc::new(RwLock::new(None)),
         }
@@ -114,16 +120,12 @@ pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
     tools::available_tool_definitions()
 }
 
-pub fn default_enabled_tool_set() -> HashSet<String> {
-    tools::all_tool_names().into_iter().collect()
+pub fn default_enabled_tool_set() -> PermissionGrantSet {
+    PermissionGrantSet::defaults()
 }
 
-pub fn sanitize_enabled_tools(list: &[String]) -> HashSet<String> {
-    let allowed = default_enabled_tool_set();
-    list.iter()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty() && allowed.contains(name))
-        .collect()
+pub fn sanitize_enabled_tools(list: &[String]) -> PermissionGrantSet {
+    PermissionGrantSet::from_requested(list)
 }
 
 fn normalize_host(host: Option<String>) -> String {
@@ -156,18 +158,22 @@ pub fn build_status(
     running: bool,
     host: String,
     port: u16,
-    enabled_tools: &HashSet<String>,
+    grants: &PermissionGrantSet,
     last_error: Option<String>,
     auth_token: Option<String>,
 ) -> McpServerStatus {
-    let mut enabled = enabled_tools.iter().cloned().collect::<Vec<_>>();
+    let mut enabled = permissions::permission_registry()
+        .iter()
+        .filter(|permission| grants.allows(permission))
+        .map(|permission| permission.invocation_name.to_string())
+        .collect::<Vec<_>>();
     enabled.sort();
     let all_tools = tools::available_tool_definitions();
     let tool_count = all_tools.len();
     let tools_list = all_tools
         .into_iter()
         .map(|mut tool| {
-            tool.enabled = enabled_tools.contains(&tool.name);
+            tool.enabled = grants.allows_id(&tool.permission_id);
             tool
         })
         .collect::<Vec<_>>();
@@ -191,13 +197,13 @@ impl McpServerManager {
         let last_error = self.last_error.read().await.clone();
         let runtime_ref = self.runtime.read().await;
         if let Some(runtime) = runtime_ref.as_ref() {
-            let enabled = runtime.enabled_tools.read().await.clone();
+            let grants = runtime.grants.read().await.clone();
             let token = runtime.auth_token.read().await.clone();
             return build_status(
                 true,
                 runtime.host.clone(),
                 runtime.port,
-                &enabled,
+                &grants,
                 last_error,
                 token,
             );
@@ -205,9 +211,9 @@ impl McpServerManager {
         drop(runtime_ref);
         let host = self.config_host.read().await.clone();
         let port = *self.config_port.read().await;
-        let enabled = self.config_enabled_tools.read().await.clone();
+        let grants = self.config_grants.read().await.clone();
         let token = self.config_auth_token.read().await.clone();
-        build_status(false, host, port, &enabled, last_error, token)
+        build_status(false, host, port, &grants, last_error, token)
     }
 
     async fn stop_internal(&self) -> Result<(), String> {
@@ -219,10 +225,10 @@ impl McpServerManager {
             if let Err(err) = runtime.task_handle.await {
                 *self.last_error.write().await = Some(err.to_string());
             }
-            let enabled = runtime.enabled_tools.read().await.clone();
+            let grants = runtime.grants.read().await.clone();
             *self.config_host.write().await = runtime.host;
             *self.config_port.write().await = runtime.port;
-            *self.config_enabled_tools.write().await = enabled;
+            *self.config_grants.write().await = grants;
         }
         Ok(())
     }
@@ -237,15 +243,13 @@ impl McpServerManager {
         enabled_tools: Vec<String>,
     ) -> Result<McpServerStatus, String> {
         let next = sanitize_enabled_tools(&enabled_tools);
-        *self.config_enabled_tools.write().await = next.clone();
-        let runtime_enabled = {
+        *self.config_grants.write().await = next.clone();
+        let runtime_grants = {
             let runtime = self.runtime.read().await;
-            runtime
-                .as_ref()
-                .map(|running| Arc::clone(&running.enabled_tools))
+            runtime.as_ref().map(|running| Arc::clone(&running.grants))
         };
-        if let Some(enabled_ref) = runtime_enabled {
-            *enabled_ref.write().await = next;
+        if let Some(grants_ref) = runtime_grants {
+            *grants_ref.write().await = next;
         }
         Ok(self.get_status().await)
     }
@@ -264,9 +268,9 @@ impl McpServerManager {
         let desired_enabled = if let Some(list) = enabled_tools {
             sanitize_enabled_tools(&list)
         } else {
-            self.config_enabled_tools.read().await.clone()
+            self.config_grants.read().await.clone()
         };
-        let enabled_ref = Arc::new(RwLock::new(desired_enabled.clone()));
+        let grants_ref = Arc::new(RwLock::new(desired_enabled.clone()));
         // Auto-generate a cryptographically random bearer token if none provided
         let effective_token = Some(auth_token.unwrap_or_else(generate_auth_token));
         let token_ref = Arc::new(RwLock::new(effective_token.clone()));
@@ -281,8 +285,10 @@ impl McpServerManager {
         let actual_port = actual_addr.port();
 
         let state = HttpRuntimeState {
-            enabled_tools: Arc::clone(&enabled_ref),
+            grants: Arc::clone(&grants_ref),
             auth_token: Arc::clone(&token_ref),
+            bind_host: normalized_host.clone(),
+            bind_port: actual_port,
         };
         let app = Router::new()
             .route("/mcp", post(handle_mcp_rpc))
@@ -307,12 +313,12 @@ impl McpServerManager {
 
         *self.config_host.write().await = normalized_host.clone();
         *self.config_port.write().await = actual_port;
-        *self.config_enabled_tools.write().await = desired_enabled;
+        *self.config_grants.write().await = desired_enabled;
         *self.config_auth_token.write().await = effective_token;
         *self.runtime.write().await = Some(RunningMcpServer {
             host: normalized_host,
             port: actual_port,
-            enabled_tools: enabled_ref,
+            grants: grants_ref,
             auth_token: token_ref,
             shutdown_tx: Some(shutdown_tx),
             task_handle,
@@ -330,6 +336,8 @@ async fn bearer_auth_middleware(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
+    // RFC 8707 resource indicators do not apply here: this is a custom,
+    // server-local bearer token and not an OAuth access-token flow.
     let token = state.auth_token.read().await;
     if let Some(expected) = token.as_deref() {
         let auth_header = headers
@@ -354,6 +362,87 @@ async fn bearer_auth_middleware(
 
 // ─── HTTP handlers ─────────────────────────────────────────────────────────
 
+fn normalize_origin_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn origin_host_allowed(origin_host: &str, bind_host: &str) -> bool {
+    let origin_host = normalize_origin_host(origin_host);
+    let bind_host = normalize_origin_host(bind_host);
+    if bind_host == "0.0.0.0" || bind_host == "::" {
+        return origin_host.eq_ignore_ascii_case("localhost")
+            || origin_host == "127.0.0.1"
+            || origin_host == "::1";
+    }
+    origin_host.eq_ignore_ascii_case(bind_host)
+}
+
+fn validate_origin(
+    headers: &HeaderMap,
+    bind_host: &str,
+    bind_port: u16,
+) -> Result<(), &'static str> {
+    let mut origins = headers.get_all("origin").iter();
+    let Some(origin) = origins.next() else {
+        // Deliberate native/non-browser path.
+        return Ok(());
+    };
+    if origins.next().is_some() {
+        return Err("multiple Origin headers are not allowed");
+    }
+    let origin = origin
+        .to_str()
+        .map_err(|_| "Origin must contain valid ASCII header text")?;
+    if origin == "null" {
+        return Err("opaque Origin values are not allowed");
+    }
+
+    let (scheme, authority_text) = origin
+        .split_once("://")
+        .ok_or("Origin must be an absolute http or https origin")?;
+    if scheme != "http" && scheme != "https" {
+        return Err("Origin scheme must be http or https");
+    }
+    if scheme != "http" {
+        return Err("Origin scheme does not match this HTTP MCP server");
+    }
+    if authority_text.is_empty()
+        || authority_text.contains(['/', '?', '#'])
+        || authority_text.contains('@')
+    {
+        return Err("Origin must not contain credentials, a path, query, or fragment");
+    }
+
+    let authority: Authority = authority_text
+        .parse()
+        .map_err(|_| "Origin authority is malformed")?;
+    if !origin_host_allowed(authority.host(), bind_host) {
+        return Err("Origin host does not match the MCP bind host policy");
+    }
+    if authority.port().is_some() && authority.port_u16().is_none() {
+        return Err("Origin port is outside the valid range");
+    }
+    let effective_port = authority.port_u16().unwrap_or(80);
+    if effective_port != bind_port {
+        return Err("Origin port does not match the MCP bind port");
+    }
+    Ok(())
+}
+
+fn origin_rejection(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(error_response(
+            None,
+            RpcErrorCode::Unauthorized.code(),
+            format!("Forbidden Origin: {reason}"),
+        )),
+    )
+        .into_response()
+}
+
 async fn handle_health() -> impl IntoResponse {
     // Minimal health check — do not leak server metadata to unauthenticated callers
     Json(json!({ "status": "ok" }))
@@ -362,8 +451,13 @@ async fn handle_health() -> impl IntoResponse {
 /// Full MCP JSON-RPC 2.0 handler with all spec methods.
 async fn handle_mcp_rpc(
     AxumState(state): AxumState<HttpRuntimeState>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Response {
+    if let Err(reason) = validate_origin(&headers, &state.bind_host, state.bind_port) {
+        return origin_rejection(reason);
+    }
+
     // ── Parse incoming request ──────────────────────────────────────────
     let request = match serde_json::from_value::<JsonRpcRequest>(payload) {
         Ok(req) => req,
@@ -395,12 +489,12 @@ async fn handle_mcp_rpc(
 
         // ── Tools ───────────────────────────────────────────────────────
         "tools/list" => {
-            let enabled = state.enabled_tools.read().await.clone();
+            let grants = state.grants.read().await.clone();
             let cursor = params.get("cursor").and_then(|v| v.as_str());
             let all_tools = tools::available_tool_definitions();
             let filtered: Vec<Value> = all_tools
                 .into_iter()
-                .filter(|tool| enabled.contains(&tool.name))
+                .filter(|tool| grants.allows_id(&tool.permission_id))
                 .map(|tool| {
                     json!({
                         "name": tool.name,
@@ -419,23 +513,26 @@ async fn handle_mcp_rpc(
             let tool_name = params
                 .get("name")
                 .and_then(|v| v.as_str())
-                .map(|v| v.trim().to_string())
+                .map(str::to_string)
                 .filter(|v| !v.is_empty());
 
             match tool_name {
                 Some(name) => {
-                    let enabled = state.enabled_tools.read().await;
-                    if !enabled.contains(&name) {
-                        Ok(tool_disabled(&name))
-                    } else {
-                        drop(enabled);
-                        let args = params
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| json!({}));
-                        match tools::execute_tool(&name, &args).await {
-                            Ok(value) => Ok(tool_success(&value)),
-                            Err(err) => Ok(tool_error(&err)),
+                    let grants = state.grants.read().await.clone();
+                    let args = params
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    match tools::execute_tool_with_grants(&grants, &name, &args).await {
+                        Ok(value) => Ok(tool_success(&value)),
+                        Err(err) => {
+                            if permissions::permission_for_invocation(&name)
+                                .is_some_and(|permission| !grants.allows(permission))
+                            {
+                                Ok(tool_disabled(&name))
+                            } else {
+                                Ok(tool_error(&err))
+                            }
                         }
                     }
                 }
@@ -587,4 +684,100 @@ async fn handle_mcp_rpc(
         Err(err_val) => err_val, // already a full JSON-RPC error response
     };
     (StatusCode::OK, Json(response_body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderValue;
+
+    use super::*;
+
+    fn headers_with_origin(origin: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static(origin));
+        headers
+    }
+
+    #[test]
+    fn absent_and_exact_local_http_origins_are_allowed() {
+        assert!(validate_origin(&HeaderMap::new(), "127.0.0.1", 8787).is_ok());
+        assert!(validate_origin(
+            &headers_with_origin("http://127.0.0.1:8787"),
+            "127.0.0.1",
+            8787
+        )
+        .is_ok());
+        assert!(validate_origin(&headers_with_origin("http://localhost"), "localhost", 80).is_ok());
+        assert!(validate_origin(&headers_with_origin("http://[::1]:8787"), "::1", 8787).is_ok());
+    }
+
+    #[test]
+    fn wildcard_bind_allows_only_loopback_origins() {
+        assert!(validate_origin(
+            &headers_with_origin("http://localhost:8787"),
+            "0.0.0.0",
+            8787
+        )
+        .is_ok());
+        assert!(validate_origin(
+            &headers_with_origin("http://192.0.2.10:8787"),
+            "0.0.0.0",
+            8787
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unsafe_origin_matrix_is_rejected() {
+        let rejected = [
+            "null",
+            "not-an-origin",
+            "file://localhost",
+            "https://127.0.0.1:8787",
+            "http://user:password@127.0.0.1:8787",
+            "http://127.0.0.1:8787/",
+            "http://127.0.0.1:8787/path",
+            "http://127.0.0.1:8787?query",
+            "http://127.0.0.1:8787#fragment",
+            "http://localhost:8787",
+            "http://127.0.0.1:9999",
+        ];
+        for origin in rejected {
+            let headers = headers_with_origin(origin);
+            assert!(
+                validate_origin(&headers, "127.0.0.1", 8787).is_err(),
+                "origin should be rejected: {origin}"
+            );
+        }
+
+        let mut repeated = headers_with_origin("http://127.0.0.1:8787");
+        repeated.append("origin", HeaderValue::from_static("http://127.0.0.1:8787"));
+        assert!(validate_origin(&repeated, "127.0.0.1", 8787).is_err());
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_origin_before_rpc_dispatch() {
+        let state = HttpRuntimeState {
+            grants: Arc::new(RwLock::new(PermissionGrantSet::all())),
+            auth_token: Arc::new(RwLock::new(Some("not-used-here".to_string()))),
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 8787,
+        };
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "cf_bulk_delete_dns_records",
+                "arguments": {}
+            }
+        });
+        let response = handle_mcp_rpc(
+            AxumState(state),
+            headers_with_origin("http://evil.example:8787"),
+            Json(payload),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 }

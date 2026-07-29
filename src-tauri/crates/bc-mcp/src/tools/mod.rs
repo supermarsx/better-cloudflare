@@ -3,14 +3,17 @@
 //! Centralises the list of all available tools, their metadata, and the
 //! top-level `execute_tool` dispatcher that routes to sub-modules.
 
-pub mod audit_tools;
-pub mod cloudflare;
-pub mod dns_tools;
-pub mod spf_tools;
+mod audit_tools;
+mod cloudflare;
+mod dns_tools;
+mod spf_tools;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::permissions::{
+    permission_for_invocation, validate_arguments, ArgumentProfile, PermissionGrantSet,
+};
 use crate::schemas;
 
 // ─── Tool descriptor ───────────────────────────────────────────────────────
@@ -18,13 +21,20 @@ use crate::schemas;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolDescriptor {
+    pub permission_id: String,
+    pub invocation_name: String,
+    pub legacy_aliases: Vec<String>,
     pub name: String,
     pub title: String,
     pub description: String,
     pub input_schema: Value,
     pub enabled: bool,
-    /// Category for UI grouping ("cloudflare", "dns", "spf", "audit").
     pub category: String,
+    pub effect: String,
+    pub risk: String,
+    pub network_access: bool,
+    pub credential_access: bool,
+    pub argument_profile: ArgumentProfile,
 }
 
 // ─── Tool catalogue ────────────────────────────────────────────────────────
@@ -101,13 +111,28 @@ const TOOL_CATALOGUE: &[(&str, &str, &str, &str)] = &[
 pub fn available_tool_definitions() -> Vec<McpToolDescriptor> {
     TOOL_CATALOGUE
         .iter()
-        .map(|(name, title, description, category)| McpToolDescriptor {
-            name: name.to_string(),
-            title: title.to_string(),
-            description: description.to_string(),
-            input_schema: schemas::tool_input_schema(name),
-            enabled: true,
-            category: category.to_string(),
+        .filter_map(|(name, title, description, _legacy_category)| {
+            let permission = permission_for_invocation(name)?;
+            Some(McpToolDescriptor {
+                permission_id: permission.id.to_string(),
+                invocation_name: permission.invocation_name.to_string(),
+                legacy_aliases: permission
+                    .legacy_aliases
+                    .iter()
+                    .map(|alias| (*alias).to_string())
+                    .collect(),
+                name: name.to_string(),
+                title: title.to_string(),
+                description: description.to_string(),
+                input_schema: schemas::tool_input_schema(name),
+                enabled: true,
+                category: permission.category.as_str().to_string(),
+                effect: permission.effect.as_str().to_string(),
+                risk: permission.risk.as_str().to_string(),
+                network_access: permission.network_access,
+                credential_access: permission.credential_access,
+                argument_profile: permission.argument_profile,
+            })
         })
         .collect()
 }
@@ -125,25 +150,96 @@ pub fn tool_count() -> usize {
     TOOL_CATALOGUE.len()
 }
 
-/// Dispatch tool execution to the correct sub-module.
+/// Compatibility entry point. Dispatch without an explicit canonical grant set
+/// is deliberately denied, including calls from other in-process crates.
 pub async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
-    // Route by prefix/category
-    if name.starts_with("cf_") {
-        return cloudflare::execute(name, args).await;
+    let _ = (name, args);
+    Err("Tool dispatch denied: explicit canonical permission grants are required.".to_string())
+}
+
+/// Final dispatch boundary. Registry resolution, grant enforcement, and
+/// argument bounds all happen here so callers cannot bypass them by invoking a
+/// private sub-handler directly.
+pub(crate) async fn execute_tool_with_grants(
+    grants: &PermissionGrantSet,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let permission = permission_for_invocation(name)
+        .ok_or_else(|| "Tool dispatch denied: tool is not registered.".to_string())?;
+    if !grants.allows(permission) {
+        return Err(format!(
+            "Tool '{}' is not enabled by the server permission grants.",
+            permission.invocation_name
+        ));
     }
-    if name.starts_with("spf_") {
-        return spf_tools::execute(name, args).await;
+    validate_arguments(permission, args)?;
+
+    let canonical_name = permission.invocation_name;
+    if canonical_name.starts_with("cf_") {
+        return cloudflare::execute(canonical_name, args).await;
     }
-    if name.starts_with("audit_") {
-        return audit_tools::execute(name, args).await;
+    if canonical_name.starts_with("spf_") {
+        return spf_tools::execute(canonical_name, args).await;
     }
-    if name.starts_with("dns_") {
-        // dns_parse_spf is an alias for spf_parse
-        if name == "dns_parse_spf" {
+    if canonical_name.starts_with("audit_") {
+        return audit_tools::execute(canonical_name, args).await;
+    }
+    if canonical_name.starts_with("dns_") {
+        if canonical_name == "dns_parse_spf" {
             return spf_tools::execute("spf_parse", args).await;
         }
-        return dns_tools::execute(name, args).await;
+        return dns_tools::execute(canonical_name, args).await;
     }
 
-    Err(format!("Unknown tool '{}'", name))
+    Err("Tool dispatch denied: registered tool has no handler.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::permissions::PermissionGrantSet;
+
+    #[tokio::test]
+    async fn unknown_and_ungranted_dispatch_deny_before_handlers() {
+        let empty = PermissionGrantSet::default();
+        let unknown = execute_tool_with_grants(&empty, "cf_future_write", &json!({})).await;
+        assert!(unknown.unwrap_err().contains("not registered"));
+
+        let ungranted = execute_tool_with_grants(&empty, "cf_delete_dns_record", &json!({})).await;
+        assert!(ungranted.unwrap_err().contains("not enabled"));
+    }
+
+    #[tokio::test]
+    async fn invocation_name_cannot_bypass_stable_high_risk_grant() {
+        let grants = PermissionGrantSet::from_requested(&["cf_list_zones".to_string()]);
+        let result =
+            execute_tool_with_grants(&grants, "cf_bulk_delete_dns_records", &json!({})).await;
+        assert!(result.unwrap_err().contains("not enabled"));
+    }
+
+    #[tokio::test]
+    async fn malformed_and_oversized_bulk_arguments_fail_before_provider_access() {
+        let grants =
+            PermissionGrantSet::from_requested(&["cf_bulk_delete_dns_records".to_string()]);
+
+        let malformed =
+            execute_tool_with_grants(&grants, "cf_bulk_delete_dns_records", &json!([])).await;
+        assert!(malformed.unwrap_err().contains("JSON object"));
+
+        let oversized = json!({
+            "record_ids": (0..101).map(|index| format!("id-{index}")).collect::<Vec<_>>()
+        });
+        let result =
+            execute_tool_with_grants(&grants, "cf_bulk_delete_dns_records", &oversized).await;
+        assert!(result.unwrap_err().contains("100 item"));
+    }
+
+    #[tokio::test]
+    async fn compatibility_dispatch_without_grants_always_denies() {
+        let result = execute_tool("dns_parse_spf", &json!({"content": "v=spf1 -all"})).await;
+        assert!(result.unwrap_err().contains("explicit canonical"));
+    }
 }

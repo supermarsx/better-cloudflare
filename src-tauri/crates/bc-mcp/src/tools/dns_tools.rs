@@ -10,7 +10,7 @@ use bc_cloudflare_api::DNSRecord;
 use crate::protocol::*;
 
 /// Execute a DNS utility tool.
-pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
+pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "dns_validate_record" => {
             let input: bc_dns_tools::DNSRecordValidationInput = serde_json::from_value(

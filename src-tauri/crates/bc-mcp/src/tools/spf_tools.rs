@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::protocol::*;
 
 /// Execute an SPF tool.
-pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
+pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "spf_simulate" => {
             let domain = get_required_string(args, "domain")?;

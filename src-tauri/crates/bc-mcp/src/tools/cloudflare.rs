@@ -5,12 +5,16 @@
 
 use serde_json::{json, Value};
 
-use bc_cloudflare_api::{DNSRecordInput, EmailRoutingRule, FirewallRuleInput};
+use bc_cloudflare_api::{CloudflareClient, DNSRecordInput, EmailRoutingRule, FirewallRuleInput};
 
+use crate::dns_mutation_validation::{self, AuthoritativeDnsZone};
 use crate::protocol::*;
 
+const AUTHORITATIVE_DNS_PAGE_SIZE: u32 = 5_000;
+const MAX_AUTHORITATIVE_DNS_RECORDS: usize = 100_000;
+
 /// Execute a Cloudflare API tool.
-pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
+pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "cf_verify_token" => {
             let client = make_cf_client(args)?;
@@ -39,6 +43,8 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
         "cf_create_dns_record" => {
             let client = make_cf_client(args)?;
             let zone_id = get_required_string(args, "zone_id")?;
+            let authoritative = fetch_authoritative_dns_zone(&client, &zone_id).await?;
+            dns_mutation_validation::validate_create(args, &authoritative)?;
             let record: DNSRecordInput = serde_json::from_value(
                 args.get("record")
                     .cloned()
@@ -56,6 +62,8 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             let client = make_cf_client(args)?;
             let zone_id = get_required_string(args, "zone_id")?;
             let record_id = get_required_string(args, "record_id")?;
+            let authoritative = fetch_authoritative_dns_zone(&client, &zone_id).await?;
+            dns_mutation_validation::validate_update(args, &authoritative)?;
             let record: DNSRecordInput = serde_json::from_value(
                 args.get("record")
                     .cloned()
@@ -73,6 +81,8 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             let client = make_cf_client(args)?;
             let zone_id = get_required_string(args, "zone_id")?;
             let record_id = get_required_string(args, "record_id")?;
+            let authoritative = fetch_authoritative_dns_zone(&client, &zone_id).await?;
+            dns_mutation_validation::validate_delete(args, &authoritative)?;
             client
                 .delete_dns_record(&zone_id, &record_id)
                 .await
@@ -83,6 +93,8 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
         "cf_bulk_create_dns_records" => {
             let client = make_cf_client(args)?;
             let zone_id = get_required_string(args, "zone_id")?;
+            let authoritative = fetch_authoritative_dns_zone(&client, &zone_id).await?;
+            dns_mutation_validation::validate_bulk_create(args, &authoritative)?;
             let dryrun = get_optional_bool(args, "dryrun").unwrap_or(false);
             let records: Vec<DNSRecordInput> = serde_json::from_value(
                 args.get("records")
@@ -100,12 +112,8 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
         "cf_bulk_delete_dns_records" => {
             let client = make_cf_client(args)?;
             let zone_id = get_required_string(args, "zone_id")?;
-            let ids: Vec<String> = serde_json::from_value(
-                args.get("record_ids")
-                    .cloned()
-                    .ok_or("Missing required argument 'record_ids'")?,
-            )
-            .map_err(|e| format!("Invalid record_ids: {}", e))?;
+            let authoritative = fetch_authoritative_dns_zone(&client, &zone_id).await?;
+            let ids = dns_mutation_validation::validated_bulk_delete_ids(args, &authoritative)?;
             let result = client
                 .delete_bulk_dns_records(&zone_id, &ids)
                 .await
@@ -404,4 +412,48 @@ pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
 
         _ => Err(format!("Unknown Cloudflare tool '{}'", name)),
     }
+}
+
+async fn fetch_authoritative_dns_zone(
+    client: &CloudflareClient,
+    zone_id: &str,
+) -> Result<AuthoritativeDnsZone, String> {
+    let mut all_records = Vec::new();
+    let mut page = 1_u32;
+
+    loop {
+        let page_records = match client
+            .get_dns_records(zone_id, Some(page), Some(AUTHORITATIVE_DNS_PAGE_SIZE))
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return dns_mutation_validation::authoritative_zone_from_lookup(
+                    zone_id,
+                    Err(error.to_string()),
+                );
+            }
+        };
+        if page_records.is_empty() {
+            break;
+        }
+
+        let next_len = all_records
+            .len()
+            .checked_add(page_records.len())
+            .ok_or_else(|| {
+                "Authoritative DNS lookup failed closed: record count overflowed.".to_string()
+            })?;
+        if next_len > MAX_AUTHORITATIVE_DNS_RECORDS {
+            return Err(format!(
+                "Authoritative DNS lookup failed closed: zone exceeds the safety limit of {MAX_AUTHORITATIVE_DNS_RECORDS} records."
+            ));
+        }
+        all_records.extend(page_records);
+        page = page.checked_add(1).ok_or_else(|| {
+            "Authoritative DNS lookup failed closed: page number overflowed.".to_string()
+        })?;
+    }
+
+    dns_mutation_validation::authoritative_zone_from_lookup(zone_id, Ok(all_records))
 }

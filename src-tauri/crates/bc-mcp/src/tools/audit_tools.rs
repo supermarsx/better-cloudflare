@@ -7,7 +7,7 @@ use bc_cloudflare_api::DNSRecord;
 use crate::protocol::*;
 
 /// Execute the domain audit tool.
-pub async fn execute(name: &str, args: &Value) -> Result<Value, String> {
+pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "audit_run_domain" => {
             let zone_name = get_required_string(args, "zone_name")?;
