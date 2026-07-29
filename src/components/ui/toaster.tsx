@@ -7,7 +7,7 @@ import {
   ToastViewport,
 } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
-import { RuntimeDiagnosticDetails } from "@/components/layout/RuntimeDiagnosticDetails";
+import { ToastDiagnosticDialog } from "@/components/ui/ToastDiagnosticDialog";
 
 /**
  * Toaster component that renders the current list of toasts from the
@@ -38,16 +38,20 @@ export function Toaster() {
             duration={isPersistent ? Number.POSITIVE_INFINITY : props.duration}
             data-persistent-diagnostic={isPersistent ? "true" : undefined}
           >
-            <div className="min-w-0 flex-1 grid gap-1">
+            <div className="grid min-w-0 max-w-full flex-1 gap-1 overflow-hidden">
               {title && <ToastTitle>{title}</ToastTitle>}
               {description && (
                 <ToastDescription>{description}</ToastDescription>
               )}
-              {diagnostic ? (
-                <RuntimeDiagnosticDetails diagnostic={diagnostic} compact />
+              {diagnostic || action ? (
+                <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                  {diagnostic ? (
+                    <ToastDiagnosticDialog diagnostic={diagnostic} />
+                  ) : null}
+                  {action}
+                </div>
               ) : null}
             </div>
-            {action}
             <ToastClose />
           </Toast>
         );

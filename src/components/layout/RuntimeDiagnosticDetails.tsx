@@ -11,12 +11,14 @@ interface RuntimeDiagnosticDetailsProps {
   diagnostic: RuntimeDiagnostic;
   defaultOpen?: boolean;
   compact?: boolean;
+  expanded?: boolean;
 }
 
 export function RuntimeDiagnosticDetails({
   diagnostic,
   defaultOpen = false,
   compact = false,
+  expanded = false,
 }: RuntimeDiagnosticDetailsProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "unavailable">(
     "idle",
@@ -27,25 +29,15 @@ export function RuntimeDiagnosticDetails({
     setCopyState(copied ? "copied" : "unavailable");
   };
 
-  return (
-    <details
-      className={
-        compact
-          ? "mt-2 rounded-md border border-border/60 bg-background/30 p-2 text-left text-xs"
-          : "w-full rounded-lg border border-border/60 bg-background/40 p-3 text-left text-xs"
-      }
-      open={defaultOpen || undefined}
-    >
-      <summary className="cursor-pointer select-none font-medium">
-        Technical details · {diagnostic.id}
-      </summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-2 text-[11px] text-muted-foreground">
+  const content = (
+    <>
+      <pre className="min-h-0 max-w-full flex-1 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-3 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
         {formatRuntimeDiagnostic(diagnostic)}
       </pre>
       <button
         type="button"
         onClick={() => void copy()}
-        className="ui-focus mt-2 rounded-md border border-border/60 bg-background/50 px-2 py-1 text-xs hover:bg-accent/50"
+        className="ui-focus mt-2 self-start rounded-md border border-border/60 bg-background/50 px-2 py-1 text-xs hover:bg-accent/50 focus-visible:outline-none"
       >
         {copyState === "copied"
           ? "Copied"
@@ -53,6 +45,35 @@ export function RuntimeDiagnosticDetails({
             ? "Copy unavailable"
             : "Copy diagnostics"}
       </button>
+    </>
+  );
+
+  if (expanded) {
+    return (
+      <section
+        aria-label="Full sanitized diagnostic information"
+        className="flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden rounded-lg border border-border/60 bg-background/40 p-3 text-left text-xs"
+      >
+        {content}
+      </section>
+    );
+  }
+
+  return (
+    <details
+      className={
+        compact
+          ? "mt-2 min-w-0 max-w-full rounded-md border border-border/60 bg-background/30 p-2 text-left text-xs"
+          : "w-full min-w-0 max-w-full rounded-lg border border-border/60 bg-background/40 p-3 text-left text-xs"
+      }
+      open={defaultOpen || undefined}
+    >
+      <summary className="cursor-pointer break-words font-medium [overflow-wrap:anywhere]">
+        Technical details · {diagnostic.id}
+      </summary>
+      <div className="mt-2 flex max-h-48 min-w-0 flex-col overflow-hidden">
+        {content}
+      </div>
     </details>
   );
 }
