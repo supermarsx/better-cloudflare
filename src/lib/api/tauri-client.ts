@@ -146,6 +146,16 @@ export interface McpServerStatus {
   last_error?: string | null;
 }
 
+type McpStartServerInvokeArgs = {
+  host?: string;
+  port?: number;
+  enabledTools?: string[];
+};
+
+type McpSetEnabledToolsInvokeArgs = {
+  enabledTools: string[];
+};
+
 export interface PasskeyStatus {
   registrationAvailable: boolean;
   authenticationAvailable: boolean;
@@ -599,11 +609,12 @@ export class TauriClient {
     port?: number,
     enabledTools?: string[],
   ): Promise<McpServerStatus> {
-    return invoke("mcp_start_server", {
+    const args: McpStartServerInvokeArgs = {
       host,
       port,
-      enabled_tools: enabledTools,
-    });
+      enabledTools,
+    };
+    return invoke("mcp_start_server", args);
   }
 
   static async stopMcpServer(): Promise<McpServerStatus> {
@@ -613,7 +624,8 @@ export class TauriClient {
   static async setMcpEnabledTools(
     enabledTools: string[],
   ): Promise<McpServerStatus> {
-    return invoke("mcp_set_enabled_tools", { enabled_tools: enabledTools });
+    const args: McpSetEnabledToolsInvokeArgs = { enabledTools };
+    return invoke("mcp_set_enabled_tools", args);
   }
 
   // ─── Registrar Monitoring ────────────────────────────────────────────

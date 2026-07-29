@@ -98,6 +98,36 @@ test("rejected desktop DNS preferences are reported without destroying the manag
   );
 });
 
+test("login-time MCP synchronization is contained and attempted only once", async () => {
+  setDesktopWindow();
+  let attempts = 0;
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: false,
+      mcp_enabled_tools: ["dns_read"],
+    }),
+    async () => {
+      attempts += 1;
+      throw new Error(
+        "invalid args `enabledTools` for command `mcp_set_enabled_tools`",
+      );
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+
+  await waitFor(() => {
+    assert.ok(
+      getRuntimeDiagnostics().some(
+        (diagnostic) =>
+          diagnostic.label === "Synchronize MCP server preferences",
+      ),
+    );
+  });
+  assert.equal(attempts, 1);
+  assert.ok(screen.getByRole("button", { name: "Settings" }));
+});
+
 test("rejected MCP tool mutation rolls back selection and shows sanitized context", async () => {
   setDesktopWindow();
   let rejectToolMutation = false;

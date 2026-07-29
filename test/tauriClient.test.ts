@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, afterEach } from "node:test";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 import {
   normalizeTauriInvokeError,
@@ -11,6 +12,7 @@ import { formatRequestError, RequestError } from "../src/lib/api/request-error";
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
 
 afterEach(() => {
+  clearMocks();
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
 });
 
@@ -22,6 +24,48 @@ test("isTauri returns true when window.__TAURI__ is present", () => {
 test("isTauri returns false when window is missing", () => {
   (globalThis as unknown as { window?: unknown }).window = undefined;
   assert.equal(TauriClient.isTauri(), false);
+});
+
+test("sends MCP tool arguments using Tauri's camel-cased command contract", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown> | undefined;
+  }> = [];
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown> | undefined,
+    });
+    return {
+      running: false,
+      host: "127.0.0.1",
+      port: 8787,
+      url: "http://127.0.0.1:8787/mcp",
+      enabledTools: ["dns_read"],
+      tools: [],
+    };
+  });
+
+  const enabledTools = ["dns_read"];
+  await TauriClient.setMcpEnabledTools(enabledTools);
+  await TauriClient.startMcpServer("127.0.0.1", 8787, enabledTools);
+
+  assert.deepEqual(calls, [
+    {
+      command: "mcp_set_enabled_tools",
+      payload: { enabledTools },
+    },
+    {
+      command: "mcp_start_server",
+      payload: {
+        host: "127.0.0.1",
+        port: 8787,
+        enabledTools,
+      },
+    },
+  ]);
+  assert.equal("enabled_tools" in (calls[0]?.payload ?? {}), false);
+  assert.equal("enabled_tools" in (calls[1]?.payload ?? {}), false);
 });
 
 test("normalizes Tauri string failures without discarding native detail", () => {
