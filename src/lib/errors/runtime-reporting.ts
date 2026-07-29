@@ -1,3 +1,9 @@
+import {
+  RESOURCE_LIMITS,
+  truncateUtf8,
+  utf8ByteLength,
+} from "@/lib/resource-limits";
+
 export type RuntimeErrorSource =
   | "react-boundary"
   | "next-route"
@@ -34,12 +40,7 @@ export interface RuntimeReportResult {
 
 type RuntimeReportListener = (diagnostic: RuntimeDiagnostic) => void;
 
-const MAX_MESSAGE_LENGTH = 1200;
-const MAX_STACK_LENGTH = 6000;
-const MAX_COMPONENT_STACK_LENGTH = 4000;
-const MAX_DIAGNOSTICS = 30;
 const DEDUPLICATION_WINDOW_MS = 10_000;
-const MAX_RECENT_FINGERPRINTS = 100;
 
 let diagnosticCounter = 0;
 let dispatching = false;
@@ -58,51 +59,8 @@ interface InstalledGlobalHandlers {
 
 const installedGlobalHandlers = new WeakMap<Window, InstalledGlobalHandlers>();
 
-function safeString(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) {
-    return String(value);
-  }
-  if (value === null) return "null";
-  if (value === undefined) return "undefined";
-
-  const seen = new WeakSet<object>();
-  try {
-    const serialized = JSON.stringify(value, (_key, nested) => {
-      if (typeof nested === "object" && nested !== null) {
-        if (seen.has(nested)) return "[circular]";
-        seen.add(nested);
-      }
-      if (typeof nested === "bigint") return String(nested);
-      if (typeof nested === "symbol") return String(nested);
-      if (typeof nested === "function")
-        return `[function ${nested.name || "anonymous"}]`;
-      return nested;
-    });
-    if (typeof serialized === "string") return serialized;
-  } catch {
-    // Fall through to bounded string coercion.
-  }
-  try {
-    return String(value);
-  } catch {
-    try {
-      return Object.prototype.toString.call(value);
-    } catch {
-      return "[unserializable value]";
-    }
-  }
-}
-
-export function sanitizeRuntimeText(
-  value: unknown,
-  maxLength = MAX_MESSAGE_LENGTH,
-): string {
-  return safeString(value)
+function redactRuntimeSecrets(value: string): string {
+  return value
     .replace(
       /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi,
       "$1[redacted]@",
@@ -111,17 +69,186 @@ export function sanitizeRuntimeText(
       /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
       "[redacted-jwt]",
     )
-    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(
-      /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+      /\bBearer\s+(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s,;&}]+)/gi,
+      "Bearer [redacted]",
+    )
+    .replace(
+      /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s,;&}]+)/gi,
       "$2=[redacted]",
     )
     .replace(
       /([?&](?:api[_-]?key|api[_-]?token|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|auth|cookie)=)[^&#\s]+/gi,
       "$1[redacted]",
-    )
-    .replace(/\s+$/g, "")
-    .slice(0, Math.max(0, maxLength));
+    );
+}
+
+function isSecretFieldName(value: string): boolean {
+  return /^(?:authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)$/i.test(
+    value,
+  );
+}
+
+function boundedUntrustedInput(value: string, maxBytes: number): string {
+  const redacted = redactRuntimeSecrets(value);
+  const bounded = truncateUtf8(redacted, maxBytes);
+  if (bounded.length === redacted.length) return bounded;
+
+  const marker = "[truncated]";
+  const markerBytes = utf8ByteLength(marker);
+  if (maxBytes <= markerBytes) return truncateUtf8(marker, maxBytes);
+  const withoutPartialToken = bounded.replace(/\S*$/u, "");
+  return `${truncateUtf8(withoutPartialToken, maxBytes - markerBytes)}${marker}`;
+}
+
+interface SerializationState {
+  readonly seen: WeakSet<object>;
+  nodes: number;
+  remainingStringBytes: number;
+}
+
+function consumeSerializedString(
+  value: string,
+  state: SerializationState,
+): string {
+  if (state.remainingStringBytes <= 0) return "[truncated]";
+  const bounded = boundedUntrustedInput(value, state.remainingStringBytes);
+  state.remainingStringBytes -= utf8ByteLength(bounded);
+  return bounded;
+}
+
+function boundedSerializable(
+  value: unknown,
+  depth: number,
+  state: SerializationState,
+): unknown {
+  if (state.nodes >= RESOURCE_LIMITS.runtimeDiagnostics.serializationMaxNodes) {
+    return "[truncated]";
+  }
+  state.nodes += 1;
+
+  if (typeof value === "string") {
+    return consumeSerializedString(value, state);
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    return "[bigint]";
+  }
+  if (typeof value === "symbol") {
+    const description = value.description
+      ? consumeSerializedString(value.description, state)
+      : "";
+    return description ? `[symbol ${description}]` : "[symbol]";
+  }
+  if (typeof value === "function") {
+    const name = value.name
+      ? consumeSerializedString(value.name, state)
+      : "anonymous";
+    return `[function ${name}]`;
+  }
+  if (value === undefined) return undefined;
+  if (depth >= RESOURCE_LIMITS.runtimeDiagnostics.serializationMaxDepth) {
+    return "[max-depth]";
+  }
+  if (state.seen.has(value)) return "[circular]";
+  state.seen.add(value);
+
+  if (value instanceof Date) {
+    try {
+      return consumeSerializedString(value.toISOString(), state);
+    } catch {
+      return "[invalid-date]";
+    }
+  }
+
+  const maxEntries = RESOURCE_LIMITS.runtimeDiagnostics.serializationMaxEntries;
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    const retainedLength = Math.min(value.length, maxEntries);
+    for (let index = 0; index < retainedLength; index += 1) {
+      try {
+        result.push(boundedSerializable(value[index], depth + 1, state));
+      } catch {
+        result.push("[unreadable]");
+      }
+    }
+    if (value.length > retainedLength) {
+      result.push(`[${value.length - retainedLength} more items]`);
+    }
+    return result;
+  }
+
+  const result: Record<string, unknown> = {};
+  let retainedEntries = 0;
+  try {
+    for (const key in value as Record<string, unknown>) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      if (retainedEntries >= maxEntries) {
+        result["[truncated]"] = "additional properties omitted";
+        break;
+      }
+      const safeKey = consumeSerializedString(key, state);
+      try {
+        result[safeKey] = isSecretFieldName(key)
+          ? "[redacted]"
+          : boundedSerializable(
+              (value as Record<string, unknown>)[key],
+              depth + 1,
+              state,
+            );
+      } catch {
+        result[safeKey] = "[unreadable]";
+      }
+      retainedEntries += 1;
+    }
+  } catch {
+    return "[unserializable value]";
+  }
+  return result;
+}
+
+function safeString(value: unknown): string {
+  const serializedLimit =
+    RESOURCE_LIMITS.runtimeDiagnostics.serializedTraceHardBytes;
+  if (typeof value === "string") {
+    return boundedUntrustedInput(value, serializedLimit);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "bigint") return "[bigint]";
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+
+  try {
+    const serialized = JSON.stringify(
+      boundedSerializable(value, 0, {
+        seen: new WeakSet<object>(),
+        nodes: 0,
+        remainingStringBytes: serializedLimit,
+      }),
+    );
+    if (typeof serialized === "string") {
+      return boundedUntrustedInput(serialized, serializedLimit);
+    }
+  } catch {
+    return "[unserializable value]";
+  }
+  return "[unserializable value]";
+}
+
+export function sanitizeRuntimeText(
+  value: unknown,
+  maxBytes: number = RESOURCE_LIMITS.runtimeDiagnostics.messageHardBytes,
+): string {
+  const redacted = redactRuntimeSecrets(safeString(value)).replace(/\s+$/g, "");
+  return truncateUtf8(redacted, maxBytes);
 }
 
 function errorRecord(error: unknown): Record<string, unknown> | undefined {
@@ -167,25 +294,31 @@ function diagnosticParts(error: unknown): {
   return {
     name: sanitizeRuntimeText(name, 120) || "RuntimeError",
     message:
-      sanitizeRuntimeText(rawMessage, MAX_MESSAGE_LENGTH) ||
-      "An unexpected runtime error occurred.",
+      sanitizeRuntimeText(
+        rawMessage,
+        RESOURCE_LIMITS.runtimeDiagnostics.messageHardBytes,
+      ) || "An unexpected runtime error occurred.",
     ...(rawCode
       ? { code: sanitizeRuntimeText(rawCode, 120) || undefined }
       : {}),
     ...(rawStack
-      ? { stack: sanitizeRuntimeText(rawStack, MAX_STACK_LENGTH) || undefined }
+      ? {
+          stack:
+            sanitizeRuntimeText(
+              rawStack,
+              RESOURCE_LIMITS.runtimeDiagnostics.stackHardBytes,
+            ) || undefined,
+        }
       : {}),
   };
 }
 
 function fingerprintFor(parts: ReturnType<typeof diagnosticParts>): string {
   const firstStackLine = parts.stack?.split("\n", 2)[1]?.trim() ?? "";
-  const input = [
-    parts.name,
-    parts.message,
-    parts.code ?? "",
-    firstStackLine,
-  ].join("|");
+  const input = truncateUtf8(
+    [parts.name, parts.message, parts.code ?? "", firstStackLine].join("|"),
+    RESOURCE_LIMITS.runtimeDiagnostics.fingerprintInputHardBytes,
+  );
   let hash = 5381;
   for (let index = 0; index < input.length; index += 1) {
     hash = (hash * 33) ^ input.charCodeAt(index);
@@ -198,24 +331,44 @@ function nextDiagnosticId(): string {
   return `runtime-${Date.now().toString(36)}-${diagnosticCounter.toString(36)}`;
 }
 
-function pruneRecentFingerprints(now: number): void {
+function pruneExpiredFingerprints(now: number): void {
   for (const [fingerprint, recent] of recentByFingerprint) {
     if (now - recent.lastSeen > DEDUPLICATION_WINDOW_MS) {
       recentByFingerprint.delete(fingerprint);
     }
   }
+}
 
-  while (recentByFingerprint.size >= MAX_RECENT_FINGERPRINTS) {
-    let oldestFingerprint: string | undefined;
-    let oldestSeen = Infinity;
-    for (const [fingerprint, recent] of recentByFingerprint) {
-      if (recent.lastSeen < oldestSeen) {
-        oldestSeen = recent.lastSeen;
-        oldestFingerprint = fingerprint;
-      }
+function evictOldestFingerprint(): void {
+  let oldestFingerprint: string | undefined;
+  let oldestSeen = Infinity;
+  for (const [fingerprint, recent] of recentByFingerprint) {
+    if (recent.lastSeen < oldestSeen) {
+      oldestSeen = recent.lastSeen;
+      oldestFingerprint = fingerprint;
     }
-    if (!oldestFingerprint) break;
-    recentByFingerprint.delete(oldestFingerprint);
+  }
+  if (!oldestFingerprint) return;
+  const recent = recentByFingerprint.get(oldestFingerprint);
+  recentByFingerprint.delete(oldestFingerprint);
+  if (!recent) return;
+  const diagnosticIndex = diagnostics.indexOf(recent.diagnostic);
+  if (diagnosticIndex >= 0) diagnostics.splice(diagnosticIndex, 1);
+}
+
+function enforceFingerprintCapacity(): void {
+  while (
+    recentByFingerprint.size >
+    RESOURCE_LIMITS.runtimeDiagnostics.recentFingerprintsHard
+  ) {
+    evictOldestFingerprint();
+  }
+}
+
+function removeDiagnosticFingerprint(diagnostic: RuntimeDiagnostic): void {
+  const recent = recentByFingerprint.get(diagnostic.fingerprint);
+  if (recent?.diagnostic === diagnostic) {
+    recentByFingerprint.delete(diagnostic.fingerprint);
   }
 }
 
@@ -233,7 +386,7 @@ export function createRuntimeDiagnostic(
     componentStack: context.componentStack
       ? sanitizeRuntimeText(
           context.componentStack,
-          MAX_COMPONENT_STACK_LENGTH,
+          RESOURCE_LIMITS.runtimeDiagnostics.componentStackHardBytes,
         ) || undefined
       : undefined,
   };
@@ -316,22 +469,31 @@ export function reportRuntimeError(
 ): RuntimeReportResult {
   const candidate = createRuntimeDiagnostic(error, context);
   const now = Date.now();
-  pruneRecentFingerprints(now);
+  pruneExpiredFingerprints(now);
   const recent = recentByFingerprint.get(candidate.fingerprint);
 
   if (recent && now - recent.lastSeen <= DEDUPLICATION_WINDOW_MS) {
     recent.lastSeen = now;
-    recent.diagnostic.occurrences += 1;
+    recent.diagnostic.occurrences = Math.min(
+      recent.diagnostic.occurrences + 1,
+      Number.MAX_SAFE_INTEGER,
+    );
     recent.diagnostic.lastSeenAt = candidate.lastSeenAt;
     return { diagnostic: recent.diagnostic, duplicate: true };
   }
 
   diagnostics.unshift(candidate);
-  diagnostics.splice(MAX_DIAGNOSTICS);
   recentByFingerprint.set(candidate.fingerprint, {
     lastSeen: now,
     diagnostic: candidate,
   });
+  const evictedDiagnostics = diagnostics.splice(
+    RESOURCE_LIMITS.runtimeDiagnostics.retainedCountHard,
+  );
+  for (const diagnostic of evictedDiagnostics) {
+    removeDiagnosticFingerprint(diagnostic);
+  }
+  enforceFingerprintCapacity();
 
   if (!dispatching) {
     dispatching = true;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RequestError } from "../src/lib/api/request-error.ts";
 import { ServerClient } from "../src/lib/api/server-client.ts";
+import { RESOURCE_LIMITS } from "../src/lib/resource-limits.ts";
 
 // Ensure web fetch shims are loaded if needed
 import "cloudflare/shims/web";
@@ -596,4 +597,109 @@ test("getVaultSecret sends passkey token when provided", async () => {
   const called = restore();
   const headers = called.init?.headers as Record<string, string>;
   assert.equal(headers["x-passkey-token"], "ptok");
+});
+
+test("oversized responses preserve request context, retryability, and reader cancellation", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  let cancellations = 0;
+  const oversizedResponse = (status: number, statusText: string) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("{}"));
+        },
+        cancel() {
+          cancellations += 1;
+        },
+      }),
+      {
+        status,
+        statusText,
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(RESOURCE_LIMITS.responseBody.hardBytes + 1),
+          "x-request-id": `oversized-${status}`,
+        },
+      },
+    );
+
+  try {
+    globalThis.fetch = async () =>
+      oversizedResponse(503, "Service Unavailable");
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "malformed-response");
+        assert.equal(error.code, "RESPONSE_TOO_LARGE");
+        assert.equal(error.status, 503);
+        assert.equal(error.statusText, "Service Unavailable");
+        assert.equal(error.endpoint, "/zones");
+        assert.equal(error.requestUrl, "http://example.com/zones");
+        assert.equal(error.operation, "GET");
+        assert.equal(error.requestId, "oversized-503");
+        assert.equal(error.retryable, true);
+        assert.match(error.message, /Request a smaller page/i);
+        return true;
+      },
+    );
+
+    globalThis.fetch = async () => oversizedResponse(200, "OK");
+    await assert.rejects(
+      () => client.getZones(),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.status, 200);
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+    assert.equal(cancellations, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("preserves caller cancellation while a bounded response body is streaming", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  const caller = new AbortController();
+  let requestSignal: AbortSignal | null | undefined;
+
+  try {
+    globalThis.fetch = async (_url: string | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("["));
+            init?.signal?.addEventListener(
+              "abort",
+              () =>
+                controller.error(new DOMException("cancelled", "AbortError")),
+              { once: true },
+            );
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    };
+
+    const request = client.getZones(caller.signal);
+    caller.abort();
+    await assert.rejects(
+      () => request,
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.kind, "aborted");
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+    assert.equal(requestSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

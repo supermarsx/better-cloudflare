@@ -15,6 +15,7 @@
  */
 import { useState, useCallback, useRef } from "react";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+import { boundedResourceCount, RESOURCE_LIMITS } from "@/lib/resource-limits";
 
 export interface UndoRedoEntry<T> {
   /** Unique id for the entry */
@@ -34,7 +35,7 @@ export interface UndoRedoOptions<T> {
   onUndo: (reverse: T, entry: UndoRedoEntry<T>) => Promise<void> | void;
   /** Called when redoing an operation — should apply the forward */
   onRedo: (forward: T, entry: UndoRedoEntry<T>) => Promise<void> | void;
-  /** Maximum number of entries to keep in history (default: 50) */
+  /** Maximum entries to retain (default: 50; always capped at 100) */
   maxHistory?: number;
 }
 
@@ -81,8 +82,16 @@ function reportHistoryFailure<T>(
   );
 }
 
+function boundedHistoryLimit(requested?: number): number {
+  return boundedResourceCount(
+    requested,
+    RESOURCE_LIMITS.undoRedo.defaultEntries,
+    RESOURCE_LIMITS.undoRedo.hardEntries,
+  );
+}
+
 export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
-  const { maxHistory = 50 } = options;
+  const maxHistory: number = boundedHistoryLimit(options.maxHistory);
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -104,6 +113,7 @@ export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
 
   const push = useCallback(
     (entry: Omit<UndoRedoEntry<T>, "id" | "timestamp">) => {
+      if (historyActionInFlightRef.current) return;
       const full: UndoRedoEntry<T> = {
         ...entry,
         id: `undo-${nextId++}`,
@@ -127,24 +137,22 @@ export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
     historyActionInFlightRef.current = true;
     try {
       await optionsRef.current.onUndo(entry.reverse, entry);
+      const currentIndex = undoStackRef.current.findIndex(
+        (candidate) => candidate.id === entry.id,
+      );
+      if (currentIndex < 0) return;
+
+      replaceUndoStack([
+        ...undoStackRef.current.slice(0, currentIndex),
+        ...undoStackRef.current.slice(currentIndex + 1),
+      ]);
+      replaceRedoStack([entry, ...redoStackRef.current].slice(0, maxHistory));
     } catch (error) {
       reportHistoryFailure("undo", entry, error);
-      return;
     } finally {
       historyActionInFlightRef.current = false;
     }
-
-    const currentIndex = undoStackRef.current.findIndex(
-      (candidate) => candidate.id === entry.id,
-    );
-    if (currentIndex < 0) return;
-
-    replaceUndoStack([
-      ...undoStackRef.current.slice(0, currentIndex),
-      ...undoStackRef.current.slice(currentIndex + 1),
-    ]);
-    replaceRedoStack([entry, ...redoStackRef.current]);
-  }, [replaceRedoStack, replaceUndoStack]);
+  }, [maxHistory, replaceRedoStack, replaceUndoStack]);
 
   const redo = useCallback(async () => {
     if (historyActionInFlightRef.current) return;
@@ -154,26 +162,25 @@ export function useUndoRedo<T>(options: UndoRedoOptions<T>): UndoRedoResult<T> {
     historyActionInFlightRef.current = true;
     try {
       await optionsRef.current.onRedo(entry.forward, entry);
+      const currentIndex = redoStackRef.current.findIndex(
+        (candidate) => candidate.id === entry.id,
+      );
+      if (currentIndex < 0) return;
+
+      replaceRedoStack([
+        ...redoStackRef.current.slice(0, currentIndex),
+        ...redoStackRef.current.slice(currentIndex + 1),
+      ]);
+      replaceUndoStack([entry, ...undoStackRef.current].slice(0, maxHistory));
     } catch (error) {
       reportHistoryFailure("redo", entry, error);
-      return;
     } finally {
       historyActionInFlightRef.current = false;
     }
-
-    const currentIndex = redoStackRef.current.findIndex(
-      (candidate) => candidate.id === entry.id,
-    );
-    if (currentIndex < 0) return;
-
-    replaceRedoStack([
-      ...redoStackRef.current.slice(0, currentIndex),
-      ...redoStackRef.current.slice(currentIndex + 1),
-    ]);
-    replaceUndoStack([entry, ...undoStackRef.current]);
-  }, [replaceRedoStack, replaceUndoStack]);
+  }, [maxHistory, replaceRedoStack, replaceUndoStack]);
 
   const clear = useCallback(() => {
+    if (historyActionInFlightRef.current) return;
     replaceUndoStack([]);
     replaceRedoStack([]);
   }, [replaceRedoStack, replaceUndoStack]);

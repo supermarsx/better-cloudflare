@@ -7,17 +7,65 @@
  */
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 import { isDesktop } from "../environment";
+import {
+  readBoundedResponseText,
+  ResponseBodyLimitError,
+} from "../resource-limits";
 import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
 import type { TauriDNSRecordInput } from "./tauri-client";
 import {
   backendConfigurationError,
   malformedResponseError,
   normalizeRequestError,
+  RequestError,
   requestErrorFromResponse,
 } from "./request-error";
 
 const DEFAULT_TIMEOUT = 10_000;
 type ResponseMode = "json" | "json-or-empty" | "text";
+
+function retryableResponseStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function formatByteLimit(bytes: number): string {
+  return Number.isInteger(bytes / (1024 * 1024))
+    ? `${bytes / (1024 * 1024)} MiB`
+    : `${bytes} bytes`;
+}
+
+function responseBodyLimitRequestError(
+  error: ResponseBodyLimitError,
+  response: Response,
+  endpoint: string,
+  operation: string,
+  requestUrl: string,
+): RequestError {
+  const sizeDescription =
+    error.declaredBytes !== undefined
+      ? `The server declared a ${error.declaredBytes}-byte response`
+      : `The streamed server response exceeded ${error.limitBytes} bytes`;
+  return new RequestError(
+    "malformed-response",
+    `${sizeDescription}, above the safe ${formatByteLimit(error.limitBytes)} limit. Request a smaller page or narrower result and try again.`,
+    {
+      source: "server",
+      endpoint,
+      requestUrl,
+      operation,
+      status: response.status,
+      statusText: response.statusText,
+      code: "RESPONSE_TOO_LARGE",
+      requestId:
+        response.headers.get("cf-ray") ??
+        response.headers.get("x-request-id") ??
+        undefined,
+      retryable: retryableResponseStatus(response.status),
+      remediation: "Reduce the requested page or result size before retrying.",
+    },
+    { cause: error },
+  );
+}
 
 function configuredServerApiBase(): string | undefined {
   const nextPublic =
@@ -211,7 +259,21 @@ export class ServerClient {
         signal: controller.signal,
       });
       const contentType = res.headers.get("content-type");
-      const bodyText = await res.text();
+      let bodyText: string;
+      try {
+        bodyText = await readBoundedResponseText(res);
+      } catch (error) {
+        if (error instanceof ResponseBodyLimitError) {
+          throw responseBodyLimitRequestError(
+            error,
+            res,
+            endpoint,
+            method,
+            requestUrl,
+          );
+        }
+        throw error;
+      }
       if (!res.ok) {
         throw requestErrorFromResponse(
           res,
@@ -221,7 +283,6 @@ export class ServerClient {
           requestUrl,
         );
       }
-      const trimmedBody = bodyText.trim();
       const responseContext = {
         operation: method,
         status: res.status,
@@ -233,7 +294,8 @@ export class ServerClient {
           undefined,
         contentType: contentType ?? undefined,
       };
-      if (!trimmedBody) {
+      const firstContentIndex = bodyText.search(/\S/);
+      if (firstContentIndex < 0) {
         if (responseMode !== "json") return undefined as T;
         throw malformedResponseError(endpoint, new SyntaxError("Empty body"), {
           ...responseContext,
@@ -242,7 +304,9 @@ export class ServerClient {
       }
       const isHtml =
         contentType?.toLowerCase().includes("text/html") === true ||
-        /^(?:<!doctype\s+html|<html\b)/i.test(trimmedBody);
+        /^(?:<!doctype\s+html|<html\b)/i.test(
+          bodyText.slice(firstContentIndex, firstContentIndex + 64),
+        );
       if (isHtml) {
         throw malformedResponseError(endpoint, new SyntaxError("HTML body"), {
           ...responseContext,
