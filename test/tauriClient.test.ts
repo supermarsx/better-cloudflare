@@ -68,6 +68,111 @@ test("sends MCP tool arguments using Tauri's camel-cased command contract", asyn
   assert.equal("enabled_tools" in (calls[1]?.payload ?? {}), false);
 });
 
+test("sends complete bounded and open-ended Analytics payloads", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown>;
+  }> = [];
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown>,
+    });
+    return {};
+  });
+
+  await TauriClient.getZoneAnalytics(
+    "zone-key",
+    "zone-id",
+    "2026-07-28T00:00:00Z",
+    "2026-07-29T00:00:00Z",
+    "owner@example.com",
+    true,
+  );
+  await TauriClient.getZoneAnalytics("zone-key", "zone-id");
+  await TauriClient.getDnsAnalytics(
+    "dns-key",
+    "dns-zone-id",
+    "2026-07-27T00:00:00Z",
+    "2026-07-29T00:00:00Z",
+    "dns@example.com",
+    ["queryName", "responseCode"],
+    ["queryCount"],
+  );
+  await TauriClient.getDnsAnalytics("dns-key", "dns-zone-id");
+
+  assert.deepEqual(calls, [
+    {
+      command: "get_zone_analytics",
+      payload: {
+        apiKey: "zone-key",
+        zoneId: "zone-id",
+        since: "2026-07-28T00:00:00Z",
+        until: "2026-07-29T00:00:00Z",
+        email: "owner@example.com",
+        continuous: true,
+      },
+    },
+    {
+      command: "get_zone_analytics",
+      payload: {
+        apiKey: "zone-key",
+        zoneId: "zone-id",
+        since: null,
+        until: null,
+        email: null,
+        continuous: null,
+      },
+    },
+    {
+      command: "get_dns_analytics",
+      payload: {
+        apiKey: "dns-key",
+        zoneId: "dns-zone-id",
+        since: "2026-07-27T00:00:00Z",
+        until: "2026-07-29T00:00:00Z",
+        email: "dns@example.com",
+        dimensions: ["queryName", "responseCode"],
+        metrics: ["queryCount"],
+      },
+    },
+    {
+      command: "get_dns_analytics",
+      payload: {
+        apiKey: "dns-key",
+        zoneId: "dns-zone-id",
+        since: null,
+        until: null,
+        email: null,
+        dimensions: null,
+        metrics: null,
+      },
+    },
+  ]);
+
+  for (const { command, payload } of calls) {
+    const expectedKeys =
+      command === "get_zone_analytics"
+        ? ["apiKey", "zoneId", "since", "until", "email", "continuous"]
+        : [
+            "apiKey",
+            "zoneId",
+            "since",
+            "until",
+            "email",
+            "dimensions",
+            "metrics",
+          ];
+    for (const key of expectedKeys) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(payload, key),
+        true,
+        `${command} payload owns ${key}`,
+      );
+    }
+  }
+});
+
 test("normalizes Tauri string failures without discarding native detail", () => {
   const error = normalizeTauriInvokeError(
     "HTTP error: connection refused password=secret-value",

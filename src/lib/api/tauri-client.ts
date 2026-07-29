@@ -846,13 +846,15 @@ export class TauriClient {
     since?: string,
     until?: string,
     email?: string,
+    continuous?: boolean,
   ): Promise<ZoneAnalytics> {
     return invoke("get_zone_analytics", {
       apiKey,
       zoneId,
-      since,
-      until,
-      email,
+      since: since ?? null,
+      until: until ?? null,
+      email: email ?? null,
+      continuous: continuous ?? null,
     });
   }
 
@@ -862,8 +864,18 @@ export class TauriClient {
     since?: string,
     until?: string,
     email?: string,
+    dimensions?: string[],
+    metrics?: string[],
   ): Promise<DnsAnalyticsResponse> {
-    return invoke("get_dns_analytics", { apiKey, zoneId, since, until, email });
+    return invoke("get_dns_analytics", {
+      apiKey,
+      zoneId,
+      since: since ?? null,
+      until: until ?? null,
+      email: email ?? null,
+      dimensions: dimensions ?? null,
+      metrics: metrics ?? null,
+    });
   }
 
   // ── Firewall / WAF ───────────────────────────────────────────────────────

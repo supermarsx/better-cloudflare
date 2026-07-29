@@ -1,3 +1,4 @@
+use chrono::{DateTime, Duration, Utc};
 use tauri::State;
 
 use crate::cloudflare_api::{
@@ -10,15 +11,31 @@ use super::log_audit;
 
 // ─── Analytics ──────────────────────────────────────────────────────────────
 
+/// Resolve one stable range for provider requests. Open-ended ranges end at the
+/// captured UTC instant, and a missing start defaults to 24 hours before it.
+fn resolve_analytics_range(
+    since: Option<String>,
+    until: Option<String>,
+    now: DateTime<Utc>,
+) -> (String, String) {
+    let default_since = (now - Duration::hours(24)).to_rfc3339();
+    let default_until = now.to_rfc3339();
+    (
+        since.unwrap_or(default_since),
+        until.unwrap_or(default_until),
+    )
+}
+
 #[tauri::command]
 pub async fn get_zone_analytics(
     api_key: String,
     email: Option<String>,
     zone_id: String,
-    since: String,
-    until: String,
+    since: Option<String>,
+    until: Option<String>,
     continuous: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    let (since, until) = resolve_analytics_range(since, until, Utc::now());
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client
         .get_zone_analytics(&zone_id, &since, &until, continuous)
@@ -31,16 +48,48 @@ pub async fn get_dns_analytics(
     api_key: String,
     email: Option<String>,
     zone_id: String,
-    since: String,
-    until: String,
+    since: Option<String>,
+    until: Option<String>,
     dimensions: Option<Vec<String>>,
     metrics: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
+    let (since, until) = resolve_analytics_range(since, until, Utc::now());
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client
         .get_dns_analytics(&zone_id, &since, &until, dimensions, metrics)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod analytics_tests {
+    use super::resolve_analytics_range;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn analytics_range_preserves_bounded_values() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 29, 12, 0, 0).unwrap();
+        let since = "2026-07-28T09:30:00Z".to_string();
+        let until = "2026-07-29T09:30:00Z".to_string();
+
+        assert_eq!(
+            resolve_analytics_range(Some(since.clone()), Some(until.clone()), now),
+            (since, until)
+        );
+    }
+
+    #[test]
+    fn analytics_range_resolves_open_values_from_one_instant() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 29, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            resolve_analytics_range(None, None, now),
+            (
+                "2026-07-28T12:00:00+00:00".to_string(),
+                "2026-07-29T12:00:00+00:00".to_string(),
+            )
+        );
+    }
 }
 
 // ─── Firewall / WAF ────────────────────────────────────────────────────────
