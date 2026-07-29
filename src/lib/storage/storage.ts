@@ -9,27 +9,14 @@ import {
   type EncryptionAlgorithm,
 } from "../../types/dns";
 import { CryptoManager } from "../auth/crypto";
+import {
+  DEFAULT_MCP_ENABLED_TOOL_IDS,
+  reconcileMcpEnabledToolIds,
+} from "../mcp/tool-permissions";
 import { getStorage, type StorageLike } from "./storage-util";
 import { generateUUID } from "../utils";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
-const DEFAULT_MCP_TOOLS = [
-  "cf_verify_token",
-  "cf_list_zones",
-  "cf_list_dns_records",
-  "cf_create_dns_record",
-  "cf_update_dns_record",
-  "cf_delete_dns_record",
-  "cf_bulk_create_dns_records",
-  "cf_export_dns_records",
-  "cf_purge_cache",
-  "cf_get_zone_setting",
-  "cf_update_zone_setting",
-  "cf_get_dnssec",
-  "cf_update_dnssec",
-  "spf_simulate",
-  "spf_graph",
-];
 
 interface StorageData {
   apiKeys: ApiKey[];
@@ -869,10 +856,7 @@ export class StorageManager {
   }
 
   setMcpEnabledTools(tools: string[]): void {
-    const next = Array.from(
-      new Set((tools ?? []).map((t) => String(t).trim()).filter(Boolean)),
-    );
-    this.data.mcpEnabledTools = next.length ? next : [...DEFAULT_MCP_TOOLS];
+    this.data.mcpEnabledTools = reconcileMcpEnabledToolIds(tools);
     this.save();
     this.dispatchPreferencesChanged({
       mcpEnabledTools: this.data.mcpEnabledTools,
@@ -881,11 +865,8 @@ export class StorageManager {
 
   getMcpEnabledTools(): string[] {
     const tools = this.data.mcpEnabledTools;
-    if (!Array.isArray(tools) || tools.length === 0)
-      return [...DEFAULT_MCP_TOOLS];
-    return Array.from(
-      new Set(tools.map((t) => String(t).trim()).filter(Boolean)),
-    );
+    if (!Array.isArray(tools)) return [...DEFAULT_MCP_ENABLED_TOOL_IDS];
+    return reconcileMcpEnabledToolIds(tools);
   }
 
   setLoadingOverlayTimeoutMs(ms: number): void {
