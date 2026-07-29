@@ -97,6 +97,7 @@ import {
 } from "@/lib/errors/runtime-reporting";
 import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
 import { DnsAppCommandBar } from "./DnsAppCommandBar";
+import { McpToolPermissions } from "@/components/mcp/McpToolPermissions";
 import {
   DnsWorkspaceTabs,
   getDnsWorkspacePanelId,
@@ -335,18 +336,6 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   tags: "Tags",
   registry: "Registry",
 };
-
-function extractMcpEnabledTools(status: McpServerStatus | null): string[] {
-  if (!status) return [];
-  const raw = Array.isArray(status.enabledTools)
-    ? status.enabledTools
-    : Array.isArray(status.enabled_tools)
-      ? status.enabled_tools
-      : [];
-  return Array.from(
-    new Set(raw.map((value) => String(value).trim()).filter(Boolean)),
-  );
-}
 
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
   basic:
@@ -909,9 +898,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [mcpServerPort, setMcpServerPort] = useState(
     storageManager.getMcpServerPort(),
   );
-  const [mcpEnabledTools, setMcpEnabledTools] = useState<string[]>(
-    storageManager.getMcpEnabledTools(),
+  const [initialMcpPermissionSnapshot] = useState(() =>
+    storageManager.getMcpEnabledToolsSnapshot(),
   );
+  const [mcpEnabledTools, setMcpEnabledTools] = useState<string[]>(
+    initialMcpPermissionSnapshot.enabledTools,
+  );
+  const [mcpRequestedTools, setMcpRequestedTools] = useState<string[]>(() =>
+    Array.from(
+      new Set([
+        ...initialMcpPermissionSnapshot.enabledTools,
+        ...initialMcpPermissionSnapshot.pendingHighRiskToolIds,
+      ]),
+    ),
+  );
+  const [mcpPermissionsReady, setMcpPermissionsReady] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpActionError, setMcpActionError] = useState<string | null>(null);
@@ -1368,7 +1369,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         );
       }
       if (Array.isArray(profile.mcpEnabledTools)) {
-        setMcpEnabledTools(
+        setMcpPermissionsReady(false);
+        setMcpRequestedTools(
           Array.from(
             new Set(
               profile.mcpEnabledTools
@@ -2097,10 +2099,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     try {
       const status = await TauriClient.getMcpServerStatus();
       setMcpStatus(status);
-      const tools = extractMcpEnabledTools(status);
-      if (tools.length) {
-        setMcpEnabledTools(tools);
-      }
     } catch (error) {
       const diagnostic = reportDnsManagerFailure(
         error,
@@ -2110,37 +2108,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   }, []);
 
-  const applyMcpEnabledTools = useCallback(
-    async (tools: string[]) => {
-      if (!isDesktop()) return;
-      const previousTools = mcpEnabledTools;
-      const normalized = Array.from(
-        new Set(tools.map((v) => String(v).trim()).filter(Boolean)),
-      );
-      setMcpBusy(true);
+  const handleMcpPermissionsApplied = useCallback(
+    (enabledTools: string[], status: McpServerStatus) => {
+      const confirmedTools = [...enabledTools];
+      setMcpEnabledTools(confirmedTools);
+      setMcpRequestedTools(confirmedTools);
+      setMcpStatus(status);
       setMcpActionError(null);
-      try {
-        const status = await TauriClient.setMcpEnabledTools(normalized);
-        setMcpStatus(status);
-        const fromStatus = extractMcpEnabledTools(status);
-        setMcpEnabledTools(fromStatus.length ? fromStatus : normalized);
-      } catch (error) {
-        setMcpEnabledTools(previousTools);
-        const diagnostic = reportDnsManagerFailure(
-          error,
-          "Update MCP tool access",
-        );
-        setMcpActionError(diagnostic.message);
-      } finally {
-        setMcpBusy(false);
-      }
+      setMcpPermissionsReady(true);
     },
-    [mcpEnabledTools],
+    [],
   );
 
   const setMcpServerRunning = useCallback(
     async (enabled: boolean, host?: string, port?: number) => {
-      if (!isDesktop()) return;
+      if (!isDesktop() || !mcpPermissionsReady) return;
       const previousEnabled = mcpServerEnabled;
       const previousStatus = mcpStatus;
       setMcpBusy(true);
@@ -2159,8 +2141,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             )
           : await TauriClient.stopMcpServer();
         setMcpStatus(status);
-        const tools = extractMcpEnabledTools(status);
-        if (tools.length) setMcpEnabledTools(tools);
         setMcpServerEnabled(enabled);
       } catch (error) {
         setMcpServerEnabled(previousEnabled);
@@ -2176,6 +2156,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [
       mcpEnabledTools,
+      mcpPermissionsReady,
       mcpServerEnabled,
       mcpServerHost,
       mcpServerPort,
@@ -2467,7 +2448,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             );
           }
           if (Array.isArray(prefObj.mcp_enabled_tools)) {
-            setMcpEnabledTools(
+            setMcpPermissionsReady(false);
+            setMcpRequestedTools(
               Array.from(
                 new Set(
                   prefObj.mcp_enabled_tools
@@ -2677,7 +2659,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setMcpServerEnabled(storageManager.getMcpServerEnabled());
     setMcpServerHost(storageManager.getMcpServerHost());
     setMcpServerPort(storageManager.getMcpServerPort());
-    setMcpEnabledTools(storageManager.getMcpEnabledTools());
+    const permissionSnapshot = storageManager.getMcpEnabledToolsSnapshot();
+    setMcpEnabledTools(permissionSnapshot.enabledTools);
+    setMcpRequestedTools(
+      Array.from(
+        new Set([
+          ...permissionSnapshot.enabledTools,
+          ...permissionSnapshot.pendingHighRiskToolIds,
+        ]),
+      ),
+    );
+    setMcpPermissionsReady(false);
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
     setTopologyResolverMode(storageManager.getTopologyResolverMode());
@@ -2733,13 +2725,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   useEffect(() => {
-    if (!prefsReady || !isDesktop()) return;
+    if (!prefsReady || !mcpPermissionsReady || !isDesktop()) return;
     let active = true;
     setMcpBusy(true);
     setMcpActionError(null);
     void (async () => {
       try {
-        await TauriClient.setMcpEnabledTools(mcpEnabledTools);
         if (mcpServerEnabled) {
           await TauriClient.startMcpServer(
             mcpServerHost,
@@ -2752,8 +2743,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         const status = await TauriClient.getMcpServerStatus();
         if (!active) return;
         setMcpStatus(status);
-        const tools = extractMcpEnabledTools(status);
-        if (tools.length) setMcpEnabledTools(tools);
       } catch (error) {
         if (!active) return;
         const diagnostic = reportDnsManagerFailure(
@@ -2768,7 +2757,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return () => {
       active = false;
     };
-  }, [prefsReady]);
+  }, [mcpPermissionsReady, prefsReady]);
 
   const persistTabStateBestEffort = useCallback(() => {
     const openTabIds = tabs.map((tab) => tab.id);
@@ -2895,7 +2884,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setMcpServerEnabled(mcpServerEnabled);
     storageManager.setMcpServerHost(mcpServerHost);
     storageManager.setMcpServerPort(mcpServerPort);
-    storageManager.setMcpEnabledTools(mcpEnabledTools);
     storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
     storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
     storageManager.setTopologyResolverMode(topologyResolverMode);
@@ -4805,7 +4793,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpLastError =
     mcpActionError ??
     (rawMcpLastError ? sanitizeRuntimeText(rawMcpLastError) : null);
-  const mcpToolCatalog = Array.isArray(mcpStatus?.tools) ? mcpStatus.tools : [];
 
   return (
     <AuthenticatedAppShell
@@ -9773,7 +9760,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <div className="flex items-center gap-3">
                                 <Switch
                                   checked={mcpServerEnabled}
-                                  disabled={mcpBusy}
+                                  disabled={mcpBusy || !mcpPermissionsReady}
                                   onCheckedChange={(checked: boolean) => {
                                     void setMcpServerRunning(checked);
                                   }}
@@ -9828,7 +9815,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                       mcpServerPort,
                                     )
                                   }
-                                  disabled={mcpBusy || !mcpServerEnabled}
+                                  disabled={
+                                    mcpBusy ||
+                                    !mcpServerEnabled ||
+                                    !mcpPermissionsReady
+                                  }
                                 >
                                   {t("Apply + restart", "Apply + restart")}
                                 </Button>
@@ -9838,86 +9829,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               <div className="font-medium">
                                 {t("Tool access", "Tool access")}
                               </div>
-                              <div className="space-y-2">
-                                <div className="flex flex-wrap gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2"
-                                    disabled={
-                                      mcpBusy || mcpToolCatalog.length === 0
-                                    }
-                                    onClick={() => {
-                                      const all = mcpToolCatalog.map(
-                                        (tool) => tool.name,
-                                      );
-                                      setMcpEnabledTools(all);
-                                      void applyMcpEnabledTools(all);
-                                    }}
-                                  >
-                                    {t("Enable all", "Enable all")}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2"
-                                    disabled={
-                                      mcpBusy || mcpToolCatalog.length === 0
-                                    }
-                                    onClick={() => {
-                                      setMcpEnabledTools([]);
-                                      void applyMcpEnabledTools([]);
-                                    }}
-                                  >
-                                    {t("Disable all", "Disable all")}
-                                  </Button>
-                                </div>
-                                <div className="grid gap-2">
-                                  {mcpToolCatalog.map((tool) => {
-                                    const enabled = mcpEnabledTools.includes(
-                                      tool.name,
-                                    );
-                                    return (
-                                      <label
-                                        key={tool.name}
-                                        className="flex items-start gap-2 rounded-md border border-border/50 bg-card/40 px-3 py-2"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          className="checkbox-themed mt-0.5"
-                                          checked={enabled}
-                                          disabled={mcpBusy}
-                                          onChange={(event) => {
-                                            const next = event.target.checked
-                                              ? Array.from(
-                                                  new Set([
-                                                    ...mcpEnabledTools,
-                                                    tool.name,
-                                                  ]),
-                                                )
-                                              : mcpEnabledTools.filter(
-                                                  (name) => name !== tool.name,
-                                                );
-                                            setMcpEnabledTools(next);
-                                            void applyMcpEnabledTools(next);
-                                          }}
-                                        />
-                                        <div className="space-y-0.5">
-                                          <div className="font-medium">
-                                            {tool.title || tool.name}
-                                          </div>
-                                          <div className="text-xs text-muted-foreground">
-                                            {tool.description}
-                                          </div>
-                                          <div className="text-[11px] text-muted-foreground/80">
-                                            {tool.name}
-                                          </div>
-                                        </div>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </div>
+                              <McpToolPermissions
+                                enabledTools={mcpRequestedTools}
+                                onApplied={handleMcpPermissionsApplied}
+                              />
                             </div>
                             {mcpLastError && (
                               <div className="px-4 py-3">
