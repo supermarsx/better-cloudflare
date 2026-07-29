@@ -1619,8 +1619,10 @@ export class StorageManager {
       ? reconcileMcpEnabledToolIdsDetailed(obj.mcpEnabledTools)
       : null;
     const importedHighRiskToolIds = importedMcpSelection
-      ? planMcpPermissionChange([], importedMcpSelection.enabledToolIds)
-          .newlyEnabledHighRiskToolIds
+      ? planMcpPermissionChange(
+          [],
+          importedMcpSelection.enabledToolIds,
+        ).newlyEnabledHighRiskToolIds
       : [];
     const importedHighRiskToolIdSet = new Set(importedHighRiskToolIds);
     this.data = {

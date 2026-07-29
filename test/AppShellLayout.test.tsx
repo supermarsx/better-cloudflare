@@ -188,11 +188,7 @@ test("closing selection prefers the right neighbor, then the previous tab", () =
     "beta",
   );
   assert.equal(
-    getNextActiveTabIdAfterClose(
-      INITIAL_TABS.slice(0, 1),
-      "alpha",
-      "alpha",
-    ),
+    getNextActiveTabIdAfterClose(INITIAL_TABS.slice(0, 1), "alpha", "alpha"),
     null,
   );
   assert.equal(
