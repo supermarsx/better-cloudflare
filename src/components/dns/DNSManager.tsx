@@ -76,7 +76,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
-import { ZoneTopologyTab } from "./ZoneTopologyTab";
+import { TOPOLOGY_MODEL_NODE_LIMIT, ZoneTopologyTab } from "./ZoneTopologyTab";
 import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
 import {
   runDomainAudit,
@@ -382,6 +382,8 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
 const DNS_RECORD_MEMORY_LIMIT = 5_000;
 const DNS_RECORD_RENDER_LIMIT = 200;
 const DNS_API_PAGE_SIZE_LIMIT = 500;
+const DNS_TOPOLOGY_RECORD_LIMIT = TOPOLOGY_MODEL_NODE_LIMIT;
+const DNS_TOPOLOGY_SCAN_PAGE_LIMIT = 200;
 const DNS_EXPORT_PAGE_SIZE = DNS_API_PAGE_SIZE_LIMIT;
 const DNS_EXPORT_PAGE_LIMIT = 10_000;
 const DNS_MIN_PAGE_SIZE = 25;
@@ -438,9 +440,138 @@ type DnsRecordPageLoader = (
   signal?: AbortSignal,
 ) => Promise<DNSRecord[]>;
 
+type DnsTopologyFilter = {
+  searchTerm: string;
+  typeFilter: RecordType | "";
+  getRecordTags?: (record: DNSRecord) => readonly string[];
+};
+
+type DnsTopologyLoadResult =
+  | {
+      status: "ready";
+      records: DNSRecord[];
+      scannedRecordCount: number;
+      pageCount: number;
+    }
+  | {
+      status: "too-large";
+      records: [];
+      scannedRecordCount: number;
+      pageCount: number;
+      matchingRecordCountLowerBound: number;
+    }
+  | {
+      status: "scan-limited";
+      records: [];
+      scannedRecordCount: number;
+      pageCount: number;
+      matchingRecordCountLowerBound: number;
+    };
+
+type DnsTopologyRecordState = {
+  status: "idle" | "loading" | "ready" | "too-large" | "scan-limited" | "error";
+  queryKey: string;
+  records: DNSRecord[];
+  scannedRecordCount: number;
+  pageCount: number;
+  matchingRecordCountLowerBound: number;
+  error: string | null;
+};
+
+const EMPTY_DNS_TOPOLOGY_RECORD_STATE: DnsTopologyRecordState = {
+  status: "idle",
+  queryKey: "",
+  records: [],
+  scannedRecordCount: 0,
+  pageCount: 0,
+  matchingRecordCountLowerBound: 0,
+  error: null,
+};
+
 function throwIfDnsOperationAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   throw new DOMException("DNS operation aborted", "AbortError");
+}
+
+function matchesDnsTopologyFilter(
+  record: DNSRecord,
+  filter: DnsTopologyFilter,
+): boolean {
+  if (filter.typeFilter && record.type !== filter.typeFilter) return false;
+  const query = filter.searchTerm.trim().toLowerCase();
+  if (!query) return true;
+  if (
+    String(record.name ?? "")
+      .toLowerCase()
+      .includes(query) ||
+    String(record.type ?? "")
+      .toLowerCase()
+      .includes(query) ||
+    String(record.content ?? "")
+      .toLowerCase()
+      .includes(query)
+  ) {
+    return true;
+  }
+  return Boolean(
+    filter
+      .getRecordTags?.(record)
+      .some((tag) => tag.toLowerCase().includes(query)),
+  );
+}
+
+/**
+ * Topology loading is independent from table pagination. It retains no more
+ * than the graph's exact model limit and scans a deterministic number of
+ * fixed-size API pages. A full final page is never treated as proof that the
+ * source is complete.
+ */
+async function loadAuthoritativeDnsRecordsForTopology(
+  loadPage: DnsRecordPageLoader,
+  zoneId: string,
+  filter: DnsTopologyFilter,
+  signal?: AbortSignal,
+): Promise<DnsTopologyLoadResult> {
+  const records: DNSRecord[] = [];
+  let scannedRecordCount = 0;
+
+  for (let page = 1; page <= DNS_TOPOLOGY_SCAN_PAGE_LIMIT; page += 1) {
+    throwIfDnsOperationAborted(signal);
+    const batch = await loadPage(zoneId, page, DNS_API_PAGE_SIZE_LIMIT, signal);
+    throwIfDnsOperationAborted(signal);
+    scannedRecordCount += batch.length;
+
+    for (const record of batch) {
+      if (!matchesDnsTopologyFilter(record, filter)) continue;
+      if (records.length === DNS_TOPOLOGY_RECORD_LIMIT) {
+        return {
+          status: "too-large",
+          records: [],
+          scannedRecordCount,
+          pageCount: page,
+          matchingRecordCountLowerBound: DNS_TOPOLOGY_RECORD_LIMIT + 1,
+        };
+      }
+      records.push(record);
+    }
+
+    if (batch.length < DNS_API_PAGE_SIZE_LIMIT) {
+      return {
+        status: "ready",
+        records,
+        scannedRecordCount,
+        pageCount: page,
+      };
+    }
+  }
+
+  return {
+    status: "scan-limited",
+    records: [],
+    scannedRecordCount,
+    pageCount: DNS_TOPOLOGY_SCAN_PAGE_LIMIT,
+    matchingRecordCountLowerBound: records.length,
+  };
 }
 
 /**
@@ -680,11 +811,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
   const exportRequestRef = useRef<AbortController | null>(null);
+  const topologyRequestRef = useRef<{
+    id: number;
+    queryKey: string;
+    controller: AbortController;
+  } | null>(null);
+  const nextTopologyRequestIdRef = useRef(0);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState("");
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [actionTab, setActionTab] = useState<ActionTab>("records");
+  const [topologyRecordState, setTopologyRecordState] =
+    useState<DnsTopologyRecordState>(EMPTY_DNS_TOPOLOGY_RECORD_STATE);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [globalPerPage, setGlobalPerPage] = useState(DNS_DEFAULT_PAGE_SIZE);
@@ -1069,6 +1208,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
+  );
+  const topologySearchTerm =
+    activeTab?.kind === "zone" ? activeTab.searchTerm : "";
+  const topologyTypeFilter =
+    activeTab?.kind === "zone" ? activeTab.typeFilter : "";
+  const topologyQueryKey = useMemo(
+    () =>
+      activeTab?.kind === "zone"
+        ? JSON.stringify([
+            activeTab.zoneId,
+            topologySearchTerm.trim().toLowerCase(),
+            topologyTypeFilter,
+            topologySearchTerm.trim() ? tagsVersion : 0,
+          ])
+        : "",
+    [
+      activeTab?.kind,
+      activeTab?.zoneId,
+      tagsVersion,
+      topologySearchTerm,
+      topologyTypeFilter,
+    ],
   );
   const currentSessionId = useMemo(
     () => storageManager.getCurrentSession() ?? "__default",
@@ -1795,6 +1956,91 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [getDNSRecords, toast, updateTab],
   );
 
+  const loadTopologyRecords = useCallback(
+    async (
+      zoneId: string,
+      queryKey: string,
+      searchTerm: string,
+      typeFilter: RecordType | "",
+    ) => {
+      topologyRequestRef.current?.controller.abort();
+      const controller = new AbortController();
+      const requestId = ++nextTopologyRequestIdRef.current;
+      topologyRequestRef.current = {
+        id: requestId,
+        queryKey,
+        controller,
+      };
+      setTopologyRecordState({
+        status: "loading",
+        queryKey,
+        records: [],
+        scannedRecordCount: 0,
+        pageCount: 0,
+        matchingRecordCountLowerBound: 0,
+        error: null,
+      });
+
+      const isCurrentRequest = () =>
+        !controller.signal.aborted &&
+        topologyRequestRef.current?.id === requestId;
+
+      try {
+        const result = await loadAuthoritativeDnsRecordsForTopology(
+          getDNSRecords,
+          zoneId,
+          {
+            searchTerm,
+            typeFilter,
+            getRecordTags: searchTerm.trim()
+              ? (record) => storageManager.getRecordTags(zoneId, record.id)
+              : undefined,
+          },
+          controller.signal,
+        );
+        if (!isCurrentRequest()) return;
+        setTopologyRecordState({
+          status: result.status,
+          queryKey,
+          records: result.records,
+          scannedRecordCount: result.scannedRecordCount,
+          pageCount: result.pageCount,
+          matchingRecordCountLowerBound:
+            result.status === "ready"
+              ? result.records.length
+              : result.matchingRecordCountLowerBound,
+          error: null,
+        });
+      } catch (error) {
+        if (
+          !isCurrentRequest() ||
+          controller.signal.aborted ||
+          (error as Error).name === "AbortError"
+        ) {
+          return;
+        }
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          "Load authoritative DNS topology records",
+        );
+        setTopologyRecordState({
+          status: "error",
+          queryKey,
+          records: [],
+          scannedRecordCount: 0,
+          pageCount: 0,
+          matchingRecordCountLowerBound: 0,
+          error: diagnostic.message,
+        });
+      } finally {
+        if (topologyRequestRef.current?.id === requestId) {
+          topologyRequestRef.current = null;
+        }
+      }
+    },
+    [getDNSRecords],
+  );
+
   const loadTagManagerRecords = useCallback(
     async (zoneId: string, signal?: AbortSignal) => {
       if (!zoneId) {
@@ -1854,6 +2100,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     () => () => {
       exportRequestRef.current?.abort();
       exportRequestRef.current = null;
+      topologyRequestRef.current?.controller.abort();
+      topologyRequestRef.current = null;
+      nextTopologyRequestIdRef.current += 1;
     },
     [],
   );
@@ -2053,6 +2302,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     activeTab?.perPage,
     activeTab?.kind,
     loadRecords,
+  ]);
+
+  useEffect(() => {
+    if (
+      actionTab !== "topology" ||
+      activeTab?.kind !== "zone" ||
+      !activeTab.zoneId
+    ) {
+      topologyRequestRef.current?.controller.abort();
+      topologyRequestRef.current = null;
+      setTopologyRecordState((previous) =>
+        previous.status === "idle" && previous.queryKey === ""
+          ? previous
+          : EMPTY_DNS_TOPOLOGY_RECORD_STATE,
+      );
+      return;
+    }
+
+    void loadTopologyRecords(
+      activeTab.zoneId,
+      topologyQueryKey,
+      topologySearchTerm,
+      topologyTypeFilter,
+    );
+
+    return () => {
+      const request = topologyRequestRef.current;
+      if (request?.queryKey === topologyQueryKey) {
+        request.controller.abort();
+      }
+    };
+  }, [
+    actionTab,
+    activeTab?.kind,
+    activeTab?.zoneId,
+    loadTopologyRecords,
+    topologyQueryKey,
+    topologySearchTerm,
+    topologyTypeFilter,
   ]);
 
   useEffect(() => {
@@ -4595,6 +4883,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     : undefined;
   const actionHintRaw = ACTION_TABS.find((tab) => tab.id === actionTab)?.hint;
   const actionHint = actionHintRaw ? t(actionHintRaw, actionHintRaw) : "";
+  const currentTopologyRecordState =
+    topologyQueryKey && topologyRecordState.queryKey === topologyQueryKey
+      ? topologyRecordState
+      : EMPTY_DNS_TOPOLOGY_RECORD_STATE;
 
   const toggleSort = useCallback(
     (key: SortKey) => {
@@ -7043,43 +7335,160 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Card>
               )}
               {activeTab.kind === "zone" && actionTab === "topology" && (
-                <ZoneTopologyTab
-                  zoneName={activeTab.zoneName}
-                  records={activeTab.records}
-                  isLoading={activeTab.isLoading}
-                  maxResolutionHops={topologyResolutionMaxHops}
-                  resolverMode={topologyResolverMode}
-                  dnsServer={topologyDnsServer}
-                  customDnsServer={topologyCustomDnsServer}
-                  dohProvider={topologyDohProvider}
-                  dohCustomUrl={topologyDohCustomUrl}
-                  exportConfirmPath={topologyExportConfirmPath}
-                  exportFolderPreset={topologyExportFolderPreset}
-                  exportCustomPath={topologyExportCustomPath}
-                  copyActions={topologyCopyActions}
-                  exportActions={topologyExportActions}
-                  disableAnnotations={topologyDisableAnnotations}
-                  disableFullWindow={topologyDisableFullWindow}
-                  lookupTimeoutMs={topologyLookupTimeoutMs}
-                  disablePtrLookups={topologyDisablePtrLookups}
-                  disableGeoLookups={topologyDisableGeoLookups}
-                  geoProvider={topologyGeoProvider}
-                  scanResolutionChain={topologyScanResolutionChain}
-                  disableServiceDiscovery={topologyDisableServiceDiscovery}
-                  tcpServicePorts={topologyTcpServices
-                    .map((v) => Number(v))
-                    .filter((v) => Number.isFinite(v) && v > 0)}
-                  onRefresh={async () => {
-                    await loadRecords(activeTab);
-                  }}
-                  onEditRecord={(record) => {
-                    setActionTab("records");
-                    updateTab(activeTab.id, (prev) => ({
-                      ...prev,
-                      editingRecord: record.id,
-                    }));
-                  }}
-                />
+                <>
+                  {currentTopologyRecordState.status === "ready" ? (
+                    <div className="space-y-3">
+                      {(topologySearchTerm.trim() || topologyTypeFilter) && (
+                        <div
+                          role="status"
+                          data-testid="dns-topology-source-filter-notice"
+                          className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground"
+                        >
+                          The authoritative topology source is narrowed by the
+                          current Records search/type filters. All{" "}
+                          {currentTopologyRecordState.records.length} matching
+                          records were retained after scanning{" "}
+                          {currentTopologyRecordState.scannedRecordCount} source
+                          records.
+                        </div>
+                      )}
+                      <ZoneTopologyTab
+                        zoneName={activeTab.zoneName}
+                        records={currentTopologyRecordState.records}
+                        isLoading={false}
+                        maxResolutionHops={topologyResolutionMaxHops}
+                        resolverMode={topologyResolverMode}
+                        dnsServer={topologyDnsServer}
+                        customDnsServer={topologyCustomDnsServer}
+                        dohProvider={topologyDohProvider}
+                        dohCustomUrl={topologyDohCustomUrl}
+                        exportConfirmPath={topologyExportConfirmPath}
+                        exportFolderPreset={topologyExportFolderPreset}
+                        exportCustomPath={topologyExportCustomPath}
+                        copyActions={topologyCopyActions}
+                        exportActions={topologyExportActions}
+                        disableAnnotations={topologyDisableAnnotations}
+                        disableFullWindow={topologyDisableFullWindow}
+                        lookupTimeoutMs={topologyLookupTimeoutMs}
+                        disablePtrLookups={topologyDisablePtrLookups}
+                        disableGeoLookups={topologyDisableGeoLookups}
+                        geoProvider={topologyGeoProvider}
+                        scanResolutionChain={topologyScanResolutionChain}
+                        disableServiceDiscovery={
+                          topologyDisableServiceDiscovery
+                        }
+                        tcpServicePorts={topologyTcpServices
+                          .map((v) => Number(v))
+                          .filter((v) => Number.isFinite(v) && v > 0)}
+                        onRefresh={async () => {
+                          await Promise.all([
+                            loadRecords(activeTab),
+                            loadTopologyRecords(
+                              activeTab.zoneId,
+                              topologyQueryKey,
+                              topologySearchTerm,
+                              topologyTypeFilter,
+                            ),
+                          ]);
+                        }}
+                        onEditRecord={(record) => {
+                          setActionTab("records");
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            editingRecord: record.id,
+                          }));
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <Card className="border-border/60 bg-card/70">
+                      <CardHeader>
+                        <CardTitle className="text-lg">Topology</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {(currentTopologyRecordState.status === "idle" ||
+                          currentTopologyRecordState.status === "loading") && (
+                          <div
+                            role="status"
+                            data-testid="dns-topology-record-loading"
+                            className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            Loading the complete bounded topology record set…
+                          </div>
+                        )}
+                        {currentTopologyRecordState.status === "too-large" && (
+                          <div
+                            role="alert"
+                            data-testid="dns-topology-record-limit"
+                            className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100"
+                          >
+                            More than{" "}
+                            {DNS_TOPOLOGY_RECORD_LIMIT.toLocaleString()}{" "}
+                            authoritative DNS records match the current Records
+                            search/type filters. No graph was constructed or
+                            silently truncated. Narrow the search or select a
+                            record type in Records, then reopen Topology.
+                          </div>
+                        )}
+                        {currentTopologyRecordState.status ===
+                          "scan-limited" && (
+                          <div
+                            role="alert"
+                            data-testid="dns-topology-scan-limit"
+                            className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100"
+                          >
+                            The authoritative topology scan reached its{" "}
+                            {(
+                              DNS_TOPOLOGY_SCAN_PAGE_LIMIT *
+                              DNS_API_PAGE_SIZE_LIMIT
+                            ).toLocaleString()}
+                            -record safety bound before completeness could be
+                            proven. No graph was constructed. Narrow the current
+                            Records search/type filters before trying again.
+                          </div>
+                        )}
+                        {currentTopologyRecordState.status === "error" && (
+                          <div
+                            role="alert"
+                            data-testid="dns-topology-record-error"
+                            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                          >
+                            Failed to load authoritative topology records:{" "}
+                            {currentTopologyRecordState.error}
+                          </div>
+                        )}
+                        {(currentTopologyRecordState.status === "too-large" ||
+                          currentTopologyRecordState.status ===
+                            "scan-limited") && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setActionTab("records")}
+                          >
+                            Narrow in Records
+                          </Button>
+                        )}
+                        {currentTopologyRecordState.status === "error" && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                              void loadTopologyRecords(
+                                activeTab.zoneId,
+                                topologyQueryKey,
+                                topologySearchTerm,
+                                topologyTypeFilter,
+                              )
+                            }
+                          >
+                            Retry topology load
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+                </>
               )}
 
               {/* ── New Panels ───────────────────────────────────── */}
@@ -10246,6 +10655,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 DNSManager.clampDnsPageSize = clampDnsPageSize;
 DNSManager.retainDnsRecordsForUi = retainDnsRecordsForUi;
 DNSManager.loadCompleteDnsRecordsForExport = loadCompleteDnsRecordsForExport;
+DNSManager.loadAuthoritativeDnsRecordsForTopology =
+  loadAuthoritativeDnsRecordsForTopology;
 DNSManager.DNS_RECORD_MEMORY_LIMIT = DNS_RECORD_MEMORY_LIMIT;
 DNSManager.DNS_RECORD_RENDER_LIMIT = DNS_RECORD_RENDER_LIMIT;
 DNSManager.DNS_API_PAGE_SIZE_LIMIT = DNS_API_PAGE_SIZE_LIMIT;
+DNSManager.DNS_TOPOLOGY_RECORD_LIMIT = DNS_TOPOLOGY_RECORD_LIMIT;
+DNSManager.DNS_TOPOLOGY_SCAN_PAGE_LIMIT = DNS_TOPOLOGY_SCAN_PAGE_LIMIT;

@@ -25,7 +25,10 @@ const {
   DNS_API_PAGE_SIZE_LIMIT,
   DNS_RECORD_MEMORY_LIMIT,
   DNS_RECORD_RENDER_LIMIT,
+  DNS_TOPOLOGY_RECORD_LIMIT,
+  DNS_TOPOLOGY_SCAN_PAGE_LIMIT,
   clampDnsPageSize,
+  loadAuthoritativeDnsRecordsForTopology,
   loadCompleteDnsRecordsForExport,
   retainDnsRecordsForUi,
 } = DNSManager;
@@ -34,6 +37,11 @@ const originalWindow = (globalThis as { window?: unknown }).window;
 const originalFetch = globalThis.fetch;
 
 function setDesktopWindow(): void {
+  const currentWindow = (globalThis as { window?: unknown }).window;
+  if (currentWindow && typeof currentWindow === "object") {
+    (currentWindow as { __TAURI__?: unknown }).__TAURI__ = {};
+    return;
+  }
   (globalThis as { window?: unknown }).window = { __TAURI__: {} };
 }
 
@@ -95,6 +103,9 @@ afterEach(() => {
   cleanup();
   mock.restoreAll();
   resetRuntimeReportingForTests();
+  if (originalWindow && typeof originalWindow === "object") {
+    delete (originalWindow as { __TAURI__?: unknown }).__TAURI__;
+  }
   (globalThis as { window?: unknown }).window = originalWindow;
   if (originalFetch) {
     globalThis.fetch = originalFetch;
@@ -238,6 +249,194 @@ test("renders at most 200 rows for an exact 5,000-record UI dataset", async () =
   assert.ok(
     requestedPages.filter((page) => page === 1).length <= 2,
     "React development effect replay may restart only the first page",
+  );
+});
+
+test("DNSManager passes an exact 10,000-record authoritative set to topology independently of the table", async () => {
+  setDesktopWindow();
+  const records = Array.from(
+    { length: DNS_TOPOLOGY_RECORD_LIMIT },
+    (_, index) => dnsRecord(index) as TauriDNSRecord,
+  );
+  const requestedPages: number[] = [];
+  mockDnsRuntime(
+    async () => ({
+      last_zone: "large-zone",
+      default_per_page: 50,
+    }),
+    async (tools) => createMcpStatus(tools),
+    {
+      zones: [
+        {
+          id: "large-zone",
+          name: "example.com",
+          status: "active",
+          paused: false,
+          type: "full",
+          development_mode: 0,
+        },
+      ],
+      getDNSRecords: async (
+        _apiKey,
+        _email,
+        _zoneId,
+        page = 1,
+        perPage = DNS_API_PAGE_SIZE_LIMIT,
+      ) => {
+        requestedPages.push(page);
+        const start = (page - 1) * perPage;
+        return records.slice(start, start + perPage);
+      },
+    },
+  );
+
+  const view = render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() =>
+    assert.equal(view.container.querySelectorAll(".ui-table-row").length, 50),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Topology" }));
+
+  await waitFor(
+    () =>
+      assert.match(
+        screen.getByTestId("topology-model-count").textContent ?? "",
+        /all 10000 matching nodes/i,
+      ),
+    { timeout: 10_000 },
+  );
+  assert.equal(
+    view.container.querySelectorAll('[data-testid="topology-graph-node"]')
+      .length,
+    80,
+  );
+  assert.equal(view.container.querySelectorAll(".ui-table-row").length, 0);
+  assert.deepEqual(
+    Array.from(new Set(requestedPages)),
+    Array.from({ length: 21 }, (_, index) => index + 1),
+  );
+});
+
+test("DNSManager refuses a 10,001-record topology without passing a truncated graph", async () => {
+  setDesktopWindow();
+  const records = Array.from(
+    { length: DNS_TOPOLOGY_RECORD_LIMIT + 1 },
+    (_, index) => dnsRecord(index) as TauriDNSRecord,
+  );
+  const requestedPages: number[] = [];
+  mockDnsRuntime(
+    async () => ({
+      last_zone: "large-zone",
+      default_per_page: 50,
+    }),
+    async (tools) => createMcpStatus(tools),
+    {
+      zones: [
+        {
+          id: "large-zone",
+          name: "example.com",
+          status: "active",
+          paused: false,
+          type: "full",
+          development_mode: 0,
+        },
+      ],
+      getDNSRecords: async (
+        _apiKey,
+        _email,
+        _zoneId,
+        page = 1,
+        perPage = DNS_API_PAGE_SIZE_LIMIT,
+      ) => {
+        requestedPages.push(page);
+        const start = (page - 1) * perPage;
+        return records.slice(start, start + perPage);
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Topology" }));
+
+  const refusal = await screen.findByTestId("dns-topology-record-limit");
+  assert.match(refusal.textContent ?? "", /more than 10,000 authoritative/i);
+  assert.match(refusal.textContent ?? "", /no graph was constructed/i);
+  assert.ok(screen.getByRole("button", { name: "Narrow in Records" }));
+  assert.equal(screen.queryByTestId("topology-model-count"), null);
+  assert.deepEqual(
+    Array.from(new Set(requestedPages)),
+    Array.from({ length: 21 }, (_, index) => index + 1),
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Narrow in Records" }));
+  fireEvent.change(screen.getByPlaceholderText("Search records"), {
+    target: { value: "host-1" },
+  });
+  requestedPages.length = 0;
+  fireEvent.click(screen.getByRole("button", { name: "Topology" }));
+
+  await waitFor(
+    () => {
+      assert.match(
+        screen.getByTestId("dns-topology-source-filter-notice").textContent ??
+          "",
+        /all 1112 matching records were retained after scanning 10001 source records/i,
+      );
+      assert.match(
+        screen.getByTestId("topology-model-count").textContent ?? "",
+        /all 1112 matching nodes/i,
+      );
+    },
+    { timeout: 10_000 },
+  );
+  assert.deepEqual(
+    Array.from(new Set(requestedPages)),
+    Array.from({ length: 21 }, (_, index) => index + 1),
+  );
+});
+
+test("authoritative topology loading aborts and never returns a partial retained set", async () => {
+  const controller = new AbortController();
+  await assert.rejects(
+    () =>
+      loadAuthoritativeDnsRecordsForTopology(
+        async () => {
+          controller.abort();
+          return Array.from({ length: DNS_API_PAGE_SIZE_LIMIT }, (_, index) =>
+            dnsRecord(index),
+          );
+        },
+        "large-zone",
+        { searchTerm: "", typeFilter: "" },
+        controller.signal,
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof DOMException);
+      assert.equal(error.name, "AbortError");
+      return true;
+    },
+  );
+});
+
+test("authoritative topology loading stops at its deterministic page scan bound", async () => {
+  const batch = Array.from({ length: DNS_API_PAGE_SIZE_LIMIT }, (_, index) =>
+    dnsRecord(index),
+  );
+  let requestedPages = 0;
+  const result = await loadAuthoritativeDnsRecordsForTopology(
+    async () => {
+      requestedPages += 1;
+      return batch;
+    },
+    "large-zone",
+    { searchTerm: "does-not-match", typeFilter: "" },
+  );
+
+  assert.equal(result.status, "scan-limited");
+  assert.equal(requestedPages, DNS_TOPOLOGY_SCAN_PAGE_LIMIT);
+  assert.equal(result.records.length, 0);
+  assert.equal(
+    result.scannedRecordCount,
+    DNS_TOPOLOGY_SCAN_PAGE_LIMIT * DNS_API_PAGE_SIZE_LIMIT,
   );
 });
 
