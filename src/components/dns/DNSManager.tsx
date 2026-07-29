@@ -1762,34 +1762,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [tabs],
   );
 
-  const closeTab = useCallback(
-    (tabId: string) => {
-      setTabs((prev) => {
-        if (!prev.some((tab) => tab.id === tabId)) return prev;
+  const closeTab = useCallback((tabId: string) => {
+    setTabs((prev) => {
+      if (!prev.some((tab) => tab.id === tabId)) return prev;
 
-        const nextTabs = prev.filter((tab) => tab.id !== tabId);
-        setActiveTabId((currentActiveId) => {
-          const nextActiveId = getNextActiveTabIdAfterClose(
-            prev,
-            currentActiveId,
-            tabId,
-          );
-          if (nextActiveId === currentActiveId) return currentActiveId;
+      const nextTabs = prev.filter((tab) => tab.id !== tabId);
+      setActiveTabId((currentActiveId) => {
+        const nextActiveId = getNextActiveTabIdAfterClose(
+          prev,
+          currentActiveId,
+          tabId,
+        );
+        if (nextActiveId === currentActiveId) return currentActiveId;
 
-          const nextActive = nextTabs.find((tab) => tab.id === nextActiveId);
-          if (nextActive?.kind === "zone") {
-            setSelectedZoneId(nextActive.zoneId);
-            setActionTab("records");
-          } else {
-            setSelectedZoneId("");
-          }
-          return nextActiveId;
-        });
-        return nextTabs;
+        const nextActive = nextTabs.find((tab) => tab.id === nextActiveId);
+        if (nextActive?.kind === "zone") {
+          setSelectedZoneId(nextActive.zoneId);
+          setActionTab("records");
+        } else {
+          setSelectedZoneId("");
+        }
+        return nextActiveId;
       });
-    },
-    [],
-  );
+      return nextTabs;
+    });
+  }, []);
   const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
     const id = `__${kind}`;
     setTabs((prev) => {
@@ -2526,14 +2523,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               ...persistedPermissionSnapshot.pendingHighRiskToolIds,
             ]);
             if (
-              !sameMcpToolIds(
-                confirmedTools,
-                mcpEnabledToolsRef.current,
-              ) ||
-              !sameMcpToolIds(
-                requestedTools,
-                mcpRequestedToolsRef.current,
-              )
+              !sameMcpToolIds(confirmedTools, mcpEnabledToolsRef.current) ||
+              !sameMcpToolIds(requestedTools, mcpRequestedToolsRef.current)
             ) {
               setMcpPermissionsReady(false);
             }
@@ -4883,9 +4874,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     mcpActionError ??
     (rawMcpLastError ? sanitizeRuntimeText(rawMcpLastError) : null);
   const mcpPermissionsInteractive =
-    isDesktop() &&
-    activeTab?.kind === "settings" &&
-    settingsSubtab === "mcp";
+    isDesktop() && activeTab?.kind === "settings" && settingsSubtab === "mcp";
 
   useEffect(() => {
     const portalHost = document.createElement("div");

@@ -996,9 +996,8 @@ export class StorageManager {
     ]);
     const removedToolIds = capMcpPermissionDiagnosticIds([
       ...partition.removedToolIds,
-      ...reconcileMcpEnabledToolIdsDetailed(
-        this.data.mcpRemovedImportedToolIds,
-      ).removedToolIds,
+      ...reconcileMcpEnabledToolIdsDetailed(this.data.mcpRemovedImportedToolIds)
+        .removedToolIds,
     ]);
 
     this.data.mcpEnabledTools = partition.enabledToolIds;
@@ -1619,10 +1618,8 @@ export class StorageManager {
       ? reconcileMcpEnabledToolIdsDetailed(obj.mcpEnabledTools)
       : null;
     const importedHighRiskToolIds = importedMcpSelection
-      ? planMcpPermissionChange(
-          [],
-          importedMcpSelection.enabledToolIds,
-        ).newlyEnabledHighRiskToolIds
+      ? planMcpPermissionChange([], importedMcpSelection.enabledToolIds)
+          .newlyEnabledHighRiskToolIds
       : [];
     const importedHighRiskToolIdSet = new Set(importedHighRiskToolIds);
     this.data = {

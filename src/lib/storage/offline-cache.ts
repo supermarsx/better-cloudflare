@@ -396,10 +396,7 @@ function restoreIfUnchanged(
 }
 
 function cleanupRollbackRestorations(
-  rollback: Pick<
-    PendingCacheRollback,
-    "removedEntries" | "restoredEntryKeys"
-  >,
+  rollback: Pick<PendingCacheRollback, "removedEntries" | "restoredEntryKeys">,
   operation: string,
 ): boolean {
   let cleanupComplete = true;
@@ -474,7 +471,10 @@ function scheduleRollback(): void {
           const indexMatchesRollbackGeneration =
             checkedIndexRaw === rollback.previousIndexRaw ||
             checkedIndexRaw === rollback.attemptedIndexRaw;
-          if (checkedIndexRaw !== undefined && !indexMatchesRollbackGeneration) {
+          if (
+            checkedIndexRaw !== undefined &&
+            !indexMatchesRollbackGeneration
+          ) {
             rollbackFinished = true;
             cleanupComplete = cleanupRollbackRestorations(
               rollback,
@@ -910,10 +910,7 @@ function scheduleContendedCacheReconciliation(): void {
     try {
       reconcileCacheState("Reconcile contended DNS offline cache write");
     } catch (error) {
-      reportCacheFailure(
-        error,
-        "Reconcile contended DNS offline cache write",
-      );
+      reportCacheFailure(error, "Reconcile contended DNS offline cache write");
     }
   }, CACHE_LEASE_MS);
 }

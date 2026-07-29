@@ -22,10 +22,7 @@ test("mounts categorized MCP permissions and removes the legacy flat controls", 
     "DNSManager must keep exactly one permission component instance",
   );
   assert.match(DNS_MANAGER_SOURCE, /createPortal\(\s*<McpToolPermissions/);
-  assert.match(
-    DNS_MANAGER_SOURCE,
-    /interactive=\{mcpPermissionsInteractive\}/,
-  );
+  assert.match(DNS_MANAGER_SOURCE, /interactive=\{mcpPermissionsInteractive\}/);
   assert.match(DNS_MANAGER_SOURCE, /onError=\{handleMcpPermissionsError\}/);
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /applyMcpEnabledTools/);
   assert.doesNotMatch(DNS_MANAGER_SOURCE, /mcpToolCatalog/);
@@ -120,10 +117,7 @@ test("stages persisted, profile, and imported permission requests for reconcilia
     profileApplication,
     /if \(!sameMcpToolIds\(requestedTools, mcpEnabledToolsRef\.current\)\) \{\s*setMcpPermissionsReady\(false\);/,
   );
-  assert.doesNotMatch(
-    profileApplication,
-    /setMcpEnabledTools\(\s*Array\.from/,
-  );
+  assert.doesNotMatch(profileApplication, /setMcpEnabledTools\(\s*Array\.from/);
   assert.match(
     desktopPreferenceImport,
     /\.\.\.persistedPermissionSnapshot\.pendingHighRiskToolIds/,

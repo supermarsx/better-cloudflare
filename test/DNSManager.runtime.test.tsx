@@ -537,8 +537,7 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
   });
   assert.equal(attempts, 2);
   const synchronizationDiagnostics = getRuntimeDiagnostics().filter(
-    (diagnostic) =>
-      diagnostic.label === "Synchronize MCP server preferences",
+    (diagnostic) => diagnostic.label === "Synchronize MCP server preferences",
   );
   assert.equal(synchronizationDiagnostics.length, 1);
   assert.match(synchronizationDiagnostics[0].message, /token=\[redacted\]/);
@@ -715,7 +714,10 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
     name: "Error details",
   });
   assert.match(diagnosticDialog.textContent ?? "", /Diagnostic ID:/);
-  assert.match(diagnosticDialog.textContent ?? "", /Area: Update MCP tool access/);
+  assert.match(
+    diagnosticDialog.textContent ?? "",
+    /Area: Update MCP tool access/,
+  );
   assert.match(
     diagnosticDialog.textContent ?? "",
     /MCP tools failed token=\[redacted\]/,
@@ -727,10 +729,7 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
     }),
   );
   await waitFor(() =>
-    assert.equal(
-      screen.queryByRole("dialog", { name: "Error details" }),
-      null,
-    ),
+    assert.equal(screen.queryByRole("dialog", { name: "Error details" }), null),
   );
   const checkbox = within(accessGroup).getByRole("checkbox", {
     name: /^List zones/,

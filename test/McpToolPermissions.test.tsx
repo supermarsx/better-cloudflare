@@ -220,9 +220,7 @@ test("StrictMode effect replay restores the mounted generation and reconciles on
   const storage = new PermissionStorage();
   const { client, saveCalls } = clientFor(status([]));
 
-  renderInStrictMode(
-    <McpToolPermissions client={client} storage={storage} />,
-  );
+  renderInStrictMode(<McpToolPermissions client={client} storage={storage} />);
   await waitUntilReady();
 
   assert.deepEqual(saveCalls, [[]]);
@@ -268,9 +266,7 @@ test("StrictMode and 96 controlled updates coalesce one deferred load and apply 
       index === 95
         ? ["cf_get_zone_analytics", "unknown_latest_controlled_tool"]
         : [
-            index % 2 === 0
-              ? "cf_list_zones"
-              : "cf_list_dns_records",
+            index % 2 === 0 ? "cf_list_zones" : "cf_list_dns_records",
             `unknown_stale_controlled_${String(index).padStart(3, "0")}`,
           ];
     rendered.rerender(
@@ -385,9 +381,7 @@ for (const [label, permissionPolicyVersion] of [
     assert.ok(within(confirmation).getByText(/Create DNS record/));
     assert.deepEqual(saveCalls, [["cf_list_zones"]]);
     assert.deepEqual(storage.current, ["cf_list_zones"]);
-    assert.deepEqual(storage.pendingHighRiskToolIds, [
-      "cf_create_dns_record",
-    ]);
+    assert.deepEqual(storage.pendingHighRiskToolIds, ["cf_create_dns_record"]);
     assert.equal(
       storage.permissionPolicyVersion,
       MCP_PERMISSION_POLICY_VERSION,
@@ -611,9 +605,7 @@ test("every newly enabled write tool requires confirmation and cancel changes no
   );
   await waitUntilReady();
   assert.deepEqual(saveCalls, [[]]);
-  const surrounding = screen.getByTestId(
-    "mcp-permission-surrounding-content",
-  );
+  const surrounding = screen.getByTestId("mcp-permission-surrounding-content");
 
   const checkbox = screen.getByRole("checkbox", {
     name: /^Create DNS record/,
@@ -664,9 +656,7 @@ test("confirmation modal traps focus, Escape cancels, and restores the trigger",
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
-  const surrounding = screen.getByTestId(
-    "mcp-permission-surrounding-content",
-  );
+  const surrounding = screen.getByTestId("mcp-permission-surrounding-content");
 
   const trigger = screen.getByRole("checkbox", {
     name: /^Delete DNS record/,
@@ -700,9 +690,7 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
   );
   await waitUntilReady();
 
-  const surrounding = screen.getByTestId(
-    "mcp-permission-surrounding-content",
-  );
+  const surrounding = screen.getByTestId("mcp-permission-surrounding-content");
   const search = screen.getByRole("searchbox", { name: "Search tools" });
   const dnsGroup = screen.getByRole("group", { name: /DNS records/ });
   const selectVisible = within(dnsGroup).getByRole("button", {
@@ -751,9 +739,7 @@ test("modal isolation restores the exact surrounding DOM state on unmount", asyn
     <McpToolPermissions client={client} storage={new PermissionStorage()} />,
   );
   await waitUntilReady();
-  const surrounding = screen.getByTestId(
-    "mcp-permission-surrounding-content",
-  );
+  const surrounding = screen.getByTestId("mcp-permission-surrounding-content");
 
   fireEvent.click(screen.getByRole("checkbox", { name: /^Create DNS record/ }));
   await screen.findByRole("alertdialog");
@@ -1182,9 +1168,7 @@ test("the latest controlled request supersedes a stale high-risk confirmation", 
     />,
   );
   await waitUntilReady();
-  const surrounding = screen.getByTestId(
-    "mcp-permission-surrounding-content",
-  );
+  const surrounding = screen.getByTestId("mcp-permission-surrounding-content");
 
   rerender(
     <McpToolPermissions
@@ -1256,9 +1240,7 @@ test("a confirmed-safe profile clears superseded staged permissions before resta
   );
   assert.ok(await screen.findByRole("alertdialog"));
   assert.deepEqual(saveCalls, [[], ["cf_list_zones"]]);
-  assert.deepEqual(storage.pendingHighRiskToolIds, [
-    "cf_create_dns_record",
-  ]);
+  assert.deepEqual(storage.pendingHighRiskToolIds, ["cf_create_dns_record"]);
 
   rerender(
     <McpToolPermissions
@@ -1282,10 +1264,7 @@ test("a confirmed-safe profile clears superseded staged permissions before resta
   unmount();
   const restartedClient = clientFor(status(["cf_list_zones"]));
   render(
-    <McpToolPermissions
-      client={restartedClient.client}
-      storage={storage}
-    />,
+    <McpToolPermissions client={restartedClient.client} storage={storage} />,
   );
   await waitUntilReady();
 
@@ -1354,9 +1333,7 @@ test("cancelling high-risk C after in-flight B completes reasserts the last conf
   assert.equal(screen.getByRole("alertdialog"), confirmation);
   assert.equal(saveCalls.length, 2);
 
-  fireEvent.click(
-    within(confirmation).getByRole("button", { name: "Cancel" }),
-  );
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Cancel" }));
   await waitFor(() => assert.equal(saveCalls.length, 3));
   assert.deepEqual(saveCalls, [[], ["cf_list_zones"], []]);
   assert.deepEqual(storage.current, []);
@@ -1394,7 +1371,9 @@ test("a hanging save retains only the latest of many controlled updates", async 
       if (saves === 1) return status([]);
       if (saves === 2) return hangingSave.promise;
       if (saves === 3) return latestSave.promise;
-      throw new Error("latest-wins scheduler retained more than one queued save");
+      throw new Error(
+        "latest-wins scheduler retained more than one queued save",
+      );
     },
   };
   const onApplied = (enabledTools: string[]) => {
@@ -1423,9 +1402,7 @@ test("a hanging save retains only the latest of many controlled updates", async 
   let latestControlledSelection = ["cf_list_dns_records"];
   for (let index = 0; index < 96; index += 1) {
     latestControlledSelection =
-      index % 2 === 0
-        ? ["cf_list_dns_records"]
-        : ["cf_get_zone_analytics"];
+      index % 2 === 0 ? ["cf_list_dns_records"] : ["cf_get_zone_analytics"];
     rerender(
       <McpToolPermissions
         client={client}

@@ -141,9 +141,7 @@ const RISK_LABELS = {
   admin: "Administrative",
 } as const;
 
-const REVIEWED_MCP_TOOL_IDS = new Set(
-  MCP_TOOL_FALLBACKS.map(({ id }) => id),
-);
+const REVIEWED_MCP_TOOL_IDS = new Set(MCP_TOOL_FALLBACKS.map(({ id }) => id));
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -247,9 +245,8 @@ function resolveCatalog(status: McpServerStatus): ResolvedMcpTool[] {
 }
 
 function authoritativeStatusSelection(status: McpServerStatus) {
-  const candidates: ReturnType<
-    typeof reconcileMcpEnabledToolIdsDetailed
-  >[] = [];
+  const candidates: ReturnType<typeof reconcileMcpEnabledToolIdsDetailed>[] =
+    [];
 
   if (Array.isArray(status.enabledTools)) {
     candidates.push(reconcileMcpEnabledToolIdsDetailed(status.enabledTools));
@@ -275,8 +272,8 @@ function authoritativeStatusSelection(status: McpServerStatus) {
 
   const first = candidates[0];
   if (!first) return null;
-  const sameSelection = candidates.every(
-    (candidate) => sameToolIds(candidate.enabledToolIds, first.enabledToolIds),
+  const sameSelection = candidates.every((candidate) =>
+    sameToolIds(candidate.enabledToolIds, first.enabledToolIds),
   );
   if (!sameSelection) return null;
   return {
@@ -361,10 +358,7 @@ function releaseModalIsolation(element: HTMLElement, owner: symbol): void {
   if (state.owners.size > 0) return;
 
   const inertTarget = element as HTMLElement & { inert?: boolean };
-  if (
-    state.supportsInertProperty &&
-    typeof state.inertProperty === "boolean"
-  ) {
+  if (state.supportsInertProperty && typeof state.inertProperty === "boolean") {
     inertTarget.inert = state.inertProperty;
   }
   if (state.inertAttribute === null) element.removeAttribute("inert");
@@ -441,15 +435,18 @@ export function McpToolPermissions({
   const mountedRef = React.useRef(true);
   const mountCleanupEpochRef = React.useRef(0);
   const generationRef = React.useRef(0);
-  const inFlightClientLoadRef =
-    React.useRef<Promise<McpServerStatus> | null>(null);
+  const inFlightClientLoadRef = React.useRef<Promise<McpServerStatus> | null>(
+    null,
+  );
   const inFlightServerSaveRef = React.useRef<ScheduledServerSave | null>(null);
   const latestQueuedServerSaveRef = React.useRef<ScheduledServerSave | null>(
     null,
   );
   const drainServerSaveQueueRef = React.useRef<() => void>(() => {});
   const lastControlledRequestRef = React.useRef<string | null>(
-    controlledSelection === null ? null : reconciliationKey(controlledSelection),
+    controlledSelection === null
+      ? null
+      : reconciliationKey(controlledSelection),
   );
   const observedControlledRequestRef = React.useRef<string | null>(
     lastControlledRequestRef.current,
@@ -600,10 +597,7 @@ export function McpToolPermissions({
   }, [onError]);
 
   const reportFailure = React.useCallback(
-    (
-      error: unknown,
-      operation: McpToolPermissionsFailure["operation"],
-    ) => {
+    (error: unknown, operation: McpToolPermissionsFailure["operation"]) => {
       try {
         onErrorRef.current?.(error, { operation });
       } catch {
@@ -1059,7 +1053,13 @@ export function McpToolPermissions({
 
     const isolationOwner = Symbol("mcp-permission-modal");
     const isolatedElements = new Set<HTMLElement>();
-    const ignoredTags = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT"]);
+    const ignoredTags = new Set([
+      "SCRIPT",
+      "STYLE",
+      "LINK",
+      "META",
+      "NOSCRIPT",
+    ]);
     const isolateApplicationSibling = (element: Element) => {
       if (
         !(element instanceof HTMLElement) ||
@@ -1309,12 +1309,7 @@ export function McpToolPermissions({
         loadState === "ready" &&
         requested !== null &&
         sameToolIds(requested.enabledToolIds, appliedToolsRef.current);
-      closeConfirmation(
-        false,
-        false,
-        supersededByAppliedSelection,
-        false,
-      );
+      closeConfirmation(false, false, supersededByAppliedSelection, false);
     }
 
     if (loadState !== "ready" || requested === null) {
@@ -1658,10 +1653,7 @@ export function McpToolPermissions({
                 if (event.shiftKey && document.activeElement === first) {
                   event.preventDefault();
                   last?.focus();
-                } else if (
-                  !event.shiftKey &&
-                  document.activeElement === last
-                ) {
+                } else if (!event.shiftKey && document.activeElement === last) {
                   event.preventDefault();
                   first.focus();
                 }
