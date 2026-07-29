@@ -19,6 +19,7 @@ import {
 import type { DNSRecord } from "../src/types/dns";
 import {
   getRuntimeDiagnostics,
+  reportRuntimeError,
   resetRuntimeReportingForTests,
 } from "../src/lib/errors/runtime-reporting";
 import { storageManager } from "../src/lib/storage/storage";
@@ -706,11 +707,30 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   await waitFor(() =>
     assert.equal(selectVisible.hasAttribute("disabled"), false),
   );
+
+  const bootstrapReport = reportRuntimeError(
+    new Error("MCP tools failed token=hidden-tool-secret"),
+    {
+      source: "runtime",
+      label: "Synchronize MCP server preferences",
+    },
+  );
+  const bootstrapMessage = await screen.findByText(
+    "MCP tools failed token=[redacted]",
+  );
+  const bootstrapToast = bootstrapMessage.closest('[data-state="open"]');
+  assert.ok(bootstrapToast, "the bootstrap diagnostic owns an open toast");
   for (const closeButton of document.querySelectorAll<HTMLElement>(
     "[toast-close]",
   )) {
     fireEvent.click(closeButton);
   }
+  await waitFor(() =>
+    assert.equal(
+      document.querySelector('[data-state="open"] [toast-close]'),
+      null,
+    ),
+  );
   rejectToolMutation = true;
   fireEvent.click(selectVisible);
 
@@ -721,6 +741,14 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
     screen.getAllByText("MCP tools failed token=[redacted]").length,
     1,
   );
+  const mutationDiagnostic = getRuntimeDiagnostics().find(
+    (diagnostic) =>
+      diagnostic.label === "Update MCP tool access" &&
+      diagnostic.message === "MCP tools failed token=[redacted]",
+  );
+  assert.ok(mutationDiagnostic, "the rejected mutation emits a diagnostic");
+  assert.notEqual(mutationDiagnostic.id, bootstrapReport.diagnostic.id);
+  assert.doesNotMatch(mutationDiagnostic.message, /hidden-tool-secret/);
   assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
   const mutationToast = mutationMessage.closest('[data-state="open"]');
   assert.ok(

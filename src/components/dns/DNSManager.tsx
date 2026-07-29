@@ -2164,10 +2164,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         failure.operation === "bootstrap"
           ? "Synchronize MCP server preferences"
           : "Update MCP tool access";
-      const report = reportRuntimeError(error, { source: "runtime", label });
+      const report = reportRuntimeError(error, {
+        source: "runtime",
+        label,
+        ...(failure.operation === "update"
+          ? { deduplicate: false, notifyListeners: false }
+          : {}),
+      });
       const diagnostic = report.diagnostic;
       setMcpActionError(diagnostic.message);
-      if (!report.duplicate) {
+      if (failure.operation === "update" || !report.duplicate) {
         toast({
           title: label,
           description: diagnostic.message,

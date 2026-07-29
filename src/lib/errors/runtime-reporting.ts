@@ -16,6 +16,16 @@ export interface RuntimeErrorContext {
   source?: RuntimeErrorSource;
   label?: string;
   componentStack?: string;
+  /**
+   * Some user actions must remain individually traceable even when they
+   * repeat a recently reported bootstrap failure.
+   */
+  deduplicate?: boolean;
+  /**
+   * Allow a caller that owns the user-facing toast to record a diagnostic
+   * without also producing a second global toast.
+   */
+  notifyListeners?: boolean;
 }
 
 export interface RuntimeDiagnostic {
@@ -472,7 +482,11 @@ export function reportRuntimeError(
   pruneExpiredFingerprints(now);
   const recent = recentByFingerprint.get(candidate.fingerprint);
 
-  if (recent && now - recent.lastSeen <= DEDUPLICATION_WINDOW_MS) {
+  if (
+    context.deduplicate !== false &&
+    recent &&
+    now - recent.lastSeen <= DEDUPLICATION_WINDOW_MS
+  ) {
     recent.lastSeen = now;
     recent.diagnostic.occurrences = Math.min(
       recent.diagnostic.occurrences + 1,
@@ -495,7 +509,7 @@ export function reportRuntimeError(
   }
   enforceFingerprintCapacity();
 
-  if (!dispatching) {
+  if (context.notifyListeners !== false && !dispatching) {
     dispatching = true;
     try {
       for (const listener of listeners) {
