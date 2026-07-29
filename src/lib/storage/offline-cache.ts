@@ -34,16 +34,6 @@ interface CacheIndexSnapshot {
   valid: boolean;
 }
 
-interface CacheStateInspection {
-  index: CacheIndexSnapshot;
-  retained: IndexedCacheEntry[];
-  purgeCandidates: Array<{
-    key: string;
-    expectedRaw: string;
-  }>;
-  scanStable: boolean;
-}
-
 interface CacheLease {
   owner: string;
   token: string;
@@ -52,6 +42,22 @@ interface CacheLease {
 
 interface PreparedIndexWrite {
   raw: string | null;
+}
+
+interface CacheRecoveryState {
+  index: CacheIndexSnapshot;
+  storedKeyCount: number;
+  cursor: number;
+  candidates: Map<string, IndexedCacheEntry>;
+  invalidEntryOperation: string;
+}
+
+interface PendingCacheRollback {
+  previousIndexRaw: string | null;
+  attemptedIndexRaw: string | null;
+  removedEntries: IndexedCacheEntry[];
+  incomingKey: string;
+  incomingRaw: string;
 }
 
 const CACHE_KEY_PREFIX = "bc_offline_cache_";
@@ -65,6 +71,11 @@ const RESERVED_CACHE_KEYS = new Set([CACHE_INDEX_KEY, CACHE_COORDINATION_KEY]);
 
 let ownerSequence = 0;
 let mutationSequence = 0;
+let completedCacheState: IndexedCacheEntry[] | undefined;
+let recoveryState: CacheRecoveryState | undefined;
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingRollback: PendingCacheRollback | undefined;
+let rollbackTimer: ReturnType<typeof setTimeout> | undefined;
 
 function randomToken(): string {
   const randomUuid = globalThis.crypto?.randomUUID;
@@ -81,6 +92,10 @@ const CACHE_OWNER_ID = randomToken();
 
 class OfflineCacheLimitError extends Error {
   readonly name = "OfflineCacheLimitError";
+}
+
+class OfflineCacheRecoveryPendingError extends Error {
+  readonly name = "OfflineCacheRecoveryPendingError";
 }
 
 function storageErrorName(error: unknown): string {
@@ -337,18 +352,63 @@ function restoreStoredValue(key: string, previous: string | null): void {
   }
 }
 
-function tryRestoreIfUnchanged(
+function restoreIfUnchanged(
   key: string,
   expectedCurrent: string | null,
   previous: string | null,
   operation: string,
-): void {
+): "restored" | "already-restored" | "changed" | "failed" {
   try {
-    if (localStorage.getItem(key) !== expectedCurrent) return;
+    const current = localStorage.getItem(key);
+    if (current === previous) return "already-restored";
+    if (current !== expectedCurrent) return "changed";
     restoreStoredValue(key, previous);
+    return localStorage.getItem(key) === previous ? "restored" : "failed";
   } catch (error) {
     reportCacheFailure(error, operation);
+    return "failed";
   }
+}
+
+function scheduleRollback(): void {
+  if (rollbackTimer !== undefined || !pendingRollback) return;
+  rollbackTimer = setTimeout(() => {
+    rollbackTimer = undefined;
+    const rollback = pendingRollback;
+    if (!rollback) return;
+    const indexResult = restoreIfUnchanged(
+      CACHE_INDEX_KEY,
+      rollback.attemptedIndexRaw,
+      rollback.previousIndexRaw,
+      "Retry DNS offline cache index rollback",
+    );
+    let entriesRestored = true;
+    for (const entry of rollback.removedEntries) {
+      const result = restoreIfUnchanged(
+        entry.key,
+        null,
+        entry.raw,
+        "Retry removed DNS offline cache entry rollback",
+      );
+      entriesRestored &&= result !== "failed";
+    }
+    if (indexResult !== "failed" && entriesRestored) {
+      if (indexResult !== "changed") {
+        restoreIfUnchanged(
+          rollback.incomingKey,
+          rollback.incomingRaw,
+          null,
+          "Retry incoming DNS offline cache entry rollback",
+        );
+      }
+      pendingRollback = undefined;
+      completedCacheState = undefined;
+      recoveryState = undefined;
+      tryReconcileAfterFailure("Reconcile retried DNS offline cache rollback");
+      return;
+    }
+    scheduleRollback();
+  }, 0);
 }
 
 function parseCacheLease(raw: string | null): CacheLease | undefined {
@@ -425,70 +485,6 @@ function releaseCacheLease(lease: CacheLease | undefined): void {
   }
 }
 
-function scanOwnedCacheKeys(): {
-  keys: string[];
-  stable: boolean;
-  observedLength: number;
-} {
-  const keys = new Set<string>();
-  let stable = true;
-  let previousLength = localStorage.length;
-
-  for (
-    let pass = 0;
-    pass < RESOURCE_LIMITS.offlineCache.discoveryPassesHard;
-    pass += 1
-  ) {
-    const storedKeyCount = localStorage.length;
-    const scanForward = pass % 2 === 0;
-    for (
-      let batchStart = 0;
-      batchStart < storedKeyCount;
-      batchStart += RESOURCE_LIMITS.offlineCache.discoveryBatchKeys
-    ) {
-      const batchEnd = Math.min(
-        storedKeyCount,
-        batchStart + RESOURCE_LIMITS.offlineCache.discoveryBatchKeys,
-      );
-      for (let offset = batchStart; offset < batchEnd; offset += 1) {
-        const index = scanForward ? offset : storedKeyCount - offset - 1;
-        const key = localStorage.key(index);
-        if (!key || !isOwnedCacheEntryKey(key) || keys.has(key)) {
-          continue;
-        }
-        if (
-          keys.size >= RESOURCE_LIMITS.offlineCache.recoveryOwnedEntriesHard
-        ) {
-          localStorage.removeItem(key);
-          stable = false;
-          continue;
-        }
-        keys.add(key);
-      }
-    }
-    const nextLength = localStorage.length;
-    if (nextLength !== storedKeyCount || storedKeyCount !== previousLength) {
-      stable = false;
-    }
-    previousLength = nextLength;
-  }
-
-  return {
-    keys: [...keys].sort((left, right) => {
-      const leftMutation = mutationTokenFromCacheKey(left);
-      const rightMutation = mutationTokenFromCacheKey(right);
-      if (leftMutation && rightMutation) {
-        return rightMutation.localeCompare(leftMutation);
-      }
-      if (leftMutation) return -1;
-      if (rightMutation) return 1;
-      return left.localeCompare(right);
-    }),
-    stable,
-    observedLength: localStorage.length,
-  };
-}
-
 function exceedsCacheLimit(entryCount: number, bytes: number): boolean {
   return (
     entryCount > RESOURCE_LIMITS.offlineCache.hardEntries ||
@@ -541,118 +537,111 @@ function isNewerCacheEntry(
   );
 }
 
-function inspectCacheState(
-  invalidEntryOperation: string,
-): CacheStateInspection {
-  const indexBefore = readCacheIndex();
-  const scan = scanOwnedCacheKeys();
-  const entries = new Map<string, IndexedCacheEntry>();
-  const purgeCandidates: CacheStateInspection["purgeCandidates"] = [];
-  let inspectedCharacters = 0;
+function removeEntryIfUnchanged(entry: IndexedCacheEntry): void {
+  if (localStorage.getItem(entry.key) === entry.raw) {
+    localStorage.removeItem(entry.key);
+  }
+}
 
-  for (const key of scan.keys) {
+function retainRecoveryCandidate(
+  state: CacheRecoveryState,
+  entry: IndexedCacheEntry,
+): void {
+  const existing = state.candidates.get(entry.zoneId);
+  if (existing) {
+    if (isNewerCacheEntry(entry, existing)) {
+      removeEntryIfUnchanged(existing);
+      state.candidates.set(entry.zoneId, entry);
+    } else {
+      removeEntryIfUnchanged(entry);
+    }
+    return;
+  }
+  state.candidates.set(entry.zoneId, entry);
+  if (state.candidates.size <= RESOURCE_LIMITS.offlineCache.hardEntries) return;
+
+  let oldest: IndexedCacheEntry | undefined;
+  for (const candidate of state.candidates.values()) {
+    if (!oldest || isNewerCacheEntry(oldest, candidate)) oldest = candidate;
+  }
+  if (oldest) {
+    state.candidates.delete(oldest.zoneId);
+    removeEntryIfUnchanged(oldest);
+  }
+}
+
+function scheduleRecovery(): void {
+  if (recoveryTimer !== undefined) return;
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = undefined;
+    try {
+      continueRecovery();
+    } catch (error) {
+      reportCacheFailure(error, "Recover DNS offline cache");
+      scheduleRecovery();
+    }
+  }, 0);
+}
+
+function continueRecovery(): IndexedCacheEntry[] | undefined {
+  const state = recoveryState;
+  if (!state) return completedCacheState;
+  let budget = RESOURCE_LIMITS.offlineCache.discoveryBatchKeys;
+  while (state.cursor > 0 && budget > 0) {
+    state.cursor -= 1;
+    budget -= 1;
+    const key = localStorage.key(state.cursor);
+    if (!key || !isOwnedCacheEntryKey(key)) continue;
     const raw = localStorage.getItem(key);
     if (raw === null) continue;
-    if (
-      raw.length >
-      RESOURCE_LIMITS.offlineCache.recoveryInspectionCharactersHard -
-        inspectedCharacters
-    ) {
-      purgeCandidates.push({ key, expectedRaw: raw });
-      continue;
-    }
-    inspectedCharacters += raw.length;
     try {
-      const entry = parseCacheEntry(key, raw);
-      const existing = entries.get(entry.zoneId);
-      if (!existing || isNewerCacheEntry(entry, existing)) {
-        if (existing) {
-          purgeCandidates.push({
-            key: existing.key,
-            expectedRaw: existing.raw,
-          });
-        }
-        entries.set(entry.zoneId, entry);
-      } else {
-        purgeCandidates.push({ key: entry.key, expectedRaw: entry.raw });
-      }
+      retainRecoveryCandidate(state, parseCacheEntry(key, raw));
     } catch (error) {
       reportCacheFailure(
         error,
-        invalidEntryOperation,
+        state.invalidEntryOperation,
         error instanceof SyntaxError,
       );
-      purgeCandidates.push({ key, expectedRaw: raw });
+      if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
     }
   }
-
-  const ordered: IndexedCacheEntry[] = [];
-  for (const zoneId of indexBefore.zoneIds) {
-    const entry = entries.get(zoneId);
-    if (!entry) continue;
-    ordered.push(entry);
-    entries.delete(zoneId);
+  if (state.cursor > 0) {
+    scheduleRecovery();
+    return undefined;
   }
-  const recovered = [...entries.values()].sort(
-    (left, right) =>
-      left.value.cachedAt - right.value.cachedAt ||
-      left.zoneId.localeCompare(right.zoneId),
-  );
-  ordered.push(...recovered);
 
+  const ordered = [...state.candidates.values()]
+    .filter((entry) => localStorage.getItem(entry.key) === entry.raw)
+    .sort(
+      (left, right) =>
+        left.value.cachedAt - right.value.cachedAt ||
+        left.zoneId.localeCompare(right.zoneId),
+    );
   const { retained, evicted } = entriesWithinLimits(ordered);
-  purgeCandidates.push(
-    ...evicted.map((entry) => ({
-      key: entry.key,
-      expectedRaw: entry.raw,
-    })),
+  for (const entry of evicted) removeEntryIfUnchanged(entry);
+  const indexWrite = prepareCacheIndex(
+    retained.map((entry) => entry.zoneId),
+    state.index.revision,
   );
-
-  const indexAfterRaw = localStorage.getItem(CACHE_INDEX_KEY);
-  return {
-    index: indexBefore,
-    retained,
-    purgeCandidates,
-    scanStable:
-      scan.stable &&
-      indexAfterRaw === indexBefore.raw &&
-      localStorage.length === scan.observedLength,
-  };
-}
-
-function inspectionIsNormalized(inspection: CacheStateInspection): boolean {
-  const normalizedIndex = inspection.retained.map((entry) => entry.zoneId);
-  return (
-    inspection.scanStable &&
-    inspection.purgeCandidates.length === 0 &&
-    inspection.index.valid &&
-    inspection.index.modern &&
-    sameIndex(inspection.index.zoneIds, normalizedIndex) &&
-    (normalizedIndex.length > 0 || inspection.index.raw === null) &&
-    inspection.retained.every(
-      (entry) => localStorage.getItem(entry.key) === entry.raw,
-    )
-  );
-}
-
-function commitInspection(inspection: CacheStateInspection): void {
-  const uniqueCandidates = new Map(
-    inspection.purgeCandidates.map((candidate) => [
-      candidate.key,
-      candidate.expectedRaw,
-    ]),
-  );
-  for (const [key, expectedRaw] of uniqueCandidates) {
-    if (localStorage.getItem(key) === expectedRaw) {
-      localStorage.removeItem(key);
-    }
+  if (localStorage.getItem(CACHE_INDEX_KEY) !== state.index.raw) {
+    recoveryState = undefined;
+    completedCacheState = undefined;
+    return undefined;
   }
-  applyPreparedIndex(
-    prepareCacheIndex(
-      inspection.retained.map((entry) => entry.zoneId),
-      inspection.index.revision,
-    ),
-  );
+  if (
+    !state.index.valid ||
+    !state.index.modern ||
+    !sameIndex(
+      state.index.zoneIds,
+      retained.map((entry) => entry.zoneId),
+    ) ||
+    (retained.length === 0 && state.index.raw !== null)
+  ) {
+    applyPreparedIndex(indexWrite);
+  }
+  completedCacheState = retained;
+  recoveryState = undefined;
+  return retained;
 }
 
 function reconcileCacheState(
@@ -661,22 +650,19 @@ function reconcileCacheState(
 ): IndexedCacheEntry[] {
   const lease = coordinate ? tryAcquireCacheLease() : undefined;
   try {
-    for (
-      let pass = 0;
-      pass < RESOURCE_LIMITS.offlineCache.reconciliationPassesHard;
-      pass += 1
-    ) {
-      const inspection = inspectCacheState(invalidEntryOperation);
-      if (inspectionIsNormalized(inspection)) return inspection.retained;
-      commitInspection(inspection);
+    if (!recoveryState) {
+      recoveryState = {
+        index: readCacheIndex(),
+        storedKeyCount: localStorage.length,
+        cursor: localStorage.length,
+        candidates: new Map(),
+        invalidEntryOperation,
+      };
     }
-
-    const finalInspection = inspectCacheState(invalidEntryOperation);
-    if (inspectionIsNormalized(finalInspection)) {
-      return finalInspection.retained;
-    }
-    throw new OfflineCacheLimitError(
-      "DNS offline cache did not stabilize within its reconciliation limit.",
+    const recovered = continueRecovery();
+    if (recovered) return recovered;
+    throw new OfflineCacheRecoveryPendingError(
+      "DNS offline cache recovery will resume in a later task.",
     );
   } finally {
     releaseCacheLease(lease);
@@ -777,27 +763,43 @@ function persistCacheEntry(
       }
       applyPreparedIndex(indexWrite);
     } catch (error) {
-      tryRestoreIfUnchanged(
+      const indexRestored = restoreIfUnchanged(
         CACHE_INDEX_KEY,
         indexWrite.raw,
         previousIndexRaw,
         "Roll back DNS offline cache index",
       );
+      let entriesRestored = true;
       for (const removedEntry of attemptedRemovals) {
-        tryRestoreIfUnchanged(
+        const result = restoreIfUnchanged(
           removedEntry.key,
           null,
           removedEntry.raw,
           "Roll back removed DNS offline cache entry",
         );
+        entriesRestored &&= result !== "failed";
       }
-      tryRestoreIfUnchanged(
-        key,
-        serialized,
-        null,
-        "Roll back DNS offline cache entry",
-      );
-      tryReconcileAfterFailure("Reconcile failed DNS offline cache write");
+      if (indexRestored === "failed" || !entriesRestored) {
+        pendingRollback = {
+          previousIndexRaw,
+          attemptedIndexRaw: indexWrite.raw,
+          removedEntries: attemptedRemovals.slice(
+            0,
+            RESOURCE_LIMITS.offlineCache.hardEntries,
+          ),
+          incomingKey: key,
+          incomingRaw: serialized,
+        };
+        scheduleRollback();
+      } else {
+        restoreIfUnchanged(
+          key,
+          serialized,
+          null,
+          "Roll back DNS offline cache entry",
+        );
+        tryReconcileAfterFailure("Reconcile failed DNS offline cache write");
+      }
       throw error;
     }
   } finally {
@@ -910,14 +912,14 @@ export function removeCachedZone(zoneId: string): void {
       }
       applyPreparedIndex(indexWrite);
     } catch (error) {
-      tryRestoreIfUnchanged(
+      restoreIfUnchanged(
         CACHE_INDEX_KEY,
         indexWrite.raw,
         previousIndexRaw,
         "Roll back removed DNS offline cache index",
       );
       for (const removedEntry of attemptedRemovals) {
-        tryRestoreIfUnchanged(
+        restoreIfUnchanged(
           removedEntry.key,
           null,
           removedEntry.raw,
@@ -975,6 +977,13 @@ function clearOwnedCacheKeysPass(): {
  * Clear all keys owned by the offline cache.
  */
 export function clearOfflineCache(): void {
+  if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+  if (rollbackTimer !== undefined) clearTimeout(rollbackTimer);
+  recoveryTimer = undefined;
+  rollbackTimer = undefined;
+  recoveryState = undefined;
+  completedCacheState = undefined;
+  pendingRollback = undefined;
   const lease = tryAcquireCacheLease();
   try {
     let firstError: unknown;

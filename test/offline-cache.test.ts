@@ -87,6 +87,17 @@ function namedStorageError(name: string, message: string): Error {
   return error;
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  attempts = 100,
+): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail("condition was not reached within the deterministic task budget");
+}
+
 function failNextSetAfterWriting(targetKey: string): () => void {
   const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
   const originalSetItem = storagePrototype.setItem;
@@ -351,7 +362,7 @@ test("immutable entry versions survive a concurrent replacement during stale evi
   assert.deepEqual(ownedEntryZoneIds(), [...index].sort());
 });
 
-test("recovery and clear discover owned keys after 650 unrelated origin keys", () => {
+test("recovery yields between bounded batches and resumes past 650 unrelated keys", async () => {
   const unrelatedKeys = Array.from(
     { length: 650 },
     (_, index) => `unrelated-${index.toString().padStart(4, "0")}`,
@@ -367,10 +378,12 @@ test("recovery and clear discover owned keys after 650 unrelated origin keys", (
   );
 
   try {
-    assert.deepEqual(getCacheIndex(), [
-      "after-unrelated-a",
-      "after-unrelated-b",
-    ]);
+    assert.deepEqual(getCacheIndex(), []);
+    await waitFor(
+      () =>
+        JSON.stringify(getCacheIndex()) ===
+        JSON.stringify(["after-unrelated-a", "after-unrelated-b"]),
+    );
     assert.deepEqual(rawIndexZoneIds(), [
       "after-unrelated-a",
       "after-unrelated-b",
@@ -385,6 +398,29 @@ test("recovery and clear discover owned keys after 650 unrelated origin keys", (
   } finally {
     for (const key of unrelatedKeys) localStorage.removeItem(key);
   }
+});
+
+test("over-cap recovery retains the newest valid timestamps from 1,000 entries", async () => {
+  const entryCount = 1_000;
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = entryCount - 1; index >= 0; index -= 1) {
+    const zoneId = `top-k-${index.toString().padStart(4, "0")}`;
+    localStorage.setItem(
+      `${CACHE_KEY_PREFIX}${zoneId}`,
+      rawCacheEntry(zoneId, index),
+    );
+  }
+
+  assert.deepEqual(getCacheIndex(), []);
+  await waitFor(() => getCacheIndex().length === hardLimit);
+
+  const expected = Array.from(
+    { length: hardLimit },
+    (_, index) =>
+      `top-k-${(entryCount - hardLimit + index).toString().padStart(4, "0")}`,
+  );
+  assert.deepEqual(getCacheIndex(), expected);
+  assert.deepEqual(ownedEntryZoneIds(), [...expected].sort());
 });
 
 test("takes over a stale lease and reconciles a crashed data-only write without storage events", () => {
@@ -557,4 +593,51 @@ test("restores deleted entries when eviction fails after data and index writes",
   assert.equal(localStorage.getItem(oldestKey), previousOldest);
   assert.equal(getCacheIndex()[0], "rollback-0");
   assert.equal(getCacheIndex().length, hardLimit);
+});
+
+test("retries an evicted durable entry restoration after the first rollback failure", async () => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  for (let index = 0; index < hardLimit; index += 1) {
+    cacheZoneRecords(`retry-${index}`, `Retry ${index}`, []);
+  }
+  const oldestKey = entryKeyForZone("retry-0");
+  assert.ok(oldestKey);
+  const oldestRaw = localStorage.getItem(oldestKey);
+  const previousIndex = localStorage.getItem(CACHE_INDEX_KEY);
+  assert.ok(oldestRaw);
+  assert.ok(previousIndex);
+
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalSetItem = storagePrototype.setItem;
+  let indexFailureArmed = true;
+  let restorationFailureArmed = true;
+  storagePrototype.setItem = function failIndexAndFirstRestoration(
+    this: Storage,
+    key: string,
+    value: string,
+  ): void {
+    if (key === CACHE_INDEX_KEY && indexFailureArmed) {
+      indexFailureArmed = false;
+      originalSetItem.call(this, key, value);
+      throw new Error("forced index write failure");
+    }
+    if (key === oldestKey && value === oldestRaw && restorationFailureArmed) {
+      restorationFailureArmed = false;
+      throw new Error("forced first durable restoration failure");
+    }
+    originalSetItem.call(this, key, value);
+  };
+  try {
+    cacheZoneRecords(`retry-${hardLimit}`, "Incoming", []);
+  } finally {
+    storagePrototype.setItem = originalSetItem;
+  }
+
+  assert.equal(localStorage.getItem(CACHE_INDEX_KEY), previousIndex);
+  assert.equal(rawIndexZoneIds().includes(`retry-${hardLimit}`), false);
+  assert.equal(localStorage.getItem(oldestKey), null);
+  await waitFor(() => localStorage.getItem(oldestKey) === oldestRaw);
+  assert.equal(entryKeyForZone(`retry-${hardLimit}`), undefined);
+  assert.deepEqual(getCacheIndex(), rawIndexZoneIds());
+  assert.equal(getCacheIndex()[0], "retry-0");
 });
