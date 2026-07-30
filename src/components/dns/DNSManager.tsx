@@ -851,6 +851,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
+  const [mcpSessionPreferencesRevision, setMcpSessionPreferencesRevision] =
+    useState(0);
   const [pendingLastActiveTab, setPendingLastActiveTab] = useState("");
   const [auditExportDefaultDocuments, setAuditExportDefaultDocuments] =
     useState(storageManager.getAuditExportDefaultDocuments());
@@ -934,6 +936,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     ),
   );
   const [mcpPermissionsReady, setMcpPermissionsReady] = useState(false);
+  const [mcpConfirmedPermissionRevision, setMcpConfirmedPermissionRevision] =
+    useState(0);
+  const [mcpStartupDrainRevision, setMcpStartupDrainRevision] = useState(0);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpActionError, setMcpActionError] = useState<string | null>(null);
@@ -942,10 +947,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const mcpServerEnabledRef = useRef(mcpServerEnabled);
   const mcpServerHostRef = useRef(mcpServerHost);
   const mcpServerPortRef = useRef(mcpServerPort);
-  const mcpInitialSyncAttemptedRef = useRef(false);
+  const mcpPermissionsReadyRef = useRef(mcpPermissionsReady);
+  const mcpStartupSynchronizationKey = useMemo(() => {
+    if (
+      mcpSessionPreferencesRevision === 0 ||
+      mcpConfirmedPermissionRevision === 0
+    ) {
+      return null;
+    }
+    return JSON.stringify({
+      preferencesRevision: mcpSessionPreferencesRevision,
+      permissionRevision: mcpConfirmedPermissionRevision,
+      enabled: mcpServerEnabled,
+      host: mcpServerHost.trim() || "127.0.0.1",
+      port: Math.max(1, Math.min(65535, Math.round(mcpServerPort))),
+      tools: [...normalizeMcpToolIds(mcpEnabledTools)].sort(),
+    });
+  }, [
+    mcpConfirmedPermissionRevision,
+    mcpEnabledTools,
+    mcpServerEnabled,
+    mcpServerHost,
+    mcpServerPort,
+    mcpSessionPreferencesRevision,
+  ]);
+  const mcpStartupSynchronizationKeyRef = useRef<string | null>(
+    mcpStartupSynchronizationKey,
+  );
+  const mcpStartupCompletedKeyRef = useRef<string | null>(null);
+  const mcpStartupInFlightKeyRef = useRef<string | null>(null);
+  const mcpStartupMountedRef = useRef(false);
   mcpServerEnabledRef.current = mcpServerEnabled;
   mcpServerHostRef.current = mcpServerHost;
   mcpServerPortRef.current = mcpServerPort;
+  mcpPermissionsReadyRef.current = mcpPermissionsReady;
+  mcpStartupSynchronizationKeyRef.current = mcpStartupSynchronizationKey;
   const mcpPermissionsParkingRef = useRef<HTMLDivElement | null>(null);
   const mcpPermissionsViewRef = useRef<HTMLDivElement | null>(null);
   const [mcpPermissionsPortalHost, setMcpPermissionsPortalHost] =
@@ -1572,6 +1608,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       applySessionSettingsProfile(profile);
     }
     sessionProfileHydratedRef.current = true;
+    setMcpSessionPreferencesRevision((revision) => revision + 1);
   }, [
     applySessionSettingsProfile,
     currentSessionId,
@@ -2151,6 +2188,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setMcpStatus(status);
       setMcpActionError(null);
       setMcpPermissionsReady(true);
+      setMcpConfirmedPermissionRevision((revision) => revision + 1);
     },
     [],
   );
@@ -2172,7 +2210,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           : {}),
       });
       const diagnostic = report.diagnostic;
-      setMcpActionError(diagnostic.message);
       if (failure.operation === "update" || !report.duplicate) {
         toast({
           title: label,
@@ -2712,6 +2749,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             typeof prefObj.session_settings_profiles === "object"
           ) {
             setSessionSettingsProfiles(prefObj.session_settings_profiles);
+          } else {
+            setSessionSettingsProfiles({});
           }
         })
         .catch((error) => {
@@ -2810,46 +2849,94 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
 
   useEffect(() => {
+    mcpStartupMountedRef.current = true;
+    return () => {
+      mcpStartupMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const synchronizationKey = mcpStartupSynchronizationKey;
     if (
       !prefsReady ||
       !mcpPermissionsReady ||
       !isDesktop() ||
-      mcpInitialSyncAttemptedRef.current
-    )
+      synchronizationKey === null ||
+      mcpStartupCompletedKeyRef.current === synchronizationKey ||
+      mcpStartupInFlightKeyRef.current !== null
+    ) {
       return;
-    mcpInitialSyncAttemptedRef.current = true;
-    let active = true;
+    }
+
+    const synchronization = {
+      enabled: mcpServerEnabled,
+      host: mcpServerHost.trim() || "127.0.0.1",
+      port: Math.max(1, Math.min(65535, Math.round(mcpServerPort))),
+      enabledTools: [...normalizeMcpToolIds(mcpEnabledTools)],
+    };
+    mcpStartupInFlightKeyRef.current = synchronizationKey;
     setMcpBusy(true);
     setMcpActionError(null);
     void (async () => {
       try {
-        if (mcpServerEnabledRef.current) {
+        if (synchronization.enabled) {
           await TauriClient.startMcpServer(
-            mcpServerHostRef.current,
-            mcpServerPortRef.current,
-            mcpEnabledToolsRef.current,
+            synchronization.host,
+            synchronization.port,
+            synchronization.enabledTools,
           );
         } else {
           await TauriClient.stopMcpServer();
         }
         const status = await TauriClient.getMcpServerStatus();
-        if (!active) return;
-        setMcpStatus(status);
+        if (
+          mcpStartupMountedRef.current &&
+          mcpPermissionsReadyRef.current &&
+          mcpStartupSynchronizationKeyRef.current === synchronizationKey
+        ) {
+          setMcpStatus(status);
+        }
       } catch (error) {
-        if (!active) return;
-        const diagnostic = reportDnsManagerFailure(
-          error,
-          "Synchronize MCP server preferences",
-        );
-        setMcpActionError(diagnostic.message);
+        if (
+          mcpStartupMountedRef.current &&
+          mcpPermissionsReadyRef.current &&
+          mcpStartupSynchronizationKeyRef.current === synchronizationKey
+        ) {
+          const diagnostic = reportDnsManagerFailure(
+            error,
+            "Synchronize MCP server preferences",
+          );
+          setMcpActionError(diagnostic.message);
+        }
       } finally {
-        if (active) setMcpBusy(false);
+        const exactSettledKey =
+          mcpStartupMountedRef.current &&
+          mcpPermissionsReadyRef.current &&
+          mcpStartupSynchronizationKeyRef.current === synchronizationKey;
+        if (exactSettledKey) {
+          mcpStartupCompletedKeyRef.current = synchronizationKey;
+        }
+        if (mcpStartupInFlightKeyRef.current === synchronizationKey) {
+          mcpStartupInFlightKeyRef.current = null;
+        }
+        if (mcpStartupMountedRef.current) {
+          if (mcpStartupSynchronizationKeyRef.current === synchronizationKey) {
+            setMcpBusy(false);
+          }
+          setMcpStartupDrainRevision((revision) => revision + 1);
+        }
       }
     })();
-    return () => {
-      active = false;
-    };
-  }, [mcpPermissionsReady, prefsReady]);
+  }, [
+    mcpEnabledTools,
+    mcpPermissionsReady,
+    mcpServerEnabled,
+    mcpServerHost,
+    mcpServerPort,
+    mcpStartupDrainRevision,
+    mcpStartupSynchronizationKey,
+    prefsReady,
+  ]);
 
   const persistTabStateBestEffort = useCallback(() => {
     const openTabIds = tabs.map((tab) => tab.id);
@@ -8298,7 +8385,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="glass-surface glass-sheen glass-fade ui-segment-group">
+                    <div
+                      role="toolbar"
+                      aria-label={t(
+                        "Session settings sections",
+                        "Session settings sections",
+                      )}
+                      className="glass-surface glass-sheen glass-fade ui-segment-group"
+                    >
                       <button
                         onClick={() => setSettingsSubtab("general")}
                         data-active={settingsSubtab === "general"}

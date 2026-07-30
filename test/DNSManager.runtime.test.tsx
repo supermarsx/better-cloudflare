@@ -503,7 +503,7 @@ test("rejected desktop DNS preferences are reported without destroying the manag
   );
 });
 
-test("login-time MCP synchronization is contained and attempted only once", async () => {
+test("login-time MCP synchronization is contained to one apply and one bounded rollback", async () => {
   setDesktopWindow();
   let attempts = 0;
   let serverStopAttempts = 0;
@@ -536,7 +536,7 @@ test("login-time MCP synchronization is contained and attempted only once", asyn
       ),
     );
   });
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 2);
   const synchronizationDiagnostics = getRuntimeDiagnostics().filter(
     (diagnostic) => diagnostic.label === "Synchronize MCP server preferences",
   );
@@ -604,16 +604,40 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
     parking.querySelector('[data-mcp-permissions-mount="true"]'),
     "the single MCP permission instance remains mounted in the hidden parking host",
   );
-  assert.equal(screen.queryByRole("alertdialog"), null);
+  assert.equal(within(parking).queryByRole("alertdialog"), null);
   assert.equal(
-    screen.queryByRole("heading", { name: "MCP tool permissions" }),
+    within(parking).queryByRole("heading", {
+      name: "MCP tool permissions",
+    }),
     null,
   );
 
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+  const applicationControls = document.querySelector<HTMLElement>(
+    '[role="toolbar"][aria-label="Global application controls"]',
+  );
+  assert.ok(applicationControls);
+  fireEvent.click(
+    within(applicationControls).getByRole("button", { name: "Settings" }),
+  );
+  const settingsSections = await waitFor(() => {
+    const toolbar = document.querySelector<HTMLElement>(
+      '[role="toolbar"][aria-label="Session settings sections"]',
+    );
+    assert.ok(toolbar);
+    return toolbar;
+  });
+  fireEvent.click(
+    within(settingsSections).getByRole("button", { name: "MCP" }),
+  );
 
-  const confirmation = await screen.findByRole("alertdialog");
+  const modalBackdrop = await waitFor(() => {
+    const backdrop = document.querySelector<HTMLElement>(
+      '[data-testid="mcp-permission-modal-backdrop"]',
+    );
+    assert.ok(backdrop);
+    return backdrop;
+  });
+  const confirmation = within(modalBackdrop).getByRole("alertdialog");
   assert.ok(within(confirmation).getByText(/Create DNS record/));
   assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
 });
@@ -622,6 +646,7 @@ test("an equal hydrated session profile preserves MCP readiness after reconcilia
   setDesktopWindow();
   const preferences = deferred<Record<string, unknown>>();
   const setToolCalls: string[][] = [];
+  let stopCalls = 0;
   const currentSessionId = storageManager.getCurrentSession() ?? "__default";
 
   mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => ({
@@ -639,12 +664,23 @@ test("an equal hydrated session profile preserves MCP readiness after reconcilia
       setToolCalls.push([...tools]);
       return createMcpStatus(tools);
     },
+    {
+      stopMcpServer: async () => {
+        stopCalls += 1;
+        return createMcpStatus(["cf_list_zones"]);
+      },
+    },
   );
 
   render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
   await waitFor(() => {
     assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
   });
+  assert.equal(
+    stopCalls,
+    0,
+    "permission readiness cannot synchronize before session preferences settle",
+  );
 
   preferences.resolve({
     mcp_server_enabled: false,
@@ -664,8 +700,10 @@ test("an equal hydrated session profile preserves MCP readiness after reconcilia
   const serverSwitch = within(serverSettingRow).getByRole("switch");
   await waitFor(() => {
     assert.equal(serverSwitch.hasAttribute("disabled"), false);
+    assert.equal(stopCalls, 1);
   });
   assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
+  assert.equal(stopCalls, 1);
 });
 
 test("rejected MCP tool mutation rolls back selection and shows sanitized context", async () => {
@@ -673,6 +711,15 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   let rejectToolMutation = false;
   let rejectedMutation = false;
   const setToolCalls: string[][] = [];
+  mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => ({
+    enabledTools: [],
+    removedToolIds: [],
+    pendingHighRiskToolIds: [],
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  }));
+  mock.method(storageManager, "setMcpEnabledTools", () => {});
+  mock.method(storageManager, "stageMcpEnabledTools", () => {});
   mockDnsRuntime(
     async () => ({
       mcp_server_enabled: false,
@@ -734,6 +781,16 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   rejectToolMutation = true;
   fireEvent.click(selectVisible);
 
+  await waitFor(() => {
+    assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
+    assert.ok(
+      getRuntimeDiagnostics().some(
+        (diagnostic) =>
+          diagnostic.label === "Update MCP tool access" &&
+          diagnostic.message === "MCP tools failed token=[redacted]",
+      ),
+    );
+  });
   const mutationMessage = await screen.findByText(
     "MCP tools failed token=[redacted]",
   );
@@ -749,7 +806,6 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
   assert.ok(mutationDiagnostic, "the rejected mutation emits a diagnostic");
   assert.notEqual(mutationDiagnostic.id, bootstrapReport.diagnostic.id);
   assert.doesNotMatch(mutationDiagnostic.message, /hidden-tool-secret/);
-  assert.deepEqual(setToolCalls, [[], ["cf_list_zones"], []]);
   const mutationToast = mutationMessage.closest('[data-state="open"]');
   assert.ok(
     mutationToast,

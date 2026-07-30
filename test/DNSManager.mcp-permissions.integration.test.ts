@@ -53,7 +53,7 @@ test("treats an explicit empty onApplied selection as authoritative and ready", 
   assert.doesNotMatch(handler, /enabledTools\.length/);
 });
 
-test("bootstrap permission failures stay unready and report one owned diagnostic", () => {
+test("bootstrap permission failures stay unready and use the parent toast as the sole diagnostic", () => {
   const handler = sourceBetween(
     "const handleMcpPermissionsError = useCallback(",
     "const setMcpServerRunning = useCallback(",
@@ -65,7 +65,11 @@ test("bootstrap permission failures stay unready and report one owned diagnostic
   );
   assert.match(handler, /"Synchronize MCP server preferences"/);
   assert.match(handler, /"Update MCP tool access"/);
-  assert.match(handler, /setMcpActionError\(diagnostic\.message\);/);
+  assert.match(
+    handler,
+    /toast\(\{[\s\S]*description: diagnostic\.message,[\s\S]*diagnostic,/,
+  );
+  assert.doesNotMatch(handler, /setMcpActionError\(/);
   assert.doesNotMatch(handler, /setMcpPermissionsReady\(true\)/);
 });
 
@@ -75,14 +79,23 @@ test("starts and restarts MCP with confirmed permissions only", () => {
     "useEffect(() => {\n    if (!prefsReady) return;",
   );
   const startupSynchronization = sourceBetween(
-    "mcpInitialSyncAttemptedRef.current = true;",
+    "const synchronizationKey = mcpStartupSynchronizationKey;",
     "const persistTabStateBestEffort = useCallback(",
   );
 
   assert.match(
     startupSynchronization,
-    /mcpInitialSyncAttemptedRef\.current = true;/,
+    /!prefsReady[\s\S]*!mcpPermissionsReady[\s\S]*synchronizationKey === null/,
   );
+  assert.match(
+    startupSynchronization,
+    /mcpStartupCompletedKeyRef\.current === synchronizationKey/,
+  );
+  assert.match(
+    startupSynchronization,
+    /mcpStartupCompletedKeyRef\.current = synchronizationKey;/,
+  );
+  assert.doesNotMatch(startupSynchronization, /mcpInitialSyncAttemptedRef/);
   assert.match(
     serverControl,
     /TauriClient\.startMcpServer\(\s*nextHost,\s*nextPort,\s*mcpEnabledTools,\s*\)/,
@@ -90,7 +103,7 @@ test("starts and restarts MCP with confirmed permissions only", () => {
   assert.doesNotMatch(serverControl, /mcpRequestedTools/);
   assert.match(
     startupSynchronization,
-    /TauriClient\.startMcpServer\(\s*mcpServerHostRef\.current,\s*mcpServerPortRef\.current,\s*mcpEnabledToolsRef\.current,\s*\)/,
+    /TauriClient\.startMcpServer\(\s*synchronization\.host,\s*synchronization\.port,\s*synchronization\.enabledTools,\s*\)/,
   );
   assert.doesNotMatch(startupSynchronization, /mcpRequestedTools/);
 });

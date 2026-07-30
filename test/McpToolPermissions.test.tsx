@@ -706,6 +706,15 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
   fireEvent.click(highRiskTrigger);
   const dialog = await screen.findByRole("alertdialog");
   const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+  const originalTriggerFocus = highRiskTrigger.focus.bind(highRiskTrigger);
+  let triggerFocusCalls = 0;
+  Object.defineProperty(highRiskTrigger, "focus", {
+    configurable: true,
+    value: (options?: FocusOptions) => {
+      triggerFocusCalls += 1;
+      originalTriggerFocus(options);
+    },
+  });
   assert.equal(surrounding.getAttribute("inert"), "");
   assert.equal(surrounding.getAttribute("aria-hidden"), "true");
   assert.equal(surrounding.style.pointerEvents, "none");
@@ -719,17 +728,25 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
   assert.deepEqual(saveCalls, [[]]);
 
   fireEvent.click(cancel);
-  await waitFor(() => assert.equal(document.activeElement, highRiskTrigger));
+  assert.equal(screen.queryByRole("alertdialog"), null);
   assert.equal(surrounding.hasAttribute("inert"), false);
   assert.equal(surrounding.hasAttribute("aria-hidden"), false);
   assert.equal(surrounding.style.pointerEvents, "");
 
+  await waitFor(() => {
+    assert.equal(highRiskTrigger.disabled, false);
+    assert.equal(document.activeElement === highRiskTrigger, true);
+    assert.equal(triggerFocusCalls, 1);
+    assert.deepEqual(saveCalls, [[]]);
+  });
+
   search.focus();
-  assert.equal(document.activeElement, search);
+  assert.equal(document.activeElement === search, true);
   fireEvent.click(readCheckbox);
   await waitFor(() => {
     assert.deepEqual(saveCalls, [[], ["cf_list_dns_records"]]);
     assert.equal((readCheckbox as HTMLInputElement).checked, true);
+    assert.equal(triggerFocusCalls, 1);
   });
 });
 
@@ -853,7 +870,7 @@ test("unfiltered category selection confirms every newly enabled high-risk tier"
     ({ categoryId }) => categoryId === "dns-records",
   ).map(({ id }) => id);
   await waitFor(() => {
-    assert.deepEqual(saveCalls, [[], expectedDnsIds]);
+    assert.deepEqual(saveCalls, [[], ["cf_list_dns_records"], expectedDnsIds]);
   });
 });
 
@@ -1259,7 +1276,7 @@ test("a confirmed-safe profile clears superseded staged permissions before resta
       synchronization: "final",
     });
   });
-  assert.deepEqual(storage.writes, [["cf_list_zones"]]);
+  assert.deepEqual(storage.writes, [[], ["cf_list_zones"]]);
 
   unmount();
   const restartedClient = clientFor(status(["cf_list_zones"]));
@@ -2018,8 +2035,70 @@ test("search uses reviewed metadata and reports no matches accessibly", async ()
   assert.ok(screen.getByText("No MCP tools match “does-not-exist”."));
 });
 
+test("a started rejected save reports once after its generation stales and coalesces the confirmed rollback", async () => {
+  const rejectedSave = deferred<McpServerStatus>();
+  const saveCalls: string[][] = [];
+  const failures: Array<{ error: unknown; operation: string }> = [];
+  const storage = new PermissionStorage();
+  let saves = 0;
+  const client: McpToolPermissionsClient = {
+    load: async () => status([]),
+    save: async (enabledTools) => {
+      saveCalls.push([...enabledTools]);
+      saves += 1;
+      if (saves === 1) return status([]);
+      if (saves === 2) return rejectedSave.promise;
+      if (saves === 3) return status([]);
+      throw new Error("rejected save scheduled more than one rollback");
+    },
+  };
+  const onError = (error: unknown, failure: { operation: string }) => {
+    failures.push({ error, operation: failure.operation });
+  };
+  const { rerender } = render(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={[]}
+      onError={onError}
+    />,
+  );
+  await waitUntilReady();
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={["cf_list_zones"]}
+      onError={onError}
+    />,
+  );
+  await waitFor(() => assert.equal(saveCalls.length, 2));
+
+  rerender(
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      enabledTools={[]}
+      onError={onError}
+    />,
+  );
+  const rejection = new Error("permission mutation rejected");
+  rejectedSave.reject(rejection);
+  await assert.rejects(rejectedSave.promise, /permission mutation rejected/);
+
+  await waitFor(() => {
+    assert.deepEqual(saveCalls, [[], ["cf_list_zones"], []]);
+    assert.equal(failures.length, 1);
+  });
+  assert.equal(failures[0].error, rejection);
+  assert.equal(failures[0].operation, "update");
+  assert.equal(screen.queryByRole("alert"), null);
+});
+
 test("load reconciliation failures remain visible and can be retried", async () => {
   let saves = 0;
+  const failures: Array<{ error: unknown; operation: string }> = [];
   const client: McpToolPermissionsClient = {
     load: async () => status(),
     save: async (enabledTools) => {
@@ -2029,7 +2108,13 @@ test("load reconciliation failures remain visible and can be retried", async () 
     },
   };
   render(
-    <McpToolPermissions client={client} storage={new PermissionStorage()} />,
+    <McpToolPermissions
+      client={client}
+      storage={new PermissionStorage()}
+      onError={(error, failure) =>
+        failures.push({ error, operation: failure.operation })
+      }
+    />,
   );
 
   await waitFor(() => {
@@ -2041,11 +2126,19 @@ test("load reconciliation failures remain visible and can be retried", async () 
   });
   fireEvent.click(screen.getByRole("button", { name: "Retry loading tools" }));
   await waitUntilReady();
-  assert.equal(saves, 2);
+  assert.equal(saves, 3);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].operation, "bootstrap");
+  assert.match(
+    String(failures[0].error),
+    /desktop permission store unavailable/,
+  );
 });
 
-test("save errors remain visible and leave the applied selection unchanged", async () => {
+test("save errors reach the parent once without an inline duplicate and leave the applied selection unchanged", async () => {
   const saveCalls: string[][] = [];
+  const failures: Array<{ error: unknown; operation: string }> = [];
+  const storage = new PermissionStorage();
   let saves = 0;
   const initialStatus = status();
   const client: McpToolPermissionsClient = {
@@ -2053,25 +2146,37 @@ test("save errors remain visible and leave the applied selection unchanged", asy
     save: async (enabledTools) => {
       saves += 1;
       saveCalls.push([...enabledTools]);
-      if (saves > 1) throw new Error("permission store is read-only");
+      if (saves === 2) throw new Error("permission store is read-only");
       return status(enabledTools);
     },
   };
   render(
-    <McpToolPermissions client={client} storage={new PermissionStorage()} />,
+    <McpToolPermissions
+      client={client}
+      storage={storage}
+      onError={(error, failure) =>
+        failures.push({ error, operation: failure.operation })
+      }
+    />,
   );
   await waitUntilReady();
+  storage.stageMcpEnabledTools([], ["cf_create_dns_record"], []);
 
   const checkbox = screen.getByRole("checkbox", { name: /List zones/ });
   fireEvent.click(checkbox);
 
   await waitFor(() => {
-    assert.ok(
-      screen.getByText(
-        /MCP permissions could not be saved.*permission store is read-only/,
-      ),
-    );
+    assert.deepEqual(saveCalls, [[], ["cf_list_zones"], []]);
+    assert.equal(failures.length, 1);
   });
-  assert.deepEqual(saveCalls, [[], ["cf_list_zones"]]);
+  assert.equal(
+    screen.queryByText(
+      /MCP permissions could not be saved.*permission store is read-only/,
+    ),
+    null,
+  );
+  assert.equal(failures[0].operation, "update");
+  assert.match(String(failures[0].error), /permission store is read-only/);
   assert.equal((checkbox as HTMLInputElement).checked, false);
+  assert.deepEqual(storage.pendingHighRiskToolIds, ["cf_create_dns_record"]);
 });

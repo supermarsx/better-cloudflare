@@ -110,6 +110,7 @@ interface PendingPermissionChange {
 
 interface ScheduledServerSave {
   enabledTools: string[];
+  rollbackEnabledTools: string[] | null;
   generation: number;
   resolve(status: McpServerStatus): void;
   reject(error: unknown): void;
@@ -317,6 +318,21 @@ function exactAppliedSelection(
 
 class StalePermissionOperation extends Error {}
 
+class StartedPermissionSaveFailure extends Error {
+  readonly parentError: unknown;
+
+  constructor(cause: unknown, rollbackError?: unknown) {
+    const rollbackFailed = rollbackError !== undefined;
+    super(
+      rollbackFailed
+        ? `${errorMessage(cause)} Automatic rollback to the previous MCP server selection also failed: ${errorMessage(rollbackError)}`
+        : errorMessage(cause),
+    );
+    this.name = "StartedPermissionSaveFailure";
+    this.parentError = rollbackFailed ? this : cause;
+  }
+}
+
 interface ModalIsolationState {
   owners: Set<symbol>;
   inertAttribute: string | null;
@@ -324,6 +340,12 @@ interface ModalIsolationState {
   pointerEvents: string;
   supportsInertProperty: boolean;
   inertProperty: boolean | undefined;
+}
+
+interface ModalFocusRestoration {
+  trigger: HTMLElement;
+  generation: number;
+  epoch: number;
 }
 
 const modalIsolationStates = new WeakMap<HTMLElement, ModalIsolationState>();
@@ -370,6 +392,38 @@ function releaseModalIsolation(element: HTMLElement, owner: symbol): void {
   }
   element.style.pointerEvents = state.pointerEvents;
   modalIsolationStates.delete(element);
+}
+
+function canRestoreModalFocus(element: HTMLElement): boolean {
+  if (
+    !element.isConnected ||
+    element.getAttribute("aria-disabled") === "true"
+  ) {
+    return false;
+  }
+  try {
+    if (element.matches(":disabled")) return false;
+  } catch {
+    return false;
+  }
+
+  let current: HTMLElement | null = element;
+  while (current) {
+    const inertTarget = current as HTMLElement & { inert?: boolean };
+    if (
+      current.hidden ||
+      current.hasAttribute("inert") ||
+      inertTarget.inert === true ||
+      current.getAttribute("aria-hidden") === "true" ||
+      current.style.display === "none" ||
+      current.style.visibility === "hidden" ||
+      current.style.visibility === "collapse"
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+  return true;
 }
 
 function matchesSearch(tool: ResolvedMcpTool, query: string): boolean {
@@ -454,6 +508,9 @@ export function McpToolPermissions({
   const dialogRef = React.useRef<HTMLDivElement>(null);
   const cancelConfirmationRef = React.useRef<HTMLButtonElement>(null);
   const confirmationTriggerRef = React.useRef<HTMLElement | null>(null);
+  const modalFocusEpochRef = React.useRef(0);
+  const pendingModalFocusRestorationRef =
+    React.useRef<ModalFocusRestoration | null>(null);
   const reassertConfirmedSelectionRef = React.useRef<
     (generation: number) => void
   >(() => {});
@@ -475,6 +532,12 @@ export function McpToolPermissions({
     [],
   );
 
+  const beginModalFocusCycle = React.useCallback(() => {
+    modalFocusEpochRef.current += 1;
+    pendingModalFocusRestorationRef.current = null;
+    return modalFocusEpochRef.current;
+  }, []);
+
   const drainServerSaveQueue = React.useCallback(() => {
     if (inFlightServerSaveRef.current) return;
     const scheduled = latestQueuedServerSaveRef.current;
@@ -493,6 +556,33 @@ export function McpToolPermissions({
       }
       drainServerSaveQueueRef.current();
     };
+    const rejectStartedSave = async (cause: unknown) => {
+      let failure: StartedPermissionSaveFailure;
+      const rollbackEnabledTools = scheduled.rollbackEnabledTools;
+      if (rollbackEnabledTools === null) {
+        failure = new StartedPermissionSaveFailure(cause);
+      } else {
+        try {
+          const rollbackStatus = await clientRef.current.save([
+            ...rollbackEnabledTools,
+          ]);
+          exactAppliedSelection(rollbackStatus, rollbackEnabledTools);
+          const queued = latestQueuedServerSaveRef.current;
+          if (
+            queued &&
+            sameToolIds(queued.enabledTools, rollbackEnabledTools)
+          ) {
+            latestQueuedServerSaveRef.current = null;
+            queued.resolve(rollbackStatus);
+          }
+          failure = new StartedPermissionSaveFailure(cause);
+        } catch (rollbackError) {
+          failure = new StartedPermissionSaveFailure(cause, rollbackError);
+        }
+      }
+      scheduled.reject(failure);
+      finishScheduledSave();
+    };
     void Promise.resolve()
       .then(() => clientRef.current.save([...scheduled.enabledTools]))
       .then(
@@ -501,15 +591,18 @@ export function McpToolPermissions({
           scheduled.resolve(status);
         },
         (error) => {
-          finishScheduledSave();
-          scheduled.reject(error);
+          void rejectStartedSave(error);
         },
       );
   }, [isCurrentGeneration]);
   drainServerSaveQueueRef.current = drainServerSaveQueue;
 
   const enqueueServerSave = React.useCallback(
-    (enabledTools: readonly string[], generation: number) =>
+    (
+      enabledTools: readonly string[],
+      generation: number,
+      rollbackEnabledTools: readonly string[] | null = null,
+    ) =>
       new Promise<McpServerStatus>((resolve, reject) => {
         const superseded = latestQueuedServerSaveRef.current;
         if (superseded) {
@@ -517,6 +610,10 @@ export function McpToolPermissions({
         }
         latestQueuedServerSaveRef.current = {
           enabledTools: reconcileMcpEnabledToolIds(enabledTools),
+          rollbackEnabledTools:
+            rollbackEnabledTools === null
+              ? null
+              : reconcileMcpEnabledToolIds(rollbackEnabledTools),
           generation,
           resolve,
           reject,
@@ -564,6 +661,8 @@ export function McpToolPermissions({
     return () => {
       mountedRef.current = false;
       generationRef.current += 1;
+      beginModalFocusCycle();
+      confirmationTriggerRef.current = null;
       const queued = latestQueuedServerSaveRef.current;
       latestQueuedServerSaveRef.current = null;
       queued?.reject(new StalePermissionOperation());
@@ -578,7 +677,7 @@ export function McpToolPermissions({
         }
       });
     };
-  }, []);
+  }, [beginModalFocusCycle]);
 
   React.useEffect(() => {
     clientRef.current = client;
@@ -721,7 +820,7 @@ export function McpToolPermissions({
       restoreFocus = true,
       clearStagedRequest = true,
       invalidateGeneration = true,
-    ): HTMLElement | null => {
+    ): void => {
       const shouldReassertConfirmedSelection =
         invalidateGeneration &&
         clearStagedRequest &&
@@ -731,6 +830,15 @@ export function McpToolPermissions({
         : generationRef.current;
       const trigger = confirmationTriggerRef.current;
       confirmationTriggerRef.current = null;
+      const focusEpoch = beginModalFocusCycle();
+      pendingModalFocusRestorationRef.current =
+        restoreFocus && trigger !== null
+          ? {
+              trigger,
+              generation,
+              epoch: focusEpoch,
+            }
+          : null;
       setPending(null);
 
       if (clearStagedRequest) {
@@ -758,15 +866,14 @@ export function McpToolPermissions({
       if (shouldReassertConfirmedSelection) {
         reassertConfirmedSelectionRef.current(generation);
       }
-
-      if (restoreFocus) {
-        queueMicrotask(() => {
-          if (trigger?.isConnected) trigger.focus();
-        });
-      }
-      return trigger;
     },
-    [beginGeneration, hasPendingServerSave, pending, persistApplied],
+    [
+      beginGeneration,
+      beginModalFocusCycle,
+      hasPendingServerSave,
+      pending,
+      persistApplied,
+    ],
   );
 
   const openConfirmation = React.useCallback(
@@ -780,6 +887,7 @@ export function McpToolPermissions({
       generation: number,
     ) => {
       if (!isCurrentGeneration(generation)) return;
+      beginModalFocusCycle();
       confirmationTriggerRef.current =
         trigger ??
         (document.activeElement instanceof HTMLElement
@@ -798,7 +906,7 @@ export function McpToolPermissions({
         reconcileOnCancel: hasPendingServerSave(),
       });
     },
-    [hasPendingServerSave, isCurrentGeneration],
+    [beginModalFocusCycle, hasPendingServerSave, isCurrentGeneration],
   );
 
   const loadPermissions = React.useCallback(
@@ -809,6 +917,8 @@ export function McpToolPermissions({
       setSaveError(null);
       setRemovedToolIds([]);
       removedToolIdsRef.current = [];
+      beginModalFocusCycle();
+      confirmationTriggerRef.current = null;
       setPending(null);
       setSaving(false);
 
@@ -934,6 +1044,7 @@ export function McpToolPermissions({
         const appliedStatus = await enqueueServerSave(
           conservativeTools,
           generation,
+          serverReconciliation.enabledToolIds,
         );
         if (!isCurrentGeneration(generation)) {
           throw new StalePermissionOperation();
@@ -996,10 +1107,16 @@ export function McpToolPermissions({
           );
         }
       } catch (error) {
-        if (
-          error instanceof StalePermissionOperation ||
-          !isCurrentGeneration(generation)
-        ) {
+        if (error instanceof StalePermissionOperation) {
+          return;
+        }
+        const startedFailure =
+          error instanceof StartedPermissionSaveFailure ? error : null;
+        const currentGeneration = isCurrentGeneration(generation);
+        if (!currentGeneration && startedFailure === null) return;
+        const parentError = startedFailure?.parentError ?? error;
+        if (!currentGeneration) {
+          reportFailure(parentError, "bootstrap");
           return;
         }
         setCatalog([]);
@@ -1009,10 +1126,11 @@ export function McpToolPermissions({
           `MCP permissions could not be loaded and reconciled: ${errorMessage(error)}`,
         );
         setLoadState("error");
-        reportFailure(error, "bootstrap");
+        reportFailure(parentError, "bootstrap");
       }
     },
     [
+      beginModalFocusCycle,
       enqueueServerSave,
       isCurrentGeneration,
       loadClientStatus,
@@ -1100,14 +1218,24 @@ export function McpToolPermissions({
           });
     mutationObserver?.observe(document.body, { childList: true });
 
+    let redirectingFocus = false;
     const keepFocusInDialog = (event: FocusEvent) => {
       const target = event.target;
+      const fallback = cancelConfirmationRef.current;
       if (
+        !redirectingFocus &&
         target instanceof Node &&
         !dialog.contains(target) &&
-        cancelConfirmationRef.current
+        fallback &&
+        document.activeElement !== fallback &&
+        canRestoreModalFocus(fallback)
       ) {
-        cancelConfirmationRef.current.focus();
+        redirectingFocus = true;
+        try {
+          fallback.focus({ preventScroll: true });
+        } finally {
+          redirectingFocus = false;
+        }
       }
     };
     document.addEventListener("focusin", keepFocusInDialog, true);
@@ -1126,6 +1254,26 @@ export function McpToolPermissions({
       }
     };
   }, [modalOpen, modalPortalHost]);
+
+  React.useLayoutEffect(() => {
+    if (modalOpen || saving || loadState === "loading") return;
+    const focusRestoration = pendingModalFocusRestorationRef.current;
+    if (focusRestoration === null) return;
+
+    pendingModalFocusRestorationRef.current = null;
+    if (
+      modalFocusEpochRef.current !== focusRestoration.epoch ||
+      !isCurrentGeneration(focusRestoration.generation) ||
+      !canRestoreModalFocus(focusRestoration.trigger)
+    ) {
+      return;
+    }
+    try {
+      focusRestoration.trigger.focus({ preventScroll: true });
+    } catch {
+      // Focus restoration is best-effort and must not disrupt recovery.
+    }
+  }, [isCurrentGeneration, loadState, modalOpen, saving]);
 
   const savePermissions = React.useCallback(
     async (
@@ -1146,6 +1294,7 @@ export function McpToolPermissions({
         const status = await enqueueServerSave(
           nextRequestedTools.enabledToolIds,
           generation,
+          previousEnabledTools,
         );
         if (!isCurrentGeneration(generation)) {
           throw new StalePermissionOperation();
@@ -1181,16 +1330,22 @@ export function McpToolPermissions({
         publishApplied(applied, status, generation, synchronization);
         return true;
       } catch (error) {
-        if (
-          error instanceof StalePermissionOperation ||
-          !isCurrentGeneration(generation)
-        ) {
+        if (error instanceof StalePermissionOperation) {
+          return false;
+        }
+        const startedFailure =
+          error instanceof StartedPermissionSaveFailure ? error : null;
+        const currentGeneration = isCurrentGeneration(generation);
+        if (!currentGeneration && startedFailure === null) return false;
+        const parentError = startedFailure?.parentError ?? error;
+        if (!currentGeneration) {
+          reportFailure(parentError, "update");
           return false;
         }
         setSaveError(
           `MCP permissions could not be saved. No local selection was changed: ${errorMessage(error)}`,
         );
-        reportFailure(error, "update");
+        reportFailure(parentError, "update");
         return false;
       } finally {
         if (isCurrentGeneration(generation)) setSaving(false);
@@ -1425,7 +1580,10 @@ export function McpToolPermissions({
             id="mcp-tool-search"
             type="search"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              if (saving || pending !== null) return;
+              setSearch(event.target.value);
+            }}
             placeholder="Search by tool, capability, category, risk, or ID"
             autoComplete="off"
             disabled={saving || pending !== null}
@@ -1514,6 +1672,7 @@ export function McpToolPermissions({
                           newlyEnabledVisibleTools.length === 0
                         }
                         onClick={(event) => {
+                          if (saving || pending !== null) return;
                           const nextTools = [
                             ...appliedTools,
                             ...visibleCategoryTools
@@ -1539,6 +1698,7 @@ export function McpToolPermissions({
                           enabledVisibleCount === 0
                         }
                         onClick={() => {
+                          if (saving || pending !== null) return;
                           const visibleIds = new Set(
                             visibleCategoryTools.map((tool) => tool.id),
                           );
@@ -1568,6 +1728,7 @@ export function McpToolPermissions({
                             disabled={saving || pending !== null || !tool.known}
                             aria-describedby={descriptionId}
                             onChange={(event) => {
+                              if (saving || pending !== null) return;
                               const nextTools = event.target.checked
                                 ? [...appliedTools, tool.id]
                                 : appliedTools.filter((id) => id !== tool.id);
@@ -1703,25 +1864,8 @@ export function McpToolPermissions({
                   onClick={() => {
                     const nextEnabledTools = pending.enabledTools;
                     const generation = pending.generation;
-                    const trigger = closeConfirmation(
-                      false,
-                      false,
-                      false,
-                      false,
-                    );
-                    void savePermissions(nextEnabledTools, generation).finally(
-                      () => {
-                        if (!isCurrentGeneration(generation)) return;
-                        setTimeout(() => {
-                          if (
-                            isCurrentGeneration(generation) &&
-                            trigger?.isConnected
-                          ) {
-                            trigger.focus();
-                          }
-                        }, 0);
-                      },
-                    );
+                    closeConfirmation(false, true, false, false);
+                    void savePermissions(nextEnabledTools, generation);
                   }}
                 >
                   Confirm enable
