@@ -6,10 +6,15 @@ description = "Model Context Protocol (MCP) JSON-RPC server for Cloudflare DNS a
 
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
+futures-util = "0.3"
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server-auto", "service", "tokio"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
 bc-dns-tools = { path = "../bc-dns-tools" }
 bc-domain-audit = { path = "../bc-domain-audit" }

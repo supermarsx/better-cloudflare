@@ -6,6 +6,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::resource_limits::{
+    bounded_message, serialize_json_limited, validate_json, MAX_RESPONSE_BYTES,
+    MAX_TOOL_RESULT_BYTES, RESPONSE_JSON_LIMITS, TOOL_RESULT_JSON_LIMITS,
+};
+
 // ─── MCP Protocol Version ──────────────────────────────────────────────────
 
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -29,6 +34,14 @@ pub enum RpcErrorCode {
     PromptNotFound = -32002,
     /// MCP: unauthorized
     Unauthorized = -32003,
+    /// MCP: bounded server capacity is currently exhausted
+    ServerOverloaded = -32004,
+    /// MCP: the request or tool exceeded its execution deadline
+    RequestTimeout = -32005,
+    /// MCP: the server is stopping and cancelled outstanding work
+    ServerShuttingDown = -32006,
+    /// MCP: a handler result could not be returned within response budgets
+    ResponseTooLarge = -32007,
 }
 
 impl RpcErrorCode {
@@ -48,6 +61,15 @@ pub struct JsonRpcRequest {
 
 /// Build a successful JSON-RPC 2.0 response.
 pub fn success_response(id: Value, result: Value) -> Value {
+    if validate_json(&result, RESPONSE_JSON_LIMITS).is_err()
+        || serialize_json_limited(&result, MAX_RESPONSE_BYTES).is_err()
+    {
+        return error_response(
+            Some(id),
+            RpcErrorCode::ResponseTooLarge.code(),
+            "The result exceeded the MCP response budget.".to_string(),
+        );
+    }
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -57,6 +79,7 @@ pub fn success_response(id: Value, result: Value) -> Value {
 
 /// Build an error JSON-RPC 2.0 response.
 pub fn error_response(id: Option<Value>, code: i64, message: String) -> Value {
+    let message = bounded_message(&message);
     json!({
         "jsonrpc": "2.0",
         "id": id.unwrap_or(Value::Null),
@@ -74,6 +97,14 @@ pub fn error_response_with_data(
     message: String,
     data: Value,
 ) -> Value {
+    let message = bounded_message(&message);
+    let data = if validate_json(&data, TOOL_RESULT_JSON_LIMITS).is_ok()
+        && serialize_json_limited(&data, MAX_TOOL_RESULT_BYTES).is_ok()
+    {
+        data
+    } else {
+        json!({ "detail": "Error data omitted because it exceeded the MCP response budget." })
+    };
     json!({
         "jsonrpc": "2.0",
         "id": id.unwrap_or(Value::Null),
@@ -184,7 +215,13 @@ pub struct ResourceContent {
 
 /// Build a tools/call success response (text content).
 pub fn tool_success(value: &Value) -> Value {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string());
+    let Ok(encoded) = serialize_json_limited(value, MAX_TOOL_RESULT_BYTES) else {
+        return tool_error("Tool result exceeded the MCP response budget.");
+    };
+    if validate_json(value, TOOL_RESULT_JSON_LIMITS).is_err() {
+        return tool_error("Tool result exceeded the MCP response structure budget.");
+    }
+    let text = String::from_utf8(encoded).unwrap_or_else(|_| "{}".to_string());
     json!({
         "content": [{ "type": "text", "text": text }],
         "structuredContent": value
@@ -193,6 +230,7 @@ pub fn tool_success(value: &Value) -> Value {
 
 /// Build a tools/call error response.
 pub fn tool_error(message: &str) -> Value {
+    let message = bounded_message(message);
     json!({
         "content": [{ "type": "text", "text": message }],
         "isError": true
@@ -201,6 +239,7 @@ pub fn tool_error(message: &str) -> Value {
 
 /// Build a tools/call disabled response.
 pub fn tool_disabled(name: &str) -> Value {
+    let name = bounded_message(name);
     json!({
         "content": [{ "type": "text", "text": format!("Tool '{}' is disabled.", name) }],
         "isError": true

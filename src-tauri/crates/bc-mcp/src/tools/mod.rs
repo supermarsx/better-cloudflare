@@ -161,11 +161,29 @@ pub async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
 /// Final dispatch boundary. Registry resolution, grant enforcement, and
 /// argument bounds all happen here so callers cannot bypass them by invoking a
 /// private sub-handler directly.
+#[allow(dead_code)] // Retained for crate tests and in-process compatibility audits.
 pub(crate) async fn execute_tool_with_grants(
     grants: &PermissionGrantSet,
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
+    let prepared = prepare_tool_invocation(grants, name, args)?;
+    dispatch_prepared_tool(prepared.canonical_name, &prepared.arguments).await
+}
+
+pub(crate) struct PreparedToolInvocation {
+    pub(crate) canonical_name: &'static str,
+    pub(crate) arguments: Value,
+}
+
+/// Resolve the exact registered permission, enforce the current grant and
+/// per-call high-risk acknowledgement, and strip the acknowledgement before a
+/// handler can observe the arguments.
+pub(crate) fn prepare_tool_invocation(
+    grants: &PermissionGrantSet,
+    name: &str,
+    args: &Value,
+) -> Result<PreparedToolInvocation, String> {
     let permission = permission_for_invocation(name)
         .ok_or_else(|| "Tool dispatch denied: tool is not registered.".to_string())?;
     if !grants.allows(permission) {
@@ -175,9 +193,19 @@ pub(crate) async fn execute_tool_with_grants(
         ));
     }
     let handler_args = prepare_handler_arguments(permission, args)?;
-    let args = &handler_args;
+    Ok(PreparedToolInvocation {
+        canonical_name: permission.invocation_name,
+        arguments: handler_args,
+    })
+}
 
-    let canonical_name = permission.invocation_name;
+/// Dispatch an invocation which has already crossed the authoritative
+/// permission boundary. This remains crate-private so external callers cannot
+/// bypass grants or confirmation.
+pub(crate) async fn dispatch_prepared_tool(
+    canonical_name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     if canonical_name.starts_with("cf_") {
         return cloudflare::execute(canonical_name, args).await;
     }
