@@ -374,6 +374,9 @@ export class ServerClient {
    */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     if (isDesktop()) {
+      if (signal === undefined) {
+        return TauriClient.getZones(this.apiKey, this.email) as Promise<Zone[]>;
+      }
       return TauriClient.getZones(this.apiKey, this.email, signal) as Promise<
         Zone[]
       >;
@@ -666,6 +669,11 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<{ id: string; counter?: number }[]> {
     if (isDesktop()) {
+      if (signal === undefined) {
+        return TauriClient.listPasskeys(id) as Promise<
+          { id: string; counter?: number }[]
+        >;
+      }
       return TauriClient.listPasskeys(id, signal) as Promise<
         { id: string; counter?: number }[]
       >;

@@ -29,28 +29,38 @@ test("Pages workflow verifies the project export before deploying main", () => {
   );
   const configurePagesPin =
     "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0";
+  const buildStart = workflow.indexOf("  build:");
+  const deployStart = workflow.indexOf("  deploy:");
 
   assert.match(workflow, /push:\s*\n\s+branches: \[main\]/);
+  assert.notEqual(buildStart, -1);
+  assert.notEqual(deployStart, -1);
+  const build = workflow.slice(buildStart, deployStart);
+  const deploy = workflow.slice(deployStart);
   assert.equal(
     workflow.split(`uses: ${configurePagesPin}`).length - 1,
-    2,
-    "both Pages configuration paths must use the current immutable v6 pin",
+    1,
+    "the deployment path must use exactly one current immutable v6 pin",
   );
-  assert.match(workflow, /token: \$\{\{ secrets\.PAGES_ADMIN_TOKEN \}\}/);
-  assert.match(workflow, /enablement: true/);
-  assert.match(workflow, /Settings > Pages > Build and deployment > Source/);
-  assert.match(workflow, /Pages: write and Administration: write/);
+  assert.match(build, /permissions:\s*\n\s+contents: read/);
+  assert.doesNotMatch(build, /pages:\s*write|id-token:\s*write/);
+  assert.match(build, /persist-credentials: false/);
+  assert.doesNotMatch(workflow, /PAGES_ADMIN_TOKEN|enablement:/);
+  assert.match(deploy, /permissions:\s*\n\s+contents: read/);
+  assert.match(deploy, /pages:\s*write/);
+  assert.match(deploy, /id-token:\s*write/);
+  assert.ok(deploy.includes(`uses: ${configurePagesPin}`));
   assert.match(
     workflow,
-    /name: Build project-path export\s*\n\s+run: npm run build:pages:ci/,
+    /name: Build project-path export\s*\n\s+env:\s*\n\s+NODE_OPTIONS: --max-old-space-size=3072\s*\n\s+run: npm run build:pages:ci/,
   );
   assert.match(
     workflow,
-    /name: Install Playwright Chromium\s*\n\s+run: npx playwright install --with-deps chromium/,
+    /name: Install Playwright Chromium\s*\n\s+env:\s*\n\s+NODE_OPTIONS: --max-old-space-size=1536\s*\n\s+run: npx playwright install --with-deps chromium/,
   );
   assert.match(
     workflow,
-    /name: Verify project-path static export\s*\n\s+run: npm run test:e2e:pages/,
+    /name: Verify project-path static export\s*\n\s+env:\s*\n\s+NODE_OPTIONS: --max-old-space-size=1536\s*\n\s+run: npm run test:e2e:pages/,
   );
   assert.match(
     workflow,
@@ -76,7 +86,6 @@ test("Pages workflow verifies the project export before deploying main", () => {
 
   assert.doesNotMatch(workflow, /pages_enabled|check-pages/);
   assert.doesNotMatch(workflow, /Skipping deployment/);
-  assert.doesNotMatch(workflow, /enablement: false/);
   assert.doesNotMatch(
     workflow,
     /name: Build export\s*\n\s+if:/,
