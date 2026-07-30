@@ -7,6 +7,7 @@ import {
   closeSync,
   constants,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -113,6 +114,13 @@ function fail(message) {
   throw new Error(message);
 }
 
+function requireRealDirectory(path, label) {
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+  if (!metadata || !metadata.isDirectory() || metadata.isSymbolicLink()) {
+    fail(`${label} must be a real directory, not a symlink: ${path}.`);
+  }
+}
+
 export function assertMatrixContract(matrix = RELEASE_MATRIX) {
   if (matrix.length !== 6) {
     fail(
@@ -189,6 +197,9 @@ export function nextReleaseTag(year, tags) {
     maximum = Math.max(maximum, sequence);
   }
 
+  if (maximum === Number.MAX_SAFE_INTEGER) {
+    fail(`Release sequence cannot be incremented safely for year ${year}.`);
+  }
   return `${year}.${maximum + 1}`;
 }
 
@@ -402,9 +413,10 @@ export function stageNativeAsset(bundleRoot, platform, arch, outputDirectory) {
   const entry = matrixEntry(platform, arch);
   const root = resolve(bundleRoot);
 
-  if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+  if (!lstatSync(root, { throwIfNoEntry: false })) {
     fail(`Tauri bundle directory is missing: ${root}.`);
   }
+  requireRealDirectory(root, "Tauri bundle directory");
 
   const candidates = filesRecursively(root).filter(
     (path) => path.endsWith(entry.sourceSuffix) && statSync(path).size > 0,
@@ -417,6 +429,7 @@ export function stageNativeAsset(bundleRoot, platform, arch, outputDirectory) {
 
   const destinationDirectory = resolve(outputDirectory);
   mkdirSync(destinationDirectory, { recursive: true });
+  requireRealDirectory(destinationDirectory, "Release output directory");
   const destination = join(destinationDirectory, entry.asset);
   releaseAssetSize(candidates[0]);
   copyFileSync(candidates[0], destination, constants.COPYFILE_EXCL);
@@ -454,9 +467,10 @@ export function validateAssetNames(names, matrix = RELEASE_MATRIX) {
 
 export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
   const root = resolve(directory);
-  if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+  if (!lstatSync(root, { throwIfNoEntry: false })) {
     fail(`Release asset directory is missing: ${root}.`);
   }
+  requireRealDirectory(root, "Release asset directory");
 
   const entries = readdirSync(root, { withFileTypes: true });
   if (entries.some((entry) => !entry.isFile())) {
@@ -488,9 +502,10 @@ export function aggregateNativeArtifacts(
 ) {
   assertMatrixContract(matrix);
   const root = resolve(artifactRoot);
-  if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+  if (!lstatSync(root, { throwIfNoEntry: false })) {
     fail(`Native artifact root is missing: ${root}.`);
   }
+  requireRealDirectory(root, "Native artifact root");
 
   const expectedDirectories = matrix
     .map(({ platform, arch }) => `native-${platform}-${arch}`)
@@ -516,6 +531,7 @@ export function aggregateNativeArtifacts(
 
   const destination = resolve(outputDirectory);
   mkdirSync(destination, { recursive: true });
+  requireRealDirectory(destination, "Aggregate release directory");
   if (readdirSync(destination).length !== 0) {
     fail(`Aggregate release directory must be empty: ${destination}.`);
   }
@@ -655,7 +671,7 @@ export function assertRemoteMain(commit, remote = "origin") {
   );
 }
 
-export function assertReleaseTagTarget(tag, commit) {
+export function assertReleaseTagTarget(tag, commit, remote = "origin") {
   if (!/^\d{2}\.(0|[1-9]\d*)$/.test(tag)) {
     fail(`Release tag is invalid: "${tag}".`);
   }
@@ -664,10 +680,10 @@ export function assertReleaseTagTarget(tag, commit) {
       `Release commit must be a full 40-character SHA; received "${commit}".`,
     );
   }
-  const actual = tagCommit(tag);
+  const actual = remoteReferenceCommit(remote, `refs/tags/${tag}`);
   if (actual.toLowerCase() !== commit.toLowerCase()) {
     fail(
-      `Release tag ${tag} targets ${actual || "nothing"}, expected ${commit}.`,
+      `Remote release tag ${tag} targets ${actual || "nothing"}, expected ${commit}.`,
     );
   }
   return true;
@@ -695,12 +711,18 @@ export function validateReleaseMetadata(
       `Release metadata tag is ${String(metadata.tagName)}, expected ${expectedTag}.`,
     );
   }
+  // GitHub documents target_commitish as a tag-creation hint. It is unused
+  // when the tag already exists, as it does after our atomic reservation, and
+  // the API can therefore retain the default branch name. The pushed tag is
+  // the authoritative release target and is verified separately.
   if (
     typeof metadata.targetCommitish !== "string" ||
-    metadata.targetCommitish.toLowerCase() !== expectedCommit.toLowerCase()
+    ![expectedCommit.toLowerCase(), "main"].includes(
+      metadata.targetCommitish.toLowerCase(),
+    )
   ) {
     fail(
-      `Release metadata target is ${String(metadata.targetCommitish)}, expected ${expectedCommit}.`,
+      `Release metadata target is ${String(metadata.targetCommitish)}, expected ${expectedCommit} or main for an existing verified tag.`,
     );
   }
   const expectedDraft =
@@ -821,7 +843,12 @@ export function cleanupReservedTag(commit, tag, created, remote = "origin") {
     allowFailure: true,
   });
   if (local.status === 0) {
-    assertReleaseTagTarget(tag, commit);
+    const localTarget = tagCommit(tag);
+    if (localTarget.toLowerCase() !== commit.toLowerCase()) {
+      fail(
+        `Refusing to clean local release tag ${tag}: target ${localTarget} does not match ${commit}.`,
+      );
+    }
     runGit(["tag", "--delete", tag]);
   }
   return true;

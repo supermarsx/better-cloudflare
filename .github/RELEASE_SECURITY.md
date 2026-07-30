@@ -14,8 +14,9 @@ Before publication, the workflow:
   the wrong architecture;
 - verifies every checksum, downloads the draft again, and compares every byte
   with the build output;
-- creates GitHub/Sigstore build-provenance attestations without adding files to
-  the twelve-asset release contract;
+- creates GitHub/Sigstore build-provenance attestations and requires the exact
+  source commit and reusable signer workflow without adding files to the
+  twelve-asset release contract;
 - pins release builds to Node 24.18.1 and Rust 1.97.1;
 - refuses to overwrite release assets and safely removes a failed draft and
   newly reserved tag only when both still target the expected commit.
@@ -25,7 +26,11 @@ Consumers should verify both controls:
 ```sh
 sha256sum --check better-cloudflare-PLATFORM-ARCH.EXT.sha256
 gh attestation verify better-cloudflare-PLATFORM-ARCH.EXT \
-  --repo supermarsx/better-cloudflare
+  --repo supermarsx/better-cloudflare \
+  --signer-workflow supermarsx/better-cloudflare/.github/workflows/autopublish.yml \
+  --signer-digest EXPECTED_COMMIT_SHA \
+  --source-digest EXPECTED_COMMIT_SHA \
+  --source-ref refs/heads/main
 ```
 
 ## Explicit residual controls

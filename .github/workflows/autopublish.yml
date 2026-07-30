@@ -188,11 +188,17 @@ jobs:
       - name: Verify build provenance attestations
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
         shell: bash
         run: |
           set -euo pipefail
           for asset in release-assets/*; do
-            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml" \
+              --signer-digest "$RELEASE_SHA" \
+              --source-digest "$RELEASE_SHA" \
+              --source-ref "refs/heads/main"
           done
       - name: Atomically reserve the next YY.N tag
         id: tag
@@ -226,7 +232,11 @@ jobs:
               asset_name="$(basename "$local_asset")"
               cmp -- "$local_asset" "$directory/$asset_name"
               gh attestation verify "$directory/$asset_name" \
-                --repo "$GITHUB_REPOSITORY"
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml" \
+                --signer-digest "$RELEASE_SHA" \
+                --source-digest "$RELEASE_SHA" \
+                --source-ref "refs/heads/main"
             done
           }
 
@@ -273,6 +283,7 @@ jobs:
             --dir uploaded-assets
           verify_downloaded_release uploaded-assets
 
+          verify_tag_and_metadata draft
           node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
 
           gh release edit "$RELEASE_TAG" \

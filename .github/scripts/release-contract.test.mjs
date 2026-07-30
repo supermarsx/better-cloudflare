@@ -5,7 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +33,9 @@ import {
 
 const RELEASE_CONTRACT_SCRIPT = fileURLToPath(
   new URL("./release-contract.mjs", import.meta.url),
+);
+const BOUNDED_NODE_SCRIPT = fileURLToPath(
+  new URL("./run-bounded-node.ps1", import.meta.url),
 );
 const AUTOPUBLISH_WORKFLOW = readFileSync(
   new URL("../workflows/autopublish.yml", import.meta.url),
@@ -181,6 +186,10 @@ test("next release tag is strict and incremental within the requested year", () 
     "26.5",
   );
   assert.throws(() => nextReleaseTag("2026", []), /exactly two digits/);
+  assert.throws(
+    () => nextReleaseTag("26", [`26.${Number.MAX_SAFE_INTEGER}`]),
+    /cannot be incremented safely/,
+  );
 });
 
 test("runner verification rejects a target that is only cross-compiled", () => {
@@ -292,6 +301,34 @@ test("native staging renames one real bundle and writes its checksum", () => {
   }
 });
 
+test("native staging refuses a junction that escapes its output directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-junction-"));
+  try {
+    const bundleRoot = join(root, "bundle", "appimage");
+    const outside = join(root, "outside");
+    const output = join(root, "output");
+    mkdirSync(bundleRoot, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(
+      join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage"),
+      "native-appimage",
+    );
+    symlinkSync(
+      outside,
+      output,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    assert.throws(
+      () => stageNativeAsset(bundleRoot, "linux", "x64", output),
+      /must be a real directory, not a symlink/,
+    );
+    assert.deepEqual(readdirSync(outside), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("aggregate validation fails on missing assets and verifies all checksums", () => {
   const root = mkdtempSync(join(tmpdir(), "better-cloudflare-assets-"));
   try {
@@ -366,6 +403,20 @@ test("release metadata rejects a release that targets another commit", () => {
       "published",
     ),
     true,
+  );
+  assert.equal(
+    validateReleaseMetadata(
+      {
+        tagName: "26.7",
+        targetCommitish: "main",
+        isDraft: false,
+      },
+      "26.7",
+      commit,
+      "published",
+    ),
+    true,
+    "GitHub retains the default branch as target_commitish when the verified tag already exists",
   );
   assert.throws(
     () =>
@@ -529,6 +580,55 @@ test("a newly reserved orphan tag can be safely recovered and reused", () => {
   }
 });
 
+test("remote tag movement is detected even when the local tag is stale", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-moved-tag-"));
+  try {
+    const remote = join(root, "remote.git");
+    const work = join(root, "work");
+    run("git", ["init", "--bare", remote], root);
+    run("git", ["init", work], root);
+    run("git", ["config", "user.name", "Release Contract Test"], work);
+    run(
+      "git",
+      ["config", "user.email", "release-contract@example.invalid"],
+      work,
+    );
+    run("git", ["commit", "--allow-empty", "-m", "release"], work);
+    run("git", ["branch", "-M", "main"], work);
+    run("git", ["remote", "add", "origin", remote], work);
+    run("git", ["push", "-u", "origin", "main"], work);
+    const releaseCommit = run("git", ["rev-parse", "HEAD"], work);
+    run(
+      process.execPath,
+      [RELEASE_CONTRACT_SCRIPT, "reserve-tag", releaseCommit, "26"],
+      work,
+    );
+
+    run("git", ["commit", "--allow-empty", "-m", "replacement"], work);
+    const replacementCommit = run("git", ["rev-parse", "HEAD"], work);
+    run(
+      "git",
+      ["push", "--force", "origin", `${replacementCommit}:refs/tags/26.1`],
+      work,
+    );
+
+    assert.equal(
+      run("git", ["rev-parse", "refs/tags/26.1"], work),
+      releaseCommit,
+    );
+    assert.match(
+      runFailure(
+        process.execPath,
+        [RELEASE_CONTRACT_SCRIPT, "verify-tag", "26.1", releaseCommit],
+        work,
+      ),
+      /Remote release tag 26\.1 targets/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("publication is globally serialized and never merges or clobbers assets", () => {
   assert.match(
     AUTOPUBLISH_WORKFLOW,
@@ -548,6 +648,18 @@ test("publication is globally serialized and never merges or clobbers assets", (
     AUTOPUBLISH_WORKFLOW,
     /release-contract\.mjs aggregate\s+release-artifacts release-assets/,
   );
+  for (const requirement of [
+    '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml"',
+    '--signer-digest "$RELEASE_SHA"',
+    '--source-digest "$RELEASE_SHA"',
+    '--source-ref "refs/heads/main"',
+  ]) {
+    assert.equal(
+      AUTOPUBLISH_WORKFLOW.split(requirement).length - 1,
+      2,
+      `Every provenance verification must enforce ${requirement}`,
+    );
+  }
 });
 
 test("CI and release toolchains are exact rather than mutable channels", () => {
@@ -598,8 +710,12 @@ test("security workflows pin external actions to immutable commits", () => {
     /actions\/dependency-review-action@[0-9a-f]{40}/,
   );
   assert.match(
-    SECURITY_WORKFLOW,
-    /google\/osv-scanner-action\/osv-scanner-action@[0-9a-f]{40}/,
+    `${SECURITY_WORKFLOW}\n${CI_WORKFLOW}`,
+    /docker:\/\/ghcr\.io\/google\/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba/,
+  );
+  assert.doesNotMatch(
+    `${SECURITY_WORKFLOW}\n${CI_WORKFLOW}`,
+    /google\/osv-scanner-action\/osv-scanner-action@/,
   );
 
   const workflowRoot = fileURLToPath(new URL("../workflows", import.meta.url));
@@ -618,6 +734,14 @@ test("security workflows pin external actions to immutable commits", () => {
       if (reference.startsWith("./")) {
         continue;
       }
+      if (reference.startsWith("docker://")) {
+        assert.match(
+          reference,
+          /^docker:\/\/[^@\s]+@sha256:[0-9a-f]{64}$/,
+          `${name} uses a mutable Docker action image: ${reference}`,
+        );
+        continue;
+      }
       assert.match(
         reference,
         /@[0-9a-f]{40}$/,
@@ -625,4 +749,48 @@ test("security workflows pin external actions to immutable commits", () => {
       );
     }
   }
+});
+
+test("CodeQL caps both extraction and analysis resources", () => {
+  assert.equal(SECURITY_WORKFLOW.match(/^\s+threads: 2$/gm)?.length, 2);
+  assert.equal(SECURITY_WORKFLOW.match(/^\s+ram: 4096$/gm)?.length, 2);
+});
+
+test("bounded Node watchdog retains peak accounting after fast exit", () => {
+  const watchdog = readFileSync(BOUNDED_NODE_SCRIPT, "utf8");
+  assert.match(watchdog, /PeakWorkingSet64/);
+  assert.match(watchdog, /Root Node process exited with live descendants/);
+
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-File",
+      BOUNDED_NODE_SCRIPT,
+      "-NodeArguments",
+      "--version",
+      "-HeapLimitMiB",
+      "128",
+      "-ProcessTreeLimitMiB",
+      "256",
+      "-TimeoutSeconds",
+      "30",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const peak = /WATCHDOG_PEAK_MIB=([\d.]+)/.exec(result.stdout)?.[1];
+  assert.ok(peak, `Watchdog omitted peak RSS:\n${result.stdout}`);
+  assert.ok(
+    Number(peak) > 0,
+    `Watchdog reported a false zero peak:\n${result.stdout}`,
+  );
+  assert.ok(
+    Number(peak) <= 256,
+    `Watchdog exceeded its aggregate cap:\n${result.stdout}`,
+  );
 });

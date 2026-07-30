@@ -10,6 +10,8 @@ import { createPlaywrightConfig } from "../playwright.config.ts";
 const root = new URL("../", import.meta.url);
 const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const rustCacheRevision = "c19371144df3bb44fab255c43d04cbc2ab54d1c4";
+const osvScannerImage =
+  "docker://ghcr.io/google/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba";
 const workflowPaths = readdirSync(new URL(".github/workflows/", root))
   .filter((name) => /\.ya?ml$/.test(name))
   .sort()
@@ -46,10 +48,6 @@ const externalActionPins = new Map([
   [
     "github/codeql-action/init@v4.37.4",
     "f205ea1c3313d32999d8d6a48b4f6530d4437b38",
-  ],
-  [
-    "google/osv-scanner-action/osv-scanner-action@v2.3.8",
-    "9a498708959aeaef5ef730655706c5a1df1edbc2",
   ],
   ["Swatinem/rust-cache@v2.9.1", "c19371144df3bb44fab255c43d04cbc2ab54d1c4"],
 ]);
@@ -331,8 +329,9 @@ test("reliability specifications reject browser and network failures", () => {
   assert.match(harness, /runtime\.assertClean\(\)/);
 });
 
-test("every external workflow action is pinned to its resolved commit", () => {
+test("every external workflow action and image is immutably pinned", () => {
   const observed = new Map<string, string>();
+  let observedOsvImages = 0;
 
   for (const workflowPath of workflowPaths) {
     for (const [index, line] of read(workflowPath).split(/\r?\n/).entries()) {
@@ -340,6 +339,21 @@ test("every external workflow action is pinned to its resolved commit", () => {
         line,
       );
       if (!uses || uses[1].startsWith("./")) continue;
+
+      if (uses[1].startsWith("docker://")) {
+        assert.equal(
+          uses[1],
+          osvScannerImage,
+          `${workflowPath}:${index + 1} uses an unapproved Docker action image`,
+        );
+        assert.equal(
+          uses[2],
+          "v2.3.8",
+          `${workflowPath}:${index + 1} must retain the OSV version comment`,
+        );
+        observedOsvImages += 1;
+        continue;
+      }
 
       const action = /^([^@]+)@([0-9a-f]{40})$/.exec(uses[1]);
       assert.ok(
@@ -367,6 +381,7 @@ test("every external workflow action is pinned to its resolved commit", () => {
   }
 
   assert.deepEqual(observed, externalActionPins);
+  assert.equal(observedOsvImages, 2);
 });
 
 test("main pushes keep a globally serialized non-cancelling release opportunity", () => {

@@ -48,9 +48,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan JavaScript and Rust lockfiles
-        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        uses: docker://ghcr.io/google/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba # v2.3.8
         with:
-          scan-args: |-
+          args: >-
             --lockfile=./package-lock.json
             --lockfile=./Cargo.lock
 
@@ -79,6 +79,8 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
+          threads: 2
+          ram: 4096
       - name: Analyze
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
