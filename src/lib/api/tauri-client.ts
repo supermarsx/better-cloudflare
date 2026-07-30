@@ -732,19 +732,19 @@ export class TauriClient {
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
       hostnames,
-      max_hops: maxHops,
-      service_hosts: serviceHosts,
-      doh_provider: dohProvider,
-      doh_custom_url: dohCustomUrl,
-      resolver_mode: resolverMode,
-      dns_server: dnsServer,
-      custom_dns_server: customDnsServer,
-      lookup_timeout_ms: lookupTimeoutMs,
-      disable_ptr_lookups: disablePtrLookups,
-      tcp_service_ports: tcpServicePorts,
-      disable_geo_lookups: disableGeoLookups,
-      geo_provider: geoProvider,
-      scan_resolution_chain: scanResolutionChain,
+      maxHops,
+      ...(serviceHosts === undefined ? {} : { serviceHosts }),
+      dohProvider,
+      dohCustomUrl,
+      resolverMode,
+      dnsServer,
+      customDnsServer,
+      lookupTimeoutMs,
+      disablePtrLookups,
+      ...(tcpServicePorts === undefined ? {} : { tcpServicePorts }),
+      disableGeoLookups,
+      geoProvider,
+      scanResolutionChain,
     });
   }
 

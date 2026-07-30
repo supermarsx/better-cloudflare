@@ -159,6 +159,160 @@ test("sends DNS pagination and export arguments through IPC in camelCase", async
   }
 });
 
+test("sends the complete topology invoke contract in camelCase and preserves optional value semantics", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown>;
+  }> = [];
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown>,
+    });
+    return { resolutions: [], probes: [], tcp_probes: [] };
+  });
+
+  await TauriClient.resolveTopologyBatch(
+    ["www.example.com", "api.example.com"],
+    7,
+    ["service.example.com"],
+    "custom",
+    "https://resolver.example/dns-query",
+    "doh",
+    "custom",
+    "192.0.2.53",
+    3456,
+    true,
+    [443, 8443],
+    true,
+    "internal",
+    false,
+  );
+  await TauriClient.resolveTopologyBatch(["defaults.example.com"]);
+  await TauriClient.resolveTopologyBatch(
+    ["null-options.example.com"],
+    4,
+    null as unknown as string[] | undefined,
+    "quad9",
+    "",
+    "dns",
+    "9.9.9.9",
+    "",
+    1200,
+    false,
+    null as unknown as number[] | undefined,
+    false,
+    "auto",
+    true,
+  );
+
+  assert.deepEqual(calls, [
+    {
+      command: "resolve_topology_batch",
+      payload: {
+        hostnames: ["www.example.com", "api.example.com"],
+        maxHops: 7,
+        serviceHosts: ["service.example.com"],
+        dohProvider: "custom",
+        dohCustomUrl: "https://resolver.example/dns-query",
+        resolverMode: "doh",
+        dnsServer: "custom",
+        customDnsServer: "192.0.2.53",
+        lookupTimeoutMs: 3456,
+        disablePtrLookups: true,
+        tcpServicePorts: [443, 8443],
+        disableGeoLookups: true,
+        geoProvider: "internal",
+        scanResolutionChain: false,
+      },
+    },
+    {
+      command: "resolve_topology_batch",
+      payload: {
+        hostnames: ["defaults.example.com"],
+        maxHops: 15,
+        dohProvider: "cloudflare",
+        dohCustomUrl: "",
+        resolverMode: "dns",
+        dnsServer: "1.1.1.1",
+        customDnsServer: "",
+        lookupTimeoutMs: 1200,
+        disablePtrLookups: false,
+        disableGeoLookups: false,
+        geoProvider: "auto",
+        scanResolutionChain: true,
+      },
+    },
+    {
+      command: "resolve_topology_batch",
+      payload: {
+        hostnames: ["null-options.example.com"],
+        maxHops: 4,
+        serviceHosts: null,
+        dohProvider: "quad9",
+        dohCustomUrl: "",
+        resolverMode: "dns",
+        dnsServer: "9.9.9.9",
+        customDnsServer: "",
+        lookupTimeoutMs: 1200,
+        disablePtrLookups: false,
+        tcpServicePorts: null,
+        disableGeoLookups: false,
+        geoProvider: "auto",
+        scanResolutionChain: true,
+      },
+    },
+  ]);
+});
+
+test("topology invokes never emit snake_case command argument keys", async () => {
+  let payload: Record<string, unknown> | undefined;
+  mockIPC((_command, args) => {
+    payload = args as Record<string, unknown>;
+    return { resolutions: [], probes: [], tcp_probes: [] };
+  });
+
+  await TauriClient.resolveTopologyBatch(
+    ["www.example.com"],
+    7,
+    ["service.example.com"],
+    "custom",
+    "https://resolver.example/dns-query",
+    "doh",
+    "custom",
+    "192.0.2.53",
+    3456,
+    true,
+    [443],
+    true,
+    "ipwhois",
+    false,
+  );
+
+  assert.ok(payload);
+  for (const forbiddenKey of [
+    "max_hops",
+    "service_hosts",
+    "doh_provider",
+    "doh_custom_url",
+    "resolver_mode",
+    "dns_server",
+    "custom_dns_server",
+    "lookup_timeout_ms",
+    "disable_ptr_lookups",
+    "tcp_service_ports",
+    "disable_geo_lookups",
+    "geo_provider",
+    "scan_resolution_chain",
+  ]) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload, forbiddenKey),
+      false,
+      `topology payload must not emit ${forbiddenKey}`,
+    );
+  }
+});
+
 test("sends complete bounded and open-ended Analytics payloads", async () => {
   const calls: Array<{
     command: string;
