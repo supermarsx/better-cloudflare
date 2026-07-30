@@ -331,6 +331,9 @@ pub async fn spf_graph(domain: String) -> Result<bc_spf::SPFGraph, String> {
 
 // ─── Topology ───────────────────────────────────────────────────────────────
 
+// Tauri derives these top-level argument names from the command signature.
+// Grouping them would break the established `resolve_topology_batch` IPC payload.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn resolve_topology_batch(
     hostnames: Vec<String>,

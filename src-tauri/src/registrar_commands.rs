@@ -30,6 +30,9 @@ async fn build_client_from_id(
 
 // ─── Credential management ─────────────────────────────────────────────────
 
+// Tauri derives these top-level argument names from the command signature.
+// Grouping them would break the established `add_registrar_credential` IPC payload.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn add_registrar_credential(
     storage: State<'_, Storage>,

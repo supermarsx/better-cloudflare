@@ -150,7 +150,7 @@ fn main() {
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(Storage::default())
-        .manage(PasskeyManager::default())
+        .manage(PasskeyManager)
         .manage(McpServerManager::default())
         .manage(SessionManager::default())
         .manage(AgentManager::default())
