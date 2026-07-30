@@ -1182,9 +1182,9 @@ export class TauriClient {
         apiKey,
         zoneId,
         mode,
-        ip,
-        notes,
-        email,
+        value: ip,
+        notes: notes ?? "",
+        ...(email === undefined ? {} : { email }),
       },
       { signal },
     );
