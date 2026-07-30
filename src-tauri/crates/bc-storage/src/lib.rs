@@ -1,9 +1,12 @@
 //! # bc-storage
 //!
-//! Secure storage layer backed by the OS keyring with an in-memory fallback.
+//! Secure storage layer backed by the OS keyring.
 //!
-//! Large values are transparently chunked across multiple keyring entries
-//! (limit ≈ 2 000 bytes per entry) and reassembled on read.
+//! Durable writes use immutable, versioned chunks and atomically replace a
+//! small manifest pointer only after every chunk has been read back and
+//! verified. Legacy direct values and stable-name chunk records remain
+//! readable. In-memory storage is used only when explicitly requested through
+//! [`Storage::new(false)`].
 //!
 //! Higher-level helpers manage API keys, vault secrets, passkey credentials,
 //! audit log entries, registrar credentials, encryption settings, and user
@@ -13,47 +16,211 @@ use keyring::Entry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use thiserror::Error;
 
 pub use bc_crypto::EncryptionConfig;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const KEYRING_CHUNK_MARKER: &str = "__chunked__:";
+const LEGACY_CHUNK_MARKER: &str = "__chunked__:";
+const CHUNK_MANIFEST_MARKER: &str = "__bc_chunks_v2__:";
 const KEYRING_MAX_VALUE_BYTES: usize = 2000;
+/// Hard ceiling for one logical secret, checked before chunk allocation.
+const MAX_SECRET_BYTES: usize = 2_000_000;
+/// Hard ceiling for chunk iteration, including legacy records.
+const MAX_CHUNK_COUNT: usize = 1000;
+const MAX_MANIFEST_BYTES: usize = 256;
 const SERVICE_NAME: &str = "better-cloudflare";
 const MAX_AUDIT_ENTRIES: usize = 1000;
+static LOGICAL_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
 
 // ── Chunking helpers ────────────────────────────────────────────────────────
 
-fn parse_chunk_marker(value: &str) -> Option<usize> {
-    value
-        .strip_prefix(KEYRING_CHUNK_MARKER)
-        .and_then(|raw| raw.parse::<usize>().ok())
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ChunkManifest {
+    generation: String,
+    chunk_count: usize,
+    byte_len: usize,
+    digest: String,
 }
 
-fn split_value_for_keyring(value: &str, max_bytes: usize) -> Vec<String> {
-    if value.is_empty() {
-        return vec![String::new()];
+impl ChunkManifest {
+    fn encode(&self) -> String {
+        format!(
+            "{CHUNK_MANIFEST_MARKER}{}:{}:{}:{}",
+            self.generation, self.chunk_count, self.byte_len, self.digest
+        )
     }
-    let mut chunks: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_bytes = 0usize;
-    for ch in value.chars() {
-        let ch_bytes = ch.len_utf8();
-        if current_bytes + ch_bytes > max_bytes && !current.is_empty() {
-            chunks.push(current);
-            current = String::new();
-            current_bytes = 0;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StoredRoot {
+    Direct(String),
+    LegacyChunks { chunk_count: usize },
+    Manifest(ChunkManifest),
+}
+
+fn parse_decimal(raw: &str, field: &'static str) -> Result<usize, StorageError> {
+    if !is_canonical_decimal(raw) {
+        return Err(StorageError::CorruptData(field));
+    }
+    raw.parse().map_err(|_| StorageError::CorruptData(field))
+}
+
+fn is_canonical_decimal(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.bytes().all(|byte| byte.is_ascii_digit())
+        && (raw.len() == 1 || !raw.starts_with('0'))
+}
+
+fn direct_stored_root(value: &str) -> Result<StoredRoot, StorageError> {
+    if value.len() > MAX_SECRET_BYTES {
+        return Err(StorageError::LimitExceeded);
+    }
+    Ok(StoredRoot::Direct(value.to_string()))
+}
+
+fn payload_digest(value: &str) -> String {
+    // FNV-1a is used only as a deterministic corruption checksum. The secret
+    // remains protected by the OS keyring; this is not a cryptographic MAC.
+    let mut checksum = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.bytes() {
+        checksum ^= u64::from(byte);
+        checksum = checksum.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{checksum:016x}")
+}
+
+fn validate_chunk_metadata(
+    chunk_count: usize,
+    byte_len: Option<usize>,
+) -> Result<(), StorageError> {
+    if chunk_count == 0 || chunk_count > MAX_CHUNK_COUNT {
+        return Err(StorageError::LimitExceeded);
+    }
+    if let Some(byte_len) = byte_len {
+        if byte_len > MAX_SECRET_BYTES
+            || byte_len > chunk_count.saturating_mul(KEYRING_MAX_VALUE_BYTES)
+            || (byte_len > 0 && chunk_count > byte_len)
+            || (byte_len == 0 && chunk_count != 1)
+        {
+            return Err(StorageError::LimitExceeded);
         }
-        current.push(ch);
-        current_bytes += ch_bytes;
     }
-    if !current.is_empty() {
-        chunks.push(current);
+    Ok(())
+}
+
+fn parse_stored_root(value: &str) -> Result<StoredRoot, StorageError> {
+    if let Some(raw_count) = value.strip_prefix(LEGACY_CHUNK_MARKER) {
+        if !is_canonical_decimal(raw_count) {
+            return direct_stored_root(value);
+        }
+        if raw_count.len() > MAX_CHUNK_COUNT.to_string().len() {
+            return Err(StorageError::LimitExceeded);
+        }
+        let chunk_count = parse_decimal(raw_count, "invalid legacy chunk count")?;
+        validate_chunk_metadata(chunk_count, None)?;
+        return Ok(StoredRoot::LegacyChunks { chunk_count });
     }
-    chunks
+
+    if let Some(raw_manifest) = value.strip_prefix(CHUNK_MANIFEST_MARKER) {
+        let mut fields = raw_manifest.split(':');
+        let candidate = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        );
+        let (Some(generation), Some(raw_count), Some(raw_bytes), Some(digest), None) = candidate
+        else {
+            return direct_stored_root(value);
+        };
+        if digest.len() != 16
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !is_canonical_decimal(raw_count)
+            || !is_canonical_decimal(raw_bytes)
+        {
+            return direct_stored_root(value);
+        }
+
+        let Ok(parsed_generation) = uuid::Uuid::parse_str(generation) else {
+            return direct_stored_root(value);
+        };
+        if parsed_generation.to_string() != generation {
+            return direct_stored_root(value);
+        }
+        if value.len() > MAX_MANIFEST_BYTES {
+            return Err(StorageError::LimitExceeded);
+        }
+
+        let chunk_count = parse_decimal(raw_count, "invalid manifest chunk count")?;
+        let byte_len = parse_decimal(raw_bytes, "invalid manifest byte length")?;
+        validate_chunk_metadata(chunk_count, Some(byte_len))?;
+        return Ok(StoredRoot::Manifest(ChunkManifest {
+            generation: generation.to_string(),
+            chunk_count,
+            byte_len,
+            digest: digest.to_string(),
+        }));
+    }
+
+    // Exact canonical marker-shaped direct values are inherently ambiguous and
+    // continue to be interpreted as metadata for backward compatibility.
+    direct_stored_root(value)
+}
+
+fn next_chunk_end(value: &str, start: usize) -> Result<usize, StorageError> {
+    let mut end = (start + KEYRING_MAX_VALUE_BYTES).min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == start {
+        return Err(StorageError::CorruptData("invalid UTF-8 chunk boundary"));
+    }
+    Ok(end)
+}
+
+fn utf8_aware_chunk_count(value: &str) -> Result<usize, StorageError> {
+    if value.is_empty() {
+        return Ok(1);
+    }
+
+    let mut chunk_count = 0_usize;
+    let mut start = 0;
+    while start < value.len() {
+        start = next_chunk_end(value, start)?;
+        chunk_count = chunk_count
+            .checked_add(1)
+            .ok_or(StorageError::LimitExceeded)?;
+    }
+    Ok(chunk_count)
+}
+
+fn split_value_for_keyring(value: &str) -> Result<Vec<String>, StorageError> {
+    if value.len() > MAX_SECRET_BYTES {
+        return Err(StorageError::LimitExceeded);
+    }
+
+    let chunk_count = utf8_aware_chunk_count(value)?;
+    if chunk_count > MAX_CHUNK_COUNT {
+        return Err(StorageError::LimitExceeded);
+    }
+    if value.is_empty() {
+        return Ok(vec![String::new()]);
+    }
+
+    let mut chunks = Vec::with_capacity(chunk_count);
+    let mut start = 0;
+    while start < value.len() {
+        let end = next_chunk_end(value, start)?;
+        chunks.push(value[start..end].to_string());
+        start = end;
+    }
+    Ok(chunks)
 }
 
 // ── API Key model ───────────────────────────────────────────────────────────
@@ -213,158 +380,409 @@ pub enum StorageError {
     NotFound,
     #[error("Keyring error: {0}")]
     KeyringError(String),
+    #[error("Stored data is corrupt: {0}")]
+    CorruptData(&'static str),
+    #[error("Stored value exceeds secure storage limits")]
+    LimitExceeded,
+}
+
+// ── Backend ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendError {
+    NotFound,
+    Failure,
+}
+
+trait SecretBackend: Send + Sync {
+    fn get(&self, key: &str) -> Result<String, BackendError>;
+    fn set(&self, key: &str, value: &str) -> Result<(), BackendError>;
+    fn delete(&self, key: &str) -> Result<(), BackendError>;
+}
+
+#[derive(Default)]
+struct KeyringBackend;
+
+impl KeyringBackend {
+    fn entry(key: &str) -> Result<Entry, BackendError> {
+        Entry::new(SERVICE_NAME, key).map_err(|_| BackendError::Failure)
+    }
+
+    fn map_error(error: keyring::Error) -> BackendError {
+        if matches!(error, keyring::Error::NoEntry) {
+            BackendError::NotFound
+        } else {
+            BackendError::Failure
+        }
+    }
+}
+
+impl SecretBackend for KeyringBackend {
+    fn get(&self, key: &str) -> Result<String, BackendError> {
+        Self::entry(key)?.get_password().map_err(Self::map_error)
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), BackendError> {
+        Self::entry(key)?
+            .set_password(value)
+            .map_err(Self::map_error)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), BackendError> {
+        Self::entry(key)?.delete_password().map_err(Self::map_error)
+    }
+}
+
+#[derive(Default)]
+struct MemoryBackend {
+    values: Mutex<HashMap<String, String>>,
+}
+
+impl SecretBackend for MemoryBackend {
+    fn get(&self, key: &str) -> Result<String, BackendError> {
+        let values = self.values.lock().map_err(|_| BackendError::Failure)?;
+        values.get(key).cloned().ok_or(BackendError::NotFound)
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), BackendError> {
+        let mut values = self.values.lock().map_err(|_| BackendError::Failure)?;
+        values.insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<(), BackendError> {
+        let mut values = self.values.lock().map_err(|_| BackendError::Failure)?;
+        if values.remove(key).is_some() {
+            Ok(())
+        } else {
+            Err(BackendError::NotFound)
+        }
+    }
 }
 
 // ── Storage ─────────────────────────────────────────────────────────────────
 
-/// Secure storage backed by the OS keyring with an in-memory fallback.
+/// Secure storage backed by the OS keyring, or by explicit in-memory mode.
 pub struct Storage {
-    memory_store: Mutex<HashMap<String, String>>,
-    use_keyring: bool,
+    backend: Arc<dyn SecretBackend>,
 }
 
 impl Default for Storage {
     fn default() -> Self {
-        Self {
-            memory_store: Mutex::new(HashMap::new()),
-            use_keyring: true,
-        }
+        Self::with_backend(Arc::new(KeyringBackend))
     }
 }
 
 impl Storage {
+    /// Construct storage in durable keyring mode (`true`) or explicit
+    /// process-local memory mode (`false`).
     pub fn new(use_keyring: bool) -> Self {
-        Self {
-            memory_store: Mutex::new(HashMap::new()),
-            use_keyring,
+        if use_keyring {
+            Self::default()
+        } else {
+            Self::with_backend(Arc::new(MemoryBackend::default()))
         }
     }
 
-    // ── Low-level keyring helpers ───────────────────────────────────────
-
-    fn get_entry(&self, key: &str) -> Result<Entry, StorageError> {
-        Entry::new(SERVICE_NAME, key).map_err(|e| StorageError::KeyringError(e.to_string()))
+    fn with_backend(backend: Arc<dyn SecretBackend>) -> Self {
+        Self { backend }
     }
 
-    fn chunk_key(key: &str, index: usize) -> String {
+    fn backend_error(operation: &'static str) -> StorageError {
+        StorageError::KeyringError(format!("secure storage {operation} failed"))
+    }
+
+    fn lock_error() -> StorageError {
+        StorageError::Error("storage synchronization failed".to_string())
+    }
+
+    fn logical_lock(&self, key: &str) -> Result<Arc<Mutex<()>>, StorageError> {
+        let mut locks = LOGICAL_LOCKS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| Self::lock_error())?;
+        if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key.to_string(), Arc::downgrade(&lock));
+        Ok(lock)
+    }
+
+    fn get_backend_value(&self, key: &str) -> Result<String, StorageError> {
+        match self.backend.get(key) {
+            Ok(value) => Ok(value),
+            Err(BackendError::NotFound) => Err(StorageError::NotFound),
+            Err(BackendError::Failure) => Err(Self::backend_error("read")),
+        }
+    }
+
+    fn set_backend_value(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        self.backend
+            .set(key, value)
+            .map_err(|_| Self::backend_error("write"))
+    }
+
+    fn delete_backend_value(&self, key: &str) -> Result<(), StorageError> {
+        self.backend
+            .delete(key)
+            .map_err(|_| Self::backend_error("delete"))
+    }
+
+    // ── Low-level chunk helpers ────────────────────────────────────────
+
+    fn legacy_chunk_key(key: &str, index: usize) -> String {
         format!("{key}::chunk:{index}")
     }
 
-    fn delete_chunk_entries(&self, key: &str, chunk_count: usize) {
+    fn generation_chunk_key(key: &str, generation: &str, index: usize) -> String {
+        format!("{key}::generation:{generation}:chunk:{index}")
+    }
+
+    fn read_legacy_chunks(&self, key: &str, chunk_count: usize) -> Result<String, StorageError> {
+        validate_chunk_metadata(chunk_count, None)?;
+        let mut combined = String::new();
         for idx in 0..chunk_count {
-            if let Ok(entry) = self.get_entry(&Self::chunk_key(key, idx)) {
-                let _ = entry.delete_password();
+            let chunk = match self.get_backend_value(&Self::legacy_chunk_key(key, idx)) {
+                Ok(chunk) => chunk,
+                Err(StorageError::NotFound) => {
+                    return Err(StorageError::CorruptData("missing legacy chunk"));
+                }
+                Err(error) => return Err(error),
+            };
+            if chunk.is_empty() || chunk.len() > KEYRING_MAX_VALUE_BYTES {
+                return Err(StorageError::CorruptData("invalid legacy chunk"));
+            }
+            let combined_len = combined
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(StorageError::LimitExceeded)?;
+            if combined_len > MAX_SECRET_BYTES {
+                return Err(StorageError::LimitExceeded);
+            }
+            combined.push_str(&chunk);
+        }
+        Ok(combined)
+    }
+
+    fn read_generation(&self, key: &str, manifest: &ChunkManifest) -> Result<String, StorageError> {
+        validate_chunk_metadata(manifest.chunk_count, Some(manifest.byte_len))?;
+        let mut combined = String::with_capacity(manifest.byte_len);
+        for idx in 0..manifest.chunk_count {
+            let chunk_key = Self::generation_chunk_key(key, &manifest.generation, idx);
+            let chunk = match self.get_backend_value(&chunk_key) {
+                Ok(chunk) => chunk,
+                Err(StorageError::NotFound) => {
+                    return Err(StorageError::CorruptData("missing generation chunk"));
+                }
+                Err(error) => return Err(error),
+            };
+            let is_valid_empty = manifest.byte_len == 0 && manifest.chunk_count == 1 && idx == 0;
+            if (!is_valid_empty && chunk.is_empty()) || chunk.len() > KEYRING_MAX_VALUE_BYTES {
+                return Err(StorageError::CorruptData("invalid generation chunk"));
+            }
+            let combined_len = combined
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(StorageError::LimitExceeded)?;
+            if combined_len > manifest.byte_len || combined_len > MAX_SECRET_BYTES {
+                return Err(StorageError::CorruptData(
+                    "generation exceeds declared byte length",
+                ));
+            }
+            combined.push_str(&chunk);
+        }
+        if combined.len() != manifest.byte_len {
+            return Err(StorageError::CorruptData("generation byte length mismatch"));
+        }
+        if payload_digest(&combined) != manifest.digest {
+            return Err(StorageError::CorruptData("generation digest mismatch"));
+        }
+        Ok(combined)
+    }
+
+    fn read_secret_unlocked(&self, key: &str) -> Result<String, StorageError> {
+        let root = self.get_backend_value(key)?;
+        match parse_stored_root(&root)? {
+            StoredRoot::Direct(value) => Ok(value),
+            StoredRoot::LegacyChunks { chunk_count } => self.read_legacy_chunks(key, chunk_count),
+            StoredRoot::Manifest(manifest) => self.read_generation(key, &manifest),
+        }
+    }
+
+    fn best_effort_delete_generation(&self, key: &str, manifest: &ChunkManifest) {
+        for idx in 0..manifest.chunk_count {
+            let chunk_key = Self::generation_chunk_key(key, &manifest.generation, idx);
+            let _ = self.backend.delete(&chunk_key);
+        }
+    }
+
+    fn best_effort_delete_legacy_chunks(&self, key: &str, chunk_count: usize) {
+        for idx in 0..chunk_count {
+            let _ = self.backend.delete(&Self::legacy_chunk_key(key, idx));
+        }
+    }
+
+    fn best_effort_cleanup_root(&self, key: &str, root: &StoredRoot) {
+        match root {
+            StoredRoot::Direct(_) => {}
+            StoredRoot::LegacyChunks { chunk_count } => {
+                self.best_effort_delete_legacy_chunks(key, *chunk_count);
+            }
+            StoredRoot::Manifest(manifest) => {
+                self.best_effort_delete_generation(key, manifest);
             }
         }
     }
 
-    fn write_keyring_secret(&self, key: &str, value: &str) -> Result<(), StorageError> {
-        let entry = self.get_entry(key)?;
-        let previous_chunk_count = entry
-            .get_password()
-            .ok()
-            .and_then(|v| parse_chunk_marker(&v))
-            .unwrap_or(0);
-
-        let chunks = split_value_for_keyring(value, KEYRING_MAX_VALUE_BYTES);
-        if chunks.len() == 1 {
-            entry
-                .set_password(value)
-                .map_err(|e| StorageError::KeyringError(e.to_string()))?;
-            if previous_chunk_count > 0 {
-                self.delete_chunk_entries(key, previous_chunk_count);
+    fn write_secret_unlocked(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let chunks = split_value_for_keyring(value)?;
+        let previous_root = match self.backend.get(key) {
+            Ok(value) => Some(parse_stored_root(&value)?),
+            Err(BackendError::NotFound) => None,
+            Err(BackendError::Failure) => return Err(Self::backend_error("read")),
+        };
+        let previous_generation = match previous_root.as_ref() {
+            Some(StoredRoot::Manifest(manifest)) => Some(manifest.generation.as_str()),
+            _ => None,
+        };
+        let generation = loop {
+            let candidate = uuid::Uuid::new_v4().to_string();
+            if previous_generation != Some(candidate.as_str()) {
+                break candidate;
             }
-            return Ok(());
-        }
+        };
+
+        let manifest = ChunkManifest {
+            generation,
+            chunk_count: chunks.len(),
+            byte_len: value.len(),
+            digest: payload_digest(value),
+        };
 
         for (idx, chunk) in chunks.iter().enumerate() {
-            let chunk_entry = self.get_entry(&Self::chunk_key(key, idx))?;
-            chunk_entry
-                .set_password(chunk)
-                .map_err(|e| StorageError::KeyringError(e.to_string()))?;
+            let chunk_key = Self::generation_chunk_key(key, &manifest.generation, idx);
+            if let Err(error) = self.set_backend_value(&chunk_key, chunk) {
+                self.best_effort_delete_generation(key, &manifest);
+                return Err(error);
+            }
         }
-        let marker = format!("{KEYRING_CHUNK_MARKER}{}", chunks.len());
-        entry
-            .set_password(&marker)
-            .map_err(|e| StorageError::KeyringError(e.to_string()))?;
-        if previous_chunk_count > chunks.len() {
-            for idx in chunks.len()..previous_chunk_count {
-                if let Ok(chunk_entry) = self.get_entry(&Self::chunk_key(key, idx)) {
-                    let _ = chunk_entry.delete_password();
+
+        match self.read_generation(key, &manifest) {
+            Ok(verified) if verified == value => {}
+            Ok(_) => {
+                self.best_effort_delete_generation(key, &manifest);
+                return Err(StorageError::CorruptData(
+                    "generation verification mismatch",
+                ));
+            }
+            Err(error) => {
+                self.best_effort_delete_generation(key, &manifest);
+                return Err(error);
+            }
+        }
+
+        let encoded_manifest = manifest.encode();
+        if let Err(error) = self.set_backend_value(key, &encoded_manifest) {
+            match self.backend.get(key) {
+                Ok(active_root) if active_root == encoded_manifest => {
+                    if let Some(previous_root) = previous_root {
+                        self.best_effort_cleanup_root(key, &previous_root);
+                    }
+                    return Ok(());
+                }
+                Ok(_) | Err(BackendError::NotFound) => {
+                    self.best_effort_delete_generation(key, &manifest);
+                    return Err(error);
+                }
+                Err(BackendError::Failure) => {
+                    return Err(error);
                 }
             }
+        }
+
+        if let Some(previous_root) = previous_root {
+            self.best_effort_cleanup_root(key, &previous_root);
         }
         Ok(())
     }
 
-    fn read_keyring_secret(&self, key: &str) -> Result<String, StorageError> {
-        let entry = self.get_entry(key)?;
-        let password = entry
-            .get_password()
-            .map_err(|e| StorageError::KeyringError(e.to_string()))?;
-        if let Some(chunk_count) = parse_chunk_marker(&password) {
-            let mut combined = String::new();
-            for idx in 0..chunk_count {
-                let chunk_entry = self.get_entry(&Self::chunk_key(key, idx))?;
-                let chunk = chunk_entry
-                    .get_password()
-                    .map_err(|e| StorageError::KeyringError(e.to_string()))?;
-                combined.push_str(&chunk);
-            }
-            return Ok(combined);
-        }
-        Ok(password)
+    fn delete_secret_unlocked(&self, key: &str) -> Result<(), StorageError> {
+        let root = match self.backend.get(key) {
+            Ok(value) => parse_stored_root(&value)?,
+            Err(BackendError::NotFound) => return Ok(()),
+            Err(BackendError::Failure) => return Err(Self::backend_error("read")),
+        };
+        self.delete_backend_value(key)?;
+        self.best_effort_cleanup_root(key, &root);
+        Ok(())
     }
 
     // ── Public low-level API ────────────────────────────────────────────
 
     pub async fn store_secret(&self, key: &str, value: &str) -> Result<(), StorageError> {
-        if self.use_keyring {
-            if self.write_keyring_secret(key, value).is_ok() {
-                return Ok(());
-            }
-        }
-        let mut store = self
-            .memory_store
-            .lock()
-            .map_err(|e| StorageError::Error(e.to_string()))?;
-        store.insert(key.to_string(), value.to_string());
-        Ok(())
+        let lock = self.logical_lock(key)?;
+        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        self.write_secret_unlocked(key, value)
     }
 
     pub async fn get_secret(&self, key: &str) -> Result<String, StorageError> {
-        if self.use_keyring {
-            if let Ok(password) = self.read_keyring_secret(key) {
-                return Ok(password);
-            }
-        }
-        let store = self
-            .memory_store
-            .lock()
-            .map_err(|e| StorageError::Error(e.to_string()))?;
-        store.get(key).cloned().ok_or(StorageError::NotFound)
+        let lock = self.logical_lock(key)?;
+        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        self.read_secret_unlocked(key)
     }
 
     pub async fn delete_secret(&self, key: &str) -> Result<(), StorageError> {
-        if self.use_keyring {
-            if let Ok(entry) = self.get_entry(key) {
-                let chunk_count = entry
-                    .get_password()
-                    .ok()
-                    .and_then(|v| parse_chunk_marker(&v))
-                    .unwrap_or(0);
-                let _ = entry.delete_password();
-                if chunk_count > 0 {
-                    self.delete_chunk_entries(key, chunk_count);
-                }
+        let lock = self.logical_lock(key)?;
+        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        self.delete_secret_unlocked(key)
+    }
+
+    fn read_json_list_unlocked<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Vec<T>, StorageError> {
+        match self.read_secret_unlocked(key) {
+            Ok(json) => {
+                serde_json::from_str(&json).map_err(|error| StorageError::Error(error.to_string()))
             }
+            Err(StorageError::NotFound) => Ok(Vec::new()),
+            Err(error) => Err(error),
         }
-        let mut store = self
-            .memory_store
-            .lock()
-            .map_err(|e| StorageError::Error(e.to_string()))?;
-        store.remove(key);
-        Ok(())
+    }
+
+    fn write_json_list_unlocked<T: Serialize>(
+        &self,
+        key: &str,
+        list: &[T],
+    ) -> Result<(), StorageError> {
+        let json =
+            serde_json::to_string(list).map_err(|error| StorageError::Error(error.to_string()))?;
+        self.write_secret_unlocked(key, &json)
+    }
+
+    /// Serialize a complete read-modify-write transaction for one logical
+    /// JSON-list key. Callers must not acquire the same logical lock or call a
+    /// locking public low-level method from `mutate`.
+    fn mutate_json_list<T, R>(
+        &self,
+        key: &str,
+        delete_when_empty: bool,
+        mutate: impl FnOnce(&mut Vec<T>) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let lock = self.logical_lock(key)?;
+        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        let mut list = self.read_json_list_unlocked(key)?;
+        let result = mutate(&mut list)?;
+        if delete_when_empty && list.is_empty() {
+            self.delete_secret_unlocked(key)?;
+        } else {
+            self.write_json_list_unlocked(key, &list)?;
+        }
+        Ok(result)
     }
 
     // ── API Key management ──────────────────────────────────────────────
@@ -384,21 +802,20 @@ impl Storage {
         email: Option<String>,
         config: EncryptionConfig,
     ) -> Result<String, StorageError> {
-        let mut keys = self.get_api_keys().await?;
         let id = format!("key_{}", uuid::Uuid::new_v4());
-
-        keys.push(ApiKey {
-            id: id.clone(),
-            label,
-            email,
-            encrypted_key,
-            iterations: config.iterations,
-            key_length: config.key_length,
-            algorithm: config.algorithm,
-        });
-
-        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("api_keys_list", &json).await?;
+        let stored_id = id.clone();
+        self.mutate_json_list("api_keys_list", false, move |keys: &mut Vec<ApiKey>| {
+            keys.push(ApiKey {
+                id: stored_id,
+                label,
+                email,
+                encrypted_key,
+                iterations: config.iterations,
+                key_length: config.key_length,
+                algorithm: config.algorithm,
+            });
+            Ok(())
+        })?;
         Ok(id)
     }
 
@@ -427,43 +844,38 @@ impl Storage {
         key_length: Option<usize>,
         algorithm: Option<String>,
     ) -> Result<(), StorageError> {
-        let mut keys = self.get_api_keys().await?;
-
-        if let Some(key) = keys.iter_mut().find(|k| k.id == id) {
-            if let Some(label) = label {
-                key.label = label;
+        self.mutate_json_list("api_keys_list", false, move |keys: &mut Vec<ApiKey>| {
+            if let Some(key) = keys.iter_mut().find(|key| key.id == id) {
+                if let Some(label) = label {
+                    key.label = label;
+                }
+                if let Some(email) = email {
+                    key.email = Some(email);
+                }
+                if let Some(encrypted_key) = encrypted_key {
+                    key.encrypted_key = encrypted_key;
+                }
+                if let Some(iterations) = iterations {
+                    key.iterations = iterations;
+                }
+                if let Some(key_length) = key_length {
+                    key.key_length = key_length;
+                }
+                if let Some(algorithm) = algorithm {
+                    key.algorithm = algorithm;
+                }
+                Ok(())
+            } else {
+                Err(StorageError::NotFound)
             }
-            if let Some(email) = email {
-                key.email = Some(email);
-            }
-            if let Some(encrypted_key) = encrypted_key {
-                key.encrypted_key = encrypted_key;
-            }
-            if let Some(iterations) = iterations {
-                key.iterations = iterations;
-            }
-            if let Some(key_length) = key_length {
-                key.key_length = key_length;
-            }
-            if let Some(algorithm) = algorithm {
-                key.algorithm = algorithm;
-            }
-        } else {
-            return Err(StorageError::NotFound);
-        }
-
-        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("api_keys_list", &json).await?;
-        Ok(())
+        })
     }
 
     pub async fn delete_api_key(&self, id: String) -> Result<(), StorageError> {
-        let mut keys = self.get_api_keys().await?;
-        keys.retain(|k| k.id != id);
-
-        let json = serde_json::to_string(&keys).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("api_keys_list", &json).await?;
-        Ok(())
+        self.mutate_json_list("api_keys_list", false, move |keys: &mut Vec<ApiKey>| {
+            keys.retain(|key| key.id != id);
+            Ok(())
+        })
     }
 
     // ── Vault operations ────────────────────────────────────────────────
@@ -495,27 +907,22 @@ impl Storage {
     }
 
     pub async fn store_passkey(&self, id: &str, credential: Value) -> Result<(), StorageError> {
-        let mut list = self.get_passkeys(id).await?;
-        list.push(credential);
         let key = format!("passkeys:{}", id);
-        let json = serde_json::to_string(&list).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret(&key, &json).await
+        self.mutate_json_list(&key, false, move |list: &mut Vec<Value>| {
+            list.push(credential);
+            Ok(())
+        })
     }
 
     pub async fn delete_passkey(&self, id: &str, credential_id: &str) -> Result<(), StorageError> {
-        let mut list = self.get_passkeys(id).await?;
-        list.retain(|c| {
-            c.get("id").and_then(|v| v.as_str()) != Some(credential_id)
-                && c.get("rawId").and_then(|v| v.as_str()) != Some(credential_id)
-        });
         let key = format!("passkeys:{}", id);
-        if list.is_empty() {
-            self.delete_secret(&key).await
-        } else {
-            let json =
-                serde_json::to_string(&list).map_err(|e| StorageError::Error(e.to_string()))?;
-            self.store_secret(&key, &json).await
-        }
+        self.mutate_json_list(&key, true, |list: &mut Vec<Value>| {
+            list.retain(|credential| {
+                credential.get("id").and_then(Value::as_str) != Some(credential_id)
+                    && credential.get("rawId").and_then(Value::as_str) != Some(credential_id)
+            });
+            Ok(())
+        })
     }
 
     // ── Generic typed-list helpers (used by registrar credentials) ──────
@@ -580,11 +987,16 @@ impl Storage {
     where
         T: DeserializeOwned,
     {
-        let mut creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
-        let val = serde_json::to_value(cred).map_err(|e| StorageError::Error(e.to_string()))?;
-        creds.push(val);
-        let json = serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("registrar_credentials", &json).await
+        let value =
+            serde_json::to_value(cred).map_err(|error| StorageError::Error(error.to_string()))?;
+        self.mutate_json_list(
+            "registrar_credentials",
+            false,
+            move |credentials: &mut Vec<Value>| {
+                credentials.push(value);
+                Ok(())
+            },
+        )
     }
 
     /// Fetch a single registrar credential by its `id` field.
@@ -601,10 +1013,15 @@ impl Storage {
     }
 
     pub async fn delete_registrar_credential(&self, id: &str) -> Result<(), StorageError> {
-        let mut creds: Vec<Value> = self.get_typed_list("registrar_credentials").await?;
-        creds.retain(|c| c.get("id").and_then(|v| v.as_str()) != Some(id));
-        let json = serde_json::to_string(&creds).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("registrar_credentials", &json).await
+        self.mutate_json_list(
+            "registrar_credentials",
+            false,
+            |credentials: &mut Vec<Value>| {
+                credentials
+                    .retain(|credential| credential.get("id").and_then(Value::as_str) != Some(id));
+                Ok(())
+            },
+        )
     }
 
     pub async fn store_registrar_secrets(
@@ -650,18 +1067,14 @@ impl Storage {
     }
 
     pub async fn add_audit_entry(&self, entry: Value) -> Result<(), StorageError> {
-        let mut entries = self.get_audit_entries().await?;
-        entries.push(entry);
-
-        let len = entries.len();
-        if len > MAX_AUDIT_ENTRIES {
-            let skip = len - MAX_AUDIT_ENTRIES;
-            entries = entries.into_iter().skip(skip).collect();
-        }
-
-        let json =
-            serde_json::to_string(&entries).map_err(|e| StorageError::Error(e.to_string()))?;
-        self.store_secret("audit_log", &json).await
+        self.mutate_json_list("audit_log", false, move |entries: &mut Vec<Value>| {
+            entries.push(entry);
+            if entries.len() > MAX_AUDIT_ENTRIES {
+                let drop_count = entries.len() - MAX_AUDIT_ENTRIES;
+                entries.drain(..drop_count);
+            }
+            Ok(())
+        })
     }
 
     // ── Encryption settings ─────────────────────────────────────────────
@@ -701,143 +1114,4 @@ impl Storage {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn chunk_helpers_roundtrip() {
-        let input = "a".repeat(KEYRING_MAX_VALUE_BYTES * 2 + 15);
-        let chunks = split_value_for_keyring(&input, KEYRING_MAX_VALUE_BYTES);
-        assert_eq!(chunks.len(), 3);
-        assert!(chunks.iter().all(|c| c.len() <= KEYRING_MAX_VALUE_BYTES));
-        assert_eq!(chunks.concat(), input);
-        assert_eq!(parse_chunk_marker("__chunked__:12"), Some(12));
-        assert_eq!(parse_chunk_marker("plain"), None);
-    }
-
-    #[tokio::test]
-    async fn api_key_lifecycle() {
-        let storage = Storage::new(false);
-        let config = EncryptionConfig::default();
-        let id = storage
-            .add_api_key(
-                "primary".to_string(),
-                "enc_v1".to_string(),
-                Some("user@example.com".to_string()),
-                config.clone(),
-            )
-            .await
-            .expect("add api key");
-
-        let keys = storage.get_api_keys().await.expect("get api keys");
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].id, id);
-        assert_eq!(keys[0].label, "primary");
-        assert_eq!(keys[0].encrypted_key, "enc_v1");
-        assert_eq!(keys[0].email.as_deref(), Some("user@example.com"));
-
-        storage
-            .delete_api_key(id.clone())
-            .await
-            .expect("delete api key");
-        let keys = storage.get_api_keys().await.expect("get keys after delete");
-        assert!(keys.is_empty());
-    }
-
-    #[tokio::test]
-    async fn vault_secret_roundtrip() {
-        let storage = Storage::new(false);
-        storage
-            .store_vault_secret("key_1", "secret")
-            .await
-            .expect("store vault secret");
-        let secret = storage
-            .get_vault_secret("key_1")
-            .await
-            .expect("get vault secret");
-        assert_eq!(secret, "secret");
-        storage
-            .delete_vault_secret("key_1")
-            .await
-            .expect("delete vault secret");
-        let missing = storage.get_vault_secret("key_1").await;
-        assert!(matches!(missing, Err(StorageError::NotFound)));
-    }
-
-    #[tokio::test]
-    async fn audit_log_roundtrip() {
-        let storage = Storage::new(false);
-        storage
-            .add_audit_entry(json!({"event":"login"}))
-            .await
-            .expect("add audit entry");
-        storage
-            .add_audit_entry(json!({"event":"logout"}))
-            .await
-            .expect("add audit entry 2");
-        let entries = storage.get_audit_entries().await.expect("get audit");
-        assert_eq!(entries.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn audit_log_retains_last_1000() {
-        let storage = Storage::new(false);
-        for idx in 0..1005 {
-            storage
-                .add_audit_entry(json!({"idx": idx}))
-                .await
-                .expect("add audit entry");
-        }
-        let entries = storage.get_audit_entries().await.expect("get audit");
-        assert_eq!(entries.len(), 1000);
-        assert_eq!(entries[0]["idx"], 5);
-    }
-
-    #[tokio::test]
-    async fn encryption_settings_roundtrip() {
-        let storage = Storage::new(false);
-        let config = EncryptionConfig {
-            iterations: 42,
-            key_length: 16,
-            algorithm: "AES-256-GCM".to_string(),
-        };
-        storage.set_encryption_settings(&config).await.expect("set");
-        let loaded = storage.get_encryption_settings().await.expect("get");
-        assert_eq!(loaded.iterations, 42);
-    }
-
-    #[tokio::test]
-    async fn passkey_storage_roundtrip() {
-        let storage = Storage::new(false);
-        let id = "key_passkey";
-        storage
-            .store_passkey(id, json!({"id":"cred_1"}))
-            .await
-            .expect("store passkey");
-        storage
-            .store_passkey(id, json!({"id":"cred_2"}))
-            .await
-            .expect("store passkey 2");
-        let list = storage.get_passkeys(id).await.expect("get passkeys");
-        assert_eq!(list.len(), 2);
-        storage
-            .delete_passkey(id, "cred_1")
-            .await
-            .expect("delete passkey");
-        let list = storage.get_passkeys(id).await.expect("after delete");
-        assert_eq!(list.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn preferences_roundtrip() {
-        let storage = Storage::new(false);
-        let mut prefs = Preferences::default();
-        prefs.vault_enabled = Some(true);
-        prefs.auto_refresh_interval = Some(60000);
-        storage.set_preferences(&prefs).await.expect("set");
-        let loaded = storage.get_preferences().await.expect("get");
-        assert_eq!(loaded.vault_enabled, Some(true));
-        assert_eq!(loaded.auto_refresh_interval, Some(60000));
-    }
-}
+mod tests;
