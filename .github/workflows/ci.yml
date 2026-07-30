@@ -20,13 +20,14 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
-env:
-  NODE_OPTIONS: --max-old-space-size=4096
-
 jobs:
   ci_contract:
     name: CI reliability contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
+      UV_THREADPOOL_SIZE: "2"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,20 +37,26 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
           cache: npm
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Test CI reliability contract
         env:
           CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: npm run test:ci-contract
+        run: npm run test:ci-contract -- --test-concurrency=1
       - name: Test deterministic resource disposal
-        run: npm run test:resource-safety
+        run: npm run test:resource-safety -- --test-concurrency=1
 
   unit_tests:
     name: Unit tests (${{ matrix.driver }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
+      UV_THREADPOOL_SIZE: "2"
     strategy:
       fail-fast: false
       matrix:
@@ -64,20 +71,25 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
           cache: npm
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Remove better-sqlite3 to simulate fallback
         if: matrix.driver == 'sqlite3-only'
         run: npm uninstall better-sqlite3 --no-save || rm -rf node_modules/better-sqlite3
       - name: Run unit tests
-        run: npm test
+        run: npm test -- --test-concurrency=1
 
   e2e_reliability:
     name: Chromium reliability E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+      UV_THREADPOOL_SIZE: "2"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,8 +98,10 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
           cache: npm
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1536 8192
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Build static export for browser tests
@@ -96,6 +110,19 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run Chromium reliability specifications
         run: npm run test:e2e:reliability
+      - name: Bound Playwright failure evidence
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d test-results/playwright ]; then
+            find test-results/playwright -type f -size +25M -print -delete
+            evidence_kib="$(du -sk test-results/playwright | cut -f1)"
+            if [ "$evidence_kib" -gt 102400 ]; then
+              echo "::warning::Playwright evidence exceeded 100 MiB and will not be uploaded."
+              rm -rf test-results/playwright
+            fi
+          fi
       - name: Upload Playwright failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -120,8 +147,8 @@ jobs:
           persist-credentials: false
       - name: Install stable Rust with Clippy
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal --component clippy
+          rustup default 1.97.1
       - name: Install Linux Tauri dependencies
         run: |
           set -euo pipefail
@@ -175,6 +202,9 @@ jobs:
   release_contract:
     name: Release workflow contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,9 +213,17 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Test release contract
-        run: npm run test:release-contract
+        run: npm run test:release-contract -- --test-concurrency=1
+      - name: Scan JavaScript and Rust lockfiles for known vulnerabilities
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --lockfile=./package-lock.json
+            --lockfile=./Cargo.lock
 
   release:
     name: Native Release
@@ -216,3 +254,6 @@ jobs:
       commit_sha: ${{ github.sha }}
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write

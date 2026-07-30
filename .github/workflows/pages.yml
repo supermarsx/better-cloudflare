@@ -14,62 +14,47 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
-      pages: write
+    env:
+      UV_THREADPOOL_SIZE: "2"
     steps:
-      - name: Configure GitHub Pages
-        id: pages
-        continue-on-error: true
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
-      - name: Detect optional Pages administration token
-        id: admin_token
-        env:
-          PAGES_ADMIN_TOKEN: ${{ secrets.PAGES_ADMIN_TOKEN }}
-        shell: bash
-        run: |
-          if [[ -n "$PAGES_ADMIN_TOKEN" ]]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Enable GitHub Pages for Actions
-        id: enable_pages
-        if: steps.pages.outcome == 'failure' && steps.admin_token.outputs.available == 'true'
-        continue-on-error: true
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-        with:
-          token: ${{ secrets.PAGES_ADMIN_TOKEN }}
-          enablement: true
-
-      - name: Require a configured GitHub Pages site
-        if: steps.pages.outcome == 'failure' && steps.enable_pages.outcome != 'success'
-        shell: bash
-        run: |
-          echo "::error title=GitHub Pages configuration required::GitHub Pages is not configured for Actions. A repository administrator must set Settings > Pages > Build and deployment > Source to 'GitHub Actions', or add a PAGES_ADMIN_TOKEN repository secret that can manage Pages. A fine-grained token needs Pages: write and Administration: write permissions."
-          exit 1
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
+          cache: npm
+
+      - name: Report runner capacity
+        env:
+          NODE_OPTIONS: --max-old-space-size=1536
+        run: node .github/scripts/release-contract.mjs diagnostics 1536 8192
 
       - name: Install dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=1536
         run: npm ci --no-audit --no-fund
 
       - name: Build project-path export
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build:pages:ci
 
       - name: Install Playwright Chromium
+        env:
+          NODE_OPTIONS: --max-old-space-size=1536
         run: npx playwright install --with-deps chromium
 
       - name: Verify project-path static export
+        env:
+          NODE_OPTIONS: --max-old-space-size=1536
         run: npm run test:e2e:pages
 
       - name: Upload artifact
@@ -80,7 +65,8 @@ jobs:
   deploy:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: write
@@ -89,6 +75,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure GitHub Pages deployment
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

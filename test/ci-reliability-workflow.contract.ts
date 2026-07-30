@@ -15,12 +15,17 @@ const workflowPaths = readdirSync(new URL(".github/workflows/", root))
   .sort()
   .map((name) => `.github/workflows/${name}`);
 const externalActionPins = new Map([
+  ["actions/attest@v4.2.1", "508db95dd578ae2727ebd6217d5ba78e4fbda05d"],
   ["actions/checkout@v7.0.1", "3d3c42e5aac5ba805825da76410c181273ba90b1"],
   [
     "actions/configure-pages@v6.0.0",
     "45bfe0192ca1faeb007ade9deae92b16b8254a0d",
   ],
   ["actions/deploy-pages@v5.0.0", "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128"],
+  [
+    "actions/dependency-review-action@v5.0.0",
+    "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+  ],
   [
     "actions/download-artifact@v8.0.1",
     "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
@@ -33,6 +38,18 @@ const externalActionPins = new Map([
   [
     "actions/upload-pages-artifact@v5.0.0",
     "fc324d3547104276b827a68afc52ff2a11cc49c9",
+  ],
+  [
+    "github/codeql-action/analyze@v4.37.4",
+    "f205ea1c3313d32999d8d6a48b4f6530d4437b38",
+  ],
+  [
+    "github/codeql-action/init@v4.37.4",
+    "f205ea1c3313d32999d8d6a48b4f6530d4437b38",
+  ],
+  [
+    "google/osv-scanner-action/osv-scanner-action@v2.3.8",
+    "9a498708959aeaef5ef730655706c5a1df1edbc2",
   ],
   ["Swatinem/rust-cache@v2.9.1", "c19371144df3bb44fab255c43d04cbc2ab54d1c4"],
 ]);
@@ -352,7 +369,7 @@ test("every external workflow action is pinned to its resolved commit", () => {
   assert.deepEqual(observed, externalActionPins);
 });
 
-test("main pushes keep an independent non-cancelling release opportunity", () => {
+test("main pushes keep a globally serialized non-cancelling release opportunity", () => {
   const workflow = read(".github/workflows/ci.yml");
   const releaseJob = workflowJob(workflow, "release");
   const autopublish = read(".github/workflows/autopublish.yml");
@@ -366,7 +383,11 @@ test("main pushes keep an independent non-cancelling release opportunity", () =>
   assert.match(releaseJob, /commit_sha: \$\{\{ github\.sha \}\}/);
   assert.match(
     publishJob,
-    /group: native-release-publish-\$\{\{ github\.repository \}\}-\$\{\{ inputs\.commit_sha \}\}/,
+    /group: native-release-publish-\$\{\{ github\.repository \}\}/,
+  );
+  assert.doesNotMatch(
+    publishJob,
+    /group: native-release-publish-[^\r\n]*inputs\.commit_sha/,
   );
   assert.match(publishJob, /cancel-in-progress: false/);
   assert.equal(
@@ -429,7 +450,7 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
   );
   assert.equal(
     stepRun(workflowStep(releaseContractJob, "Test release contract")),
-    "npm run test:release-contract",
+    "npm run test:release-contract -- --test-concurrency=1",
   );
   assert.deepEqual(workflowNeeds(releaseJob), [
     "ci_contract",
@@ -446,15 +467,23 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
 test("CI bounds build concurrency and gates deterministic disposal checks", () => {
   const workflow = read(".github/workflows/ci.yml");
   const contractJob = workflowJob(workflow, "ci_contract");
+  const unitJob = workflowJob(workflow, "unit_tests");
+  const e2eJob = workflowJob(workflow, "e2e_reliability");
   const nativeJob = workflowJob(workflow, "native_reliability");
+  const releaseContractJob = workflowJob(workflow, "release_contract");
 
-  assert.match(
-    workflow,
-    /env:\r?\n  NODE_OPTIONS: --max-old-space-size=4096\r?\n\r?\njobs:/,
+  assert.doesNotMatch(workflow, /^env:\r?\n  NODE_OPTIONS:/m);
+  assert.match(contractJob, /NODE_OPTIONS: --max-old-space-size=1536/);
+  assert.match(unitJob, /NODE_OPTIONS: --max-old-space-size=1536/);
+  assert.match(e2eJob, /NODE_OPTIONS: --max-old-space-size=3072/);
+  assert.match(releaseContractJob, /NODE_OPTIONS: --max-old-space-size=1536/);
+  assert.equal(
+    stepRun(workflowStep(unitJob, "Run unit tests")),
+    "npm test -- --test-concurrency=1",
   );
   assert.equal(
     stepRun(workflowStep(contractJob, "Test deterministic resource disposal")),
-    "npm run test:resource-safety",
+    "npm run test:resource-safety -- --test-concurrency=1",
   );
   assert.match(nativeJob, /CARGO_BUILD_JOBS: "2"/);
   assert.match(nativeJob, /RUST_TEST_THREADS: "2"/);
@@ -511,7 +540,7 @@ test("package workflow typechecks before testing and packaging", () => {
 
   assert.deepEqual(orderedCommands, [
     "npm run typecheck",
-    "npm test",
+    "npm test -- --test-concurrency=1",
     "npm run build",
     "npm pack",
   ]);

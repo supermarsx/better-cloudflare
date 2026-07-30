@@ -15,12 +15,17 @@ import { fileURLToPath } from "node:url";
 
 import {
   RELEASE_MATRIX,
+  aggregateNativeArtifacts,
+  assertReleaseCommitIsCurrentMain,
   assertMatrixContract,
+  assertResourceHeadroom,
   expectedAssetNames,
   nextReleaseTag,
   stageNativeAsset,
   validateAssetNames,
+  validateReleaseMetadata,
   validateReleaseAssets,
+  verifyExecutableArchitecture,
   verifyRunnerArchitecture,
 } from "./release-contract.mjs";
 
@@ -31,6 +36,24 @@ const AUTOPUBLISH_WORKFLOW = readFileSync(
   new URL("../workflows/autopublish.yml", import.meta.url),
   "utf8",
 ).replaceAll("\r\n", "\n");
+const CI_WORKFLOW = readFileSync(
+  new URL("../workflows/ci.yml", import.meta.url),
+  "utf8",
+).replaceAll("\r\n", "\n");
+const PAGES_WORKFLOW = readFileSync(
+  new URL("../workflows/pages.yml", import.meta.url),
+  "utf8",
+).replaceAll("\r\n", "\n");
+const SECURITY_WORKFLOW = readFileSync(
+  new URL("../workflows/security.yml", import.meta.url),
+  "utf8",
+).replaceAll("\r\n", "\n");
+const SUPPORT_WORKFLOWS = ["format.yml", "lint.yml", "test-package.yml"]
+  .map((name) =>
+    readFileSync(new URL(`../workflows/${name}`, import.meta.url), "utf8"),
+  )
+  .join("\n")
+  .replaceAll("\r\n", "\n");
 
 function workflowStep(name) {
   const marker = `      - name: ${name}\n`;
@@ -51,6 +74,63 @@ function run(command, arguments_, cwd) {
     );
   }
   return result.stdout.trim();
+}
+
+function runFailure(command, arguments_, cwd) {
+  const result = spawnSync(command, arguments_, { cwd, encoding: "utf8" });
+  assert.notEqual(
+    result.status,
+    0,
+    `${command} ${arguments_.join(" ")} unexpectedly succeeded`,
+  );
+  return `${result.stderr}\n${result.stdout}`;
+}
+
+function writeReleaseAssets(root) {
+  for (const { asset } of RELEASE_MATRIX) {
+    const contents = `native-${asset}`;
+    const hash = createHash("sha256").update(contents).digest("hex");
+    writeFileSync(join(root, asset), contents);
+    writeFileSync(join(root, `${asset}.sha256`), `${hash}  ${asset}\n`);
+  }
+}
+
+function writeIsolatedArtifacts(root) {
+  for (const { platform, arch, asset } of RELEASE_MATRIX) {
+    const directory = join(root, `native-${platform}-${arch}`);
+    mkdirSync(directory, { recursive: true });
+    const contents = `native-${asset}`;
+    const hash = createHash("sha256").update(contents).digest("hex");
+    writeFileSync(join(directory, asset), contents);
+    writeFileSync(join(directory, `${asset}.sha256`), `${hash}  ${asset}\n`);
+  }
+}
+
+function writeExecutable(path, format, arch) {
+  if (format === "elf") {
+    const header = Buffer.alloc(64);
+    header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
+    header.writeUInt16LE(arch === "x64" ? 62 : 183, 18);
+    writeFileSync(path, header);
+    return;
+  }
+  if (format === "pe") {
+    const header = Buffer.alloc(512);
+    header.set([0x4d, 0x5a]);
+    header.writeUInt32LE(128, 0x3c);
+    header.set([0x50, 0x45, 0, 0], 128);
+    header.writeUInt16LE(arch === "x64" ? 0x8664 : 0xaa64, 132);
+    writeFileSync(path, header);
+    return;
+  }
+  if (format === "mach-o") {
+    const header = Buffer.alloc(32);
+    header.writeUInt32LE(0xfeedfacf, 0);
+    header.writeUInt32LE(arch === "x64" ? 0x01000007 : 0x0100000c, 4);
+    writeFileSync(path, header);
+    return;
+  }
+  assert.fail(`Unsupported test executable format: ${format}`);
 }
 
 test("release matrix contains the six required native runner/target pairs", () => {
@@ -112,6 +192,36 @@ test("runner verification rejects a target that is only cross-compiled", () => {
     () => verifyRunnerArchitecture("linux", "arm64", "linux", "x64"),
     /Runner architecture mismatch/,
   );
+});
+
+test("executable inspection rejects a correctly named wrong architecture", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-binary-"));
+  try {
+    const fixtures = [
+      ["linux", "x64", "elf"],
+      ["linux", "arm64", "elf"],
+      ["macos", "x64", "mach-o"],
+      ["macos", "arm64", "mach-o"],
+      ["windows", "x64", "pe"],
+      ["windows", "arm64", "pe"],
+    ];
+    for (const [platform, arch, format] of fixtures) {
+      const path = join(root, `${platform}-${arch}.bin`);
+      writeExecutable(path, format, arch);
+      assert.equal(verifyExecutableArchitecture(path, platform, arch), true);
+      assert.throws(
+        () =>
+          verifyExecutableArchitecture(
+            path,
+            platform,
+            arch === "x64" ? "arm64" : "x64",
+          ),
+        /architecture mismatch/,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("native staging uses the repository-root Cargo bundle directory", () => {
@@ -185,12 +295,7 @@ test("native staging renames one real bundle and writes its checksum", () => {
 test("aggregate validation fails on missing assets and verifies all checksums", () => {
   const root = mkdtempSync(join(tmpdir(), "better-cloudflare-assets-"));
   try {
-    for (const { asset } of RELEASE_MATRIX) {
-      const contents = `native-${asset}`;
-      const hash = createHash("sha256").update(contents).digest("hex");
-      writeFileSync(join(root, asset), contents);
-      writeFileSync(join(root, `${asset}.sha256`), `${hash}  ${asset}\n`);
-    }
+    writeReleaseAssets(root);
 
     assert.equal(validateReleaseAssets(root), true);
     assert.equal(validateAssetNames(expectedAssetNames()), true);
@@ -200,6 +305,113 @@ test("aggregate validation fails on missing assets and verifies all checksums", 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("correct release names with changed bytes are rejected", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-wrong-bytes-"));
+  try {
+    writeReleaseAssets(root);
+    writeFileSync(
+      join(root, "better-cloudflare-linux-x64.AppImage"),
+      "substituted-binary",
+    );
+    assert.throws(
+      () => validateReleaseAssets(root),
+      /SHA-256 checksum does not match/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("platform artifacts remain isolated and cross-platform injection is rejected", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-isolated-"));
+  try {
+    const artifacts = join(root, "artifacts");
+    const output = join(root, "output");
+    writeIsolatedArtifacts(artifacts);
+    assert.equal(aggregateNativeArtifacts(artifacts, output), true);
+
+    const injected = join(root, "injected");
+    const rejectedOutput = join(root, "rejected-output");
+    writeIsolatedArtifacts(injected);
+    writeFileSync(
+      join(
+        injected,
+        "native-linux-x64",
+        "better-cloudflare-windows-x64-setup.exe",
+      ),
+      "cross-platform-injection",
+    );
+    assert.throws(
+      () => aggregateNativeArtifacts(injected, rejectedOutput),
+      /must contain only/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release metadata rejects a release that targets another commit", () => {
+  const commit = "a".repeat(40);
+  assert.equal(
+    validateReleaseMetadata(
+      {
+        tagName: "26.7",
+        targetCommitish: commit,
+        isDraft: false,
+      },
+      "26.7",
+      commit,
+      "published",
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      validateReleaseMetadata(
+        {
+          tagName: "26.7",
+          targetCommitish: "b".repeat(40),
+          isDraft: false,
+        },
+        "26.7",
+        commit,
+        "published",
+      ),
+    /metadata target/,
+  );
+});
+
+test("reverse completion is rejected when main has advanced", () => {
+  assert.equal(
+    assertReleaseCommitIsCurrentMain("a".repeat(40), "a".repeat(40)),
+    true,
+  );
+  assert.throws(
+    () => assertReleaseCommitIsCurrentMain("a".repeat(40), "b".repeat(40)),
+    /is stale/,
+  );
+});
+
+test("runner diagnostics reject insufficient memory or disk deterministically", () => {
+  const mib = 1024 * 1024;
+  assert.deepEqual(
+    assertResourceHeadroom(512, 1024, 1024 * mib, 2048 * mib, 2048 * mib),
+    {
+      freeMemoryMiB: 1024,
+      totalMemoryMiB: 2048,
+      freeDiskMiB: 2048,
+    },
+  );
+  assert.throws(
+    () => assertResourceHeadroom(1025, 1, 1024 * mib, 2048 * mib, 2048 * mib),
+    /free memory/,
+  );
+  assert.throws(
+    () => assertResourceHeadroom(1, 2049, 1024 * mib, 2048 * mib, 2048 * mib),
+    /free disk/,
+  );
 });
 
 test("tag reservation fetches history, increments, and is idempotent", () => {
@@ -242,6 +454,14 @@ test("tag reservation fetches history, increments, and is idempotent", () => {
     run("git", ["push", "origin", "main"], work);
     const secondCommit = run("git", ["rev-parse", "HEAD"], work);
     assert.match(
+      runFailure(
+        process.execPath,
+        [RELEASE_CONTRACT_SCRIPT, "reserve-tag", firstCommit, "26"],
+        work,
+      ),
+      /is stale/,
+    );
+    assert.match(
       run(
         process.execPath,
         [RELEASE_CONTRACT_SCRIPT, "reserve-tag", secondCommit, "26"],
@@ -257,5 +477,152 @@ test("tag reservation fetches history, increments, and is idempotent", () => {
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a newly reserved orphan tag can be safely recovered and reused", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-orphan-tag-"));
+  try {
+    const remote = join(root, "remote.git");
+    const work = join(root, "work");
+    run("git", ["init", "--bare", remote], root);
+    run("git", ["init", work], root);
+    run("git", ["config", "user.name", "Release Contract Test"], work);
+    run(
+      "git",
+      ["config", "user.email", "release-contract@example.invalid"],
+      work,
+    );
+    run("git", ["commit", "--allow-empty", "-m", "release"], work);
+    run("git", ["branch", "-M", "main"], work);
+    run("git", ["remote", "add", "origin", remote], work);
+    run("git", ["push", "-u", "origin", "main"], work);
+    const commit = run("git", ["rev-parse", "HEAD"], work);
+
+    assert.match(
+      run(
+        process.execPath,
+        [RELEASE_CONTRACT_SCRIPT, "reserve-tag", commit, "26"],
+        work,
+      ),
+      /Reserved release tag 26\.1/,
+    );
+    assert.match(
+      run(
+        process.execPath,
+        [RELEASE_CONTRACT_SCRIPT, "cleanup-tag", commit, "26.1", "true"],
+        work,
+      ),
+      /Cleaned reserved release tag 26\.1/,
+    );
+    assert.equal(run("git", ["ls-remote", "--tags", "origin"], work), "");
+    assert.match(
+      run(
+        process.execPath,
+        [RELEASE_CONTRACT_SCRIPT, "reserve-tag", commit, "26"],
+        work,
+      ),
+      /Reserved release tag 26\.1/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("publication is globally serialized and never merges or clobbers assets", () => {
+  assert.match(
+    AUTOPUBLISH_WORKFLOW,
+    /group: native-release-publish-\$\{\{ github\.repository \}\}/,
+  );
+  assert.doesNotMatch(
+    AUTOPUBLISH_WORKFLOW,
+    /group: native-release-publish-[^\n]*inputs\.commit_sha/,
+  );
+  assert.match(AUTOPUBLISH_WORKFLOW, /merge-multiple: false/);
+  assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /--clobber/);
+  assert.match(
+    AUTOPUBLISH_WORKFLOW,
+    /release-contract\.mjs assert-main "\$RELEASE_SHA"/,
+  );
+  assert.match(
+    AUTOPUBLISH_WORKFLOW,
+    /release-contract\.mjs aggregate\s+release-artifacts release-assets/,
+  );
+});
+
+test("CI and release toolchains are exact rather than mutable channels", () => {
+  const nodeWorkflows = [
+    AUTOPUBLISH_WORKFLOW,
+    CI_WORKFLOW,
+    PAGES_WORKFLOW,
+    SUPPORT_WORKFLOWS,
+  ].join("\n");
+  const setupCount = nodeWorkflows.match(/actions\/setup-node@/g)?.length ?? 0;
+  const pinnedNodeCount =
+    nodeWorkflows.match(/node-version: 24\.18\.1/g)?.length ?? 0;
+  assert.equal(pinnedNodeCount, setupCount);
+  assert.doesNotMatch(nodeWorkflows, /node-version:\s+\d+\.x/);
+  assert.match(
+    AUTOPUBLISH_WORKFLOW,
+    /rustup toolchain install 1\.97\.1 --profile minimal/,
+  );
+  assert.match(
+    CI_WORKFLOW,
+    /rustup toolchain install 1\.97\.1 --profile minimal --component clippy/,
+  );
+  assert.doesNotMatch(
+    `${AUTOPUBLISH_WORKFLOW}\n${CI_WORKFLOW}`,
+    /rustup (?:toolchain install|default) stable/,
+  );
+});
+
+test("Pages build has read-only contents and no standing administration token", () => {
+  const buildStart = PAGES_WORKFLOW.indexOf("  build:");
+  const deployStart = PAGES_WORKFLOW.indexOf("  deploy:");
+  assert.notEqual(buildStart, -1);
+  assert.notEqual(deployStart, -1);
+  const build = PAGES_WORKFLOW.slice(buildStart, deployStart);
+  const deploy = PAGES_WORKFLOW.slice(deployStart);
+  assert.match(build, /permissions:\n\s+contents: read/);
+  assert.doesNotMatch(build, /pages: write|id-token: write/);
+  assert.match(build, /persist-credentials: false/);
+  assert.match(deploy, /pages: write/);
+  assert.match(deploy, /id-token: write/);
+  assert.doesNotMatch(PAGES_WORKFLOW, /PAGES_ADMIN_TOKEN|enablement:/);
+});
+
+test("security workflows pin external actions to immutable commits", () => {
+  assert.match(SECURITY_WORKFLOW, /github\/codeql-action\/init@[0-9a-f]{40}/);
+  assert.match(
+    SECURITY_WORKFLOW,
+    /actions\/dependency-review-action@[0-9a-f]{40}/,
+  );
+  assert.match(
+    SECURITY_WORKFLOW,
+    /google\/osv-scanner-action\/osv-scanner-action@[0-9a-f]{40}/,
+  );
+
+  const workflowRoot = fileURLToPath(new URL("../workflows", import.meta.url));
+  for (const name of [
+    "autopublish.yml",
+    "ci.yml",
+    "format.yml",
+    "lint.yml",
+    "pages.yml",
+    "security.yml",
+    "test-package.yml",
+  ]) {
+    const workflow = readFileSync(join(workflowRoot, name), "utf8");
+    for (const match of workflow.matchAll(/uses:\s+([^\s#]+)/g)) {
+      const reference = match[1];
+      if (reference.startsWith("./")) {
+        continue;
+      }
+      assert.match(
+        reference,
+        /@[0-9a-f]{40}$/,
+        `${name} uses a mutable action reference: ${reference}`,
+      );
+    }
   }
 });

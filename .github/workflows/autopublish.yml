@@ -15,6 +15,9 @@ jobs:
   contract:
     name: Validate release contract
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -26,9 +29,17 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Test release contract
-        run: node --test .github/scripts/release-contract.test.mjs
+        run: >-
+          node --test --test-concurrency=1
+          .github/scripts/release-contract.test.mjs
+      - name: Require release commit to remain current main
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
       - name: Generate native build matrix
         id: matrix
         run: node .github/scripts/release-contract.mjs matrix >> "$GITHUB_OUTPUT"
@@ -40,6 +51,12 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      CARGO_BUILD_JOBS: "2"
+      NODE_OPTIONS: --max-old-space-size=3072
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
@@ -52,16 +69,18 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
           cache: npm
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 2048 8192
       - name: Verify native runner architecture
         run: >-
           node .github/scripts/release-contract.mjs verify-runner
           ${{ matrix.platform }} ${{ matrix.arch }}
       - name: Install stable Rust target
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
           rustup target add ${{ matrix.target }}
       - name: Install Linux Tauri dependencies
         if: matrix.platform == 'linux'
@@ -90,16 +109,30 @@ jobs:
           npm run tauri -- build
           --target ${{ matrix.target }}
           --bundles ${{ matrix.bundle }}
+      - name: Verify packaged application executable architecture
+        run: >-
+          node .github/scripts/release-contract.mjs verify-executable
+          target/${{ matrix.target }}/release/${{ matrix.executable }}
+          ${{ matrix.platform }} ${{ matrix.arch }}
       - name: Stage deterministic native asset
         run: >-
           node .github/scripts/release-contract.mjs stage
           target/${{ matrix.target }}/release/bundle
-          ${{ matrix.platform }} ${{ matrix.arch }} release-assets
+          ${{ matrix.platform }} ${{ matrix.arch }}
+          release-assets/${{ matrix.platform }}-${{ matrix.arch }}
+      - name: Attest native asset provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}
+            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}.sha256
       - name: Upload native asset and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.platform }}-${{ matrix.arch }}
-          path: release-assets/
+          path: |
+            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}
+            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -113,10 +146,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
-      group: native-release-publish-${{ github.repository }}-${{ inputs.commit_sha }}
+      group: native-release-publish-${{ github.repository }}
       cancel-in-progress: false
+    environment:
+      name: production-release
     permissions:
       contents: write
+      attestations: read
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
     steps:
       - name: Checkout release commit with complete tag history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,15 +166,34 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.x
+          node-version: 24.18.1
+      - name: Report runner capacity
+        run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Download all native assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: native-*
-          path: release-assets
-          merge-multiple: true
+          path: release-artifacts
+          merge-multiple: false
+      - name: Validate isolated platform artifacts
+        run: >-
+          node .github/scripts/release-contract.mjs aggregate
+          release-artifacts release-assets
       - name: Require all six native assets and valid checksums
         run: node .github/scripts/release-contract.mjs validate release-assets
+      - name: Require release commit to remain current main
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
+      - name: Verify build provenance attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in release-assets/*; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+          done
       - name: Atomically reserve the next YY.N tag
         id: tag
         env:
@@ -151,40 +208,109 @@ jobs:
         run: |
           set -euo pipefail
 
+          verify_tag_and_metadata() {
+            local state="$1"
+            node .github/scripts/release-contract.mjs verify-tag \
+              "$RELEASE_TAG" "$RELEASE_SHA"
+            gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName,targetCommitish,isDraft \
+              | node .github/scripts/release-contract.mjs \
+                validate-release-json "$RELEASE_TAG" "$RELEASE_SHA" "$state"
+          }
+
+          verify_downloaded_release() {
+            local directory="$1"
+            node .github/scripts/release-contract.mjs validate "$directory"
+            for local_asset in release-assets/*; do
+              asset_name="$(basename "$local_asset")"
+              cmp -- "$local_asset" "$directory/$asset_name"
+              gh attestation verify "$directory/$asset_name" \
+                --repo "$GITHUB_REPOSITORY"
+            done
+          }
+
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             is_draft="$(gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --json isDraft \
               --jq '.isDraft')"
             if [ "$is_draft" != "true" ]; then
-              gh release view "$RELEASE_TAG" \
+              verify_tag_and_metadata published
+              mkdir published-assets
+              gh release download "$RELEASE_TAG" \
                 --repo "$GITHUB_REPOSITORY" \
-                --json assets \
-                --jq '.assets[].name' \
-                | node .github/scripts/release-contract.mjs validate-names
-              echo "::notice::Release $RELEASE_TAG is already complete and published."
+                --dir published-assets
+              verify_downloaded_release published-assets
+              echo "::notice::Release $RELEASE_TAG is already byte-for-byte complete, attested, and published."
               exit 0
             fi
-          else
-            short_sha="${RELEASE_SHA:0:7}"
-            gh release create "$RELEASE_TAG" \
+            verify_tag_and_metadata draft
+            gh release delete "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --draft \
-              --title "Better Cloudflare $RELEASE_TAG" \
-              --notes "Automated native release for commit \`$short_sha\`. Includes Linux, macOS, and Windows installers for x64 and arm64, with SHA-256 checksums."
+              --yes
+          else
+            node .github/scripts/release-contract.mjs verify-tag \
+              "$RELEASE_TAG" "$RELEASE_SHA"
           fi
 
-          gh release upload "$RELEASE_TAG" release-assets/* \
+          short_sha="${RELEASE_SHA:0:7}"
+          gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --clobber
+            --verify-tag \
+            --target "$RELEASE_SHA" \
+            --draft \
+            --title "Better Cloudflare $RELEASE_TAG" \
+            --notes "Automated native release for commit \`$short_sha\`. Includes Linux, macOS, and Windows installers for x64 and arm64, with SHA-256 checksums and GitHub build-provenance attestations. Executables are not yet platform code-signed."
 
-          gh release view "$RELEASE_TAG" \
+          gh release upload "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY"
+
+          verify_tag_and_metadata draft
+          mkdir uploaded-assets
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name' \
-            | node .github/scripts/release-contract.mjs validate-names
+            --dir uploaded-assets
+          verify_downloaded_release uploaded-assets
+
+          node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
 
           gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false
+          verify_tag_and_metadata published
+
+      - name: Recover a failed draft and newly reserved tag
+        if: ${{ failure() && steps.tag.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CREATED: ${{ steps.tag.outputs.created }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft \
+              --jq '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::Refusing cleanup because $RELEASE_TAG is already published."
+              exit 1
+            fi
+            gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName,targetCommitish,isDraft \
+              | node .github/scripts/release-contract.mjs \
+                validate-release-json "$RELEASE_TAG" "$RELEASE_SHA" draft
+            node .github/scripts/release-contract.mjs verify-tag \
+              "$RELEASE_TAG" "$RELEASE_SHA"
+            gh release delete "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --yes
+          fi
+
+          node .github/scripts/release-contract.mjs cleanup-tag \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$RELEASE_CREATED"
