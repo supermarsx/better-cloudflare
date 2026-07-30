@@ -66,13 +66,15 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
         // ── Import / Parse ──────────────────────────────────────────────
         "dns_parse_csv" => {
             let text = get_required_string(args, "text")?;
-            let records = bc_dns_tools::parse_csv_records(&text);
+            let records =
+                bc_dns_tools::try_parse_csv_records(&text).map_err(|error| error.to_string())?;
             serde_json::to_value(records).map_err(|e| e.to_string())
         }
 
         "dns_parse_bind" => {
             let text = get_required_string(args, "text")?;
-            let records = bc_dns_tools::parse_bind_zone(&text);
+            let records =
+                bc_dns_tools::try_parse_bind_zone(&text).map_err(|error| error.to_string())?;
             serde_json::to_value(records).map_err(|e| e.to_string())
         }
 
@@ -84,7 +86,8 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
                     .ok_or("Missing required argument 'records'")?,
             )
             .map_err(|e| format!("Invalid records: {}", e))?;
-            let csv = bc_dns_tools::records_to_csv(&records);
+            let csv =
+                bc_dns_tools::try_records_to_csv(&records).map_err(|error| error.to_string())?;
             Ok(json!({ "format": "csv", "data": csv }))
         }
 
@@ -95,7 +98,8 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
                     .ok_or("Missing required argument 'records'")?,
             )
             .map_err(|e| format!("Invalid records: {}", e))?;
-            let bind = bc_dns_tools::records_to_bind(&records);
+            let bind =
+                bc_dns_tools::try_records_to_bind(&records).map_err(|error| error.to_string())?;
             Ok(json!({ "format": "bind", "data": bind }))
         }
 
@@ -106,7 +110,8 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
                     .ok_or("Missing required argument 'records'")?,
             )
             .map_err(|e| format!("Invalid records: {}", e))?;
-            let j = bc_dns_tools::records_to_json(&records);
+            let j =
+                bc_dns_tools::try_records_to_json(&records).map_err(|error| error.to_string())?;
             Ok(json!({ "format": "json", "data": j }))
         }
 

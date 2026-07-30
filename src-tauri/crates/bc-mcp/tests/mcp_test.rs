@@ -75,9 +75,9 @@ fn default_tool_set_is_empty_and_least_privilege() {
 // ── Tool count ─────────────────────────────────────────────────────────────
 
 #[test]
-fn has_at_least_50_tools() {
+fn preserves_exactly_53_tool_contracts() {
     let defs = available_tool_definitions();
-    assert!(defs.len() >= 50, "Expected >= 50 tools, got {}", defs.len(),);
+    assert_eq!(defs.len(), 53, "The MCP tool contract count changed");
 }
 
 #[test]

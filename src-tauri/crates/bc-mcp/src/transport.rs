@@ -1129,6 +1129,17 @@ mod tests {
         HttpRuntimeState::with_dispatcher(Arc::new(StubDispatcher { behavior }), test_policy())
     }
 
+    fn production_state() -> HttpRuntimeState {
+        HttpRuntimeState::production(
+            Arc::new(RwLock::new(PermissionGrantSet::all())),
+            Arc::new(RwLock::new(Some("test-token".to_string()))),
+            "127.0.0.1".to_string(),
+            8787,
+            CancellationToken::new(),
+            test_policy(),
+        )
+    }
+
     fn rpc(method: &str, id: Option<Value>, params: Value) -> Value {
         let mut request = json!({
             "jsonrpc": "2.0",
@@ -1387,6 +1398,163 @@ mod tests {
         .await;
         let encoded = serialize_json_limited(&response, MAX_RESPONSE_BYTES).unwrap();
         assert!(encoded.len() < MAX_RESPONSE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn dns_failures_are_explicit_bounded_and_serializable() {
+        let state = production_state();
+        let oversized_bind = format!(
+            "example.com 300 IN TXT {}",
+            "x".repeat(bc_dns_tools::MAX_IMPORT_LINE_BYTES)
+        );
+        let invalid_csv = (0..=bc_dns_tools::MAX_IMPORT_FIELDS)
+            .map(|index| format!("field-{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let oversized_record = json!({
+            "id": "record-id",
+            "type": "TXT",
+            "name": "example.com",
+            "content": "x".repeat(bc_dns_tools::MAX_EXPORT_FIELD_BYTES + 1),
+            "comment": null,
+            "ttl": 300,
+            "priority": null,
+            "proxied": false,
+            "zone_id": "zone-id",
+            "zone_name": "example.com",
+            "created_on": "",
+            "modified_on": ""
+        });
+        let cases = [
+            ("dns_parse_bind", json!({ "text": oversized_bind })),
+            ("dns_parse_csv", json!({ "text": invalid_csv })),
+            (
+                "dns_export_csv",
+                json!({ "records": [oversized_record.clone()] }),
+            ),
+            (
+                "dns_export_bind",
+                json!({ "records": [oversized_record.clone()] }),
+            ),
+            ("dns_export_json", json!({ "records": [oversized_record] })),
+        ];
+
+        for (index, (name, arguments)) in cases.into_iter().enumerate() {
+            let response = process(
+                &state,
+                rpc(
+                    "tools/call",
+                    Some(json!(index)),
+                    json!({ "name": name, "arguments": arguments }),
+                ),
+            )
+            .await;
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{name}: {response}");
+            assert!(
+                result.get("structuredContent").is_none(),
+                "{name}: {response}"
+            );
+            let message = result["content"][0]["text"]
+                .as_str()
+                .expect("tool failures return text diagnostics");
+            assert!(!message.is_empty(), "{name}: {response}");
+            assert!(
+                message.len() <= crate::resource_limits::MAX_ERROR_MESSAGE_BYTES + 3,
+                "{name}: diagnostic was not bounded"
+            );
+            assert!(
+                message.contains("exceeds the safe"),
+                "{name}: unexpected diagnostic: {message}"
+            );
+            let encoded = serialize_json_limited(&response, MAX_RESPONSE_BYTES)
+                .expect("DNS error response must remain serializable");
+            assert!(encoded.len() < MAX_RESPONSE_BYTES);
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_dns_exports_and_imports_round_trip_through_json_rpc() {
+        let state = production_state();
+        let record = json!({
+            "id": "record-id",
+            "type": "TXT",
+            "name": "example.com",
+            "content": "a \"quoted\" value",
+            "comment": null,
+            "ttl": 300,
+            "priority": null,
+            "proxied": false,
+            "zone_id": "zone-id",
+            "zone_name": "example.com",
+            "created_on": "",
+            "modified_on": ""
+        });
+
+        for (index, (export_name, parse_name)) in [
+            ("dns_export_csv", "dns_parse_csv"),
+            ("dns_export_bind", "dns_parse_bind"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let exported = process(
+                &state,
+                rpc(
+                    "tools/call",
+                    Some(json!(index)),
+                    json!({
+                        "name": export_name,
+                        "arguments": { "records": [record.clone()] }
+                    }),
+                ),
+            )
+            .await;
+            assert_ne!(exported["result"]["isError"], true, "{exported}");
+            let text = exported["result"]["structuredContent"]["data"]
+                .as_str()
+                .expect("export returns text data");
+            let imported = process(
+                &state,
+                rpc(
+                    "tools/call",
+                    Some(json!(index + 10)),
+                    json!({
+                        "name": parse_name,
+                        "arguments": { "text": text }
+                    }),
+                ),
+            )
+            .await;
+            assert_ne!(imported["result"]["isError"], true, "{imported}");
+            let parsed = imported["result"]["structuredContent"]
+                .as_array()
+                .expect("parser returns records");
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0]["type"], "TXT");
+            assert_eq!(parsed[0]["name"], "example.com");
+            assert_eq!(parsed[0]["content"], "a \"quoted\" value");
+        }
+
+        let exported_json = process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(20)),
+                json!({
+                    "name": "dns_export_json",
+                    "arguments": { "records": [record] }
+                }),
+            ),
+        )
+        .await;
+        assert_ne!(exported_json["result"]["isError"], true, "{exported_json}");
+        let text = exported_json["result"]["structuredContent"]["data"]
+            .as_str()
+            .expect("JSON export returns text data");
+        let decoded: Value = serde_json::from_str(text).expect("JSON export remains valid JSON");
+        assert_eq!(decoded[0]["type"], "TXT");
+        assert_eq!(decoded[0]["content"], "a \"quoted\" value");
     }
 
     async fn spawn_test_server(
