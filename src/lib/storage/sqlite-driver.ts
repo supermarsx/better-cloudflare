@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "path";
 
 // promisify unused; intentionally omitted
@@ -19,6 +21,7 @@ export type SqliteWrapper = {
 // (createCredentialStore, isAdmin, tests, etc.) share the same state when
 // native sqlite drivers are not available.
 const inMemoryWrapperCache: Map<string, SqliteWrapper> = new Map();
+const requireFromModule = createRequire(import.meta.url);
 
 // Minimal surface of the better-sqlite3 synchronous DB used by our code
 type BetterSqlite3Like = {
@@ -163,27 +166,16 @@ export function openSqlite(
   requireFn?: (name: string) => unknown,
 ): SqliteWrapper {
   const file = dbFile ?? path.resolve(process.cwd(), "data", "credentials.db");
+  if (file !== ":memory:" && !file.startsWith("file:")) {
+    mkdirSync(path.dirname(file), { recursive: true });
+  }
   const globalRequire = (globalThis as { require?: (name: string) => unknown })
     .require;
   const req = requireFn
     ? requireFn
     : typeof globalRequire === "function"
       ? (globalRequire as (name: string) => unknown)
-      : ((): unknown => {
-          // Try to obtain a runtime require without static imports so bundlers
-          // don't externalize 'module'. If unavailable, return a function that
-          // throws when used so callers can handle the absence.
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-implied-eval
-            const r = eval(
-              "typeof require === 'function' ? require : undefined",
-            );
-            if (typeof r === "function") return r;
-          } catch {}
-          return (_name: string) => {
-            throw new Error("require not available in this environment");
-          };
-        })();
+      : requireFromModule;
   // Try better-sqlite3 first (synchronous, faster).
   try {
     // allow injection for tests (e.g., throw on better-sqlite3)
@@ -210,6 +202,7 @@ export function openSqlite(
       const errMsg = err instanceof Error ? err.message : String(err);
       throw new Error(
         `No sqlite driver available (tried better-sqlite3 and sqlite3): ${errMsg}`,
+        { cause: err },
       );
     }
 
@@ -267,7 +260,9 @@ export function openSqlite(
                 typeof r[0].values[0][0] !== "undefined"
               )
                 lastId = r[0].values[0][0] as number;
-            } catch {}
+            } catch {
+              // Preserve the wrapper's zero fallback if SQL.js cannot report it.
+            }
             const changes =
               /INSERT|UPDATE|DELETE/i.test(sql) && executed ? 1 : 0;
             return Promise.resolve({

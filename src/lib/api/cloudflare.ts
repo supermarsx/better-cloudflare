@@ -147,14 +147,23 @@ export class CloudflareAPI {
   ): Promise<DNSRecord[]> {
     if (DEBUG) console.debug("getDNSRecords", { zoneId });
     this.debugRequest(`/zones/${zoneId}/dns_records`);
-    const records: DNSRecord[] = [];
     const listParams: Record<string, unknown> = { zone_id: zoneId };
-    if (page) listParams.page = page;
-    if (perPage) listParams.per_page = perPage;
-    for await (const record of this.client.dns.records.list(
+    if (page !== undefined) listParams.page = page;
+    if (perPage !== undefined) listParams.per_page = perPage;
+    const recordPages = this.client.dns.records.list(
       listParams as unknown as RecordListParams,
       { signal },
-    )) {
+    );
+    if (page !== undefined || perPage !== undefined) {
+      const requestedPage = await recordPages;
+      const records =
+        requestedPage.getPaginatedItems() as unknown as DNSRecord[];
+      this.debugResponse(records);
+      return records;
+    }
+
+    const records: DNSRecord[] = [];
+    for await (const record of recordPages) {
       records.push(record as unknown as DNSRecord);
     }
     this.debugResponse(records);

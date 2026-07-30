@@ -2911,6 +2911,7 @@ export function ZoneTopologyTab({
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: TOPOLOGY_MERMAID_SECURITY_LEVEL,
+          htmlLabels: TOPOLOGY_MERMAID_HTML_LABELS,
           theme: "base",
           themeVariables: {
             primaryColor: hslVar("--primary", "#5b8cff"),
@@ -2948,7 +2949,6 @@ export function ZoneTopologyTab({
           },
           flowchart: {
             curve: "basis",
-            htmlLabels: TOPOLOGY_MERMAID_HTML_LABELS,
             defaultRenderer: "elk",
             nodeSpacing: 70,
             rankSpacing: 95,

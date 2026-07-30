@@ -171,10 +171,14 @@ function stepUses(step: string): string {
 
 test("package scripts expose truthful lint and reliability gates", () => {
   const packageJson = JSON.parse(read("package.json")) as {
+    engines: { node: string };
     scripts: Record<string, string>;
   };
   const scripts = packageJson.scripts;
 
+  assert.equal(packageJson.engines.node, "^20.19.0 || ^22.13.0 || >=24.0.0");
+  assert.equal(scripts.dev, "next dev --turbo");
+  assert.equal(scripts.build, "next build --webpack");
   assert.equal(scripts.typecheck, "tsc -p tsconfig.json --noEmit");
   assert.equal(scripts.lint, "npm run lint:app && npm run lint:src:baseline");
   assert.equal(

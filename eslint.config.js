@@ -19,7 +19,6 @@ export const legacySourceLintDebt = [
   "src/lib/auth/credential-store.ts",
   "src/lib/auth/crypto.ts",
   "src/lib/dns/spf.ts",
-  "src/lib/storage/sqlite-driver.ts",
 ];
 
 const generatedArtifacts = [

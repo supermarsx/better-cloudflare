@@ -3,6 +3,9 @@ import { test } from "node:test";
 import openSqlite from "../src/lib/storage/sqlite-driver.ts";
 import path from "path";
 import fs from "fs";
+import { createRequire } from "node:module";
+
+const requireCjs = createRequire(import.meta.url);
 
 test("openSqlite should return a sqlite wrapper and support basic calls", async () => {
   const tmp = path.resolve(process.cwd(), "data", "test-credentials.db");
@@ -19,6 +22,14 @@ test("openSqlite should return a sqlite wrapper and support basic calls", async 
     ),
     "driver type should be known",
   );
+  const sqliteVersion = await wrapper.get<{ version: string }>(
+    "SELECT sqlite_version() AS version",
+  );
+  assert.match(
+    sqliteVersion?.version ?? "",
+    /^\d+\.\d+\.\d+/,
+    "the default path must load a real SQLite driver",
+  );
   // basic run & get & all interface
   await wrapper.run(
     "CREATE TABLE IF NOT EXISTS tmp (id INTEGER PRIMARY KEY, v TEXT)",
@@ -32,6 +43,30 @@ test("openSqlite should return a sqlite wrapper and support basic calls", async 
   assert.equal(row.v, "x");
   const rows = await wrapper.all("SELECT id, v FROM tmp");
   assert.ok(Array.isArray(rows));
+  if (wrapper.close) await wrapper.close();
+  try {
+    fs.unlinkSync(tmp);
+  } catch {
+    /* ignore cleanup errors */
+  }
+});
+
+test("openSqlite uses sqlite3 6 when optional better-sqlite3 is unavailable", async () => {
+  const tmp = path.resolve(process.cwd(), "data", "test-sqlite3-driver.db");
+  try {
+    fs.unlinkSync(tmp);
+  } catch {
+    /* ignore cleanup errors */
+  }
+  const wrapper = openSqlite(tmp, (name) => {
+    if (name === "better-sqlite3") throw new Error("optional driver absent");
+    return requireCjs(name);
+  });
+  assert.equal(wrapper.type, "sqlite3");
+  const sqliteVersion = await wrapper.get<{ version: string }>(
+    "SELECT sqlite_version() AS version",
+  );
+  assert.match(sqliteVersion?.version ?? "", /^\d+\.\d+\.\d+/);
   if (wrapper.close) await wrapper.close();
   try {
     fs.unlinkSync(tmp);
