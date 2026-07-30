@@ -411,6 +411,97 @@ test("recovery yields between bounded batches and resumes past 650 unrelated key
   }
 });
 
+test("completed recovery is reused without rescanning an unchanged origin", async () => {
+  const unrelatedKeys = Array.from(
+    { length: 650 },
+    (_, index) => `stable-unrelated-${index.toString().padStart(4, "0")}`,
+  );
+  for (const key of unrelatedKeys) localStorage.setItem(key, "unrelated");
+  localStorage.setItem(
+    `${CACHE_KEY_PREFIX}stable-recovery`,
+    rawCacheEntry("stable-recovery", 1),
+  );
+
+  try {
+    assert.deepEqual(getCacheIndex(), []);
+    await waitFor(
+      () => JSON.stringify(getCacheIndex()) === '["stable-recovery"]',
+    );
+
+    const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+    const originalKey = storagePrototype.key;
+    let enumerations = 0;
+    storagePrototype.key = function countKeyEnumeration(
+      this: Storage,
+      index: number,
+    ): string | null {
+      enumerations += 1;
+      return originalKey.call(this, index);
+    };
+    try {
+      assert.deepEqual(getCacheIndex(), ["stable-recovery"]);
+      assert.deepEqual(getCacheIndex(), ["stable-recovery"]);
+    } finally {
+      storagePrototype.key = originalKey;
+    }
+    assert.equal(enumerations, 0);
+  } finally {
+    clearOfflineCache();
+    for (const key of unrelatedKeys) localStorage.removeItem(key);
+  }
+});
+
+test("permanent recovery failure reaches a terminal state without a timer storm", (t) => {
+  const unrelatedCount = RESOURCE_LIMITS.offlineCache.discoveryBatchKeys + 2;
+  for (let index = 0; index < unrelatedCount; index += 1) {
+    localStorage.setItem(`recovery-failure-${index}`, "unrelated");
+  }
+  localStorage.setItem(
+    `${CACHE_KEY_PREFIX}recovery-terminal`,
+    rawCacheEntry("recovery-terminal", 1),
+  );
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+
+  assert.deepEqual(getCacheIndex(), []);
+  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+  const originalKey = storagePrototype.key;
+  let failures = 0;
+  storagePrototype.key = function permanentlyFailRecovery(): string | null {
+    failures += 1;
+    throw namedStorageError(
+      "SecurityError",
+      "forced permanent recovery failure",
+    );
+  };
+  try {
+    for (const delay of [0, 25, 50, 100, 200, 400, 800, 10_000]) {
+      t.mock.timers.tick(delay);
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      t.mock.timers.tick(60_000);
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      assert.deepEqual(getCacheIndex(), []);
+    }
+    const terminalFailures = failures;
+    assert.ok(terminalFailures > 0);
+    assert.ok(terminalFailures <= 6);
+    t.mock.timers.tick(60_000);
+    assert.equal(failures, terminalFailures);
+    assert.deepEqual(getCacheIndex(), []);
+    assert.equal(failures, terminalFailures);
+  } finally {
+    storagePrototype.key = originalKey;
+    clearOfflineCache();
+    for (let index = 0; index < unrelatedCount; index += 1) {
+      localStorage.removeItem(`recovery-failure-${index}`);
+    }
+  }
+});
+
 test("over-cap recovery retains the newest valid timestamps from 1,000 entries", async () => {
   const entryCount = 1_000;
   const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;

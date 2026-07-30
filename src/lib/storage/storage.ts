@@ -20,11 +20,45 @@ import {
 } from "../mcp/tool-permissions";
 import { getStorage, type StorageLike } from "./storage-util";
 import { generateUUID } from "../utils";
+import { reportRuntimeError } from "../errors/runtime-reporting";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
+const STORAGE_RECOVERY_KEY = `${STORAGE_KEY}:recovery`;
+const MAX_STORAGE_BYTES = 2 * 1024 * 1024;
+const MAX_JSON_DEPTH = 12;
+const MAX_JSON_NODES = 20_000;
+const MAX_OBJECT_PROPERTIES = 5_000;
+const MAX_ARRAY_ITEMS = 5_000;
+const MAX_STRING_BYTES = 64 * 1024;
+const MAX_PROPERTY_NAME_BYTES = 512;
+const MAX_API_KEYS = 256;
+const MAX_API_KEY_LABEL_BYTES = 256;
+const MAX_API_KEY_EMAIL_BYTES = 320;
+const MAX_API_KEY_ID_BYTES = 512;
+const MAX_CRYPTO_METADATA_BYTES = 64 * 1024;
+const MAX_TAG_ZONES = 256;
+const MAX_TAG_RECORDS = 5_000;
+const MAX_TAG_BYTES = 128;
+
+export class StoragePersistenceError extends Error {
+  readonly name = "StoragePersistenceError";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
+}
+
+export class StorageRecoveryRequiredError extends Error {
+  readonly name = "StorageRecoveryRequiredError";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
+}
 
 interface StorageData {
   apiKeys: ApiKey[];
+  __storageRevision?: number;
   currentSession?: string;
   lastZone?: string;
   lastActiveTabId?: string;
@@ -89,6 +123,128 @@ interface StorageData {
   auditOverrides?: Record<string, string[]>;
 }
 
+export interface StorageRecoverySnapshot {
+  capturedAt: string;
+  reason: string;
+  raw: string;
+}
+
+function utf8Bytes(value: string, stopAfterBytes = MAX_STORAGE_BYTES): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+    if (bytes > stopAfterBytes) return bytes;
+  }
+  return bytes;
+}
+
+function assertStringWithin(
+  value: unknown,
+  maximumBytes: number,
+  label: string,
+): value is string {
+  void label;
+  return (
+    typeof value === "string" &&
+    utf8Bytes(value, maximumBytes) <= maximumBytes &&
+    value.length <= maximumBytes
+  );
+}
+
+function assertBoundedJsonValue(value: unknown): void {
+  const pending: Array<{ value: unknown; depth: number }> = [
+    { value, depth: 0 },
+  ];
+  let nodes = 0;
+
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    nodes += 1;
+    if (nodes > MAX_JSON_NODES) {
+      throw new RangeError("Storage data contains too many values.");
+    }
+    if (current.depth > MAX_JSON_DEPTH) {
+      throw new RangeError("Storage data is nested too deeply.");
+    }
+    if (typeof current.value === "string") {
+      if (!assertStringWithin(current.value, MAX_STRING_BYTES, "string")) {
+        throw new RangeError("Storage data contains an oversized string.");
+      }
+      continue;
+    }
+    if (typeof current.value === "number") {
+      if (!Number.isFinite(current.value)) {
+        throw new TypeError("Storage data contains a non-finite number.");
+      }
+      continue;
+    }
+    if (
+      current.value === null ||
+      typeof current.value === "boolean" ||
+      current.value === undefined
+    ) {
+      continue;
+    }
+    if (typeof current.value !== "object") {
+      throw new TypeError("Storage data contains an unsupported value.");
+    }
+    if (Array.isArray(current.value)) {
+      if (current.value.length > MAX_ARRAY_ITEMS) {
+        throw new RangeError("Storage data contains an oversized array.");
+      }
+      for (const child of current.value) {
+        pending.push({ value: child, depth: current.depth + 1 });
+      }
+      continue;
+    }
+    const entries = Object.entries(current.value);
+    if (entries.length > MAX_OBJECT_PROPERTIES) {
+      throw new RangeError("Storage data contains an oversized object.");
+    }
+    for (const [key, child] of entries) {
+      if (!assertStringWithin(key, MAX_PROPERTY_NAME_BYTES, "property name")) {
+        throw new RangeError(
+          "Storage data contains an oversized property name.",
+        );
+      }
+      pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+}
+
+function parseBoundedJson(raw: string): unknown {
+  if (utf8Bytes(raw) > MAX_STORAGE_BYTES) {
+    throw new RangeError(
+      `Storage data exceeds the ${MAX_STORAGE_BYTES}-byte safety limit.`,
+    );
+  }
+  const parsed: unknown = JSON.parse(raw);
+  assertBoundedJsonValue(parsed);
+  return parsed;
+}
+
+function cloneStorageData(data: StorageData): StorageData {
+  return structuredClone(data);
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export interface SessionSettingsProfile {
   autoRefreshInterval?: number | null;
   defaultPerPage?: number;
@@ -144,22 +300,35 @@ function parseRecordTags(
   if (!value || typeof value !== "object") return undefined;
   const byZone = value as Record<string, unknown>;
   const result: Record<string, Record<string, string[]>> = {};
+  let recordCount = 0;
 
-  for (const [zoneId, zoneValue] of Object.entries(byZone)) {
+  for (const [zoneId, zoneValue] of Object.entries(byZone).slice(
+    0,
+    MAX_TAG_ZONES,
+  )) {
+    if (!assertStringWithin(zoneId, MAX_API_KEY_ID_BYTES, "zone id")) continue;
     if (!zoneValue || typeof zoneValue !== "object") continue;
     const byRecord = zoneValue as Record<string, unknown>;
     const zoneResult: Record<string, string[]> = {};
 
     for (const [recordId, tagsValue] of Object.entries(byRecord)) {
+      if (recordCount >= MAX_TAG_RECORDS) break;
+      if (!assertStringWithin(recordId, MAX_API_KEY_ID_BYTES, "record id")) {
+        continue;
+      }
       if (!Array.isArray(tagsValue)) continue;
       const tags = tagsValue
-        .filter((t): t is string => typeof t === "string")
+        .filter((tag): tag is string =>
+          assertStringWithin(tag, MAX_TAG_BYTES, "record tag"),
+        )
         .map((t) => t.trim())
         .filter(Boolean);
       zoneResult[recordId] = Array.from(new Set(tags)).slice(0, 32);
+      recordCount += 1;
     }
 
     result[zoneId] = zoneResult;
+    if (recordCount >= MAX_TAG_RECORDS) break;
   }
 
   return result;
@@ -169,10 +338,16 @@ function parseTagCatalog(value: unknown): Record<string, string[]> | undefined {
   if (!value || typeof value !== "object") return undefined;
   const byZone = value as Record<string, unknown>;
   const result: Record<string, string[]> = {};
-  for (const [zoneId, tagsValue] of Object.entries(byZone)) {
+  for (const [zoneId, tagsValue] of Object.entries(byZone).slice(
+    0,
+    MAX_TAG_ZONES,
+  )) {
+    if (!assertStringWithin(zoneId, MAX_API_KEY_ID_BYTES, "zone id")) continue;
     if (!Array.isArray(tagsValue)) continue;
     const tags = tagsValue
-      .filter((t): t is string => typeof t === "string")
+      .filter((tag): tag is string =>
+        assertStringWithin(tag, MAX_TAG_BYTES, "catalog tag"),
+      )
       .map((t) => t.trim())
       .filter(Boolean);
     result[zoneId] = Array.from(new Set(tags)).slice(0, 256);
@@ -191,8 +366,14 @@ export function isStorageData(value: unknown): value is StorageData {
    * @returns true when the value conforms to StorageData, false otherwise
    */
   if (!value || typeof value !== "object") return false;
+  try {
+    assertBoundedJsonValue(value);
+  } catch {
+    return false;
+  }
   const obj = value as {
     apiKeys?: unknown;
+    __storageRevision?: unknown;
     currentSession?: unknown;
     lastZone?: unknown;
     confirmLogout?: unknown;
@@ -200,14 +381,30 @@ export function isStorageData(value: unknown): value is StorageData {
     confirmWindowClose?: unknown;
     closeTabOnMiddleClick?: unknown;
   };
-  if (!Array.isArray(obj.apiKeys)) return false;
+  if (!Array.isArray(obj.apiKeys) || obj.apiKeys.length > MAX_API_KEYS) {
+    return false;
+  }
   if (
-    obj.currentSession !== undefined &&
-    typeof obj.currentSession !== "string"
+    obj.__storageRevision !== undefined &&
+    (!Number.isSafeInteger(obj.__storageRevision) ||
+      (obj.__storageRevision as number) < 0)
   ) {
     return false;
   }
-  if (obj.lastZone !== undefined && typeof obj.lastZone !== "string") {
+  if (
+    obj.currentSession !== undefined &&
+    !assertStringWithin(
+      obj.currentSession,
+      MAX_API_KEY_ID_BYTES,
+      "current session",
+    )
+  ) {
+    return false;
+  }
+  if (
+    obj.lastZone !== undefined &&
+    !assertStringWithin(obj.lastZone, MAX_API_KEY_ID_BYTES, "last zone")
+  ) {
     return false;
   }
   if (
@@ -219,7 +416,7 @@ export function isStorageData(value: unknown): value is StorageData {
   if (
     obj.idleLogoutMs !== undefined &&
     obj.idleLogoutMs !== null &&
-    typeof obj.idleLogoutMs !== "number"
+    (typeof obj.idleLogoutMs !== "number" || !Number.isFinite(obj.idleLogoutMs))
   ) {
     return false;
   }
@@ -239,17 +436,26 @@ export function isStorageData(value: unknown): value is StorageData {
     if (!k || typeof k !== "object") return false;
     const key = k as Record<string, unknown>;
     return (
-      typeof key.id === "string" &&
-      typeof key.label === "string" &&
-      typeof key.encryptedKey === "string" &&
-      typeof key.salt === "string" &&
-      typeof key.iv === "string" &&
-      typeof key.iterations === "number" &&
-      typeof key.keyLength === "number" &&
-      typeof key.algorithm === "string" &&
+      assertStringWithin(key.id, MAX_API_KEY_ID_BYTES, "API key id") &&
+      assertStringWithin(key.label, MAX_API_KEY_LABEL_BYTES, "API key label") &&
+      assertStringWithin(
+        key.encryptedKey,
+        MAX_CRYPTO_METADATA_BYTES,
+        "encrypted API key",
+      ) &&
+      assertStringWithin(key.salt, 1024, "API key salt") &&
+      assertStringWithin(key.iv, 1024, "API key IV") &&
+      Number.isSafeInteger(key.iterations) &&
+      (key.iterations as number) > 0 &&
+      (key.iterations as number) <= 10_000_000 &&
+      Number.isSafeInteger(key.keyLength) &&
+      (key.keyLength as number) > 0 &&
+      (key.keyLength as number) <= 4_096 &&
+      assertStringWithin(key.algorithm, 32, "encryption algorithm") &&
       ENCRYPTION_ALGORITHMS.includes(key.algorithm as EncryptionAlgorithm) &&
-      typeof key.createdAt === "string" &&
-      (key.email === undefined || typeof key.email === "string")
+      assertStringWithin(key.createdAt, 64, "creation timestamp") &&
+      (key.email === undefined ||
+        assertStringWithin(key.email, MAX_API_KEY_EMAIL_BYTES, "API key email"))
     );
   });
 }
@@ -262,13 +468,81 @@ export function isStorageData(value: unknown): value is StorageData {
  */
 export class StorageManager {
   private data: StorageData = { apiKeys: [] };
+  private lastPersistedData: StorageData = { apiKeys: [] };
   private storage: StorageLike;
   private crypto: CryptoManager;
+  private readonly ownsCrypto: boolean;
+  private readonly readiness: Promise<void>;
+  private recoveryRaw: string | undefined;
 
   constructor(storage?: StorageLike, crypto?: CryptoManager) {
     this.storage = getStorage(storage);
+    this.ownsCrypto = crypto === undefined;
     this.crypto = crypto ?? new CryptoManager({}, this.storage);
-    this.load();
+    if (this.storage.isReady?.() === false) {
+      this.readiness = (this.storage.ready?.() ?? Promise.resolve()).then(
+        () => {
+          if (this.ownsCrypto)
+            this.crypto = new CryptoManager({}, this.storage);
+          this.load();
+        },
+      );
+    } else {
+      this.load();
+      this.readiness = Promise.resolve();
+    }
+  }
+
+  async ready(): Promise<void> {
+    await this.readiness;
+  }
+
+  isReady(): boolean {
+    return this.storage.isReady?.() ?? true;
+  }
+
+  private reportFailure(error: unknown, label: string): void {
+    reportRuntimeError(error, { source: "runtime", label });
+  }
+
+  private preserveCorruptedData(raw: string, error: unknown): void {
+    this.recoveryRaw = raw;
+    if (utf8Bytes(raw) > MAX_STORAGE_BYTES) {
+      this.reportFailure(error, "Preserve oversized browser storage data");
+      return;
+    }
+    try {
+      if (this.storage.getItem(STORAGE_RECOVERY_KEY) !== null) return;
+      const envelope: StorageRecoverySnapshot = {
+        capturedAt: new Date().toISOString(),
+        reason: error instanceof Error ? error.message : String(error),
+        raw,
+      };
+      this.storage.setItem(STORAGE_RECOVERY_KEY, JSON.stringify(envelope));
+    } catch (preserveError) {
+      this.reportFailure(
+        preserveError,
+        "Quarantine corrupted browser storage data",
+      );
+    }
+  }
+
+  private parseStorageData(raw: string): StorageData {
+    const parsed = parseBoundedJson(raw);
+    if (!isStorageData(parsed)) {
+      throw new TypeError(
+        "Stored browser data does not match the safe schema.",
+      );
+    }
+    const obj = parsed as StorageData & {
+      recordTags?: unknown;
+      tagCatalog?: unknown;
+    };
+    return {
+      ...obj,
+      recordTags: parseRecordTags(obj.recordTags),
+      tagCatalog: parseTagCatalog(obj.tagCatalog),
+    };
   }
 
   /**
@@ -278,38 +552,190 @@ export class StorageManager {
     try {
       const stored = this.storage.getItem(STORAGE_KEY);
       if (stored) {
-        const parsed = JSON.parse(stored);
-        if (isStorageData(parsed)) {
-          const obj = parsed as StorageData & { recordTags?: unknown };
-          this.data = {
-            ...obj,
-            recordTags: parseRecordTags(obj.recordTags),
-            tagCatalog: parseTagCatalog(
-              (obj as { tagCatalog?: unknown }).tagCatalog,
-            ),
-          };
-        } else {
-          this.data = { apiKeys: [] };
-          this.storage.removeItem(STORAGE_KEY);
-        }
+        this.data = this.parseStorageData(stored);
       }
+      this.lastPersistedData = cloneStorageData(this.data);
+      this.recoveryRaw = undefined;
     } catch (error) {
-      console.error("Failed to load storage data:", error);
-      // Remove corrupted data so subsequent loads start with a clean slate.
-      this.storage.removeItem(STORAGE_KEY);
+      let stored: string | null = null;
+      try {
+        stored = this.storage.getItem(STORAGE_KEY);
+      } catch {
+        // The primary read error is already reported below.
+      }
+      if (stored !== null) this.preserveCorruptedData(stored, error);
       this.data = { apiKeys: [] };
+      this.lastPersistedData = { apiKeys: [] };
+      this.reportFailure(error, "Load browser storage data");
     }
+  }
+
+  private mergeApiKeys(
+    baseline: ApiKey[],
+    current: ApiKey[],
+    latest: ApiKey[],
+  ): ApiKey[] {
+    const baselineById = new Map(baseline.map((key) => [key.id, key]));
+    const currentById = new Map(current.map((key) => [key.id, key]));
+    const merged = new Map(latest.map((key) => [key.id, key]));
+
+    for (const id of baselineById.keys()) {
+      if (!currentById.has(id)) merged.delete(id);
+    }
+    for (const key of current) {
+      const baselineKey = baselineById.get(key.id);
+      if (!baselineKey || !jsonEqual(key, baselineKey)) {
+        merged.set(key.id, structuredClone(key));
+      }
+    }
+
+    const ordered: ApiKey[] = [];
+    for (const key of latest) {
+      const next = merged.get(key.id);
+      if (next) {
+        ordered.push(next);
+        merged.delete(key.id);
+      }
+    }
+    for (const key of current) {
+      const next = merged.get(key.id);
+      if (next) {
+        ordered.push(next);
+        merged.delete(key.id);
+      }
+    }
+    return ordered.slice(0, MAX_API_KEYS);
+  }
+
+  private mergeWithLatest(latest: StorageData): StorageData {
+    const baseline = this.lastPersistedData as unknown as Record<
+      string,
+      unknown
+    >;
+    const current = this.data as unknown as Record<string, unknown>;
+    const merged = cloneStorageData(latest) as unknown as Record<
+      string,
+      unknown
+    >;
+    const fields = new Set([...Object.keys(baseline), ...Object.keys(current)]);
+    fields.delete("__storageRevision");
+
+    for (const field of fields) {
+      const baselineHas = Object.prototype.hasOwnProperty.call(baseline, field);
+      const currentHas = Object.prototype.hasOwnProperty.call(current, field);
+      const baselineValue = baseline[field];
+      const currentValue = current[field];
+      if (
+        baselineHas === currentHas &&
+        jsonEqual(baselineValue, currentValue)
+      ) {
+        continue;
+      }
+      if (!currentHas) {
+        delete merged[field];
+      } else if (field === "apiKeys") {
+        merged.apiKeys = this.mergeApiKeys(
+          this.lastPersistedData.apiKeys,
+          this.data.apiKeys,
+          latest.apiKeys,
+        );
+      } else {
+        merged[field] = structuredClone(currentValue);
+      }
+    }
+    return merged as unknown as StorageData;
   }
 
   /**
    * Persist the in-memory data to storage as JSON.
    */
-  private save(throwOnError = false): void {
+  private save(
+    _throwOnError = true,
+    options: { replace?: boolean } = {},
+  ): void {
+    void _throwOnError;
+    const rollbackData = cloneStorageData(this.lastPersistedData);
+    let previousRaw: string | null | undefined;
+    let attemptedRaw: string | undefined;
     try {
-      this.storage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      if (!this.isReady()) {
+        throw new StoragePersistenceError(
+          "Browser storage is not ready; the change was not applied.",
+        );
+      }
+      assertBoundedJsonValue(this.data);
+      if (this.recoveryRaw !== undefined && !options.replace) {
+        throw new StorageRecoveryRequiredError(
+          "Stored data needs recovery before new changes can be saved.",
+        );
+      }
+
+      previousRaw = this.storage.getItem(STORAGE_KEY);
+      let latest: StorageData = { apiKeys: [] };
+      if (previousRaw !== null) {
+        try {
+          latest = this.parseStorageData(previousRaw);
+        } catch (error) {
+          this.preserveCorruptedData(previousRaw, error);
+          if (!options.replace) {
+            throw new StorageRecoveryRequiredError(
+              "Stored data needs recovery before new changes can be saved.",
+              { cause: error },
+            );
+          }
+        }
+      }
+
+      const next = options.replace
+        ? cloneStorageData(this.data)
+        : this.mergeWithLatest(latest);
+      next.__storageRevision =
+        Math.max(
+          latest.__storageRevision ?? 0,
+          this.lastPersistedData.__storageRevision ?? 0,
+        ) + 1;
+      assertBoundedJsonValue(next);
+      attemptedRaw = JSON.stringify(next);
+      if (utf8Bytes(attemptedRaw) > MAX_STORAGE_BYTES) {
+        throw new RangeError(
+          `Storage data exceeds the ${MAX_STORAGE_BYTES}-byte safety limit.`,
+        );
+      }
+
+      this.storage.setItem(STORAGE_KEY, attemptedRaw);
+      if (this.storage.getItem(STORAGE_KEY) !== attemptedRaw) {
+        throw new StoragePersistenceError(
+          "Browser storage changed concurrently; the write was rejected.",
+        );
+      }
+      this.data = next;
+      this.lastPersistedData = cloneStorageData(next);
+      if (options.replace) this.recoveryRaw = undefined;
     } catch (error) {
-      console.error("Failed to save storage data:", error);
-      if (throwOnError) throw error;
+      if (previousRaw !== undefined && attemptedRaw !== undefined) {
+        try {
+          if (this.storage.getItem(STORAGE_KEY) === attemptedRaw) {
+            if (previousRaw === null) this.storage.removeItem(STORAGE_KEY);
+            else this.storage.setItem(STORAGE_KEY, previousRaw);
+          }
+        } catch (rollbackError) {
+          this.reportFailure(
+            rollbackError,
+            "Roll back failed browser storage write",
+          );
+        }
+      }
+      this.data = rollbackData;
+      const surfaced =
+        error instanceof StoragePersistenceError ||
+        error instanceof StorageRecoveryRequiredError
+          ? error
+          : new StoragePersistenceError(
+              "The browser could not persist this change. The in-memory mutation was rolled back.",
+              { cause: error },
+            );
+      this.reportFailure(surfaced, "Persist browser storage data");
+      throw surfaced;
     }
   }
 
@@ -1566,14 +1992,80 @@ export class StorageManager {
   }
 
   clearAllData(): void {
-    this.data = { apiKeys: [] };
+    if (!this.isReady()) {
+      throw new StoragePersistenceError(
+        "Browser storage is not ready; data was not cleared.",
+      );
+    }
+    const previousData = cloneStorageData(this.data);
+    const previousPersisted = cloneStorageData(this.lastPersistedData);
+    let primaryRaw: string | null = null;
+    let recoveryRaw: string | null = null;
     try {
+      primaryRaw = this.storage.getItem(STORAGE_KEY);
+      recoveryRaw = this.storage.getItem(STORAGE_RECOVERY_KEY);
       this.storage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
+      this.storage.removeItem(STORAGE_RECOVERY_KEY);
+      this.data = { apiKeys: [] };
+      this.lastPersistedData = { apiKeys: [] };
+      this.recoveryRaw = undefined;
+    } catch (error) {
+      try {
+        if (primaryRaw !== null) this.storage.setItem(STORAGE_KEY, primaryRaw);
+        if (recoveryRaw !== null) {
+          this.storage.setItem(STORAGE_RECOVERY_KEY, recoveryRaw);
+        }
+      } catch (rollbackError) {
+        this.reportFailure(
+          rollbackError,
+          "Roll back failed browser storage clear",
+        );
+      }
+      this.data = previousData;
+      this.lastPersistedData = previousPersisted;
+      const surfaced = new StoragePersistenceError(
+        "Browser storage could not be cleared. Existing data was retained where possible.",
+        { cause: error },
+      );
+      this.reportFailure(surfaced, "Clear browser storage data");
+      throw surfaced;
     }
     this.dispatchPreferencesChanged({ allDataCleared: true });
     this.dispatchRecordTagsChanged("*");
+  }
+
+  getRecoverySnapshot(): StorageRecoverySnapshot | null {
+    try {
+      const rawEnvelope = this.storage.getItem(STORAGE_RECOVERY_KEY);
+      if (rawEnvelope) {
+        const parsed = parseBoundedJson(rawEnvelope);
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "capturedAt" in parsed &&
+          typeof parsed.capturedAt === "string" &&
+          "reason" in parsed &&
+          typeof parsed.reason === "string" &&
+          "raw" in parsed &&
+          typeof parsed.raw === "string"
+        ) {
+          return {
+            capturedAt: parsed.capturedAt,
+            reason: parsed.reason,
+            raw: parsed.raw,
+          };
+        }
+      }
+    } catch (error) {
+      this.reportFailure(error, "Read browser storage recovery snapshot");
+    }
+    return this.recoveryRaw === undefined
+      ? null
+      : {
+          capturedAt: new Date().toISOString(),
+          reason: "The primary browser storage payload is invalid.",
+          raw: this.recoveryRaw,
+        };
   }
 
   /**
@@ -1601,9 +2093,11 @@ export class StorageManager {
   importData(jsonData: string): void {
     let imported: unknown;
     try {
-      imported = JSON.parse(jsonData);
+      imported = parseBoundedJson(jsonData);
     } catch {
-      throw new Error("Failed to import data: Invalid JSON");
+      throw new Error(
+        `Failed to import data: JSON must be valid and no larger than ${MAX_STORAGE_BYTES} bytes.`,
+      );
     }
 
     if (!isStorageData(imported)) {
@@ -1624,6 +2118,7 @@ export class StorageManager {
     const importedHighRiskToolIdSet = new Set(importedHighRiskToolIds);
     this.data = {
       ...obj,
+      __storageRevision: undefined,
       recordTags: parseRecordTags(obj.recordTags),
       tagCatalog: parseTagCatalog(obj.tagCatalog),
       ...(importedMcpSelection
@@ -1642,7 +2137,7 @@ export class StorageManager {
             mcpPermissionPolicyVersion: undefined,
           }),
     };
-    this.save();
+    this.save(true, { replace: true });
   }
 
   getAuditOverrides(zoneId: string): string[] {

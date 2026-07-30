@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { StorageManager, isStorageData } from "../src/lib/storage/storage.ts";
+import {
+  StorageManager,
+  StoragePersistenceError,
+  StorageRecoveryRequiredError,
+  isStorageData,
+} from "../src/lib/storage/storage.ts";
 import { CryptoManager } from "../src/lib/auth/crypto.ts";
+import { createMigratingStorage } from "../src/lib/storage/storage-util.ts";
 
 class LocalStorageMock {
-  private store: Record<string, string> = {};
+  protected store: Record<string, string> = {};
   getItem(key: string) {
     return Object.prototype.hasOwnProperty.call(this.store, key)
       ? this.store[key]
@@ -85,14 +91,146 @@ test("load uses valid stored data", () => {
   assert.equal(mgr.getCurrentSession(), "1");
 });
 
-test("load resets state and clears invalid stored data", () => {
+test("load preserves invalid stored data for explicit recovery", () => {
   const storage = new LocalStorageMock();
-  storage.setItem(STORAGE_KEY, JSON.stringify({ apiKeys: "nope" }));
+  const corruptRaw = JSON.stringify({ apiKeys: "nope" });
+  storage.setItem(STORAGE_KEY, corruptRaw);
   const crypto = new CryptoManager({}, storage);
   const mgr = new StorageManager(storage, crypto);
   assert.equal(mgr.getApiKeys().length, 0);
   assert.equal(mgr.getCurrentSession(), undefined);
-  assert.equal(storage.getItem(STORAGE_KEY), null);
+  assert.equal(storage.getItem(STORAGE_KEY), corruptRaw);
+  assert.equal(mgr.getRecoverySnapshot()?.raw, corruptRaw);
+  assert.throws(
+    () => mgr.setCurrentSession("must-not-overwrite"),
+    StorageRecoveryRequiredError,
+  );
+  assert.equal(storage.getItem(STORAGE_KEY), corruptRaw);
+});
+
+test("deferred legacy hydration blocks writes and loads durable keys before use", async () => {
+  const durable = new LocalStorageMock();
+  let release!: (values: ReadonlyMap<string, string>) => void;
+  const deferred = new Promise<ReadonlyMap<string, string>>((resolve) => {
+    release = resolve;
+  });
+  const storage = createMigratingStorage(durable, () => deferred);
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const sample = {
+    apiKeys: [],
+    currentSession: "legacy-session",
+  };
+
+  assert.throws(
+    () => mgr.setCurrentSession("premature"),
+    StoragePersistenceError,
+  );
+  assert.equal(mgr.getCurrentSession(), undefined);
+  release(new Map([[STORAGE_KEY, JSON.stringify(sample)]]));
+  await mgr.ready();
+
+  assert.equal(mgr.getCurrentSession(), "legacy-session");
+  mgr.setLastZone("zone-after-ready");
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+  await restarted.ready();
+  assert.equal(restarted.getCurrentSession(), "legacy-session");
+  assert.equal(restarted.getLastZone(), "zone-after-ready");
+});
+
+test("failed writes roll back the complete in-memory mutation", () => {
+  class FailingStorage extends LocalStorageMock {
+    fail = false;
+    override setItem(key: string, value: string): void {
+      if (this.fail && key === STORAGE_KEY) {
+        throw new DOMException("quota full", "QuotaExceededError");
+      }
+      super.setItem(key, value);
+    }
+  }
+  const storage = new FailingStorage();
+  const mgr = new StorageManager(storage, new CryptoManager({}, storage));
+  mgr.setCurrentSession("stable");
+  const stableRaw = storage.getItem(STORAGE_KEY);
+  storage.fail = true;
+
+  assert.throws(
+    () => mgr.setCurrentSession("not-durable"),
+    StoragePersistenceError,
+  );
+  assert.equal(mgr.getCurrentSession(), "stable");
+  assert.equal(storage.getItem(STORAGE_KEY), stableRaw);
+});
+
+test("failed clear restores durable and in-memory data", () => {
+  class FailingDeleteStorage extends LocalStorageMock {
+    fail = false;
+    override removeItem(key: string): void {
+      if (this.fail && key === STORAGE_KEY) {
+        throw new DOMException("delete denied", "SecurityError");
+      }
+      super.removeItem(key);
+    }
+  }
+  const storage = new FailingDeleteStorage();
+  const mgr = new StorageManager(storage, new CryptoManager({}, storage));
+  mgr.setCurrentSession("stable");
+  const stableRaw = storage.getItem(STORAGE_KEY);
+  storage.fail = true;
+
+  assert.throws(() => mgr.clearAllData(), StoragePersistenceError);
+  assert.equal(mgr.getCurrentSession(), "stable");
+  assert.equal(storage.getItem(STORAGE_KEY), stableRaw);
+});
+
+test("nonconflicting multi-instance writes merge instead of replacing a stale blob", () => {
+  const storage = new LocalStorageMock();
+  const first = new StorageManager(storage, new CryptoManager({}, storage));
+  const second = new StorageManager(storage, new CryptoManager({}, storage));
+
+  first.setCurrentSession("session-a");
+  second.setLastZone("zone-b");
+
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+  assert.equal(restarted.getCurrentSession(), "session-a");
+  assert.equal(restarted.getLastZone(), "zone-b");
+});
+
+test("multi-instance API key additions survive stale whole-blob snapshots", async () => {
+  const storage = new LocalStorageMock();
+  const first = new StorageManager(storage, new CryptoManager({}, storage));
+  const second = new StorageManager(storage, new CryptoManager({}, storage));
+
+  const [firstId, secondId] = await Promise.all([
+    first.addApiKey("first", "secret-a", "password"),
+    second.addApiKey("second", "secret-b", "password"),
+  ]);
+
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+  assert.deepEqual(
+    new Set(restarted.getApiKeys().map((key) => key.id)),
+    new Set([firstId, secondId]),
+  );
+});
+
+test("import rejects oversized, deep and non-finite storage metadata", () => {
+  const storage = new LocalStorageMock();
+  const mgr = new StorageManager(storage, new CryptoManager({}, storage));
+  const oversized = JSON.stringify({
+    apiKeys: [],
+    lastZone: "x".repeat(2 * 1024 * 1024),
+  });
+  assert.throws(() => mgr.importData(oversized), /no larger than/);
+
+  let deep: Record<string, unknown> = { apiKeys: [] };
+  for (let index = 0; index < 20; index += 1) {
+    deep = { apiKeys: [], nested: deep };
+  }
+  assert.throws(() => mgr.importData(JSON.stringify(deep)), /no larger than/);
+  assert.equal(
+    isStorageData({ apiKeys: [], idleLogoutMs: Number.POSITIVE_INFINITY }),
+    false,
+  );
 });
 
 test("falls back to in-memory storage when localStorage is unavailable", async () => {
@@ -118,7 +256,7 @@ test("falls back to in-memory storage when localStorage is unavailable", async (
   assert.ok(id);
   assert.equal(mgr.getApiKeys().length, 1);
   const mgr2 = new StorageManager(undefined, crypto);
-  assert.equal(mgr2.getApiKeys().length, 0);
+  assert.equal(mgr2.getApiKeys().length, 1);
 
   if (originalDescriptor) {
     Object.defineProperty(globalThis, "localStorage", originalDescriptor);

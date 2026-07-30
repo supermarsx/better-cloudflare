@@ -50,6 +50,8 @@ interface CacheRecoveryState {
   cursor: number;
   candidates: Map<string, IndexedCacheEntry>;
   invalidEntryOperation: string;
+  failures: number;
+  startedAt: number;
 }
 
 interface PendingCacheRollback {
@@ -79,19 +81,43 @@ const CACHE_LEASE_MS = 2_000;
 const ROLLBACK_RETRY_LIMIT = 8;
 const ROLLBACK_RETRY_WINDOW_MS = 5_000;
 const ROLLBACK_RETRY_BASE_DELAY_MS = 10;
+const RECOVERY_RETRY_LIMIT = 6;
+const RECOVERY_RETRY_WINDOW_MS = 10_000;
+const RECOVERY_RETRY_BASE_DELAY_MS = 25;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const RESERVED_CACHE_KEYS = new Set([CACHE_INDEX_KEY, CACHE_COORDINATION_KEY]);
 
 let ownerSequence = 0;
 let mutationSequence = 0;
 let completedCacheState: IndexedCacheEntry[] | undefined;
+let completedCacheStorageLength: number | undefined;
+let completedCacheIndexRaw: string | null | undefined;
 let recoveryState: CacheRecoveryState | undefined;
+let recoveryTerminalError: Error | undefined;
+let recoveryFailureCount = 0;
+let recoveryFailureStartedAt = 0;
 let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
 let contendedReconciliationTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingRollback: PendingCacheRollback | undefined;
 let rollbackTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingClear: PendingCacheClear | undefined;
 let clearTimer: ReturnType<typeof setTimeout> | undefined;
+
+function resetCompletedCacheState(): void {
+  completedCacheState = undefined;
+  completedCacheStorageLength = undefined;
+  completedCacheIndexRaw = undefined;
+}
+
+function invalidateRecoveryState(): void {
+  if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+  recoveryTimer = undefined;
+  recoveryState = undefined;
+  recoveryTerminalError = undefined;
+  recoveryFailureCount = 0;
+  recoveryFailureStartedAt = 0;
+  resetCompletedCacheState();
+}
 
 function randomToken(): string {
   const randomUuid = globalThis.crypto?.randomUUID;
@@ -440,8 +466,9 @@ function scheduleRollback(): void {
   const terminateRollback = (): void => {
     if (pendingRollback !== rollback) return;
     pendingRollback = undefined;
-    completedCacheState = undefined;
+    resetCompletedCacheState();
     recoveryState = undefined;
+    recoveryTerminalError = undefined;
   };
   const delay = Math.min(
     ROLLBACK_RETRY_BASE_DELAY_MS * 2 ** Math.min(rollback.attempts, 6),
@@ -778,17 +805,52 @@ function retainRecoveryCandidate(
   }
 }
 
-function scheduleRecovery(): void {
-  if (recoveryTimer !== undefined) return;
-  recoveryTimer = setTimeout(() => {
-    recoveryTimer = undefined;
-    try {
-      continueRecovery();
-    } catch (error) {
-      reportCacheFailure(error, "Recover DNS offline cache");
-      scheduleRecovery();
-    }
-  }, 0);
+function recordRecoveryFailure(
+  state: CacheRecoveryState,
+  error: unknown,
+): boolean {
+  state.failures += 1;
+  recoveryFailureCount += 1;
+  const elapsed = Date.now() - recoveryFailureStartedAt;
+  if (
+    recoveryFailureCount < RECOVERY_RETRY_LIMIT &&
+    elapsed < RECOVERY_RETRY_WINDOW_MS
+  ) {
+    return false;
+  }
+  recoveryTerminalError = new Error(
+    "DNS offline cache recovery stopped after repeated storage failures.",
+    { cause: error },
+  );
+  if (recoveryState === state) recoveryState = undefined;
+  return true;
+}
+
+function recoveryRetryDelay(): number {
+  return (
+    RECOVERY_RETRY_BASE_DELAY_MS *
+    2 ** Math.min(Math.max(0, recoveryFailureCount - 1), 6)
+  );
+}
+
+function scheduleRecovery(delayMs = 0): void {
+  if (recoveryTimer !== undefined || recoveryTerminalError) return;
+  const scheduledState = recoveryState;
+  if (!scheduledState) return;
+  recoveryTimer = setTimeout(
+    () => {
+      recoveryTimer = undefined;
+      if (recoveryState !== scheduledState || recoveryTerminalError) return;
+      try {
+        continueRecovery();
+      } catch (error) {
+        reportCacheFailure(error, "Recover DNS offline cache");
+        if (recordRecoveryFailure(scheduledState, error)) return;
+        scheduleRecovery(recoveryRetryDelay());
+      }
+    },
+    Math.max(0, delayMs),
+  );
 }
 
 function continueRecovery(): IndexedCacheEntry[] | undefined {
@@ -796,9 +858,10 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
   if (!state) return completedCacheState;
   let budget = RESOURCE_LIMITS.offlineCache.discoveryBatchKeys;
   while (state.cursor > 0 && budget > 0) {
-    state.cursor -= 1;
+    const nextCursor = state.cursor - 1;
+    const key = localStorage.key(nextCursor);
+    state.cursor = nextCursor;
     budget -= 1;
-    const key = localStorage.key(state.cursor);
     if (!key || !isOwnedCacheEntryKey(key)) continue;
     const raw = localStorage.getItem(key);
     if (raw === null) continue;
@@ -814,6 +877,9 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
     }
   }
   if (state.cursor > 0) {
+    state.failures = 0;
+    recoveryFailureCount = 0;
+    recoveryFailureStartedAt = Date.now();
     scheduleRecovery();
     return undefined;
   }
@@ -833,7 +899,7 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
   );
   if (localStorage.getItem(CACHE_INDEX_KEY) !== state.index.raw) {
     recoveryState = undefined;
-    completedCacheState = undefined;
+    resetCompletedCacheState();
     return undefined;
   }
   if (
@@ -848,8 +914,35 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
     applyPreparedIndex(indexWrite);
   }
   completedCacheState = retained;
+  completedCacheStorageLength = localStorage.length;
+  completedCacheIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
   recoveryState = undefined;
+  recoveryTerminalError = undefined;
+  recoveryFailureCount = 0;
+  recoveryFailureStartedAt = 0;
   return retained;
+}
+
+function completedCacheIsCurrent(): boolean {
+  if (
+    !completedCacheState ||
+    completedCacheStorageLength === undefined ||
+    completedCacheIndexRaw === undefined
+  ) {
+    return false;
+  }
+  try {
+    return (
+      localStorage.length === completedCacheStorageLength &&
+      localStorage.getItem(CACHE_INDEX_KEY) === completedCacheIndexRaw &&
+      completedCacheState.every(
+        (entry) => localStorage.getItem(entry.key) === entry.raw,
+      )
+    );
+  } catch (error) {
+    reportCacheFailure(error, "Verify completed DNS offline cache recovery");
+    return false;
+  }
 }
 
 function reconcileCacheState(
@@ -859,15 +952,32 @@ function reconcileCacheState(
   const lease = coordinate ? tryAcquireCacheLease() : undefined;
   try {
     if (!recoveryState) {
+      if (recoveryTerminalError) throw recoveryTerminalError;
+      if (completedCacheIsCurrent()) return completedCacheState!;
+      resetCompletedCacheState();
       recoveryState = {
         index: readCacheIndex(),
         storedKeyCount: localStorage.length,
         cursor: localStorage.length,
         candidates: new Map(),
         invalidEntryOperation,
+        failures: 0,
+        startedAt: Date.now(),
       };
+      recoveryFailureCount = 0;
+      recoveryFailureStartedAt = recoveryState.startedAt;
     }
-    const recovered = continueRecovery();
+    let recovered: IndexedCacheEntry[] | undefined;
+    try {
+      recovered = continueRecovery();
+    } catch (error) {
+      reportCacheFailure(error, "Recover DNS offline cache");
+      const state = recoveryState;
+      if (state && !recordRecoveryFailure(state, error)) {
+        scheduleRecovery(recoveryRetryDelay());
+      }
+      throw recoveryTerminalError ?? error;
+    }
     if (recovered) return recovered;
     throw new OfflineCacheRecoveryPendingError(
       "DNS offline cache recovery will resume in a later task.",
@@ -906,8 +1016,9 @@ function scheduleContendedCacheReconciliation(): void {
   if (contendedReconciliationTimer !== undefined) return;
   contendedReconciliationTimer = setTimeout(() => {
     contendedReconciliationTimer = undefined;
-    completedCacheState = undefined;
+    resetCompletedCacheState();
     recoveryState = undefined;
+    recoveryTerminalError = undefined;
     try {
       reconcileCacheState("Reconcile contended DNS offline cache write");
     } catch (error) {
@@ -937,7 +1048,7 @@ function persistCacheEntry(
     // current owner's removals or index write. The bounded deferred pass (or
     // any observable read) will reconcile the index after the lease expires.
     localStorage.setItem(key, serialized);
-    completedCacheState = undefined;
+    resetCompletedCacheState();
     recoveryState = undefined;
     scheduleContendedCacheReconciliation();
     return;
@@ -1076,6 +1187,7 @@ export function cacheZoneRecords(
   zoneName: string,
   records: unknown[],
 ): void {
+  invalidateRecoveryState();
   const entry: CachedZoneRecords = {
     zoneId,
     zoneName,
@@ -1152,6 +1264,7 @@ export function getCacheAge(zoneId: string): number | null {
  * Remove cached data for a zone.
  */
 export function removeCachedZone(zoneId: string): void {
+  invalidateRecoveryState();
   const lease = tryAcquireCacheLease();
   if (!lease) {
     reportCacheFailure(
@@ -1270,7 +1383,10 @@ export function clearOfflineCache(): void {
   rollbackTimer = undefined;
   clearTimer = undefined;
   recoveryState = undefined;
-  completedCacheState = undefined;
+  resetCompletedCacheState();
+  recoveryTerminalError = undefined;
+  recoveryFailureCount = 0;
+  recoveryFailureStartedAt = 0;
   pendingRollback = undefined;
   pendingClear = {
     cursor: localStorage.length,

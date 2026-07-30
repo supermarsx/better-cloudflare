@@ -115,10 +115,12 @@ export function useLoginForm(
   const [biometricLoading, setBiometricLoading] = useState(false);
 
   useEffect(() => {
-    if (backend !== "indexeddb") {
+    if (backend === "memory") {
       toast({
-        title: t("Note"),
-        description: `Using ${backend} storage. IndexedDB not available or in use. Some features may be limited.`,
+        title: t("Persistent storage unavailable"),
+        description:
+          "This session is using temporary memory storage. Changes will not survive an app restart.",
+        variant: "destructive",
       });
     }
   }, [backend, t]);
