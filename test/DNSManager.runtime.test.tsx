@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, mock, test } from "node:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -51,12 +52,21 @@ function setDesktopWindow(): void {
   (globalThis as { window?: unknown }).window = { __TAURI__: {} };
 }
 
-function createMcpStatus(enabledTools: string[] = []): McpServerStatus {
+function createMcpStatus(
+  enabledTools: string[] = [],
+  binding: {
+    running?: boolean;
+    host?: string;
+    port?: number;
+  } = {},
+): McpServerStatus {
+  const host = binding.host ?? "127.0.0.1";
+  const port = binding.port ?? 8787;
   return {
-    running: false,
-    host: "127.0.0.1",
-    port: 8787,
-    url: "http://127.0.0.1:8787/mcp",
+    running: binding.running ?? false,
+    host,
+    port,
+    url: `http://${host}:${port}/mcp`,
     enabledTools,
     tools: [
       {
@@ -68,6 +78,21 @@ function createMcpStatus(enabledTools: string[] = []): McpServerStatus {
     ],
     lastError: null,
   };
+}
+
+function mockMcpPermissionStorage(
+  enabledTools: string[],
+  pendingHighRiskToolIds: string[] = [],
+): void {
+  mock.method(storageManager, "getMcpEnabledToolsSnapshot", () => ({
+    enabledTools,
+    removedToolIds: [],
+    pendingHighRiskToolIds,
+    configured: true,
+    permissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
+  }));
+  mock.method(storageManager, "setMcpEnabledTools", () => {});
+  mock.method(storageManager, "stageMcpEnabledTools", () => {});
 }
 
 function deferred<T>(): {
@@ -136,6 +161,39 @@ function mockDnsRuntime(
       status: 200,
       headers: { "content-type": "application/json" },
     });
+}
+
+async function openMcpServerSettings(): Promise<{
+  serverSwitch: HTMLElement;
+  hostInput: HTMLInputElement;
+  portInput: HTMLInputElement;
+  applyButton: HTMLElement;
+}> {
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+
+  const serverSetting = await screen.findByText("Enable MCP server");
+  const serverSettingRow = serverSetting.parentElement;
+  assert.ok(serverSettingRow);
+  const bindingSetting = await screen.findByText("Bind host");
+  const bindingSettingRow = bindingSetting.parentElement;
+  assert.ok(bindingSettingRow);
+
+  return {
+    serverSwitch: within(serverSettingRow).getByRole("switch", {
+      hidden: true,
+    }),
+    hostInput: within(bindingSettingRow).getByRole("textbox", {
+      hidden: true,
+    }) as HTMLInputElement,
+    portInput: within(bindingSettingRow).getByRole("spinbutton", {
+      hidden: true,
+    }) as HTMLInputElement,
+    applyButton: within(bindingSettingRow).getByRole("button", {
+      name: "Apply + restart",
+      hidden: true,
+    }),
+  };
 }
 
 afterEach(() => {
@@ -550,7 +608,7 @@ test("login-time MCP synchronization is contained to one apply and one bounded r
   assert.ok(screen.getByRole("button", { name: "Settings" }));
 });
 
-test("login-time MCP reconciliation stays mounted off-view, preserves staged high-risk requests, and defers confirmation", async () => {
+test("MCP command-count 1/8: initial hydrated off-view synchronization invokes exactly one lifecycle command", async () => {
   setDesktopWindow();
   const statusLoad = deferred<McpServerStatus>();
   const setToolCalls: string[][] = [];
@@ -640,6 +698,508 @@ test("login-time MCP reconciliation stays mounted off-view, preserves staged hig
   const confirmation = within(modalBackdrop).getByRole("alertdialog");
   assert.ok(within(confirmation).getByText(/Create DNS record/));
   assert.deepEqual(setToolCalls, [["cf_list_zones"]]);
+  assert.deepEqual(startCalls, [["cf_list_zones"]]);
+});
+
+test("MCP command-count 2/8: manual switch start invokes start exactly once without background replay", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.2";
+  const configuredPort = 8811;
+  const startCalls: Array<{
+    host: string;
+    port: number;
+    enabledTools: string[];
+  }> = [];
+  let stopCalls = 0;
+  const stoppedStatus = createMcpStatus(confirmedTools, {
+    running: false,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: false,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: confirmedTools,
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: false,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => stoppedStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        startCalls.push({ host, port, enabledTools: [...enabledTools] });
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+      stopMcpServer: async () => {
+        stopCalls += 1;
+        return stoppedStatus;
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(stopCalls, 1));
+
+  const { serverSwitch } = await openMcpServerSettings();
+  await waitFor(() =>
+    assert.equal(serverSwitch.hasAttribute("disabled"), false),
+  );
+  assert.equal(serverSwitch.getAttribute("aria-checked"), "false");
+  fireEvent.click(serverSwitch);
+
+  await waitFor(() => {
+    assert.equal(startCalls.length, 1);
+    assert.equal(serverSwitch.getAttribute("aria-checked"), "true");
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(startCalls, [
+    {
+      host: configuredHost,
+      port: configuredPort,
+      enabledTools: confirmedTools,
+    },
+  ]);
+  assert.equal(stopCalls, 1);
+});
+
+test("MCP command-count 3/8: manual switch stop invokes stop exactly once without background replay", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.3";
+  const configuredPort = 8812;
+  const startCalls: Array<{
+    host: string;
+    port: number;
+    enabledTools: string[];
+  }> = [];
+  let stopCalls = 0;
+  const runningStatus = createMcpStatus(confirmedTools, {
+    running: true,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: confirmedTools,
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: true,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => runningStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        startCalls.push({ host, port, enabledTools: [...enabledTools] });
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+      stopMcpServer: async () => {
+        stopCalls += 1;
+        return createMcpStatus(confirmedTools, {
+          running: false,
+          host: configuredHost,
+          port: configuredPort,
+        });
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(startCalls.length, 1));
+
+  const { serverSwitch } = await openMcpServerSettings();
+  await waitFor(() =>
+    assert.equal(serverSwitch.hasAttribute("disabled"), false),
+  );
+  assert.equal(serverSwitch.getAttribute("aria-checked"), "true");
+  fireEvent.click(serverSwitch);
+
+  await waitFor(() => {
+    assert.equal(stopCalls, 1);
+    assert.equal(serverSwitch.getAttribute("aria-checked"), "false");
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  assert.equal(startCalls.length, 1);
+  assert.equal(stopCalls, 1);
+});
+
+test("MCP command-count 4/8: editing the draft host invokes zero lifecycle commands before Apply", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.4";
+  const configuredPort = 8813;
+  const lifecycleCalls: string[] = [];
+  const runningStatus = createMcpStatus(confirmedTools, {
+    running: true,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: confirmedTools,
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: true,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => runningStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        lifecycleCalls.push(`start:${host}:${port}`);
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+      stopMcpServer: async () => {
+        lifecycleCalls.push("stop");
+        return runningStatus;
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(lifecycleCalls.length, 1));
+  const { hostInput } = await openMcpServerSettings();
+  await waitFor(() => assert.equal(hostInput.hasAttribute("disabled"), false));
+  lifecycleCalls.length = 0;
+
+  fireEvent.change(hostInput, { target: { value: "192.0.2.40" } });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  assert.equal(hostInput.value, "192.0.2.40");
+  assert.deepEqual(lifecycleCalls, []);
+});
+
+test("MCP command-count 5/8: editing the draft port invokes zero lifecycle commands before Apply", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.5";
+  const configuredPort = 8814;
+  const lifecycleCalls: string[] = [];
+  const runningStatus = createMcpStatus(confirmedTools, {
+    running: true,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: confirmedTools,
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: true,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => runningStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        lifecycleCalls.push(`start:${host}:${port}`);
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+      stopMcpServer: async () => {
+        lifecycleCalls.push("stop");
+        return runningStatus;
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(lifecycleCalls.length, 1));
+  const { portInput } = await openMcpServerSettings();
+  await waitFor(() => assert.equal(portInput.hasAttribute("disabled"), false));
+  lifecycleCalls.length = 0;
+
+  fireEvent.change(portInput, { target: { value: "18814" } });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  assert.equal(portInput.value, "18814");
+  assert.deepEqual(lifecycleCalls, []);
+});
+
+test("MCP command-count 6/8: Apply and restart invokes one start with the final draft binding", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.6";
+  const configuredPort = 8815;
+  const startCalls: Array<{
+    host: string;
+    port: number;
+    enabledTools: string[];
+  }> = [];
+  const runningStatus = createMcpStatus(confirmedTools, {
+    running: true,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: confirmedTools,
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: true,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => runningStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        startCalls.push({ host, port, enabledTools: [...enabledTools] });
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(startCalls.length, 1));
+  const { hostInput, portInput, applyButton } = await openMcpServerSettings();
+  await waitFor(() =>
+    assert.equal(applyButton.hasAttribute("disabled"), false),
+  );
+  startCalls.length = 0;
+
+  fireEvent.change(hostInput, { target: { value: "192.0.2.60" } });
+  fireEvent.change(portInput, { target: { value: "18815" } });
+  assert.deepEqual(startCalls, []);
+  fireEvent.click(applyButton);
+
+  await waitFor(() => assert.equal(startCalls.length, 1));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  assert.deepEqual(startCalls, [
+    {
+      host: "192.0.2.60",
+      port: 18815,
+      enabledTools: confirmedTools,
+    },
+  ]);
+});
+
+test("MCP command-count 7/8: changed permissions serialize one resynchronization from authoritative applied binding", async () => {
+  setDesktopWindow();
+  const configuredHost = "127.0.0.7";
+  const configuredPort = 8816;
+  const authoritativeHost = "127.0.0.77";
+  const authoritativePort = 18777;
+  const permissionApplication = deferred<McpServerStatus>();
+  const setToolCalls: string[][] = [];
+  const startCalls: Array<{
+    host: string;
+    port: number;
+    enabledTools: string[];
+  }> = [];
+  const authoritativeEmptyStatus = createMcpStatus([], {
+    running: true,
+    host: authoritativeHost,
+    port: authoritativePort,
+  });
+
+  mockMcpPermissionStorage([]);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: true,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: [],
+    }),
+    async (tools) => {
+      setToolCalls.push([...tools]);
+      if (setToolCalls.length === 1) {
+        return authoritativeEmptyStatus;
+      }
+      return permissionApplication.promise;
+    },
+    {
+      getMcpServerStatus: async () => authoritativeEmptyStatus,
+      startMcpServer: async (host, port, enabledTools) => {
+        startCalls.push({ host, port, enabledTools: [...enabledTools] });
+        return createMcpStatus(enabledTools, { running: true, host, port });
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(startCalls.length, 1));
+  assert.deepEqual(startCalls[0], {
+    host: configuredHost,
+    port: configuredPort,
+    enabledTools: [],
+  });
+
+  const { hostInput, portInput } = await openMcpServerSettings();
+  fireEvent.change(hostInput, { target: { value: "192.0.2.77" } });
+  fireEvent.change(portInput, { target: { value: "28777" } });
+  startCalls.length = 0;
+
+  const accessGroup = await screen.findByRole("group", {
+    name: /Access and zones/,
+  });
+  fireEvent.click(
+    within(accessGroup).getByRole("button", { name: "Select visible" }),
+  );
+  await waitFor(() => assert.equal(setToolCalls.length, 2));
+  assert.deepEqual(setToolCalls[1], ["cf_list_zones"]);
+  assert.deepEqual(
+    startCalls,
+    [],
+    "lifecycle synchronization must wait for authoritative permission status",
+  );
+
+  permissionApplication.resolve(
+    createMcpStatus(["cf_list_zones"], {
+      running: true,
+      host: authoritativeHost,
+      port: authoritativePort,
+    }),
+  );
+  await waitFor(() => assert.equal(startCalls.length, 1));
+  assert.deepEqual(startCalls, [
+    {
+      host: authoritativeHost,
+      port: authoritativePort,
+      enabledTools: ["cf_list_zones"],
+    },
+  ]);
+});
+
+test("MCP command-count 8/8: equal final cancel settlement adds no command while manual start completes", async () => {
+  setDesktopWindow();
+  const confirmedTools = ["cf_list_zones"];
+  const configuredHost = "127.0.0.8";
+  const configuredPort = 8817;
+  const manualStart = deferred<McpServerStatus>();
+  const startCalls: Array<{
+    host: string;
+    port: number;
+    enabledTools: string[];
+  }> = [];
+  let stopCalls = 0;
+  let activeLifecycleCommands = 0;
+  let peakActiveLifecycleCommands = 0;
+  const stoppedStatus = createMcpStatus(confirmedTools, {
+    running: false,
+    host: configuredHost,
+    port: configuredPort,
+  });
+
+  mockMcpPermissionStorage(confirmedTools, ["cf_create_dns_record"]);
+  mockDnsRuntime(
+    async () => ({
+      mcp_server_enabled: false,
+      mcp_server_host: configuredHost,
+      mcp_server_port: configuredPort,
+      mcp_enabled_tools: [],
+    }),
+    async (tools) =>
+      createMcpStatus(tools, {
+        running: false,
+        host: configuredHost,
+        port: configuredPort,
+      }),
+    {
+      getMcpServerStatus: async () => stoppedStatus,
+      startMcpServer: (host, port, enabledTools) => {
+        startCalls.push({ host, port, enabledTools: [...enabledTools] });
+        activeLifecycleCommands += 1;
+        peakActiveLifecycleCommands = Math.max(
+          peakActiveLifecycleCommands,
+          activeLifecycleCommands,
+        );
+        return manualStart.promise.finally(() => {
+          activeLifecycleCommands -= 1;
+        });
+      },
+      stopMcpServer: async () => {
+        stopCalls += 1;
+        activeLifecycleCommands += 1;
+        peakActiveLifecycleCommands = Math.max(
+          peakActiveLifecycleCommands,
+          activeLifecycleCommands,
+        );
+        activeLifecycleCommands -= 1;
+        return stoppedStatus;
+      },
+    },
+  );
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await waitFor(() => assert.equal(stopCalls, 1));
+  const { serverSwitch } = await openMcpServerSettings();
+  const confirmation = await screen.findByRole("alertdialog");
+  assert.ok(within(confirmation).getByText(/Create DNS record/));
+
+  fireEvent.click(serverSwitch);
+  await waitFor(() => assert.equal(startCalls.length, 1));
+  assert.equal(activeLifecycleCommands, 1);
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => assert.equal(screen.queryByRole("alertdialog"), null));
+  assert.equal(startCalls.length, 1);
+
+  manualStart.resolve(
+    createMcpStatus(confirmedTools, {
+      running: true,
+      host: configuredHost,
+      port: configuredPort,
+    }),
+  );
+  await waitFor(() => {
+    assert.equal(activeLifecycleCommands, 0);
+    assert.equal(serverSwitch.getAttribute("aria-checked"), "true");
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(startCalls, [
+    {
+      host: configuredHost,
+      port: configuredPort,
+      enabledTools: confirmedTools,
+    },
+  ]);
+  assert.equal(stopCalls, 1);
+  assert.equal(peakActiveLifecycleCommands, 1);
 });
 
 test("an equal hydrated session profile preserves MCP readiness after reconciliation", async () => {

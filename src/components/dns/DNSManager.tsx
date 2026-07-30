@@ -958,19 +958,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return JSON.stringify({
       preferencesRevision: mcpSessionPreferencesRevision,
       permissionRevision: mcpConfirmedPermissionRevision,
-      enabled: mcpServerEnabled,
-      host: mcpServerHost.trim() || "127.0.0.1",
-      port: Math.max(1, Math.min(65535, Math.round(mcpServerPort))),
-      tools: [...normalizeMcpToolIds(mcpEnabledTools)].sort(),
     });
-  }, [
-    mcpConfirmedPermissionRevision,
-    mcpEnabledTools,
-    mcpServerEnabled,
-    mcpServerHost,
-    mcpServerPort,
-    mcpSessionPreferencesRevision,
-  ]);
+  }, [mcpConfirmedPermissionRevision, mcpSessionPreferencesRevision]);
   const mcpStartupSynchronizationKeyRef = useRef<string | null>(
     mcpStartupSynchronizationKey,
   );
@@ -1441,6 +1430,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (Array.isArray(profile.mcpEnabledTools)) {
         const requestedTools = normalizeMcpToolIds(profile.mcpEnabledTools);
         if (!sameMcpToolIds(requestedTools, mcpEnabledToolsRef.current)) {
+          mcpPermissionsReadyRef.current = false;
           setMcpPermissionsReady(false);
         }
         mcpRequestedToolsRef.current = requestedTools;
@@ -2178,7 +2168,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       status: McpServerStatus,
       application: McpToolPermissionsApplication,
     ) => {
-      const confirmedTools = [...enabledTools];
+      const confirmedTools = normalizeMcpToolIds(enabledTools);
+      const initialAuthoritativeReadiness = !mcpPermissionsReadyRef.current;
+      const confirmedSelectionChanged = !sameMcpToolIds(
+        confirmedTools,
+        mcpEnabledToolsRef.current,
+      );
       mcpEnabledToolsRef.current = confirmedTools;
       setMcpEnabledTools(confirmedTools);
       if (application.synchronization === "final") {
@@ -2187,8 +2182,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       setMcpStatus(status);
       setMcpActionError(null);
+      mcpPermissionsReadyRef.current = true;
       setMcpPermissionsReady(true);
-      setMcpConfirmedPermissionRevision((revision) => revision + 1);
+      if (initialAuthoritativeReadiness || confirmedSelectionChanged) {
+        setMcpConfirmedPermissionRevision((revision) => revision + 1);
+      }
     },
     [],
   );
@@ -2196,6 +2194,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const handleMcpPermissionsError = useCallback(
     (error: unknown, failure: McpToolPermissionsFailure) => {
       if (failure.operation === "bootstrap") {
+        mcpPermissionsReadyRef.current = false;
         setMcpPermissionsReady(false);
       }
       const label =
@@ -2224,9 +2223,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const setMcpServerRunning = useCallback(
     async (enabled: boolean, host?: string, port?: number) => {
-      if (!isDesktop() || !mcpPermissionsReady) return;
+      if (
+        !isDesktop() ||
+        !mcpPermissionsReadyRef.current ||
+        mcpStartupInFlightKeyRef.current !== null
+      ) {
+        return;
+      }
       const previousEnabled = mcpServerEnabled;
       const previousStatus = mcpStatus;
+      const synchronizationKey = mcpStartupSynchronizationKeyRef.current;
       setMcpBusy(true);
       setMcpActionError(null);
       try {
@@ -2242,7 +2248,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               mcpEnabledTools,
             )
           : await TauriClient.stopMcpServer();
+        if (
+          synchronizationKey !== null &&
+          mcpStartupSynchronizationKeyRef.current === synchronizationKey
+        ) {
+          mcpStartupCompletedKeyRef.current = synchronizationKey;
+        }
         setMcpStatus(status);
+        mcpServerEnabledRef.current = enabled;
         setMcpServerEnabled(enabled);
       } catch (error) {
         setMcpServerEnabled(previousEnabled);
@@ -2258,7 +2271,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [
       mcpEnabledTools,
-      mcpPermissionsReady,
       mcpServerEnabled,
       mcpServerHost,
       mcpServerPort,
@@ -2575,6 +2587,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               !sameMcpToolIds(confirmedTools, mcpEnabledToolsRef.current) ||
               !sameMcpToolIds(requestedTools, mcpRequestedToolsRef.current)
             ) {
+              mcpPermissionsReadyRef.current = false;
               setMcpPermissionsReady(false);
             }
             mcpEnabledToolsRef.current = confirmedTools;
@@ -2793,6 +2806,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     ]);
     mcpRequestedToolsRef.current = requestedTools;
     setMcpRequestedTools(requestedTools);
+    mcpPermissionsReadyRef.current = false;
     setMcpPermissionsReady(false);
     setLoadingOverlayTimeoutMs(storageManager.getLoadingOverlayTimeoutMs());
     setTopologyResolutionMaxHops(storageManager.getTopologyResolutionMaxHops());
@@ -2868,12 +2882,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return;
     }
 
-    const synchronization = {
-      enabled: mcpServerEnabled,
-      host: mcpServerHost.trim() || "127.0.0.1",
-      port: Math.max(1, Math.min(65535, Math.round(mcpServerPort))),
-      enabledTools: [...normalizeMcpToolIds(mcpEnabledTools)],
-    };
+    const initialSynchronization = mcpStartupCompletedKeyRef.current === null;
+    if (!initialSynchronization && mcpStatus === null) {
+      return;
+    }
+    const synchronization = initialSynchronization
+      ? {
+          enabled: mcpServerEnabledRef.current,
+          host: mcpServerHostRef.current.trim() || "127.0.0.1",
+          port: Math.max(
+            1,
+            Math.min(65535, Math.round(mcpServerPortRef.current)),
+          ),
+          enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
+        }
+      : {
+          enabled: mcpStatus.running,
+          host: mcpStatus.host.trim() || "127.0.0.1",
+          port: Math.max(1, Math.min(65535, Math.round(mcpStatus.port))),
+          enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
+        };
     mcpStartupInFlightKeyRef.current = synchronizationKey;
     setMcpBusy(true);
     setMcpActionError(null);
@@ -2928,11 +2956,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
     })();
   }, [
-    mcpEnabledTools,
     mcpPermissionsReady,
-    mcpServerEnabled,
-    mcpServerHost,
-    mcpServerPort,
+    mcpStatus,
     mcpStartupDrainRevision,
     mcpStartupSynchronizationKey,
     prefsReady,

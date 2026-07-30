@@ -42,14 +42,28 @@ test("treats an explicit empty onApplied selection as authoritative and ready", 
     "const setMcpServerRunning = useCallback(",
   );
 
-  assert.match(handler, /const confirmedTools = \[\.\.\.enabledTools\];/);
+  assert.match(
+    handler,
+    /const confirmedTools = normalizeMcpToolIds\(enabledTools\);/,
+  );
+  assert.match(
+    handler,
+    /initialAuthoritativeReadiness[\s\S]*confirmedSelectionChanged/,
+  );
   assert.match(handler, /setMcpEnabledTools\(confirmedTools\);/);
   assert.match(
     handler,
     /if \(application\.synchronization === "final"\) \{[\s\S]*setMcpRequestedTools\(confirmedTools\);/,
   );
   assert.match(handler, /setMcpStatus\(status\);/);
-  assert.match(handler, /setMcpPermissionsReady\(true\);/);
+  assert.match(
+    handler,
+    /mcpPermissionsReadyRef\.current = true;\s*setMcpPermissionsReady\(true\);/,
+  );
+  assert.match(
+    handler,
+    /if \(initialAuthoritativeReadiness \|\| confirmedSelectionChanged\) \{\s*setMcpConfirmedPermissionRevision/,
+  );
   assert.doesNotMatch(handler, /enabledTools\.length/);
 });
 
@@ -61,7 +75,7 @@ test("bootstrap permission failures stay unready and use the parent toast as the
 
   assert.match(
     handler,
-    /failure\.operation === "bootstrap"[\s\S]*setMcpPermissionsReady\(false\);/,
+    /failure\.operation === "bootstrap"[\s\S]*mcpPermissionsReadyRef\.current = false;\s*setMcpPermissionsReady\(false\);/,
   );
   assert.match(handler, /"Synchronize MCP server preferences"/);
   assert.match(handler, /"Update MCP tool access"/);
@@ -73,7 +87,11 @@ test("bootstrap permission failures stay unready and use the parent toast as the
   assert.doesNotMatch(handler, /setMcpPermissionsReady\(true\)/);
 });
 
-test("starts and restarts MCP with confirmed permissions only", () => {
+test("uses one revision-keyed lifecycle effect with confirmed tools and authoritative applied binding", () => {
+  const startupKey = sourceBetween(
+    "const mcpStartupSynchronizationKey = useMemo(",
+    "const mcpStartupSynchronizationKeyRef",
+  );
   const serverControl = sourceBetween(
     "const setMcpServerRunning = useCallback(",
     "useEffect(() => {\n    if (!prefsReady) return;",
@@ -83,6 +101,14 @@ test("starts and restarts MCP with confirmed permissions only", () => {
     "const persistTabStateBestEffort = useCallback(",
   );
 
+  assert.match(
+    startupKey,
+    /preferencesRevision: mcpSessionPreferencesRevision,\s*permissionRevision: mcpConfirmedPermissionRevision,/,
+  );
+  assert.doesNotMatch(
+    startupKey,
+    /enabled:|host:|port:|tools:|mcpServerEnabled|mcpServerHost|mcpServerPort|mcpEnabledTools/,
+  );
   assert.match(
     startupSynchronization,
     /!prefsReady[\s\S]*!mcpPermissionsReady[\s\S]*synchronizationKey === null/,
@@ -100,12 +126,28 @@ test("starts and restarts MCP with confirmed permissions only", () => {
     serverControl,
     /TauriClient\.startMcpServer\(\s*nextHost,\s*nextPort,\s*mcpEnabledTools,\s*\)/,
   );
+  assert.match(
+    serverControl,
+    /mcpStartupSynchronizationKeyRef\.current === synchronizationKey[\s\S]*mcpStartupCompletedKeyRef\.current = synchronizationKey;/,
+  );
   assert.doesNotMatch(serverControl, /mcpRequestedTools/);
   assert.match(
     startupSynchronization,
     /TauriClient\.startMcpServer\(\s*synchronization\.host,\s*synchronization\.port,\s*synchronization\.enabledTools,\s*\)/,
   );
+  assert.match(
+    startupSynchronization,
+    /initialSynchronization[\s\S]*mcpServerEnabledRef\.current[\s\S]*mcpServerHostRef\.current[\s\S]*mcpServerPortRef\.current/,
+  );
+  assert.match(
+    startupSynchronization,
+    /enabled: mcpStatus\.running,\s*host: mcpStatus\.host\.trim\(\)[\s\S]*port: Math\.max\(1, Math\.min\(65535, Math\.round\(mcpStatus\.port\)\)\)/,
+  );
   assert.doesNotMatch(startupSynchronization, /mcpRequestedTools/);
+  assert.doesNotMatch(
+    DNS_MANAGER_SOURCE,
+    /McpSynchronizationSource|mcpRequestedSynchronization|mcpSettledSynchronization|mcpSynchronizationRevision/,
+  );
 });
 
 test("stages persisted, profile, and imported permission requests for reconciliation", () => {
@@ -132,7 +174,7 @@ test("stages persisted, profile, and imported permission requests for reconcilia
   );
   assert.match(
     profileApplication,
-    /if \(!sameMcpToolIds\(requestedTools, mcpEnabledToolsRef\.current\)\) \{\s*setMcpPermissionsReady\(false\);/,
+    /if \(!sameMcpToolIds\(requestedTools, mcpEnabledToolsRef\.current\)\) \{\s*mcpPermissionsReadyRef\.current = false;\s*setMcpPermissionsReady\(false\);/,
   );
   assert.doesNotMatch(profileApplication, /setMcpEnabledTools\(\s*Array\.from/);
   assert.match(
@@ -142,6 +184,14 @@ test("stages persisted, profile, and imported permission requests for reconcilia
   assert.match(
     desktopPreferenceImport,
     /setMcpEnabledTools\(confirmedTools\);/,
+  );
+  assert.match(
+    desktopPreferenceImport,
+    /mcpPermissionsReadyRef\.current = false;\s*setMcpPermissionsReady\(false\);/,
+  );
+  assert.match(
+    DNS_MANAGER_SOURCE,
+    /mcpPermissionsReadyRef = useRef\(mcpPermissionsReady\)/,
   );
   assert.match(fileImport, /applySessionSettingsProfile\(profile\);/);
 });
