@@ -107,6 +107,122 @@ class OsvPolicyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.PolicyError, "must pass"):
             POLICY.validate_workflow_text("ci.yml", weakened)
 
+    def test_commented_scanner_argument_does_not_count(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        argument = "--lockfile=./Cargo.lock"
+        scanner_position = workflow.index(POLICY.OSV_IMAGE)
+        weakened = (
+            workflow[:scanner_position]
+            + workflow[scanner_position:].replace(
+                f"            {argument}", f"        # {argument}", 1
+            )
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "scanner step must pass"):
+            POLICY.validate_workflow_text("ci.yml", weakened)
+
+    def test_reviewed_reason_metadata_cannot_drift(self) -> None:
+        source = (ROOT / "osv-scanner.toml").read_text(encoding="utf-8")
+        mutations = {
+            "owner": (
+                "owner=Better Cloudflare security maintainers",
+                "owner=Unrelated arbitrary owner",
+            ),
+            "review": (
+                "review=.github/RELEASE_SECURITY.md#osv-exception-register",
+                "review=https://attacker.invalid/review/2099-01-01",
+            ),
+            "rationale": (
+                "rationale=GTK3 bindings are archived and have no patched GTK3 "
+                "release, while GTK4 requires an upstream Tauri runtime migration",
+                "rationale=generic placeholder rationale",
+            ),
+            "reachability": (
+                "reachability=transitive through Tauri 2.11.1 GTK3 runtime",
+                "reachability=transitive through imaginary package",
+            ),
+        }
+        for field, (before, after) in mutations.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                config = Path(directory) / "osv-scanner.toml"
+                config.write_text(source.replace(before, after, 1), encoding="utf-8")
+                old_root = POLICY.REPOSITORY_ROOT
+                POLICY.REPOSITORY_ROOT = Path(directory)
+                try:
+                    with self.assertRaisesRegex(
+                        POLICY.PolicyError, "reviewed reason metadata drifted"
+                    ):
+                        POLICY.validate_config(
+                            config, ROOT / "Cargo.lock", today=dt.date(2026, 7, 30)
+                        )
+                finally:
+                    POLICY.REPOSITORY_ROOT = old_root
+
+    def test_critical_workflow_steps_cannot_be_conditional(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        scanner = f"uses: {POLICY.OSV_IMAGE}"
+        scanner_disabled = workflow.replace(
+            scanner, f"if: false\n        {scanner}", 1
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "must be unconditional"):
+            POLICY.validate_workflow_text("ci.yml", scanner_disabled)
+
+        validator = (
+            "run: >-\n"
+            "          python3 .github/scripts/validate-osv-policy.py"
+        )
+        validator_disabled = workflow.replace(
+            validator, f"if: false\n        {validator}", 1
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "must be unconditional"):
+            POLICY.validate_workflow_text("ci.yml", validator_disabled)
+
+        quoted_if = workflow.replace(
+            scanner,
+            f'"if": github.event_name == \'push\'\n        {scanner}',
+            1,
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "must be unconditional"):
+            POLICY.validate_workflow_text("ci.yml", quoted_if)
+
+    def test_scanner_image_must_be_an_active_uses_value(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        active = f"uses: {POLICY.OSV_IMAGE}"
+        bypass = workflow.replace(
+            active,
+            "uses: actions/checkout@"
+            "3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+            f"        # {active}",
+            1,
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "actively use"):
+            POLICY.validate_workflow_text("ci.yml", bypass)
+
+    def test_validator_command_must_be_active(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        command = "python3 .github/scripts/validate-osv-policy.py"
+        bypass = workflow.replace(command, f"true\n          # {command}", 1)
+        with self.assertRaisesRegex(POLICY.PolicyError, "actively run"):
+            POLICY.validate_workflow_text("ci.yml", bypass)
+
+    def test_osv_job_condition_cannot_drift(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        ci_disabled = ci.replace(
+            "  release_contract:\n",
+            "  release_contract:\n    if: false\n",
+            1,
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "job condition drifted"):
+            POLICY.validate_workflow_text("ci.yml", ci_disabled)
+
+        security = (ROOT / ".github/workflows/security.yml").read_text(
+            encoding="utf-8"
+        )
+        security_disabled = security.replace(
+            "if: github.event_name != 'pull_request'", "if: false", 1
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "job condition drifted"):
+            POLICY.validate_workflow_text("security.yml", security_disabled)
+
     def test_continue_on_error_is_forbidden(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         with self.assertRaisesRegex(POLICY.PolicyError, "continue-on-error"):

@@ -15,6 +15,9 @@ from typing import Any, Iterable
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 POLICY_FILENAME = "osv-scanner.toml"
 POLICY_REVIEW_DEADLINE = dt.date(2026, 10, 30)
+POLICY_OWNER = "Better Cloudflare security maintainers"
+POLICY_REVIEW = ".github/RELEASE_SECURITY.md#osv-exception-register"
+POLICY_REVIEW_HEADING = "## OSV exception register"
 OSV_IMAGE = (
     "docker://ghcr.io/google/osv-scanner-action@"
     "sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba"
@@ -54,6 +57,111 @@ APPROVED_EXCEPTIONS = {
     "RUSTSEC-2025-0098": ("unic-ucd-version", "0.9.0", "unmaintained"),
     "RUSTSEC-2025-0100": ("unic-ucd-ident", "0.9.0", "unmaintained"),
     "RUSTSEC-2026-0097": ("rand", "0.7.3", "unsound"),
+}
+
+GTK_BINDING_RATIONALE = (
+    "GTK3 bindings are archived and have no patched GTK3 release, while GTK4 "
+    "requires an upstream Tauri runtime migration"
+)
+UNIC_RATIONALE = (
+    "the advisory is maintenance-only and urlpattern 0.3 has no compatible "
+    "release that removes the archived rust-unic stack"
+)
+APPROVED_JUSTIFICATIONS = {
+    "RUSTSEC-2024-0370": (
+        "transitive build dependency through GTK3 macros",
+        "the advisory is maintenance-only and the current Tauri GTK3 stack has "
+        "no compatible release that removes proc-macro-error",
+    ),
+    "RUSTSEC-2024-0384": (
+        "transitive through keyring, secret-service, zbus, and futures-lite",
+        "the advisory is maintenance-only and the current keyring stack has no "
+        "compatible release that removes instant",
+    ),
+    "RUSTSEC-2024-0388": (
+        "transitive through keyring to secret-service and zbus",
+        "the advisory is maintenance-only and the current keyring stack has no "
+        "compatible release that removes derivative",
+    ),
+    "RUSTSEC-2024-0411": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0412": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0413": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0414": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0415": (
+        "transitive through Tauri 2.11.1 Linux runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0416": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0417": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0418": (
+        "transitive through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0419": (
+        "transitive build dependency through Tauri 2.11.1 GTK3 runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0420": (
+        "transitive through Tauri 2.11.1 Linux runtime",
+        GTK_BINDING_RATIONALE,
+    ),
+    "RUSTSEC-2024-0429": (
+        "transitive through Tauri 2.11.1 GTK3 runtime with no direct application "
+        "glib use",
+        "the fix starts at glib 0.20 but gtk 0.18 requires glib 0.18, so no "
+        "patched version is solver-reachable without replacing the upstream GTK3 "
+        "runtime",
+    ),
+    "RUSTSEC-2025-0057": (
+        "transitive build dependency through Tauri utils, kuchikiki, and selectors",
+        "the advisory is maintenance-only and the current Tauri HTML processing "
+        "stack has no compatible release that removes fxhash",
+    ),
+    "RUSTSEC-2025-0075": (
+        "transitive through Tauri utils and urlpattern",
+        UNIC_RATIONALE,
+    ),
+    "RUSTSEC-2025-0080": (
+        "transitive through Tauri utils and urlpattern",
+        UNIC_RATIONALE,
+    ),
+    "RUSTSEC-2025-0081": (
+        "transitive through Tauri utils and urlpattern",
+        UNIC_RATIONALE,
+    ),
+    "RUSTSEC-2025-0098": (
+        "transitive through Tauri utils and urlpattern",
+        UNIC_RATIONALE,
+    ),
+    "RUSTSEC-2025-0100": (
+        "transitive through Tauri utils and urlpattern",
+        UNIC_RATIONALE,
+    ),
+    "RUSTSEC-2026-0097": (
+        "transitive build dependency through Tauri utils, kuchikiki, selectors, "
+        "and phf_generator",
+        "the fix starts at rand 0.8.6 but phf_generator 0.8 requires rand 0.7, "
+        "and the custom-logger thread_rng reseed trigger is not used by the "
+        "application",
+    ),
 }
 
 # Exact vulnerability IDs eliminated by the mandatory package upgrades. They
@@ -186,6 +294,26 @@ def validate_config(
             raise PolicyError(f"{advisory_id}: package/version rationale drifted")
         if metadata["classification"] != classification:
             raise PolicyError(f"{advisory_id}: classification rationale drifted")
+        expected_reachability, expected_rationale = APPROVED_JUSTIFICATIONS[
+            advisory_id
+        ]
+        expected_metadata = {
+            "classification": classification,
+            "owner": POLICY_OWNER,
+            "package": f"{package}@{version}",
+            "rationale": expected_rationale,
+            "reachability": expected_reachability,
+            "review": POLICY_REVIEW,
+        }
+        if metadata != expected_metadata:
+            drifted = sorted(
+                key
+                for key in REQUIRED_REASON_KEYS
+                if metadata[key] != expected_metadata[key]
+            )
+            raise PolicyError(
+                f"{advisory_id}: reviewed reason metadata drifted: {drifted}"
+            )
 
     expected = set(APPROVED_EXCEPTIONS)
     if seen != expected:
@@ -218,6 +346,15 @@ def validate_config(
             raise PolicyError(
                 f"{package} resolved below security floor {minimum}: {sorted(resolved)}"
             )
+
+    review_document = REPOSITORY_ROOT / POLICY_REVIEW.partition("#")[0]
+    if not review_document.is_file():
+        raise PolicyError(f"policy review document does not exist: {review_document}")
+    if POLICY_REVIEW_HEADING not in review_document.read_text(encoding="utf-8"):
+        raise PolicyError(
+            f"policy review anchor is absent from {review_document}: "
+            f"{POLICY_REVIEW_HEADING}"
+        )
 
     return seen
 
@@ -258,33 +395,119 @@ def _step_block(text: str, needle: str, name: str) -> str:
     start_match = step_starts[-1]
     indentation = re.escape(start_match.group(1))
     next_step = re.search(rf"(?m)^{indentation}- name:\s*", text[position:])
-    end = position + next_step.start() if next_step else len(text)
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text[position:])
+    boundaries = [
+        match.start() for match in (next_step, next_job) if match is not None
+    ]
+    end = position + min(boundaries) if boundaries else len(text)
     return text[start_match.start() : end]
 
 
+def _job_block(text: str, position: int, name: str) -> tuple[str, str, int]:
+    job_starts = list(
+        re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", text[:position])
+    )
+    if not job_starts:
+        raise PolicyError(f"{name}: critical OSV step is not inside a job")
+    start_match = job_starts[-1]
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text[position:])
+    end = position + next_job.start() if next_job else len(text)
+    return (
+        start_match.group(1),
+        text[start_match.start() : end],
+        start_match.start(),
+    )
+
+
+def _reject_conditional_step(name: str, label: str, block: str) -> None:
+    if re.search(r"""(?m)^\s+(?:if|"if"|'if')\s*:""", block):
+        raise PolicyError(f"{name}: {label} step must be unconditional")
+
+
 def validate_workflow_text(name: str, text: str) -> None:
-    if re.search(r"(?m)^\s*continue-on-error\s*:", text):
+    if re.search(
+        r"""(?m)^\s*"""
+        r"""(?:continue-on-error|"continue-on-error"|'continue-on-error')\s*:""",
+        text,
+    ):
         raise PolicyError(f"{name}: continue-on-error is forbidden")
     if text.count(OSV_IMAGE) != 1:
         raise PolicyError(f"{name}: must use the pinned OSV v2.3.8 image exactly once")
     validator = "python3 .github/scripts/validate-osv-policy.py"
     scanner_step = _step_block(text, OSV_IMAGE, name)
     validator_step = _step_block(text, validator, name)
+    scanner_position = text.index(scanner_step)
+    validator_position = text.index(validator_step)
+    scanner_job, scanner_job_block, scanner_job_position = _job_block(
+        text, scanner_position, name
+    )
+    validator_job, _, validator_job_position = _job_block(
+        text, validator_position, name
+    )
+    expected_job = {"ci.yml": "release_contract", "security.yml": "osv"}.get(name)
+    if (
+        expected_job is None
+        or scanner_job != expected_job
+        or validator_job != expected_job
+    ):
+        raise PolicyError(
+            f"{name}: validator and scanner must remain in the expected OSV job "
+            f"{expected_job!r}"
+        )
+    if scanner_job_position != validator_job_position:
+        raise PolicyError(f"{name}: validator and scanner must remain in the same job")
+    if validator_position >= scanner_position:
+        raise PolicyError(f"{name}: policy validator must run before the scanner")
+
+    expected_job_condition = {
+        "ci.yml": None,
+        "security.yml": "github.event_name != 'pull_request'",
+    }[name]
+    job_conditions = re.findall(
+        r"""(?m)^    (?:if|"if"|'if')\s*:\s*(.*?)\s*$""",
+        scanner_job_block,
+    )
+    expected_conditions = (
+        [] if expected_job_condition is None else [expected_job_condition]
+    )
+    if job_conditions != expected_conditions:
+        raise PolicyError(
+            f"{name}: {expected_job} job condition drifted: {job_conditions}"
+        )
+
+    _reject_conditional_step(name, "policy validator", validator_step)
+    _reject_conditional_step(name, "scanner", scanner_step)
+    active_image = re.findall(
+        rf"(?m)^\s+uses:\s*{re.escape(OSV_IMAGE)}(?:\s+#.*)?\s*$",
+        scanner_step,
+    )
+    if len(active_image) != 1:
+        raise PolicyError(f"{name}: scanner step must actively use the pinned image")
+    active_validator = re.findall(
+        rf"(?m)^\s+{re.escape(validator)}\s*$",
+        validator_step,
+    )
+    if len(active_validator) != 1:
+        raise PolicyError(
+            f"{name}: validator step must actively run the policy validator"
+        )
     for argument in (
         "--config=./osv-scanner.toml",
         "--lockfile=./Cargo.lock",
         "--lockfile=./package-lock.json",
     ):
-        if scanner_step.count(argument) != 1:
+        active_argument = rf"(?m)^\s+{re.escape(argument)}\s*$"
+        if len(re.findall(active_argument, scanner_step)) != 1:
             raise PolicyError(
                 f"{name}: scanner step must pass {argument} exactly once"
             )
-        if validator_step.count(argument) != 1:
+        if len(re.findall(active_argument, validator_step)) != 1:
             raise PolicyError(
                 f"{name}: policy validator step must pass {argument} exactly once"
             )
     for workflow in ("./.github/workflows/ci.yml", "./.github/workflows/security.yml"):
-        if validator_step.count(f"--workflow={workflow}") != 1:
+        active_workflow = rf"(?m)^\s+{re.escape(f'--workflow={workflow}')}\s*$"
+        if len(re.findall(active_workflow, validator_step)) != 1:
             raise PolicyError(f"{name}: validator must inspect {workflow}")
 
 
