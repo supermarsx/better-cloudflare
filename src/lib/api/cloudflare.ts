@@ -9,7 +9,6 @@
  * DEBUG flag and re-exports a typed `CloudflareAPI` class with convenience
  * helper methods.
  */
-import "cloudflare/shims/web";
 import Cloudflare from "cloudflare";
 import type {
   RecordListParams,

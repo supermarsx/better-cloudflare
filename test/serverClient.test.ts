@@ -6,7 +6,6 @@ import { RESOURCE_LIMITS } from "../src/lib/resource-limits.ts";
 import { TauriClient } from "../src/lib/api/tauri-client.ts";
 
 // Ensure web fetch shims are loaded if needed
-import "cloudflare/shims/web";
 
 const originalFetch = globalThis.fetch;
 

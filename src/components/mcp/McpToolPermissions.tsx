@@ -783,6 +783,7 @@ export function McpToolPermissions({
         }
         throw new Error(
           `${errorMessage(cause)} Automatic rollback to the previous MCP server selection also failed: ${errorMessage(rollbackError)}`,
+          { cause: rollbackError },
         );
       }
       throw new Error(

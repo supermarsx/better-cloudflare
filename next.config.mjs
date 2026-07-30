@@ -11,7 +11,8 @@ const nextConfig = {
   assetPrefix: isGitHubPages ? `${basePath}/` : undefined,
   reactStrictMode: true,
   experimental: {
-    // turbo is enabled by default in 'next dev --turbo'
+    // Keep static-export builds within the repository's CI memory budget.
+    cpus: 1,
   },
 };
 

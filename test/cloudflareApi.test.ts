@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { CloudflareAPI } from "../src/lib/api/cloudflare.ts";
 
 // Ensure web fetch shims are loaded for Cloudflare client
-import "cloudflare/shims/web";
 
 interface FetchCall {
   url: string;
