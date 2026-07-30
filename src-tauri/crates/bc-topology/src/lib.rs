@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use trust_dns_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -95,6 +95,16 @@ fn topology_host_cache() -> &'static RwLock<HashMap<String, TopologyHostCacheEnt
 fn topology_ip_geo_cache() -> &'static RwLock<HashMap<String, TopologyIpGeoCacheEntry>> {
     static CACHE: OnceLock<RwLock<HashMap<String, TopologyIpGeoCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn topology_request_semaphore() -> &'static Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_TOPOLOGY_REQUESTS)))
+}
+
+fn propagation_request_semaphore() -> &'static Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_PROPAGATION_REQUESTS)))
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -1157,6 +1167,14 @@ pub async fn resolve_topology_batch(
         geo_provider.as_deref(),
         tcp_service_ports.as_deref(),
     )?;
+    let _request_permit = topology_request_semaphore()
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            format!(
+                "topology resolver is busy; at most {MAX_CONCURRENT_TOPOLOGY_REQUESTS} requests may run concurrently"
+            )
+        })?;
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
     let lookup_timeout_ms = lookup_timeout_ms.unwrap_or(1200).clamp(250, 10000);
     let disable_ptr_lookups = disable_ptr_lookups.unwrap_or(false);
@@ -1540,6 +1558,14 @@ pub async fn check_propagation(
 ) -> Result<PropagationResult, String> {
     let (domain, record_type, resolver_list) =
         validate_propagation_request(&domain, &record_type, extra_resolvers.as_deref())?;
+    let _request_permit = propagation_request_semaphore()
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            format!(
+                "propagation checker is busy; at most {MAX_CONCURRENT_PROPAGATION_REQUESTS} requests may run concurrently"
+            )
+        })?;
     let query_domain = domain.clone();
     let query_record_type = record_type.clone();
     let results = bounded_parallel_map(
@@ -1972,6 +1998,57 @@ mod tests {
         let result =
             check_propagation("example.com".to_string(), "A".to_string(), Some(extras)).await;
         assert!(result.is_err());
+        assert_eq!(TEST_NETWORK_STARTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aggregate_request_concurrency_is_bounded_before_network_work() {
+        TEST_NETWORK_STARTS.store(0, Ordering::SeqCst);
+        let topology_permits: Vec<_> = (0..MAX_CONCURRENT_TOPOLOGY_REQUESTS)
+            .map(|_| {
+                topology_request_semaphore()
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("reserve topology permit")
+            })
+            .collect();
+        let topology = resolve_topology_batch(
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            topology.is_err(),
+            "topology request exceeded the global cap"
+        );
+        drop(topology_permits);
+
+        let propagation_permits: Vec<_> = (0..MAX_CONCURRENT_PROPAGATION_REQUESTS)
+            .map(|_| {
+                propagation_request_semaphore()
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("reserve propagation permit")
+            })
+            .collect();
+        let propagation = check_propagation("example.com".to_string(), "A".to_string(), None).await;
+        assert!(
+            propagation.is_err(),
+            "propagation request exceeded the global cap"
+        );
+        drop(propagation_permits);
         assert_eq!(TEST_NETWORK_STARTS.load(Ordering::SeqCst), 0);
     }
 

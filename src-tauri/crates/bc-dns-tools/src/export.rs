@@ -104,11 +104,15 @@ fn push_bounded(output: &mut String, value: &str) -> Result<(), ExportLimitError
 }
 
 fn push_csv_value(output: &mut String, value: &str) -> Result<(), ExportLimitError> {
-    let maximum_growth = value.len().saturating_mul(2).saturating_add(2);
-    ensure_output_room(output.len(), maximum_growth)?;
-    output.try_reserve(maximum_growth).map_err(|_| {
-        ExportLimitError::new("DNS export allocation", maximum_growth, maximum_growth)
-    })?;
+    let escaped_quote_count = value.bytes().filter(|byte| *byte == b'"').count();
+    let exact_growth = value
+        .len()
+        .saturating_add(escaped_quote_count)
+        .saturating_add(2);
+    ensure_output_room(output.len(), exact_growth)?;
+    output
+        .try_reserve(exact_growth)
+        .map_err(|_| ExportLimitError::new("DNS export allocation", exact_growth, exact_growth))?;
     output.push('"');
     for character in value.chars() {
         if character == '"' {
@@ -298,5 +302,14 @@ mod tests {
     fn csv_escapes_quotes_without_row_vector() {
         let csv = try_records_to_csv(&[record("a\"b".to_string())]).unwrap();
         assert!(csv.contains("\"a\"\"b\""));
+    }
+
+    #[test]
+    fn csv_value_accepts_an_exact_output_boundary_without_false_refusal() {
+        let value = "abc";
+        let exact_growth = value.len() + 2;
+        let mut output = "x".repeat(MAX_EXPORT_OUTPUT_BYTES - exact_growth);
+        push_csv_value(&mut output, value).expect("exact output boundary must remain valid");
+        assert_eq!(output.len(), MAX_EXPORT_OUTPUT_BYTES);
     }
 }

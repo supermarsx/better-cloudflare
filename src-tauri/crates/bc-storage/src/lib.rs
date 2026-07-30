@@ -28,6 +28,10 @@ const CHUNK_MANIFEST_MARKER: &str = "__bc_chunks_v2__:";
 const KEYRING_MAX_VALUE_BYTES: usize = 2000;
 /// Hard ceiling for one logical secret, checked before chunk allocation.
 const MAX_SECRET_BYTES: usize = 2_000_000;
+/// Hard ceiling for one caller-visible key, checked before lock-map allocation.
+const MAX_LOGICAL_KEY_BYTES: usize = 512;
+/// Hard ceiling for distinct in-flight logical-key operations.
+const MAX_ACTIVE_LOGICAL_LOCKS: usize = 64;
 /// Hard ceiling for chunk iteration, including legacy records.
 const MAX_CHUNK_COUNT: usize = 1000;
 const MAX_MANIFEST_BYTES: usize = 256;
@@ -223,6 +227,30 @@ fn split_value_for_keyring(value: &str) -> Result<Vec<String>, StorageError> {
     Ok(chunks)
 }
 
+fn serialize_json<T: Serialize + ?Sized>(value: &T) -> Result<String, StorageError> {
+    serde_json::to_string(value)
+        .map_err(|_| StorageError::Error("secure storage serialization failed".to_string()))
+}
+
+fn deserialize_json<T: DeserializeOwned>(
+    value: &str,
+    context: &'static str,
+) -> Result<T, StorageError> {
+    serde_json::from_str(value).map_err(|_| StorageError::CorruptData(context))
+}
+
+fn to_json_value<T: Serialize + ?Sized>(value: &T) -> Result<Value, StorageError> {
+    serde_json::to_value(value)
+        .map_err(|_| StorageError::Error("secure storage serialization failed".to_string()))
+}
+
+fn from_json_value<T: DeserializeOwned>(
+    value: Value,
+    context: &'static str,
+) -> Result<T, StorageError> {
+    serde_json::from_value(value).map_err(|_| StorageError::CorruptData(context))
+}
+
 // ── API Key model ───────────────────────────────────────────────────────────
 
 /// A stored API key with per-key encryption metadata.
@@ -255,7 +283,7 @@ fn default_algorithm() -> String {
 // ── Preferences ─────────────────────────────────────────────────────────────
 
 /// User preferences covering every feature area.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Preferences {
     pub vault_enabled: Option<bool>,
     pub auto_refresh_interval: Option<u32>,
@@ -311,65 +339,6 @@ pub struct Preferences {
     pub locale: Option<String>,
 }
 
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            vault_enabled: None,
-            auto_refresh_interval: None,
-            last_zone: None,
-            last_active_tab: None,
-            default_per_page: None,
-            zone_per_page: None,
-            show_unsupported_record_types: None,
-            zone_show_unsupported_record_types: None,
-            confirm_delete_record: None,
-            zone_confirm_delete_record: None,
-            reopen_last_tabs: None,
-            reopen_zone_tabs: None,
-            last_open_tabs: None,
-            dns_table_columns: None,
-            zone_dns_table_columns: None,
-            confirm_logout: None,
-            idle_logout_ms: None,
-            confirm_window_close: None,
-            loading_overlay_timeout_ms: None,
-            audit_export_default_documents: None,
-            confirm_clear_audit_logs: None,
-            topology_resolution_max_hops: None,
-            topology_resolver_mode: None,
-            topology_dns_server: None,
-            topology_custom_dns_server: None,
-            topology_doh_provider: None,
-            topology_doh_custom_url: None,
-            topology_export_folder_preset: None,
-            topology_export_custom_path: None,
-            topology_export_confirm_path: None,
-            topology_copy_actions: None,
-            topology_export_actions: None,
-            topology_disable_annotations: None,
-            topology_disable_full_window: None,
-            topology_lookup_timeout_ms: None,
-            topology_disable_ptr_lookups: None,
-            topology_disable_geo_lookups: None,
-            topology_geo_provider: None,
-            topology_scan_resolution_chain: None,
-            topology_disable_service_discovery: None,
-            topology_tcp_services: None,
-            audit_export_folder_preset: None,
-            audit_export_custom_path: None,
-            audit_export_skip_destination_confirm: None,
-            domain_audit_categories: None,
-            session_settings_profiles: None,
-            mcp_server_enabled: None,
-            mcp_server_host: None,
-            mcp_server_port: None,
-            mcp_enabled_tools: None,
-            theme: None,
-            locale: None,
-        }
-    }
-}
-
 // ── Error ───────────────────────────────────────────────────────────────────
 
 #[derive(Error, Debug)]
@@ -384,6 +353,8 @@ pub enum StorageError {
     CorruptData(&'static str),
     #[error("Stored value exceeds secure storage limits")]
     LimitExceeded,
+    #[error("Invalid secure storage key")]
+    InvalidKey,
 }
 
 // ── Backend ─────────────────────────────────────────────────────────────────
@@ -496,13 +467,33 @@ impl Storage {
         StorageError::Error("storage synchronization failed".to_string())
     }
 
+    fn validate_logical_key(key: &str) -> Result<(), StorageError> {
+        if key.is_empty() || key.len() > MAX_LOGICAL_KEY_BYTES {
+            return Err(StorageError::InvalidKey);
+        }
+        Ok(())
+    }
+
+    fn validate_mutating_logical_key(key: &str) -> Result<(), StorageError> {
+        Self::validate_logical_key(key)?;
+        if key.contains("::chunk:") || key.contains("::generation:") {
+            return Err(StorageError::InvalidKey);
+        }
+        Ok(())
+    }
+
     fn logical_lock(&self, key: &str) -> Result<Arc<Mutex<()>>, StorageError> {
+        Self::validate_logical_key(key)?;
         let mut locks = LOGICAL_LOCKS
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .map_err(|_| Self::lock_error())?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
             return Ok(lock);
+        }
+        if locks.len() >= MAX_ACTIVE_LOGICAL_LOCKS {
+            return Err(StorageError::LimitExceeded);
         }
         let lock = Arc::new(Mutex::new(()));
         locks.insert(key.to_string(), Arc::downgrade(&lock));
@@ -617,18 +608,15 @@ impl Storage {
         }
     }
 
-    fn best_effort_delete_legacy_chunks(&self, key: &str, chunk_count: usize) {
-        for idx in 0..chunk_count {
-            let _ = self.backend.delete(&Self::legacy_chunk_key(key, idx));
-        }
-    }
-
     fn best_effort_cleanup_root(&self, key: &str, root: &StoredRoot) {
         match root {
             StoredRoot::Direct(_) => {}
-            StoredRoot::LegacyChunks { chunk_count } => {
-                self.best_effort_delete_legacy_chunks(key, *chunk_count);
-            }
+            // Released versions did not reserve legacy chunk-shaped logical
+            // keys. A chunk may therefore also be an independently readable
+            // direct value; deleting it during migration could destroy data.
+            // Preserve ambiguous legacy chunks and prefer a bounded keyring
+            // leak over irreversible loss.
+            StoredRoot::LegacyChunks { .. } => {}
             StoredRoot::Manifest(manifest) => {
                 self.best_effort_delete_generation(key, manifest);
             }
@@ -636,6 +624,7 @@ impl Storage {
     }
 
     fn write_secret_unlocked(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        Self::validate_mutating_logical_key(key)?;
         let chunks = split_value_for_keyring(value)?;
         let previous_root = match self.backend.get(key) {
             Ok(value) => Some(parse_stored_root(&value)?),
@@ -708,6 +697,7 @@ impl Storage {
     }
 
     fn delete_secret_unlocked(&self, key: &str) -> Result<(), StorageError> {
+        Self::validate_mutating_logical_key(key)?;
         let root = match self.backend.get(key) {
             Ok(value) => parse_stored_root(&value)?,
             Err(BackendError::NotFound) => return Ok(()),
@@ -743,9 +733,7 @@ impl Storage {
         key: &str,
     ) -> Result<Vec<T>, StorageError> {
         match self.read_secret_unlocked(key) {
-            Ok(json) => {
-                serde_json::from_str(&json).map_err(|error| StorageError::Error(error.to_string()))
-            }
+            Ok(json) => deserialize_json(&json, "invalid stored list"),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(error) => Err(error),
         }
@@ -756,8 +744,7 @@ impl Storage {
         key: &str,
         list: &[T],
     ) -> Result<(), StorageError> {
-        let json =
-            serde_json::to_string(list).map_err(|error| StorageError::Error(error.to_string()))?;
+        let json = serialize_json(list)?;
         self.write_secret_unlocked(key, &json)
     }
 
@@ -773,6 +760,7 @@ impl Storage {
     where
         T: DeserializeOwned + Serialize,
     {
+        Self::validate_mutating_logical_key(key)?;
         let lock = self.logical_lock(key)?;
         let _guard = lock.lock().map_err(|_| Self::lock_error())?;
         let mut list = self.read_json_list_unlocked(key)?;
@@ -789,7 +777,7 @@ impl Storage {
 
     pub async fn get_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
         match self.get_secret("api_keys_list").await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid API key collection"),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -834,6 +822,7 @@ impl Storage {
             .ok_or(StorageError::NotFound)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_api_key(
         &self,
         id: String,
@@ -900,7 +889,7 @@ impl Storage {
     pub async fn get_passkeys(&self, id: &str) -> Result<Vec<Value>, StorageError> {
         let key = format!("passkeys:{}", id);
         match self.get_secret(&key).await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid passkey collection"),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -934,7 +923,7 @@ impl Storage {
         key: &str,
     ) -> Result<Vec<T>, StorageError> {
         match self.get_secret(key).await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid stored typed list"),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -946,7 +935,7 @@ impl Storage {
         key: &str,
         list: &[T],
     ) -> Result<(), StorageError> {
-        let json = serde_json::to_string(list).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serialize_json(list)?;
         self.store_secret(key, &json).await
     }
 
@@ -956,7 +945,7 @@ impl Storage {
         key: &str,
     ) -> Result<HashMap<String, T>, StorageError> {
         match self.get_secret(key).await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid stored typed map"),
             Err(StorageError::NotFound) => Ok(HashMap::new()),
             Err(e) => Err(e),
         }
@@ -968,7 +957,7 @@ impl Storage {
         key: &str,
         map: &HashMap<String, T>,
     ) -> Result<(), StorageError> {
-        let json = serde_json::to_string(map).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serialize_json(map)?;
         self.store_secret(key, &json).await
     }
 
@@ -980,15 +969,11 @@ impl Storage {
         self.get_typed_list("registrar_credentials").await
     }
 
-    pub async fn store_registrar_credential<T: Serialize>(
+    pub async fn store_registrar_credential<T: Serialize + DeserializeOwned>(
         &self,
         cred: &T,
-    ) -> Result<(), StorageError>
-    where
-        T: DeserializeOwned,
-    {
-        let value =
-            serde_json::to_value(cred).map_err(|error| StorageError::Error(error.to_string()))?;
+    ) -> Result<(), StorageError> {
+        let value = to_json_value(cred)?;
         self.mutate_json_list(
             "registrar_credentials",
             false,
@@ -1009,7 +994,7 @@ impl Storage {
             .into_iter()
             .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
             .ok_or(StorageError::NotFound)?;
-        serde_json::from_value(val).map_err(|e| StorageError::Error(e.to_string()))
+        from_json_value(val, "invalid registrar credential")
     }
 
     pub async fn delete_registrar_credential(&self, id: &str) -> Result<(), StorageError> {
@@ -1030,8 +1015,7 @@ impl Storage {
         secrets: &HashMap<String, String>,
     ) -> Result<(), StorageError> {
         let key = format!("registrar_secrets:{}", credential_id);
-        let json =
-            serde_json::to_string(secrets).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serialize_json(secrets)?;
         self.store_secret(&key, &json).await
     }
 
@@ -1041,7 +1025,7 @@ impl Storage {
     ) -> Result<HashMap<String, String>, StorageError> {
         let key = format!("registrar_secrets:{}", credential_id);
         match self.get_secret(&key).await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid registrar secret collection"),
             Err(StorageError::NotFound) => Ok(HashMap::new()),
             Err(e) => Err(e),
         }
@@ -1056,7 +1040,7 @@ impl Storage {
 
     pub async fn get_audit_entries(&self) -> Result<Vec<Value>, StorageError> {
         match self.get_secret("audit_log").await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid audit log"),
             Err(StorageError::NotFound) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -1081,7 +1065,7 @@ impl Storage {
 
     pub async fn get_encryption_settings(&self) -> Result<EncryptionConfig, StorageError> {
         match self.get_secret("encryption_settings").await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid encryption settings"),
             Err(StorageError::NotFound) => Err(StorageError::NotFound),
             Err(e) => Err(e),
         }
@@ -1091,7 +1075,7 @@ impl Storage {
         &self,
         config: &EncryptionConfig,
     ) -> Result<(), StorageError> {
-        let json = serde_json::to_string(config).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serialize_json(config)?;
         self.store_secret("encryption_settings", &json).await
     }
 
@@ -1099,14 +1083,14 @@ impl Storage {
 
     pub async fn get_preferences(&self) -> Result<Preferences, StorageError> {
         match self.get_secret("preferences").await {
-            Ok(json) => serde_json::from_str(&json).map_err(|e| StorageError::Error(e.to_string())),
+            Ok(json) => deserialize_json(&json, "invalid preferences"),
             Err(StorageError::NotFound) => Ok(Preferences::default()),
             Err(e) => Err(e),
         }
     }
 
     pub async fn set_preferences(&self, prefs: &Preferences) -> Result<(), StorageError> {
-        let json = serde_json::to_string(prefs).map_err(|e| StorageError::Error(e.to_string()))?;
+        let json = serialize_json(prefs)?;
         self.store_secret("preferences", &json).await
     }
 }

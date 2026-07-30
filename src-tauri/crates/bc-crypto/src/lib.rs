@@ -137,16 +137,9 @@ pub fn validate_benchmark_iterations(iterations: u32) -> Result<(), CryptoError>
 // ── Manager ─────────────────────────────────────────────────────────────────
 
 /// High-level encryption / decryption facade.
+#[derive(Default)]
 pub struct CryptoManager {
     config: EncryptionConfig,
-}
-
-impl Default for CryptoManager {
-    fn default() -> Self {
-        Self {
-            config: EncryptionConfig::default(),
-        }
-    }
 }
 
 impl CryptoManager {
@@ -227,7 +220,7 @@ impl CryptoManager {
 
         let versioned = encrypted.starts_with(ENVELOPE_PREFIX);
         let encoded = encrypted.strip_prefix(ENVELOPE_PREFIX).unwrap_or(encrypted);
-        if encoded.len() > MAX_BASE64_CHARS || encoded.len() % 4 != 0 {
+        if encoded.len() > MAX_BASE64_CHARS || !encoded.len().is_multiple_of(4) {
             return Err(CryptoError::InvalidFormat);
         }
 

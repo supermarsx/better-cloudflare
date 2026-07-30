@@ -377,6 +377,159 @@ async fn every_chunk_write_failure_preserves_the_old_generation() {
 }
 
 #[tokio::test]
+async fn logical_keys_cannot_alias_internal_chunk_namespaces() {
+    let (_backend, storage) = fake_storage();
+    let victim = "victim-generation|".repeat(180);
+    storage
+        .store_secret("victim", &victim)
+        .await
+        .expect("seed chunked victim");
+
+    let manifest = manifest_from_backend(&_backend, "victim");
+    let generation_alias = Storage::generation_chunk_key("victim", &manifest.generation, 0);
+    assert!(
+        storage
+            .store_secret(&generation_alias, "attacker-controlled-root")
+            .await
+            .is_err(),
+        "a logical key must not overwrite a generation chunk"
+    );
+
+    _backend.put("legacy-victim", "__chunked__:1");
+    _backend.put(
+        &Storage::legacy_chunk_key("legacy-victim", 0),
+        "legacy-secret",
+    );
+    let legacy_alias = Storage::legacy_chunk_key("legacy-victim", 0);
+    assert!(
+        storage
+            .store_secret(&legacy_alias, "attacker-controlled-root")
+            .await
+            .is_err(),
+        "a logical key must not overwrite a legacy chunk"
+    );
+
+    assert_secret(
+        &storage
+            .get_secret("victim")
+            .await
+            .expect("generation victim remains readable"),
+        &victim,
+        "generation alias corrupted the victim",
+    );
+    assert_secret(
+        &storage
+            .get_secret("legacy-victim")
+            .await
+            .expect("legacy victim remains readable"),
+        "legacy-secret",
+        "legacy alias corrupted the victim",
+    );
+}
+
+#[tokio::test]
+async fn logical_key_limits_accept_exact_and_reject_invalid_boundaries() {
+    let (_backend, storage) = fake_storage();
+    let exact = "k".repeat(MAX_LOGICAL_KEY_BYTES);
+    storage
+        .store_secret(&exact, "value")
+        .await
+        .expect("exact key byte limit remains valid");
+    assert_secret(
+        &storage
+            .get_secret(&exact)
+            .await
+            .expect("read exact-limit key"),
+        "value",
+        "exact-limit logical key did not round-trip",
+    );
+
+    for invalid in [
+        String::new(),
+        "k".repeat(MAX_LOGICAL_KEY_BYTES + 1),
+        "victim::chunk:0".to_string(),
+        format!("victim::generation:{}:chunk:0", uuid::Uuid::nil()),
+    ] {
+        assert!(matches!(
+            storage.store_secret(&invalid, "value").await,
+            Err(StorageError::InvalidKey)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn completed_unique_key_operations_do_not_leak_lock_registry_entries() {
+    let (_backend, storage) = fake_storage();
+    for index in 0..2048 {
+        storage
+            .store_secret(&format!("lock-registry-{index}"), "value")
+            .await
+            .expect("store unique logical key");
+    }
+
+    let locks = LOGICAL_LOCKS
+        .get()
+        .expect("logical lock registry initialized")
+        .lock()
+        .expect("inspect logical lock registry");
+    assert!(
+        locks.len() <= 2,
+        "completed operations leaked {} logical lock entries",
+        locks.len()
+    );
+}
+
+#[test]
+fn active_logical_lock_registry_has_a_hard_ceiling_and_recovers() {
+    let (_backend, storage) = fake_storage();
+    let held: Vec<_> = (0..MAX_ACTIVE_LOGICAL_LOCKS)
+        .map(|index| {
+            storage
+                .logical_lock(&format!("active-lock-{index}"))
+                .expect("reserve active logical lock")
+        })
+        .collect();
+    assert!(matches!(
+        storage.logical_lock("one-active-lock-too-many"),
+        Err(StorageError::LimitExceeded)
+    ));
+    drop(held);
+    assert!(
+        storage.logical_lock("lock-after-release").is_ok(),
+        "released lock entries were not pruned"
+    );
+}
+
+#[tokio::test]
+async fn legacy_migration_preserves_ambiguous_direct_alias_values() {
+    let (backend, storage) = fake_storage();
+    backend.put("legacy-ambiguous", "__chunked__:1");
+    let ambiguous_key = Storage::legacy_chunk_key("legacy-ambiguous", 0);
+    backend.put(&ambiguous_key, "shared-legacy-value");
+
+    assert_secret(
+        &storage
+            .get_secret(&ambiguous_key)
+            .await
+            .expect("legacy alias is independently readable"),
+        "shared-legacy-value",
+        "legacy alias fixture changed before migration",
+    );
+    storage
+        .store_secret("legacy-ambiguous", "migrated-root")
+        .await
+        .expect("migrate legacy root");
+    assert_secret(
+        &storage
+            .get_secret(&ambiguous_key)
+            .await
+            .expect("migration must preserve ambiguous direct alias"),
+        "shared-legacy-value",
+        "legacy migration deleted an independently readable value",
+    );
+}
+
+#[tokio::test]
 async fn every_verification_read_failure_preserves_the_old_generation() {
     let new = "new-generation|".repeat(330);
     let chunk_count = split_value_for_keyring(&new)
@@ -651,6 +804,41 @@ async fn backend_errors_fail_closed_and_not_found_stays_distinct() {
             && !rendered.contains("replacement-value")
             && !rendered.contains("new-value"),
         "storage error exposed a secret payload"
+    );
+}
+
+#[tokio::test]
+async fn custom_serde_errors_do_not_expose_stored_secret_values() {
+    #[derive(Debug)]
+    struct SecretEchoDeserializer;
+
+    impl<'de> Deserialize<'de> for SecretEchoDeserializer {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let value = String::deserialize(deserializer)?;
+            Err(serde::de::Error::custom(format!(
+                "custom parser rejected secret value {value}"
+            )))
+        }
+    }
+
+    let (_backend, storage) = fake_storage();
+    const SECRET: &str = "storage-secret-must-not-escape";
+    storage
+        .store_secret("custom-serde", &format!("[\"{SECRET}\"]"))
+        .await
+        .expect("seed custom serde payload");
+
+    let error = storage
+        .get_typed_list::<SecretEchoDeserializer>("custom-serde")
+        .await
+        .expect_err("custom deserializer must reject the fixture")
+        .to_string();
+    assert!(
+        !error.contains(SECRET),
+        "custom serde error exposed a stored secret: {error}"
     );
 }
 
@@ -950,8 +1138,8 @@ async fn legacy_direct_and_chunked_values_read_and_migrate() {
     ));
     for idx in 0..3 {
         assert!(
-            !backend.contains(&Storage::legacy_chunk_key("legacy-chunked", idx)),
-            "legacy chunk was not garbage-collected"
+            backend.contains(&Storage::legacy_chunk_key("legacy-chunked", idx)),
+            "ambiguous legacy chunk was deleted during migration"
         );
     }
     let migrated = storage
@@ -1284,9 +1472,11 @@ async fn existing_models_and_bounded_audit_behavior_still_roundtrip() {
         .expect("get encryption settings");
     assert!(loaded.iterations == 42);
 
-    let mut preferences = Preferences::default();
-    preferences.vault_enabled = Some(true);
-    preferences.auto_refresh_interval = Some(60_000);
+    let preferences = Preferences {
+        vault_enabled: Some(true),
+        auto_refresh_interval: Some(60_000),
+        ..Preferences::default()
+    };
     storage
         .set_preferences(&preferences)
         .await

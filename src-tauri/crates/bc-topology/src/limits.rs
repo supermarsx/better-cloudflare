@@ -26,3 +26,5 @@ pub const MAX_GEO_COUNTRY_CODE_BYTES: usize = 8;
 pub const MAX_ERROR_BYTES: usize = 1024;
 
 pub const NETWORK_CONCURRENCY: usize = 8;
+pub const MAX_CONCURRENT_TOPOLOGY_REQUESTS: usize = 2;
+pub const MAX_CONCURRENT_PROPAGATION_REQUESTS: usize = 4;
