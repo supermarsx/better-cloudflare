@@ -159,6 +159,113 @@ test("sends DNS pagination and export arguments through IPC in camelCase", async
   }
 });
 
+test("sends complete IP access-rule invoke contracts without ip/value drift", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown>;
+  }> = [];
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown>,
+    });
+    if (command === "get_ip_access_rules") return [];
+    if (command === "create_ip_access_rule") {
+      return {
+        id: "rule-id",
+        mode: "block",
+        notes: "abuse source",
+        configuration: { target: "ip", value: "203.0.113.7" },
+      };
+    }
+    if (command === "delete_ip_access_rule") return undefined;
+    throw new Error(`Unexpected Tauri command: ${command}`);
+  });
+
+  await TauriClient.getIpAccessRules("api-key", "zone-id", "owner@example.com");
+  await TauriClient.createIpAccessRule(
+    "api-key",
+    "zone-id",
+    "block",
+    "203.0.113.7",
+    "abuse source",
+    "owner@example.com",
+  );
+  await TauriClient.createIpAccessRule(
+    "api-key",
+    "zone-id",
+    "challenge",
+    "198.51.100.0/24",
+  );
+  await TauriClient.deleteIpAccessRule(
+    "api-key",
+    "zone-id",
+    "rule-id",
+    "owner@example.com",
+  );
+
+  assert.deepEqual(calls, [
+    {
+      command: "get_ip_access_rules",
+      payload: {
+        apiKey: "api-key",
+        zoneId: "zone-id",
+        email: "owner@example.com",
+      },
+    },
+    {
+      command: "create_ip_access_rule",
+      payload: {
+        apiKey: "api-key",
+        zoneId: "zone-id",
+        mode: "block",
+        value: "203.0.113.7",
+        notes: "abuse source",
+        email: "owner@example.com",
+      },
+    },
+    {
+      command: "create_ip_access_rule",
+      payload: {
+        apiKey: "api-key",
+        zoneId: "zone-id",
+        mode: "challenge",
+        value: "198.51.100.0/24",
+        notes: "",
+      },
+    },
+    {
+      command: "delete_ip_access_rule",
+      payload: {
+        apiKey: "api-key",
+        zoneId: "zone-id",
+        ruleId: "rule-id",
+        email: "owner@example.com",
+      },
+    },
+  ]);
+
+  for (const { command, payload } of calls.filter(
+    ({ command }) => command === "create_ip_access_rule",
+  )) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload, "ip"),
+      false,
+      `${command} payload must map the public ip input to native value`,
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload, "value"),
+      true,
+      `${command} payload must own the native value argument`,
+    );
+  }
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(calls[2]?.payload ?? {}, "email"),
+    false,
+    "omitted optional email must not become an IPC argument",
+  );
+});
+
 test("sends the complete topology invoke contract in camelCase and preserves optional value semantics", async () => {
   const calls: Array<{
     command: string;

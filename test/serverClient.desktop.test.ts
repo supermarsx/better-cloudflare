@@ -10,6 +10,9 @@ const originalExport = TauriClient.exportDNSRecords;
 const originalSimulate = TauriClient.simulateSPF;
 const originalGraph = TauriClient.getSPFGraph;
 const originalVault = TauriClient.getVaultSecret;
+const originalGetIpAccessRules = TauriClient.getIpAccessRules;
+const originalCreateIpAccessRule = TauriClient.createIpAccessRule;
+const originalDeleteIpAccessRule = TauriClient.deleteIpAccessRule;
 
 afterEach(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
@@ -19,6 +22,9 @@ afterEach(() => {
   TauriClient.simulateSPF = originalSimulate;
   TauriClient.getSPFGraph = originalGraph;
   TauriClient.getVaultSecret = originalVault;
+  TauriClient.getIpAccessRules = originalGetIpAccessRules;
+  TauriClient.createIpAccessRule = originalCreateIpAccessRule;
+  TauriClient.deleteIpAccessRule = originalDeleteIpAccessRule;
 });
 
 test("verifyToken uses Tauri in desktop mode", async () => {
@@ -68,6 +74,64 @@ test("exportDNSRecords routes to Tauri in desktop mode", async () => {
   const data = await client.exportDNSRecords("zone", "csv", 2, 50);
   assert.equal(data, "data");
   assert.deepEqual(params, ["token", undefined, "zone", "csv", 2, 50]);
+});
+
+test("IP access-rule methods preserve the public server-client contract in desktop mode", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  TauriClient.getIpAccessRules = async (...args: unknown[]) => {
+    calls.push({ method: "get", args });
+    return [];
+  };
+  TauriClient.createIpAccessRule = async (...args: unknown[]) => {
+    calls.push({ method: "create", args });
+    return {
+      id: "rule-id",
+      mode: "block",
+      notes: "abuse source",
+      configuration: { target: "ip", value: "203.0.113.7" },
+    };
+  };
+  TauriClient.deleteIpAccessRule = async (...args: unknown[]) => {
+    calls.push({ method: "delete", args });
+  };
+
+  const client = new ServerClient(
+    "api-key",
+    "http://example.com",
+    "owner@example.com",
+  );
+  await client.getIpAccessRules("zone-id");
+  await client.createIpAccessRule(
+    "zone-id",
+    "block",
+    "203.0.113.7",
+    "abuse source",
+  );
+  await client.deleteIpAccessRule("zone-id", "rule-id");
+
+  assert.deepEqual(calls, [
+    {
+      method: "get",
+      args: ["api-key", "zone-id", "owner@example.com", undefined],
+    },
+    {
+      method: "create",
+      args: [
+        "api-key",
+        "zone-id",
+        "block",
+        "203.0.113.7",
+        "abuse source",
+        "owner@example.com",
+        undefined,
+      ],
+    },
+    {
+      method: "delete",
+      args: ["api-key", "zone-id", "rule-id", "owner@example.com", undefined],
+    },
+  ]);
 });
 
 test("simulateSPF routes to Tauri in desktop mode", async () => {

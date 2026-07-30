@@ -354,6 +354,61 @@ test("deleteDNSRecord success and error", async () => {
   restore();
 });
 
+test("createIpAccessRule sends the complete Cloudflare configuration body and omits absent notes", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  const created = {
+    id: "rule-id",
+    mode: "block",
+    notes: "abuse source",
+    configuration: { target: "ip", value: "203.0.113.7" },
+  };
+
+  let restore = mockFetch({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: created,
+  });
+  assert.deepEqual(
+    await client.createIpAccessRule(
+      "zone-id",
+      "block",
+      "203.0.113.7",
+      "abuse source",
+    ),
+    created,
+  );
+  let called = restore();
+  assert.equal(
+    called.url,
+    "http://example.com/zones/zone-id/firewall/access_rules/rules",
+  );
+  assert.equal(called.init?.method, "POST");
+  assert.deepEqual(JSON.parse(called.init?.body as string), {
+    mode: "block",
+    configuration: { target: "ip", value: "203.0.113.7" },
+    notes: "abuse source",
+  });
+
+  restore = mockFetch({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: {
+      ...created,
+      mode: "challenge",
+      notes: undefined,
+      configuration: { target: "ip", value: "198.51.100.0/24" },
+    },
+  });
+  await client.createIpAccessRule("zone-id", "challenge", "198.51.100.0/24");
+  called = restore();
+  assert.deepEqual(JSON.parse(called.init?.body as string), {
+    mode: "challenge",
+    configuration: { target: "ip", value: "198.51.100.0/24" },
+  });
+});
+
 test("includes Cloudflare JSON error details", async () => {
   const client = new ServerClient("key", "http://example.com");
   const restore = mockFetch({
