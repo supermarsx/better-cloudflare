@@ -62,10 +62,31 @@ export interface ZoneSetting<T = unknown> {
 }
 
 /**
- * Supported encryption algorithms used by the CryptoManager when encrypting
- * API keys in storage. AES-GCM is preferred for authenticated encryption.
+ * Authoritative limits for API-key encryption. These values are shared by
+ * browser validation and the settings UI; native commands enforce equivalent
+ * limits independently.
+ */
+export const MIN_PBKDF2_ITERATIONS = 100_000;
+export const MAX_PBKDF2_ITERATIONS = 1_000_000;
+export const AES_256_KEY_LENGTH_BITS = 256;
+export const MAX_CRYPTO_PLAINTEXT_BYTES = 64 * 1024;
+export const MAX_CRYPTO_PASSWORD_BYTES = 4 * 1024;
+export const MAX_CRYPTO_CIPHERTEXT_BYTES = MAX_CRYPTO_PLAINTEXT_BYTES + 16;
+export const MAX_CRYPTO_BASE64_CHARS =
+  Math.ceil(MAX_CRYPTO_CIPHERTEXT_BYTES / 3) * 4;
+
+/**
+ * The full stored-record algorithm union retains AES-CBC solely so existing
+ * records can be decrypted and migrated. New writes and the settings UI use
+ * `ACTIVE_ENCRYPTION_ALGORITHMS`, which contains only authenticated AES-GCM.
  */
 export const ENCRYPTION_ALGORITHMS = ["AES-GCM", "AES-CBC"] as const;
+export const ACTIVE_ENCRYPTION_ALGORITHMS = ["AES-GCM"] as const;
+export const LEGACY_ENCRYPTION_ALGORITHMS = ["AES-CBC"] as const;
+export type ActiveEncryptionAlgorithm =
+  (typeof ACTIVE_ENCRYPTION_ALGORITHMS)[number];
+export type LegacyEncryptionAlgorithm =
+  (typeof LEGACY_ENCRYPTION_ALGORITHMS)[number];
 export type EncryptionAlgorithm = (typeof ENCRYPTION_ALGORITHMS)[number];
 
 /**

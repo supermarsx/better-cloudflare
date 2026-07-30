@@ -4,7 +4,15 @@
  * encryption with configured algorithms and parameters.
  */
 import {
-  ENCRYPTION_ALGORITHMS,
+  ACTIVE_ENCRYPTION_ALGORITHMS,
+  AES_256_KEY_LENGTH_BITS,
+  LEGACY_ENCRYPTION_ALGORITHMS,
+  MAX_CRYPTO_BASE64_CHARS,
+  MAX_CRYPTO_CIPHERTEXT_BYTES,
+  MAX_CRYPTO_PASSWORD_BYTES,
+  MAX_CRYPTO_PLAINTEXT_BYTES,
+  MAX_PBKDF2_ITERATIONS,
+  MIN_PBKDF2_ITERATIONS,
   type EncryptionConfig,
   type EncryptionAlgorithm,
 } from "../../types/dns";
@@ -13,26 +21,78 @@ import { getStorage, type StorageLike } from "../storage/storage-util";
 
 const CONFIG_STORAGE_KEY = "encryption-settings";
 
-/**
- * Minimum allowed PBKDF2 iterations. Prevents stored config tampering
- * from weakening key derivation below a safe threshold.
- */
-const MIN_ITERATIONS = 100_000;
-
 const DEFAULT_CONFIG: EncryptionConfig = {
-  iterations: 100_000,
-  keyLength: 256,
+  iterations: MIN_PBKDF2_ITERATIONS,
+  keyLength: AES_256_KEY_LENGTH_BITS,
   algorithm: "AES-GCM",
 };
 
-/**
- * Validate whether a string is a supported encryption algorithm.
- *
- * @param alg - algorithm name to validate
- * @returns true if algorithm is supported, false otherwise
- */
-function isValidAlgorithm(alg: string): alg is EncryptionAlgorithm {
-  return ENCRYPTION_ALGORITHMS.includes(alg as EncryptionAlgorithm);
+const ENVELOPE_PREFIX = "bc1:";
+const ENVELOPE_AAD = new TextEncoder().encode(
+  "better-cloudflare:crypto-envelope:v1",
+);
+const SALT_BYTES = 16;
+const GCM_IV_BYTES = 12;
+const CBC_IV_BYTES = 16;
+const AUTH_TAG_BYTES = 16;
+
+function isKnownAlgorithm(value: unknown): value is EncryptionAlgorithm {
+  const knownAlgorithms: readonly string[] = [
+    ...ACTIVE_ENCRYPTION_ALGORITHMS,
+    ...LEGACY_ENCRYPTION_ALGORITHMS,
+  ];
+  return typeof value === "string" && knownAlgorithms.includes(value);
+}
+
+function validateConfig(
+  config: EncryptionConfig,
+  activeWrite: boolean,
+): EncryptionConfig {
+  const minimum = activeWrite ? MIN_PBKDF2_ITERATIONS : 1;
+  if (
+    !Number.isSafeInteger(config.iterations) ||
+    config.iterations < minimum ||
+    config.iterations > MAX_PBKDF2_ITERATIONS
+  ) {
+    throw new Error(
+      `PBKDF2 iterations must be an integer between ${minimum} and ${MAX_PBKDF2_ITERATIONS}`,
+    );
+  }
+  if (config.keyLength !== AES_256_KEY_LENGTH_BITS) {
+    throw new Error(
+      `AES-256 key length must be exactly ${AES_256_KEY_LENGTH_BITS} bits`,
+    );
+  }
+  if (!isKnownAlgorithm(config.algorithm)) {
+    throw new Error("Encryption algorithm is not supported");
+  }
+  if (
+    activeWrite &&
+    !(ACTIVE_ENCRYPTION_ALGORITHMS as readonly string[]).includes(
+      config.algorithm,
+    )
+  ) {
+    throw new Error(
+      "AES-CBC is legacy decrypt-only; new writes require AES-GCM",
+    );
+  }
+  return { ...config };
+}
+
+function encodeUtf8Bounded(
+  value: string,
+  maxBytes: number,
+  field: string,
+): Uint8Array {
+  if (value.length > maxBytes) {
+    throw new Error(`${field} exceeds the ${maxBytes}-byte limit`);
+  }
+  const encoded = new TextEncoder().encode(value);
+  if (encoded.byteLength > maxBytes) {
+    encoded.fill(0);
+    throw new Error(`${field} exceeds the ${maxBytes}-byte limit`);
+  }
+  return encoded;
 }
 
 /**
@@ -56,13 +116,10 @@ export class CryptoManager {
   constructor(config: Partial<EncryptionConfig> = {}, storage?: StorageLike) {
     this.storage = getStorage(storage);
     const stored = this.loadFromStorage();
-    this.config = { ...DEFAULT_CONFIG, ...stored, ...config };
-    // Enforce minimum iterations to prevent localStorage tampering from
-    // weakening key derivation (e.g. setting iterations to 1)
-    this.config.iterations = Math.max(this.config.iterations, MIN_ITERATIONS);
-    if (!isValidAlgorithm(this.config.algorithm)) {
-      this.config.algorithm = DEFAULT_CONFIG.algorithm;
-    }
+    this.config = validateConfig(
+      { ...DEFAULT_CONFIG, ...stored, ...config },
+      false,
+    );
   }
 
   /**
@@ -71,24 +128,41 @@ export class CryptoManager {
    *
    * @returns partial EncryptionConfig read from storage, or empty object
    */
-  private loadFromStorage(): Partial<EncryptionConfig> {
+  private loadFromStorage(): EncryptionConfig | undefined {
     try {
       const stored = this.storage.getItem(CONFIG_STORAGE_KEY);
-      return stored ? JSON.parse(stored) : {};
+      if (!stored) return undefined;
+      const parsed: unknown = JSON.parse(stored);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Stored encryption settings must be an object");
+      }
+      return validateConfig(
+        {
+          ...DEFAULT_CONFIG,
+          ...(parsed as Partial<EncryptionConfig>),
+        },
+        true,
+      );
     } catch (error) {
-      console.error("Failed to load encryption config:", error);
-      return {};
+      // Corrupted or hostile settings are never used for cryptographic work.
+      // A safe default keeps the application recoverable without weakening
+      // encryption or applying an attacker-controlled expensive setting.
+      console.error(
+        "Stored encryption settings were rejected; using safe defaults:",
+        error instanceof Error ? error.message : "invalid settings",
+      );
+      return undefined;
     }
   }
 
   /**
    * Persist the active configuration into storage as JSON.
    */
-  private saveToStorage(): void {
+  private saveToStorage(config: EncryptionConfig): void {
     try {
-      this.storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.config));
-    } catch (error) {
-      console.error("Failed to save encryption config:", error);
+      this.storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch {
+      throw new Error("Encryption settings could not be persisted");
     }
   }
 
@@ -97,10 +171,7 @@ export class CryptoManager {
    */
   reloadConfig(): void {
     const stored = this.loadFromStorage();
-    this.config = { ...DEFAULT_CONFIG, ...stored };
-    if (!isValidAlgorithm(this.config.algorithm)) {
-      this.config.algorithm = DEFAULT_CONFIG.algorithm;
-    }
+    this.config = stored ? { ...stored } : { ...DEFAULT_CONFIG };
   }
 
   /**
@@ -160,18 +231,34 @@ export class CryptoManager {
    * @returns a derived CryptoKey suitable for encrypt/decrypt
    */
   async deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-    const encoder = new TextEncoder();
+    validateConfig(this.config, false);
+    if (password.length === 0) {
+      throw new Error("Password must not be empty");
+    }
+    if (salt.byteLength !== SALT_BYTES) {
+      throw new Error(`PBKDF2 salt must be exactly ${SALT_BYTES} bytes`);
+    }
     const webcrypto = this.getWebCrypto();
     if (!webcrypto?.subtle)
       throw new Error("Web Crypto Subtle API not available");
 
-    const keyMaterial = await webcrypto.subtle.importKey(
-      "raw",
-      encoder.encode(password),
-      "PBKDF2",
-      false,
-      ["deriveBits", "deriveKey"],
+    const passwordBytes = encodeUtf8Bounded(
+      password,
+      MAX_CRYPTO_PASSWORD_BYTES,
+      "Password",
     );
+    let keyMaterial: CryptoKey;
+    try {
+      keyMaterial = await webcrypto.subtle.importKey(
+        "raw",
+        passwordBytes,
+        "PBKDF2",
+        false,
+        ["deriveBits", "deriveKey"],
+      );
+    } finally {
+      passwordBytes.fill(0);
+    }
 
     return webcrypto.subtle.deriveKey(
       {
@@ -181,7 +268,10 @@ export class CryptoManager {
         hash: "SHA-256",
       },
       keyMaterial,
-      { name: this.config.algorithm, length: this.config.keyLength },
+      {
+        name: this.config.algorithm,
+        length: AES_256_KEY_LENGTH_BITS,
+      },
       false,
       ["encrypt", "decrypt"],
     );
@@ -203,26 +293,44 @@ export class CryptoManager {
     salt: string;
     iv: string;
   }> {
-    const encoder = new TextEncoder();
+    validateConfig(this.config, true);
+    const plaintext = encodeUtf8Bounded(
+      data,
+      MAX_CRYPTO_PLAINTEXT_BYTES,
+      "Plaintext",
+    );
     const salt = this.generateSalt();
     const iv = this.generateIV();
-    const key = await this.deriveKey(password, salt);
 
-    const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.subtle)
-      throw new Error("Web Crypto Subtle API not available");
+    try {
+      const key = await this.deriveKey(password, salt);
+      const webcrypto = this.getWebCrypto();
+      if (!webcrypto?.subtle)
+        throw new Error("Web Crypto Subtle API not available");
+      const encrypted = await webcrypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv,
+          additionalData: ENVELOPE_AAD,
+          tagLength: 128,
+        },
+        key,
+        plaintext,
+      );
+      if (encrypted.byteLength > MAX_CRYPTO_CIPHERTEXT_BYTES) {
+        throw new Error(
+          `Ciphertext exceeds the ${MAX_CRYPTO_CIPHERTEXT_BYTES}-byte limit`,
+        );
+      }
 
-    const encrypted = await webcrypto.subtle.encrypt(
-      { name: this.config.algorithm, iv: iv },
-      key,
-      encoder.encode(data),
-    );
-
-    return {
-      encrypted: this.arrayBufferToBase64(encrypted),
-      salt: this.arrayBufferToBase64(salt as any),
-      iv: this.arrayBufferToBase64(iv as any),
-    };
+      return {
+        encrypted: `${ENVELOPE_PREFIX}${this.arrayBufferToBase64(encrypted)}`,
+        salt: this.arrayBufferToBase64(salt),
+        iv: this.arrayBufferToBase64(iv),
+      };
+    } finally {
+      plaintext.fill(0);
+    }
   }
 
   /**
@@ -241,19 +349,80 @@ export class CryptoManager {
     iv: string,
     password: string,
   ): Promise<string> {
-    const key = await this.deriveKey(password, this.base64ToArrayBuffer(salt));
-
-    const webcrypto = this.getWebCrypto();
-    if (!webcrypto?.subtle)
-      throw new Error("Web Crypto Subtle API not available");
-
-    const decrypted = await webcrypto.subtle.decrypt(
-      { name: this.config.algorithm, iv: this.base64ToArrayBuffer(iv) },
-      key,
-      this.base64ToArrayBuffer(encryptedData),
+    validateConfig(this.config, false);
+    const versioned = encryptedData.startsWith(ENVELOPE_PREFIX);
+    if (versioned && this.config.algorithm !== "AES-GCM") {
+      throw new Error("Versioned ciphertext requires AES-GCM");
+    }
+    const encodedCiphertext = versioned
+      ? encryptedData.slice(ENVELOPE_PREFIX.length)
+      : encryptedData;
+    const saltBytes = this.base64ToArrayBuffer(
+      salt,
+      "Salt",
+      Math.ceil(SALT_BYTES / 3) * 4,
+      SALT_BYTES,
     );
+    const ivBytes = this.base64ToArrayBuffer(
+      iv,
+      "Initialization vector",
+      Math.ceil(CBC_IV_BYTES / 3) * 4,
+      this.config.algorithm === "AES-CBC" ? CBC_IV_BYTES : GCM_IV_BYTES,
+    );
+    const ciphertext = this.base64ToArrayBuffer(
+      encodedCiphertext,
+      "Ciphertext",
+      MAX_CRYPTO_BASE64_CHARS,
+    );
+    if (
+      ciphertext.byteLength < AUTH_TAG_BYTES ||
+      ciphertext.byteLength > MAX_CRYPTO_CIPHERTEXT_BYTES
+    ) {
+      throw new Error("Ciphertext length is invalid");
+    }
+    if (
+      this.config.algorithm === "AES-CBC" &&
+      ciphertext.byteLength % CBC_IV_BYTES !== 0
+    ) {
+      throw new Error("Legacy AES-CBC ciphertext length is invalid");
+    }
 
-    return new TextDecoder().decode(decrypted);
+    try {
+      const key = await this.deriveKey(password, saltBytes);
+      const webcrypto = this.getWebCrypto();
+      if (!webcrypto?.subtle)
+        throw new Error("Web Crypto Subtle API not available");
+      const algorithm: AesGcmParams | AesCbcParams =
+        this.config.algorithm === "AES-GCM"
+          ? {
+              name: "AES-GCM",
+              iv: ivBytes,
+              ...(versioned
+                ? { additionalData: ENVELOPE_AAD, tagLength: 128 }
+                : {}),
+            }
+          : { name: "AES-CBC", iv: ivBytes };
+      const decrypted = await webcrypto.subtle.decrypt(
+        algorithm,
+        key,
+        ciphertext,
+      );
+      if (decrypted.byteLength > MAX_CRYPTO_PLAINTEXT_BYTES) {
+        throw new Error(
+          `Plaintext exceeds the ${MAX_CRYPTO_PLAINTEXT_BYTES}-byte limit`,
+        );
+      }
+      const plaintext = new Uint8Array(decrypted);
+      try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+      } finally {
+        plaintext.fill(0);
+      }
+    } finally {
+      saltBytes.fill(0);
+      ivBytes.fill(0);
+      ciphertext.fill(0);
+    }
   }
 
   /**
@@ -262,8 +431,10 @@ export class CryptoManager {
    * @param buffer - an ArrayBuffer
    * @returns base64-encoded string
    */
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
+  private arrayBufferToBase64(buffer: ArrayBuffer | ArrayBufferView): string {
+    const bytes = ArrayBuffer.isView(buffer)
+      ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      : new Uint8Array(buffer);
     let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
@@ -277,8 +448,31 @@ export class CryptoManager {
    * @param base64 - base64-encoded data
    * @returns a Uint8Array containing the decoded bytes
    */
-  private base64ToArrayBuffer(base64: string): Uint8Array {
-    const binary = atob(base64);
+  private base64ToArrayBuffer(
+    base64: string,
+    field: string,
+    maxChars: number,
+    exactBytes?: number,
+  ): Uint8Array {
+    if (
+      base64.length === 0 ||
+      base64.length > maxChars ||
+      base64.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        base64,
+      )
+    ) {
+      throw new Error(`${field} is not valid bounded base64`);
+    }
+    let binary: string;
+    try {
+      binary = atob(base64);
+    } catch {
+      throw new Error(`${field} is not valid base64`);
+    }
+    if (exactBytes !== undefined && binary.length !== exactBytes) {
+      throw new Error(`${field} must decode to exactly ${exactBytes} bytes`);
+    }
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
@@ -302,11 +496,9 @@ export class CryptoManager {
    * @throws if an invalid algorithm is supplied
    */
   updateConfig(newConfig: Partial<EncryptionConfig>): void {
-    if (newConfig.algorithm && !isValidAlgorithm(newConfig.algorithm)) {
-      throw new Error("Invalid algorithm");
-    }
-    this.config = { ...this.config, ...newConfig };
-    this.saveToStorage();
+    const next = validateConfig({ ...this.config, ...newConfig }, true);
+    this.saveToStorage(next);
+    this.config = next;
   }
 }
 /**

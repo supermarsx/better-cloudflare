@@ -112,7 +112,7 @@ test("falls back to in-memory storage when localStorage is unavailable", async (
     delete globalAsRecord.localStorage;
   }
 
-  const crypto = new CryptoManager({ iterations: 1 });
+  const crypto = new CryptoManager();
   const mgr = new StorageManager(undefined, crypto);
   const id = await mgr.addApiKey("label", "secret", "pw");
   assert.ok(id);
@@ -139,7 +139,7 @@ test("stores and clears last selected zone", () => {
 
 test("updateApiKey modifies metadata and re-encrypts with new password", async () => {
   const storage = new LocalStorageMock();
-  const crypto = new CryptoManager({ iterations: 1 }, storage);
+  const crypto = new CryptoManager({}, storage);
   const mgr = new StorageManager(storage, crypto);
   const id = await mgr.addApiKey("label", "secret", "pw", "old@example.com");
   await mgr.updateApiKey(id, { label: "new", email: "new@example.com" });

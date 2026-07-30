@@ -1,4 +1,7 @@
+use std::sync::{Arc, OnceLock};
+
 use tauri::State;
+use tokio::sync::Semaphore;
 
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
@@ -11,6 +14,30 @@ use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailure
 use super::log_audit;
 
 // ─── Authentication & Key Management ────────────────────────────────────────
+
+const MAX_CONCURRENT_CRYPTO_JOBS: usize = 2;
+
+fn crypto_job_semaphore() -> &'static Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_CRYPTO_JOBS)))
+}
+
+async fn run_crypto_job<T, F>(job: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let permit = crypto_job_semaphore()
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "Encryption is busy; wait for the active operation to finish.".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        job()
+    })
+    .await
+    .map_err(|e| format!("Encryption worker failed: {e}"))?
+}
 
 #[tauri::command]
 pub async fn verify_token(
@@ -171,10 +198,18 @@ pub async fn add_api_key(
         Err(bc_storage::StorageError::NotFound) => CryptoManager::default().get_config(),
         Err(e) => return Err(e.to_string()),
     };
-    let crypto = CryptoManager::new(config.clone());
-    let encrypted = crypto
-        .encrypt(&api_key, &password)
+    let config = config
+        .validated_for_encryption()
         .map_err(|e| e.to_string())?;
+    let encryption_config = config.clone();
+    let encrypted = run_crypto_job(move || {
+        let crypto =
+            CryptoManager::new_for_encryption(encryption_config).map_err(|e| e.to_string())?;
+        crypto
+            .encrypt(&api_key, &password)
+            .map_err(|e| e.to_string())
+    })
+    .await?;
 
     let id = storage
         .add_api_key(label.clone(), encrypted, email.clone(), config)
@@ -209,24 +244,36 @@ pub async fn update_api_key(
     if let Some(new_password) = new_password {
         let current_password = current_password.ok_or("Current password required")?;
         let existing = storage.get_api_key(&id).await.map_err(|e| e.to_string())?;
-        let crypto = CryptoManager::new(EncryptionConfig {
+        let existing_config = EncryptionConfig {
             iterations: existing.iterations,
             key_length: existing.key_length,
             algorithm: existing.algorithm.clone(),
-        });
-        let decrypted = crypto
-            .decrypt(&existing.encrypted_key, &current_password)
-            .map_err(|e| e.to_string())?;
+        };
+        let existing_ciphertext = existing.encrypted_key.clone();
+        let decrypted = run_crypto_job(move || {
+            let crypto = CryptoManager::new(existing_config).map_err(|e| e.to_string())?;
+            crypto
+                .decrypt(&existing_ciphertext, &current_password)
+                .map_err(|e| e.to_string())
+        })
+        .await?;
         let updated_config = match storage.get_encryption_settings().await {
             Ok(config) => config,
-            Err(bc_storage::StorageError::NotFound) => crypto.get_config(),
+            Err(bc_storage::StorageError::NotFound) => CryptoManager::default().get_config(),
             Err(e) => return Err(e.to_string()),
-        };
-        let updated_crypto = CryptoManager::new(updated_config.clone());
+        }
+        .validated_for_encryption()
+        .map_err(|e| e.to_string())?;
+        let encryption_config = updated_config.clone();
         encrypted_key = Some(
-            updated_crypto
-                .encrypt(&decrypted, &new_password)
-                .map_err(|e| e.to_string())?,
+            run_crypto_job(move || {
+                let updated_crypto = CryptoManager::new_for_encryption(encryption_config)
+                    .map_err(|e| e.to_string())?;
+                updated_crypto
+                    .encrypt(&decrypted, &new_password)
+                    .map_err(|e| e.to_string())
+            })
+            .await?,
         );
         iterations = Some(updated_config.iterations);
         key_length = Some(updated_config.key_length);
@@ -281,12 +328,20 @@ pub async fn decrypt_api_key(
     password: String,
 ) -> Result<String, String> {
     let encrypted = storage.get_api_key(&id).await.map_err(|e| e.to_string())?;
-    let crypto = CryptoManager::new(EncryptionConfig {
+    let config = EncryptionConfig {
         iterations: encrypted.iterations,
         key_length: encrypted.key_length,
         algorithm: encrypted.algorithm,
-    });
-    match crypto.decrypt(&encrypted.encrypted_key, &password) {
+    };
+    let ciphertext = encrypted.encrypted_key;
+    let result = run_crypto_job(move || {
+        let crypto = CryptoManager::new(config).map_err(|e| e.to_string())?;
+        crypto
+            .decrypt(&ciphertext, &password)
+            .map_err(|e| e.to_string())
+    })
+    .await;
+    match result {
         Ok(value) => {
             log_audit(
                 &storage,
@@ -510,7 +565,9 @@ pub async fn get_encryption_settings(
     storage: State<'_, Storage>,
 ) -> Result<EncryptionConfig, String> {
     match storage.get_encryption_settings().await {
-        Ok(config) => Ok(config),
+        Ok(config) => CryptoManager::new(config)
+            .map(|crypto| crypto.get_config())
+            .map_err(|e| e.to_string()),
         Err(bc_storage::StorageError::NotFound) => Ok(CryptoManager::default().get_config()),
         Err(e) => Err(e.to_string()),
     }
@@ -521,6 +578,9 @@ pub async fn update_encryption_settings(
     storage: State<'_, Storage>,
     config: EncryptionConfig,
 ) -> Result<(), String> {
+    let config = config
+        .validated_for_encryption()
+        .map_err(|e| e.to_string())?;
     storage
         .set_encryption_settings(&config)
         .await
@@ -541,11 +601,13 @@ pub async fn update_encryption_settings(
 
 #[tauri::command]
 pub async fn benchmark_encryption(iterations: u32) -> Result<f64, String> {
-    let crypto = CryptoManager::default();
-    crypto
-        .benchmark(iterations)
-        .await
-        .map_err(|e| e.to_string())
+    bc_crypto::validate_benchmark_iterations(iterations).map_err(|e| e.to_string())?;
+    run_crypto_job(move || {
+        CryptoManager::default()
+            .benchmark(iterations)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ─── Biometric Authentication ───────────────────────────────────────────────

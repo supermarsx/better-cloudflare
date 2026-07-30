@@ -23,9 +23,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  ENCRYPTION_ALGORITHMS,
+  ACTIVE_ENCRYPTION_ALGORITHMS,
+  AES_256_KEY_LENGTH_BITS,
+  MAX_PBKDF2_ITERATIONS,
+  MIN_PBKDF2_ITERATIONS,
   type EncryptionConfig,
-  type EncryptionAlgorithm,
 } from "../../types/dns";
 import { Switch } from "@/components/ui/switch";
 
@@ -71,10 +73,20 @@ export function EncryptionSettingsDialog({
 }: EncryptionSettingsDialogProps) {
   const [useVault, setUseVault] = useState(vaultEnabled);
   const safeIterations =
-    typeof settings.iterations === "number" ? settings.iterations : 100000;
-  const safeKeyLength =
-    typeof settings.keyLength === "number" ? settings.keyLength : 256;
-  const safeAlgorithm = settings.algorithm ?? "AES-GCM";
+    Number.isSafeInteger(settings.iterations) &&
+    settings.iterations >= MIN_PBKDF2_ITERATIONS &&
+    settings.iterations <= MAX_PBKDF2_ITERATIONS
+      ? settings.iterations
+      : MIN_PBKDF2_ITERATIONS;
+  const safeAlgorithm = (
+    ACTIVE_ENCRYPTION_ALGORITHMS as readonly string[]
+  ).includes(settings.algorithm)
+    ? settings.algorithm
+    : "AES-GCM";
+  const validSettings =
+    safeIterations === settings.iterations &&
+    settings.keyLength === AES_256_KEY_LENGTH_BITS &&
+    safeAlgorithm === settings.algorithm;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -90,50 +102,47 @@ export function EncryptionSettingsDialog({
             <Input
               id="iterations"
               type="number"
+              min={MIN_PBKDF2_ITERATIONS}
+              max={MAX_PBKDF2_ITERATIONS}
+              step={10_000}
               value={safeIterations}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                const n = Number.parseInt(e.target.value, 10);
-                onSettingsChange({
-                  ...settings,
-                  iterations: Number.isNaN(n) ? 100000 : n,
-                });
+                const iterations = Number(e.target.value);
+                if (
+                  Number.isSafeInteger(iterations) &&
+                  iterations >= MIN_PBKDF2_ITERATIONS &&
+                  iterations <= MAX_PBKDF2_ITERATIONS
+                ) {
+                  onSettingsChange({ ...settings, iterations });
+                }
               }}
             />
+            <p className="text-xs text-muted-foreground">
+              Allowed range: {MIN_PBKDF2_ITERATIONS.toLocaleString()}–
+              {MAX_PBKDF2_ITERATIONS.toLocaleString()} iterations.
+            </p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="key-length">Key Length (bits)</Label>
-            <Select
-              value={safeKeyLength.toString()}
-              onValueChange={(value) =>
-                onSettingsChange({ ...settings, keyLength: parseInt(value) })
-              }
-            >
-              <SelectTrigger>
+            <Select value={AES_256_KEY_LENGTH_BITS.toString()} disabled>
+              <SelectTrigger id="key-length">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="128">128</SelectItem>
-                <SelectItem value="192">192</SelectItem>
-                <SelectItem value="256">256</SelectItem>
+                <SelectItem value={AES_256_KEY_LENGTH_BITS.toString()}>
+                  {AES_256_KEY_LENGTH_BITS}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-2">
             <Label htmlFor="algorithm">Algorithm</Label>
-            <Select
-              value={safeAlgorithm}
-              onValueChange={(value) =>
-                onSettingsChange({
-                  ...settings,
-                  algorithm: value as EncryptionAlgorithm,
-                })
-              }
-            >
-              <SelectTrigger>
+            <Select value={safeAlgorithm} disabled>
+              <SelectTrigger id="algorithm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {ENCRYPTION_ALGORITHMS.map((alg) => (
+                {ACTIVE_ENCRYPTION_ALGORITHMS.map((alg) => (
                   <SelectItem key={alg} value={alg}>
                     {alg}
                   </SelectItem>
@@ -142,10 +151,19 @@ export function EncryptionSettingsDialog({
             </Select>
           </div>
           <div className="flex gap-2">
-            <Button onClick={onBenchmark} variant="outline" className="flex-1">
+            <Button
+              onClick={onBenchmark}
+              variant="outline"
+              className="flex-1"
+              disabled={!validSettings}
+            >
               Benchmark
             </Button>
-            <Button onClick={onUpdate} className="flex-1">
+            <Button
+              onClick={onUpdate}
+              className="flex-1"
+              disabled={!validSettings}
+            >
               Update
             </Button>
           </div>
