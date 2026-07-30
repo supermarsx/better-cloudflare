@@ -17,6 +17,7 @@ import {
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
 import { useI18n } from "@/hooks/use-i18n";
 import { formatRequestError } from "@/lib/api/request-error";
+import { retainUtf8 } from "./rendererSafety";
 
 export interface PropagationResolverResult {
   resolver: string;
@@ -37,6 +38,17 @@ export interface PropagationResult {
 }
 
 const RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS"];
+export const PROPAGATION_LIMITS = Object.freeze({
+  resolvers: 200,
+  renderedResolvers: 100,
+  answersPerResolver: 50,
+  renderedAnswersPerResolver: 20,
+  warnings: 32,
+  stringBytes: 4 * 1024,
+  identityBytes: 512,
+  aggregateBytes: 512 * 1024,
+  queryBytes: 512,
+});
 
 interface PropagationCheckerProps {
   zoneName?: string;
@@ -58,12 +70,66 @@ class PropagationResponseError extends Error {
   readonly name = "PropagationResponseError";
 }
 
+type PropagationLimitStats = {
+  truncatedStrings: number;
+  omittedStrings: number;
+};
+
+class PropagationWarningCollector {
+  readonly items: string[] = [];
+  private omitted = 0;
+
+  add(message: string): void {
+    if (this.items.length < PROPAGATION_LIMITS.warnings - 1) {
+      this.items.push(message);
+    } else {
+      this.omitted += 1;
+    }
+  }
+
+  addPriority(message: string): void {
+    if (this.items.includes(message)) return;
+    this.items.unshift(message);
+    if (this.items.length >= PROPAGATION_LIMITS.warnings) {
+      this.items.pop();
+      this.omitted += 1;
+    }
+  }
+
+  finish(): string[] {
+    if (this.omitted > 0) {
+      this.items.push(
+        `${this.omitted.toLocaleString()} additional safety warnings were omitted.`,
+      );
+    }
+    return Array.from(new Set(this.items)).slice(
+      0,
+      PROPAGATION_LIMITS.warnings,
+    );
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function retainPropagationString(
+  value: unknown,
+  perStringBytes: number,
+  budget: { remaining: number },
+  stats: PropagationLimitStats,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (budget.remaining <= 0) {
+    stats.omittedStrings += 1;
+    return undefined;
+  }
+  const allowedBytes = Math.min(perStringBytes, budget.remaining);
+  const retained = retainUtf8(value, allowedBytes);
+  if (retained.truncated) stats.truncatedStrings += 1;
+  budget.remaining -= retained.bytes;
+  const trimmed = retained.value.trim();
+  return trimmed || undefined;
 }
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
@@ -75,27 +141,50 @@ function finiteNonNegativeNumber(value: unknown): number | undefined {
 function normalizeRecordValues(
   value: unknown,
   resolverNumber: number,
-  warnings: string[],
+  warnings: PropagationWarningCollector,
+  budget: { remaining: number },
+  stats: PropagationLimitStats,
 ): string[] {
   if (value === undefined || value === null) {
-    warnings.push(
+    warnings.add(
       `Resolver ${resolverNumber} omitted its records array; it was treated as empty.`,
     );
     return [];
   }
   if (!Array.isArray(value)) {
-    warnings.push(
+    warnings.add(
       `Resolver ${resolverNumber} returned a non-array records field; it was treated as empty.`,
     );
     return [];
   }
 
-  const records = value.filter(
-    (entry): entry is string => typeof entry === "string",
+  const records: string[] = [];
+  let invalidValues = 0;
+  const answerCount = Math.min(
+    value.length,
+    PROPAGATION_LIMITS.answersPerResolver,
   );
-  if (records.length !== value.length) {
-    warnings.push(
+  for (let index = 0; index < answerCount; index += 1) {
+    if (typeof value[index] !== "string") {
+      invalidValues += 1;
+      continue;
+    }
+    const record = retainPropagationString(
+      value[index],
+      PROPAGATION_LIMITS.stringBytes,
+      budget,
+      stats,
+    );
+    if (record !== undefined) records.push(record);
+  }
+  if (invalidValues > 0) {
+    warnings.add(
       `Resolver ${resolverNumber} included invalid record values; those values were ignored.`,
+    );
+  }
+  if (value.length > PROPAGATION_LIMITS.answersPerResolver) {
+    warnings.add(
+      `Resolver ${resolverNumber} returned ${value.length.toLocaleString()} answers; only the first ${PROPAGATION_LIMITS.answersPerResolver} were retained.`,
     );
   }
   return records;
@@ -104,11 +193,13 @@ function normalizeRecordValues(
 function normalizeResolverResult(
   value: unknown,
   index: number,
-  warnings: string[],
+  warnings: PropagationWarningCollector,
+  budget: { remaining: number },
+  stats: PropagationLimitStats,
 ): PropagationResolverResult {
   const resolverNumber = index + 1;
   if (!isRecord(value)) {
-    warnings.push(
+    warnings.add(
       `Resolver ${resolverNumber} returned an invalid response entry; a safe failure row is shown.`,
     );
     return {
@@ -122,18 +213,46 @@ function normalizeResolverResult(
   }
 
   const resolver =
-    nonEmptyString(value.resolver) ?? `unknown-${resolverNumber}`;
+    retainPropagationString(
+      value.resolver,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    ) ?? `unknown-${resolverNumber}`;
   const label =
-    nonEmptyString(value.label) ??
-    nonEmptyString(value.resolver_label) ??
+    retainPropagationString(
+      value.label,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    ) ??
+    retainPropagationString(
+      value.resolver_label,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    ) ??
     resolver;
   const records = normalizeRecordValues(
     value.records ?? value.answers,
     resolverNumber,
     warnings,
+    budget,
+    stats,
   );
-  const error = nonEmptyString(value.error);
-  const rcode = nonEmptyString(value.rcode) ?? (error ? "SERVFAIL" : "UNKNOWN");
+  const error = retainPropagationString(
+    value.error,
+    PROPAGATION_LIMITS.stringBytes,
+    budget,
+    stats,
+  );
+  const rcode =
+    retainPropagationString(
+      value.rcode,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    ) ?? (error ? "SERVFAIL" : "UNKNOWN");
   const latency = finiteNonNegativeNumber(value.latency_ms);
 
   if (
@@ -142,7 +261,7 @@ function normalizeResolverResult(
     value.rcode === undefined ||
     latency === undefined
   ) {
-    warnings.push(
+    warnings.add(
       `Resolver ${resolverNumber} returned an incomplete response; missing fields were replaced with safe defaults.`,
     );
   }
@@ -155,6 +274,19 @@ function normalizeResolverResult(
     latency_ms: latency ?? 0,
     ...(error ? { error } : {}),
   };
+}
+
+function boundedTopLevelString(
+  value: unknown,
+  fallback: string,
+  maxBytes: number,
+  budget: { remaining: number },
+  stats: PropagationLimitStats,
+): string {
+  return (
+    retainPropagationString(value, maxBytes, budget, stats) ??
+    retainUtf8(fallback, maxBytes).value
+  );
 }
 
 function inferConsistency(resolvers: PropagationResolverResult[]): boolean {
@@ -182,12 +314,17 @@ export function normalizePropagationResult(
     );
   }
 
-  const warnings: string[] = [];
+  const warnings = new PropagationWarningCollector();
+  const stats: PropagationLimitStats = {
+    truncatedStrings: 0,
+    omittedStrings: 0,
+  };
+  const budget = { remaining: PROPAGATION_LIMITS.aggregateBytes };
   const resolverValue =
     value.resolvers !== undefined ? value.resolvers : value.results;
   let rawResolvers: unknown[];
   if (resolverValue === null) {
-    warnings.push(
+    warnings.add(
       "The provider returned a null resolver-results array; it was treated as empty.",
     );
     rawResolvers = [];
@@ -199,18 +336,69 @@ export function normalizePropagationResult(
     );
   }
 
-  const resolvers = rawResolvers.map((resolver, index) =>
-    normalizeResolverResult(resolver, index, warnings),
+  const retainedResolverCount = Math.min(
+    rawResolvers.length,
+    PROPAGATION_LIMITS.resolvers,
   );
-  const timestamp = nonEmptyString(value.timestamp);
+  const resolvers = new Array<PropagationResolverResult>(retainedResolverCount);
+  for (let index = 0; index < retainedResolverCount; index += 1) {
+    resolvers[index] = normalizeResolverResult(
+      rawResolvers[index],
+      index,
+      warnings,
+      budget,
+      stats,
+    );
+  }
+  if (rawResolvers.length > PROPAGATION_LIMITS.resolvers) {
+    warnings.addPriority(
+      `${(
+        rawResolvers.length - PROPAGATION_LIMITS.resolvers
+      ).toLocaleString()} resolver entries were not retained because the ${PROPAGATION_LIMITS.resolvers}-resolver limit was reached.`,
+    );
+  }
+  const timestamp = retainPropagationString(
+    value.timestamp,
+    PROPAGATION_LIMITS.identityBytes,
+    budget,
+    stats,
+  );
   const parsedTimestamp = timestamp ? Date.parse(timestamp) : Number.NaN;
+  const normalizedDomain = boundedTopLevelString(
+    value.domain,
+    domain,
+    PROPAGATION_LIMITS.identityBytes,
+    budget,
+    stats,
+  );
+  const normalizedRecordType =
+    retainPropagationString(
+      value.record_type,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    ) ??
+    boundedTopLevelString(
+      value.recordType,
+      recordType,
+      PROPAGATION_LIMITS.identityBytes,
+      budget,
+      stats,
+    );
+  if (stats.truncatedStrings > 0) {
+    warnings.addPriority(
+      `${stats.truncatedStrings.toLocaleString()} oversized propagation strings were truncated to the per-string or aggregate UTF-8 byte limit.`,
+    );
+  }
+  if (stats.omittedStrings > 0 || budget.remaining === 0) {
+    warnings.addPriority(
+      `${stats.omittedStrings.toLocaleString()} propagation strings were omitted after the ${PROPAGATION_LIMITS.aggregateBytes.toLocaleString()}-byte retained-payload budget was exhausted.`,
+    );
+  }
 
   return {
-    domain: nonEmptyString(value.domain) ?? domain,
-    record_type:
-      nonEmptyString(value.record_type) ??
-      nonEmptyString(value.recordType) ??
-      recordType,
+    domain: normalizedDomain,
+    record_type: normalizedRecordType,
     resolvers,
     consistent:
       typeof value.consistent === "boolean"
@@ -219,7 +407,7 @@ export function normalizePropagationResult(
     timestamp: Number.isFinite(parsedTimestamp)
       ? new Date(parsedTimestamp).toISOString()
       : receivedAt.toISOString(),
-    warnings: Array.from(new Set(warnings)),
+    warnings: warnings.finish(),
   };
 }
 
@@ -228,101 +416,181 @@ function PropagationCheckerInner({
   checkDnsPropagation,
 }: PropagationCheckerProps) {
   const { t } = useI18n();
-  const [domain, setDomain] = useState(zoneName ?? "");
+  const initialDomain = retainUtf8(
+    zoneName ?? "",
+    PROPAGATION_LIMITS.queryBytes,
+  );
+  const [domain, setDomain] = useState(initialDomain.value);
   const [recordType, setRecordType] = useState("A");
   const [result, setResult] = useState<PropagationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [queryDiagnostic, setQueryDiagnostic] = useState<string | null>(
+    initialDomain.truncated
+      ? `Domain input was truncated to ${PROPAGATION_LIMITS.queryBytes} UTF-8 bytes.`
+      : null,
+  );
   const [watching, setWatching] = useState(false);
   const [watchInterval, setWatchInterval] = useState(15);
-  const watchRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const watchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
   const requestRef = useRef<{
     id: number;
     controller: AbortController;
+    watchGeneration?: number;
   } | null>(null);
   const nextRequestIdRef = useRef(0);
   const [checkCount, setCheckCount] = useState(0);
 
-  const check = useCallback(async () => {
-    const requestedDomain = domain.trim();
-    if (!requestedDomain) return;
-
-    requestRef.current?.controller.abort();
-    const controller = new AbortController();
-    const requestId = ++nextRequestIdRef.current;
-    requestRef.current = { id: requestId, controller };
-    setLoading(true);
-    setError(null);
-    try {
-      const rawResult = await checkDnsPropagation(
-        requestedDomain,
-        recordType,
-        undefined,
-        controller.signal,
-      );
-      if (controller.signal.aborted || requestRef.current?.id !== requestId) {
+  const check = useCallback(
+    async (watchGeneration?: number) => {
+      const requestedDomain = domain.trim();
+      if (!requestedDomain) return;
+      if (
+        watchGeneration !== undefined &&
+        watchGenerationRef.current !== watchGeneration
+      ) {
         return;
       }
-      const res = normalizePropagationResult(rawResult, {
-        domain: requestedDomain,
-        recordType,
-      });
-      setResult(res);
-      setCheckCount((c) => c + 1);
-      // Auto-stop watch when fully propagated
-      if (res.consistent && watching) {
-        setWatching(false);
-      }
-    } catch (err) {
-      if (controller.signal.aborted || requestRef.current?.id !== requestId) {
-        return;
-      }
-      setResult(null);
-      setError(
-        err instanceof PropagationResponseError
-          ? err.message
-          : formatRequestError(err),
-      );
-    } finally {
-      if (requestRef.current?.id === requestId) {
-        requestRef.current = null;
-        setLoading(false);
-      }
-    }
-  }, [domain, recordType, checkDnsPropagation, watching]);
 
-  useEffect(
-    () => () => {
+      requestRef.current?.controller.abort();
+      const controller = new AbortController();
+      const requestId = ++nextRequestIdRef.current;
+      requestRef.current = { id: requestId, controller, watchGeneration };
+      const isCurrentRequest = () =>
+        mountedRef.current &&
+        !controller.signal.aborted &&
+        requestRef.current?.id === requestId &&
+        (watchGeneration === undefined ||
+          watchGenerationRef.current === watchGeneration);
+      setLoading(true);
+      setError(null);
+      try {
+        const rawResult = await checkDnsPropagation(
+          requestedDomain,
+          recordType,
+          undefined,
+          controller.signal,
+        );
+        if (!isCurrentRequest()) return;
+        const res = normalizePropagationResult(rawResult, {
+          domain: requestedDomain,
+          recordType,
+        });
+        setResult(res);
+        setCheckCount((c) => c + 1);
+        // Auto-stop watch when fully propagated
+        if (res.consistent && watchGeneration !== undefined) {
+          watchGenerationRef.current += 1;
+          if (watchTimerRef.current) {
+            clearTimeout(watchTimerRef.current);
+            watchTimerRef.current = null;
+          }
+          setWatching(false);
+        }
+      } catch (err) {
+        if (!isCurrentRequest()) return;
+        setResult(null);
+        const message =
+          err instanceof PropagationResponseError
+            ? err.message
+            : formatRequestError(err);
+        const boundedMessage = retainUtf8(
+          message,
+          PROPAGATION_LIMITS.stringBytes,
+        );
+        setError(
+          boundedMessage.truncated
+            ? `${
+                retainUtf8(
+                  boundedMessage.value,
+                  PROPAGATION_LIMITS.stringBytes - 18,
+                ).value
+              }… [truncated]`
+            : boundedMessage.value,
+        );
+      } finally {
+        if (mountedRef.current && requestRef.current?.id === requestId) {
+          requestRef.current = null;
+          setLoading(false);
+        }
+      }
+    },
+    [domain, recordType, checkDnsPropagation],
+  );
+  const latestCheckRef = useRef(check);
+  const latestWatchIntervalRef = useRef(watchInterval);
+  useEffect(() => {
+    latestCheckRef.current = check;
+  }, [check]);
+  useEffect(() => {
+    latestWatchIntervalRef.current = watchInterval;
+  }, [watchInterval]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      watchGenerationRef.current += 1;
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+        watchTimerRef.current = null;
+      }
       requestRef.current?.controller.abort();
       requestRef.current = null;
-    },
-    [],
-  );
+    };
+  }, []);
 
-  // Watch mode: poll at interval
+  // Watch mode is completion-scheduled: a new request is queued only after the
+  // previous request has settled, so an unresolved provider cannot overlap.
   useEffect(() => {
-    if (watching) {
-      void check(); // Run immediately on start
-      watchRef.current = setInterval(() => {
-        void check();
-      }, watchInterval * 1000);
-    } else if (watchRef.current) {
-      clearInterval(watchRef.current);
-      watchRef.current = null;
-    }
+    if (!watching) return;
+    const generation = ++watchGenerationRef.current;
+    let disposed = false;
+    const cycle = async () => {
+      await latestCheckRef.current(generation);
+      if (
+        disposed ||
+        !mountedRef.current ||
+        watchGenerationRef.current !== generation
+      ) {
+        return;
+      }
+      watchTimerRef.current = setTimeout(
+        () => void cycle(),
+        latestWatchIntervalRef.current * 1000,
+      );
+    };
+    void cycle();
     return () => {
-      if (watchRef.current) {
-        clearInterval(watchRef.current);
-        watchRef.current = null;
+      disposed = true;
+      if (watchGenerationRef.current === generation) {
+        watchGenerationRef.current += 1;
+      }
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+        watchTimerRef.current = null;
+      }
+      if (requestRef.current?.watchGeneration === generation) {
+        requestRef.current.controller.abort();
       }
     };
-  }, [watching, watchInterval, check]);
+  }, [watching]);
 
   const toggleWatch = () => {
     if (watching) {
-      requestRef.current?.controller.abort();
-      requestRef.current = null;
-      setLoading(false);
+      watchGenerationRef.current += 1;
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+        watchTimerRef.current = null;
+      }
+      const activeRequest = requestRef.current;
+      if (activeRequest?.watchGeneration !== undefined) {
+        activeRequest.controller.abort();
+        requestRef.current = null;
+        setLoading(false);
+      }
       setWatching(false);
     } else {
       setCheckCount(0);
@@ -335,6 +603,8 @@ function PropagationCheckerInner({
     if (rcode === "NXDOMAIN") return "text-yellow-600 dark:text-yellow-400";
     return "text-red-600 dark:text-red-400";
   };
+  const visibleResolvers =
+    result?.resolvers.slice(0, PROPAGATION_LIMITS.renderedResolvers) ?? [];
 
   return (
     <div className="space-y-4">
@@ -351,17 +621,42 @@ function PropagationCheckerInner({
               <Label className="text-xs">{t("Domain", "Domain")}</Label>
               <Input
                 value={domain}
-                onChange={(e) => setDomain(e.target.value)}
+                disabled={watching}
+                onChange={(e) => {
+                  const bounded = retainUtf8(
+                    e.target.value,
+                    PROPAGATION_LIMITS.queryBytes,
+                  );
+                  setDomain(bounded.value);
+                  setQueryDiagnostic(
+                    bounded.truncated
+                      ? `Domain input was truncated to ${PROPAGATION_LIMITS.queryBytes} UTF-8 bytes.`
+                      : null,
+                  );
+                }}
                 placeholder={t("example.com", "example.com")}
                 className="h-8 text-xs font-mono"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void check();
                 }}
               />
+              {queryDiagnostic && (
+                <p
+                  className="mt-1 text-[11px] text-yellow-700 dark:text-yellow-300"
+                  data-testid="propagation-query-diagnostic"
+                  role="status"
+                >
+                  {queryDiagnostic}
+                </p>
+              )}
             </div>
             <div className="w-28">
               <Label className="text-xs">{t("Type", "Type")}</Label>
-              <Select value={recordType} onValueChange={setRecordType}>
+              <Select
+                value={recordType}
+                onValueChange={setRecordType}
+                disabled={watching}
+              >
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -378,7 +673,7 @@ function PropagationCheckerInner({
               <Button
                 size="sm"
                 onClick={() => void check()}
-                disabled={loading || !domain.trim()}
+                disabled={watching || loading || !domain.trim()}
               >
                 {loading ? t("Checking…", "Checking…") : t("Check", "Check")}
               </Button>
@@ -390,6 +685,7 @@ function PropagationCheckerInner({
                   <Select
                     value={String(watchInterval)}
                     onValueChange={(v) => setWatchInterval(parseInt(v, 10))}
+                    disabled={watching}
                   >
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue />
@@ -430,7 +726,7 @@ function PropagationCheckerInner({
             size="sm"
             variant="outline"
             onClick={() => void check()}
-            disabled={loading || !domain.trim()}
+            disabled={watching || loading || !domain.trim()}
           >
             {t("Retry", "Retry")}
           </Button>
@@ -506,16 +802,30 @@ function PropagationCheckerInner({
                     size="sm"
                     variant="outline"
                     onClick={() => void check()}
-                    disabled={loading || !domain.trim()}
+                    disabled={watching || loading || !domain.trim()}
                   >
                     {t("Retry", "Retry")}
                   </Button>
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {result.resolvers.map((r, i) => (
+                  {result.resolvers.length >
+                    PROPAGATION_LIMITS.renderedResolvers && (
+                    <p
+                      className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-2 text-xs text-yellow-700 dark:text-yellow-300"
+                      data-testid="propagation-render-limit"
+                      role="status"
+                    >
+                      Showing the first{" "}
+                      {PROPAGATION_LIMITS.renderedResolvers.toLocaleString()} of{" "}
+                      {result.resolvers.length.toLocaleString()} retained
+                      resolver rows.
+                    </p>
+                  )}
+                  {visibleResolvers.map((r, i) => (
                     <div
                       key={`${r.resolver}-${i}`}
+                      data-testid="propagation-resolver-row"
                       className="flex items-start justify-between rounded-md border px-3 py-2"
                     >
                       <div className="flex-1 space-y-0.5">
@@ -532,14 +842,29 @@ function PropagationCheckerInner({
                         </div>
                         {r.records.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
-                            {r.records.map((rec, j) => (
-                              <span
-                                key={j}
-                                className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
-                              >
-                                {rec}
+                            {r.records
+                              .slice(
+                                0,
+                                PROPAGATION_LIMITS.renderedAnswersPerResolver,
+                              )
+                              .map((rec, j) => (
+                                <span
+                                  key={j}
+                                  data-testid="propagation-answer"
+                                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                                >
+                                  {rec}
+                                </span>
+                              ))}
+                            {r.records.length >
+                              PROPAGATION_LIMITS.renderedAnswersPerResolver && (
+                              <span className="text-[10px] text-muted-foreground">
+                                +
+                                {r.records.length -
+                                  PROPAGATION_LIMITS.renderedAnswersPerResolver}{" "}
+                                retained answers not shown
                               </span>
-                            ))}
+                            )}
                           </div>
                         ) : r.error ? (
                           <p className="text-[11px] text-destructive">

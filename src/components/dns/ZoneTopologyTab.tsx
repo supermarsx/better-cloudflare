@@ -39,6 +39,7 @@ import { useToast } from "@/hooks/use-toast";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
+import { retainUtf8, utf8ByteLengthUpTo } from "./rendererSafety";
 
 type Annotation = {
   id: string;
@@ -143,6 +144,28 @@ function reportTopologyFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
 }
 
+function SanitizedTopologySvg({ svgMarkup }: { svgMarkup: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.replaceChildren();
+    if (!svgMarkup.trim()) return;
+    try {
+      const safeMarkup = sanitizeTopologySvg(svgMarkup);
+      const parsed = new DOMParser().parseFromString(
+        safeMarkup,
+        "image/svg+xml",
+      ).documentElement;
+      container.append(document.importNode(parsed, true));
+    } catch (error) {
+      reportTopologyFailure(error, "Insert sanitized DNS topology SVG");
+      container.textContent = "Topology SVG could not be displayed safely.";
+    }
+  }, [svgMarkup]);
+  return <div ref={containerRef} className="topology-svg-wrapper" />;
+}
+
 async function copyTopologyText(
   text: string,
   label = "Copy topology text",
@@ -236,6 +259,425 @@ function applyEdgeLabelTheme(svgMarkup: string, isDarkTheme: boolean): string {
   }
 }
 
+const ALLOWED_TOPOLOGY_SVG_ELEMENTS = new Set([
+  "circle",
+  "clippath",
+  "defs",
+  "desc",
+  "ellipse",
+  "g",
+  "line",
+  "lineargradient",
+  "marker",
+  "mask",
+  "path",
+  "pattern",
+  "polygon",
+  "polyline",
+  "radialgradient",
+  "rect",
+  "stop",
+  "style",
+  "svg",
+  "text",
+  "title",
+  "tspan",
+]);
+
+const TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES = new Set([
+  "clip-path",
+  "fill",
+  "filter",
+  "marker",
+  "marker-end",
+  "marker-mid",
+  "marker-start",
+  "mask",
+  "stroke",
+]);
+
+function hasUnsafeCss(css: string): boolean {
+  if (
+    /@import|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|behavior\s*:|-moz-binding/i.test(
+      css,
+    )
+  ) {
+    return true;
+  }
+  for (const match of css.matchAll(/url\s*\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
+    if (!/^#[A-Za-z_][A-Za-z0-9_.:-]*$/.test(match[2].trim())) return true;
+  }
+  return false;
+}
+
+/**
+ * Sanitize Mermaid output before it is retained, inserted, copied, printed, or
+ * exported. The allowlist intentionally excludes HTML, scripting, animation,
+ * external resources, and interactive links.
+ */
+export function sanitizeTopologySvg(input: string): string {
+  const doc = new DOMParser().parseFromString(input, "image/svg+xml");
+  if (doc.querySelector("parsererror")) {
+    throw new Error("Mermaid returned malformed SVG");
+  }
+  const svg = doc.documentElement;
+  if (
+    svg.localName.toLowerCase() !== "svg" ||
+    svg.namespaceURI !== "http://www.w3.org/2000/svg"
+  ) {
+    throw new Error("Mermaid returned a non-SVG document");
+  }
+
+  for (const element of Array.from(svg.querySelectorAll("*"))) {
+    const localName = element.localName.toLowerCase();
+    if (
+      element.namespaceURI !== "http://www.w3.org/2000/svg" ||
+      !ALLOWED_TOPOLOGY_SVG_ELEMENTS.has(localName)
+    ) {
+      element.remove();
+      continue;
+    }
+
+    if (localName === "style") {
+      const css = element.textContent ?? "";
+      if (hasUnsafeCss(css)) element.remove();
+      continue;
+    }
+
+    for (const attribute of Array.from(element.attributes)) {
+      const attributeName = attribute.name.toLowerCase();
+      const attributeValue = attribute.value.trim();
+      if (
+        attributeName.startsWith("on") ||
+        attributeName === "href" ||
+        attributeName === "xlink:href" ||
+        attributeName === "src"
+      ) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (attributeName === "style" && hasUnsafeCss(attributeValue)) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (
+        TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES.has(attributeName) &&
+        /url\s*\(/i.test(attributeValue) &&
+        hasUnsafeCss(attributeValue)
+      ) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+
+  for (const attribute of Array.from(svg.attributes)) {
+    const attributeName = attribute.name.toLowerCase();
+    if (
+      attributeName.startsWith("on") ||
+      attributeName === "href" ||
+      attributeName === "xlink:href" ||
+      attributeName === "src" ||
+      (attributeName === "style" && hasUnsafeCss(attribute.value)) ||
+      (TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES.has(attributeName) &&
+        /url\s*\(/i.test(attribute.value) &&
+        hasUnsafeCss(attribute.value))
+    ) {
+      svg.removeAttribute(attribute.name);
+    }
+  }
+  if (!svg.getAttribute("xmlns")) {
+    svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+  return new XMLSerializer().serializeToString(svg);
+}
+
+export type TopologyCanvasAllocation = {
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  downscaled: boolean;
+};
+
+function parsePositiveSvgNumber(value: string | null): number | null {
+  if (!value) return null;
+  const match = value
+    .trim()
+    .match(/^([+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(?:px)?$/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function readTopologySvgDimensions(svgMarkup: string): {
+  width: number;
+  height: number;
+} {
+  const parsed = new DOMParser().parseFromString(svgMarkup, "image/svg+xml");
+  if (parsed.querySelector("parsererror")) {
+    throw new Error("Cannot allocate a canvas for malformed SVG");
+  }
+  const svg = parsed.documentElement;
+  if (svg.localName.toLowerCase() !== "svg") {
+    throw new Error("Cannot allocate a canvas for a non-SVG document");
+  }
+  const viewBox = (svg.getAttribute("viewBox") ?? "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  const viewBoxWidth =
+    viewBox.length === 4 && Number.isFinite(viewBox[2]) && viewBox[2] > 0
+      ? viewBox[2]
+      : null;
+  const viewBoxHeight =
+    viewBox.length === 4 && Number.isFinite(viewBox[3]) && viewBox[3] > 0
+      ? viewBox[3]
+      : null;
+  return {
+    width:
+      parsePositiveSvgNumber(svg.getAttribute("width")) ?? viewBoxWidth ?? 1600,
+    height:
+      parsePositiveSvgNumber(svg.getAttribute("height")) ??
+      viewBoxHeight ??
+      900,
+  };
+}
+
+export function computeTopologyCanvasAllocation(
+  sourceWidth: number,
+  sourceHeight: number,
+  pixelRatio: number,
+): TopologyCanvasAllocation {
+  if (
+    !Number.isFinite(sourceWidth) ||
+    sourceWidth <= 0 ||
+    !Number.isFinite(sourceHeight) ||
+    sourceHeight <= 0
+  ) {
+    throw new RangeError("SVG dimensions must be finite positive numbers");
+  }
+  const boundedPixelRatio =
+    Number.isFinite(pixelRatio) && pixelRatio > 0 ? Math.min(pixelRatio, 2) : 1;
+  let scale = Math.min(
+    boundedPixelRatio,
+    TOPOLOGY_CANVAS_MAX_AXIS / sourceWidth,
+    TOPOLOGY_CANVAS_MAX_AXIS / sourceHeight,
+  );
+  let scaledWidth = sourceWidth * scale;
+  let scaledHeight = sourceHeight * scale;
+  const areaScale = Math.min(
+    1,
+    Math.sqrt(TOPOLOGY_CANVAS_MAX_PIXELS / scaledWidth / scaledHeight),
+  );
+  scale *= areaScale;
+  scaledWidth = sourceWidth * scale;
+  scaledHeight = sourceHeight * scale;
+
+  const width = Math.max(
+    1,
+    Math.min(TOPOLOGY_CANVAS_MAX_AXIS, Math.floor(scaledWidth)),
+  );
+  const height = Math.max(
+    1,
+    Math.min(TOPOLOGY_CANVAS_MAX_AXIS, Math.floor(scaledHeight)),
+  );
+  if (
+    width > TOPOLOGY_CANVAS_MAX_AXIS ||
+    height > TOPOLOGY_CANVAS_MAX_AXIS ||
+    width * height > TOPOLOGY_CANVAS_MAX_PIXELS
+  ) {
+    throw new RangeError(
+      "Topology canvas allocation exceeds its safety budget",
+    );
+  }
+  return {
+    width,
+    height,
+    sourceWidth,
+    sourceHeight,
+    downscaled:
+      width < Math.ceil(sourceWidth * boundedPixelRatio) ||
+      height < Math.ceil(sourceHeight * boundedPixelRatio),
+  };
+}
+
+export function assignBoundedTopologyCanvas(
+  canvas: HTMLCanvasElement,
+  svgMarkup: string,
+  pixelRatio: number,
+): TopologyCanvasAllocation {
+  const dimensions = readTopologySvgDimensions(svgMarkup);
+  const allocation = computeTopologyCanvasAllocation(
+    dimensions.width,
+    dimensions.height,
+    pixelRatio,
+  );
+  canvas.width = allocation.width;
+  canvas.height = allocation.height;
+  if (
+    canvas.width > TOPOLOGY_CANVAS_MAX_AXIS ||
+    canvas.height > TOPOLOGY_CANVAS_MAX_AXIS ||
+    canvas.width * canvas.height > TOPOLOGY_CANVAS_MAX_PIXELS
+  ) {
+    canvas.width = 0;
+    canvas.height = 0;
+    throw new RangeError("Browser assigned an oversized topology canvas");
+  }
+  return allocation;
+}
+
+export async function withBoundedTopologyCanvas<T>(
+  canvas: HTMLCanvasElement,
+  svgMarkup: string,
+  pixelRatio: number,
+  operation: (
+    canvas: HTMLCanvasElement,
+    allocation: TopologyCanvasAllocation,
+  ) => Promise<T> | T,
+): Promise<T> {
+  try {
+    const allocation = assignBoundedTopologyCanvas(
+      canvas,
+      svgMarkup,
+      pixelRatio,
+    );
+    return await operation(canvas, allocation);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
+export async function withTopologyObjectUrl<T>(
+  blob: Blob,
+  operation: (url: string) => Promise<T> | T,
+): Promise<T> {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await operation(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+export function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Failed to encode PNG data"));
+    reader.onabort = () => reject(new Error("PNG encoding was aborted"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("PNG encoder returned an invalid result"));
+        return;
+      }
+      const separator = result.indexOf(",");
+      if (separator < 0) {
+        reject(new Error("PNG encoder returned a malformed data URL"));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+export function appendBoundedTopologyAnnotation(
+  annotations: readonly Annotation[],
+  annotation: Annotation,
+): { annotations: Annotation[]; diagnostic: string | null } {
+  if (annotations.length >= TOPOLOGY_ANNOTATION_LIMIT) {
+    return {
+      annotations: [...annotations],
+      diagnostic: `Annotation refused: remove an existing note before adding more than ${TOPOLOGY_ANNOTATION_LIMIT}.`,
+    };
+  }
+  let retainedBytes = 0;
+  for (const current of annotations) {
+    retainedBytes += utf8ByteLengthUpTo(
+      current.text,
+      TOPOLOGY_ANNOTATION_TOTAL_MAX_BYTES,
+    );
+  }
+  const remainingBytes = Math.max(
+    0,
+    TOPOLOGY_ANNOTATION_TOTAL_MAX_BYTES - retainedBytes,
+  );
+  const entryBudget = Math.min(
+    TOPOLOGY_ANNOTATION_ENTRY_MAX_BYTES,
+    remainingBytes,
+  );
+  if (entryBudget === 0) {
+    return {
+      annotations: [...annotations],
+      diagnostic: `Annotation refused: the ${TOPOLOGY_ANNOTATION_TOTAL_MAX_BYTES.toLocaleString()}-byte annotation budget is full.`,
+    };
+  }
+  const bounded = retainUtf8(annotation.text, entryBudget);
+  const text = bounded.value.trim();
+  if (!text) {
+    return {
+      annotations: [...annotations],
+      diagnostic: "Annotation refused: enter non-empty text.",
+    };
+  }
+  return {
+    annotations: [...annotations, { ...annotation, text }],
+    diagnostic: bounded.truncated
+      ? `Annotation was truncated to fit the ${entryBudget.toLocaleString()}-byte remaining safety budget.`
+      : null,
+  };
+}
+
+export function populateTopologyPrintDocument(
+  doc: Document,
+  svgMarkup: string,
+  zoneName: string,
+  annotations: ReadonlyArray<{ text: string; x: number; y: number }>,
+): void {
+  const head = doc.createElement("head");
+  const title = doc.createElement("title");
+  title.textContent = `${zoneName} topology`;
+  const style = doc.createElement("style");
+  style.textContent =
+    "body { font-family: system-ui, sans-serif; margin: 20px; color: #111; } .graph { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }";
+  head.append(title, style);
+
+  const body = doc.createElement("body");
+  const heading = doc.createElement("h1");
+  heading.textContent = `${zoneName} topology`;
+  const graph = doc.createElement("div");
+  graph.className = "graph";
+  const parsedSvg = new DOMParser().parseFromString(
+    sanitizeTopologySvg(svgMarkup),
+    "image/svg+xml",
+  ).documentElement;
+  graph.append(doc.importNode(parsedSvg, true));
+  body.append(heading, graph);
+
+  if (annotations.length > 0) {
+    const annotationHeading = doc.createElement("h3");
+    annotationHeading.textContent = "Annotations";
+    const list = doc.createElement("ul");
+    for (const annotation of annotations) {
+      const item = doc.createElement("li");
+      const label = doc.createElement("strong");
+      label.textContent = annotation.text;
+      item.append(
+        label,
+        doc.createTextNode(
+          ` (${Math.round(annotation.x)}, ${Math.round(annotation.y)})`,
+        ),
+      );
+      list.append(item);
+    }
+    body.append(annotationHeading, list);
+  }
+
+  doc.documentElement.replaceChildren(head, body);
+}
+
 const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /cloudfront\.net$/i, service: "AWS CloudFront" },
   { pattern: /elb\.amazonaws\.com$/i, service: "AWS ELB" },
@@ -266,7 +708,14 @@ const TOPOLOGY_LOOKUP_CONCURRENCY = 6;
 const TOPOLOGY_IPS_PER_FAMILY_LIMIT = 4;
 const TOPOLOGY_PTR_HOSTS_PER_IP_LIMIT = 4;
 const TOPOLOGY_CACHE_ENTRY_LIMIT = 512;
-const TOPOLOGY_ANNOTATION_LIMIT = 100;
+export const TOPOLOGY_ANNOTATION_LIMIT = 100;
+export const TOPOLOGY_ANNOTATION_ENTRY_MAX_BYTES = 2 * 1024;
+export const TOPOLOGY_ANNOTATION_TOTAL_MAX_BYTES = 64 * 1024;
+export const TOPOLOGY_CANVAS_MAX_AXIS = 8192;
+export const TOPOLOGY_CANVAS_MAX_PIXELS = 16 * 1024 * 1024;
+export const TOPOLOGY_MERMAID_SECURITY_LEVEL = "strict" as const;
+export const TOPOLOGY_MERMAID_HTML_LABELS = false;
+export const TOPOLOGY_MERMAID_LABEL_MAX_BYTES = 2 * 1024;
 const EMPTY_TOPOLOGY_RECORDS: DNSRecord[] = [];
 const DEFAULT_TOPOLOGY_TCP_SERVICE_PORTS = [80, 443, 22];
 
@@ -299,8 +748,29 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+export function escapeMermaidLabel(value: string): string {
+  return retainUtf8(
+    String(value ?? ""),
+    TOPOLOGY_MERMAID_LABEL_MAX_BYTES,
+  ).value.replace(
+    /[&<>"'`\\\r\n]/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+        "`": "&#96;",
+        "\\": "&#92;",
+        "\r": "&#13;",
+        "\n": "&#10;",
+      })[character] ?? "",
+  );
+}
+
 function esc(value: string): string {
-  return String(value ?? "").replace(/"/g, '\\"');
+  return escapeMermaidLabel(value);
 }
 
 function sanitizeId(value: string): string {
@@ -831,12 +1301,13 @@ function pickBestResolution(
 }
 
 function buildNodeLabel(title: string, subtitle = ""): string {
-  const cleanTitle = String(title ?? "");
-  const cleanSubtitle = String(subtitle ?? "");
-  const subtitleHtml = cleanSubtitle
-    ? `<div style='font-size:11px;opacity:0.82;margin-top:2px'>${esc(cleanSubtitle)}</div>`
-    : "";
-  return `<div><div>${esc(cleanTitle)}</div>${subtitleHtml}</div>`;
+  const cleanTitle = String(title ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cleanSubtitle = String(subtitle ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleanSubtitle ? `${cleanTitle} — ${cleanSubtitle}` : cleanTitle;
 }
 
 function classifyAreas(
@@ -1707,6 +2178,9 @@ export function ZoneTopologyTab({
   const [annotationTool, setAnnotationTool] = useState(false);
   const [annotationDraft, setAnnotationDraft] = useState("Note");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [annotationDiagnostic, setAnnotationDiagnostic] = useState<
+    string | null
+  >(null);
   const [themeVersion, setThemeVersion] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const zoomRef = useRef(1);
@@ -2430,7 +2904,7 @@ export function ZoneTopologyTab({
         };
         mermaid.initialize({
           startOnLoad: false,
-          securityLevel: "loose",
+          securityLevel: TOPOLOGY_MERMAID_SECURITY_LEVEL,
           theme: "base",
           themeVariables: {
             primaryColor: hslVar("--primary", "#5b8cff"),
@@ -2468,7 +2942,7 @@ export function ZoneTopologyTab({
           },
           flowchart: {
             curve: "basis",
-            htmlLabels: true,
+            htmlLabels: TOPOLOGY_MERMAID_HTML_LABELS,
             defaultRenderer: "elk",
             nodeSpacing: 70,
             rankSpacing: 95,
@@ -2479,7 +2953,10 @@ export function ZoneTopologyTab({
         const id = `topology_${Date.now()}`;
         const rendered = await mermaid.render(id, mermaidCode);
         if (!cancelled) {
-          const themedSvg = applyEdgeLabelTheme(rendered.svg, isDarkThemeMode);
+          const safeRenderedSvg = sanitizeTopologySvg(rendered.svg);
+          const themedSvg = sanitizeTopologySvg(
+            applyEdgeLabelTheme(safeRenderedSvg, isDarkThemeMode),
+          );
           setSvgMarkup(themedSvg);
           const doc = new DOMParser().parseFromString(
             themedSvg,
@@ -2736,18 +3213,14 @@ export function ZoneTopologyTab({
       const x = (event.clientX - rect.left - pan.x) / zoom;
       const y = (event.clientY - rect.top - pan.y) / zoom;
       setAnnotations((prev) => {
-        const next = [
-          ...prev,
-          {
-            id: `ann_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-            x,
-            y,
-            text: annotationDraft.trim() || "Note",
-          },
-        ];
-        return next.length > TOPOLOGY_ANNOTATION_LIMIT
-          ? next.slice(next.length - TOPOLOGY_ANNOTATION_LIMIT)
-          : next;
+        const bounded = appendBoundedTopologyAnnotation(prev, {
+          id: `ann_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          x,
+          y,
+          text: annotationDraft.trim() || "Note",
+        });
+        setAnnotationDiagnostic(bounded.diagnostic);
+        return bounded.annotations;
       });
     },
     [annotationDraft, annotationTool, nodeContextMenu.open, pan.x, pan.y, zoom],
@@ -2804,11 +3277,14 @@ export function ZoneTopologyTab({
     }
     const blob = new Blob([mermaidCode], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${baseName}.mmd`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}.mmd`;
+      a.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }, [
     desktop,
     mermaidCode,
@@ -2830,132 +3306,47 @@ export function ZoneTopologyTab({
 
   const renderSvgToPngBlob = useCallback(async (): Promise<Blob | null> => {
     if (!svgMarkup.trim()) return null;
-    const sanitizeSvgForRasterization = (input: string): string => {
-      try {
-        const doc = new DOMParser().parseFromString(input, "image/svg+xml");
-        const isExternalRef = (value: string | null) =>
-          Boolean(value && /^(https?:)?\/\//i.test(value.trim()));
-        const stripExternalUrls = (value: string) =>
-          value
-            .replace(/url\((['"]?)(https?:)?\/\/.*?\1\)/gi, "none")
-            .replace(/@import\s+url\((['"]?)(https?:)?\/\/.*?\1\)\s*;?/gi, "");
-        for (const el of Array.from(doc.querySelectorAll("image,use"))) {
-          const href = el.getAttribute("href") ?? el.getAttribute("xlink:href");
-          if (isExternalRef(href)) {
-            el.remove();
-          }
-        }
-        for (const el of Array.from(
-          doc.querySelectorAll("[href],[xlink\\:href],[src]"),
-        )) {
-          const href =
-            el.getAttribute("href") ??
-            el.getAttribute("xlink:href") ??
-            el.getAttribute("src");
-          if (isExternalRef(href)) {
-            el.removeAttribute("href");
-            el.removeAttribute("xlink:href");
-            el.removeAttribute("src");
-          }
-        }
-        for (const el of Array.from(doc.querySelectorAll("[style]"))) {
-          const style = el.getAttribute("style");
-          if (!style) continue;
-          el.setAttribute("style", stripExternalUrls(style));
-        }
-        for (const styleNode of Array.from(doc.querySelectorAll("style"))) {
-          styleNode.textContent = stripExternalUrls(
-            styleNode.textContent ?? "",
-          );
-        }
-        const svg = doc.querySelector("svg");
-        if (svg && !svg.getAttribute("xmlns")) {
-          svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-        }
-        return svg ? new XMLSerializer().serializeToString(svg) : input;
-      } catch {
-        return input;
-      }
-    };
-    const safeSvgMarkup = sanitizeSvgForRasterization(svgMarkup);
-    const parsed = new DOMParser().parseFromString(
-      safeSvgMarkup,
-      "image/svg+xml",
-    );
-    const svg = parsed.querySelector("svg");
-    const vb = svg?.getAttribute("viewBox")?.split(/\s+/).map(Number) ?? [];
-    const widthAttr = Number(
-      svg?.getAttribute("width")?.replace(/[^\d.]/g, ""),
-    );
-    const heightAttr = Number(
-      svg?.getAttribute("height")?.replace(/[^\d.]/g, ""),
-    );
-    const width =
-      Number.isFinite(widthAttr) && widthAttr > 0
-        ? widthAttr
-        : Number.isFinite(vb[2]) && vb[2] > 0
-          ? vb[2]
-          : 1600;
-    const height =
-      Number.isFinite(heightAttr) && heightAttr > 0
-        ? heightAttr
-        : Number.isFinite(vb[3]) && vb[3] > 0
-          ? vb[3]
-          : 900;
+    const safeSvgMarkup = sanitizeTopologySvg(svgMarkup);
     const svgBlob = new Blob([safeSvgMarkup], {
       type: "image/svg+xml;charset=utf-8",
     });
-    const url = URL.createObjectURL(svgBlob);
-    const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(safeSvgMarkup)}`;
-    try {
-      const loadSvgImage = async () =>
-        await new Promise<HTMLImageElement>((resolve, reject) => {
-          const i = new Image();
-          i.onload = () => resolve(i);
-          i.onerror = () => reject(new Error("Failed to render SVG"));
-          i.src = url;
-        }).catch(
-          async () =>
-            await new Promise<HTMLImageElement>((resolve, reject) => {
-              const i = new Image();
-              i.onload = () => resolve(i);
-              i.onerror = () =>
-                reject(new Error("Failed to render SVG data URL"));
-              i.src = dataUrl;
-            }),
-        );
-      const img = await loadSvgImage();
-      const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(width * scale);
-      canvas.height = Math.round(height * scale);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      try {
-        ctx.scale(scale, scale);
-        ctx.drawImage(img, 0, 0, width, height);
-      } catch {
-        return null;
-      }
-      const blob = await new Promise<Blob | null>((resolve) => {
-        try {
-          canvas.toBlob((b) => resolve(b), "image/png");
-        } catch {
-          resolve(null);
-        }
+    return await withTopologyObjectUrl(svgBlob, async (url) => {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("Failed to render safe SVG"));
+        image.src = url;
       });
-      if (blob) return blob;
-      try {
-        const data = canvas.toDataURL("image/png");
-        const fetched = await fetch(data);
-        return await fetched.blob();
-      } catch {
-        return null;
-      }
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }, [svgMarkup]);
+      const canvas = document.createElement("canvas");
+      return await withBoundedTopologyCanvas(
+        canvas,
+        safeSvgMarkup,
+        window.devicePixelRatio || 1,
+        async (boundedCanvas, allocation) => {
+          if (allocation.downscaled) {
+            toast({
+              title: "Topology downscaled",
+              description: `PNG output was safely reduced to ${allocation.width}×${allocation.height} pixels.`,
+            });
+          }
+          const ctx = boundedCanvas.getContext("2d");
+          if (!ctx) return null;
+          try {
+            ctx.drawImage(img, 0, 0, allocation.width, allocation.height);
+          } catch {
+            return null;
+          }
+          return await new Promise<Blob | null>((resolve) => {
+            try {
+              boundedCanvas.toBlob((blob) => resolve(blob), "image/png");
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+    });
+  }, [svgMarkup, toast]);
 
   const copySvg = useCallback(async () => {
     if (!svgMarkup.trim()) return;
@@ -3045,11 +3436,14 @@ export function ZoneTopologyTab({
     }
     const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${baseName}.svg`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}.svg`;
+      a.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }, [
     desktop,
     exportConfirmPath,
@@ -3072,13 +3466,7 @@ export function ZoneTopologyTab({
       }
       const baseName = `${normalizeDomain(zoneName) || "zone"}-topology`;
       if (desktop) {
-        const bytes = await pngBlob.arrayBuffer();
-        const arr = new Uint8Array(bytes);
-        let binary = "";
-        for (let i = 0; i < arr.length; i += 1) {
-          binary += String.fromCharCode(arr[i]);
-        }
-        const b64 = btoa(binary);
+        const b64 = await blobToBase64(pngBlob);
         const path = await TauriClient.saveTopologyAsset(
           "png",
           `${baseName}.png`,
@@ -3092,11 +3480,14 @@ export function ZoneTopologyTab({
         return;
       }
       const url = URL.createObjectURL(pngBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${baseName}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${baseName}.png`;
+        a.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     } catch (error) {
       reportTopologyFailure(error, "Export PNG topology");
     }
@@ -3114,30 +3505,15 @@ export function ZoneTopologyTab({
     if (!svgMarkup.trim()) return;
     const win = window.open("", "_blank", "noopener,noreferrer");
     if (!win) return;
-    const noteHtml = annotations
-      .map(
-        (ann) =>
-          `<li><strong>${ann.text}</strong> (${Math.round(ann.x)}, ${Math.round(ann.y)})</li>`,
-      )
-      .join("");
-    win.document.write(`
-      <html>
-        <head>
-          <title>${zoneName} topology</title>
-          <style>
-            body { font-family: system-ui, sans-serif; margin: 20px; color: #111; }
-            .graph { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
-          </style>
-        </head>
-        <body>
-          <h1>${zoneName} topology</h1>
-          <div class="graph">${svgMarkup}</div>
-          ${noteHtml ? `<h3>Annotations</h3><ul>${noteHtml}</ul>` : ""}
-          <script>window.onload = () => window.print();</script>
-        </body>
-      </html>
-    `);
-    win.document.close();
+    try {
+      const doc = win.document;
+      populateTopologyPrintDocument(doc, svgMarkup, zoneName, annotations);
+      doc.close();
+      win.setTimeout(() => win.print(), 0);
+    } catch (error) {
+      reportTopologyFailure(error, "Print topology to PDF");
+      win.close();
+    }
   }, [annotations, svgMarkup, zoneName]);
 
   const controlsDisabled =
@@ -3613,10 +3989,31 @@ export function ZoneTopologyTab({
           </Button>
           <Input
             value={annotationDraft}
-            onChange={(e) => setAnnotationDraft(e.target.value)}
+            onChange={(e) => {
+              const bounded = retainUtf8(
+                e.target.value,
+                TOPOLOGY_ANNOTATION_ENTRY_MAX_BYTES,
+              );
+              setAnnotationDraft(bounded.value);
+              setAnnotationDiagnostic(
+                bounded.truncated
+                  ? `Annotation input was truncated to ${TOPOLOGY_ANNOTATION_ENTRY_MAX_BYTES.toLocaleString()} UTF-8 bytes.`
+                  : null,
+              );
+            }}
             className="h-8 w-44"
             placeholder="Annotation text"
+            aria-label="Annotation text"
           />
+          {annotationDiagnostic && (
+            <span
+              className="max-w-80 text-xs text-yellow-700 dark:text-yellow-300"
+              data-testid="topology-annotation-diagnostic"
+              role="status"
+            >
+              {annotationDiagnostic}
+            </span>
+          )}
         </>
       )}
       <DropdownMenu>
@@ -3859,10 +4256,7 @@ export function ZoneTopologyTab({
                         Mermaid render failed: {renderError}
                       </div>
                     ) : (
-                      <div
-                        className="topology-svg-wrapper"
-                        dangerouslySetInnerHTML={{ __html: svgMarkup }}
-                      />
+                      <SanitizedTopologySvg svgMarkup={svgMarkup} />
                     )}
 
                     {annotations.map((ann) => (
@@ -3878,9 +4272,10 @@ export function ZoneTopologyTab({
                             type="button"
                             className="text-muted-foreground hover:text-foreground"
                             onClick={() =>
-                              setAnnotations((prev) =>
-                                prev.filter((x) => x.id !== ann.id),
-                              )
+                              setAnnotations((prev) => {
+                                setAnnotationDiagnostic(null);
+                                return prev.filter((x) => x.id !== ann.id);
+                              })
                             }
                           >
                             x
@@ -4374,10 +4769,7 @@ export function ZoneTopologyTab({
                       Mermaid render failed: {renderError}
                     </div>
                   ) : (
-                    <div
-                      className="topology-svg-wrapper"
-                      dangerouslySetInnerHTML={{ __html: svgMarkup }}
-                    />
+                    <SanitizedTopologySvg svgMarkup={svgMarkup} />
                   )}
 
                   {annotations.map((ann) => (
@@ -4393,9 +4785,10 @@ export function ZoneTopologyTab({
                           type="button"
                           className="text-muted-foreground hover:text-foreground"
                           onClick={() =>
-                            setAnnotations((prev) =>
-                              prev.filter((x) => x.id !== ann.id),
-                            )
+                            setAnnotations((prev) => {
+                              setAnnotationDiagnostic(null);
+                              return prev.filter((x) => x.id !== ann.id);
+                            })
                           }
                         >
                           x
