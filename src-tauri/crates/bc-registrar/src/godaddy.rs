@@ -48,26 +48,24 @@ impl GoDaddyClient {
         let auto_renew = d["renewAuto"].as_bool().unwrap_or(false);
         let privacy = d["privacy"].as_bool().unwrap_or(false);
 
-        let contact = d.get("contactRegistrant").and_then(|c| {
-            Some(DomainContact {
-                first_name: c["nameFirst"].as_str().map(String::from),
-                last_name: c["nameLast"].as_str().map(String::from),
-                organization: c["organization"].as_str().map(String::from),
-                email: c["email"].as_str().map(String::from),
-                phone: c["phone"].as_str().map(String::from),
-                city: c["addressMailing"]
-                    .get("city")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                state: c["addressMailing"]
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                country: c["addressMailing"]
-                    .get("country")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-            })
+        let contact = d.get("contactRegistrant").map(|c| DomainContact {
+            first_name: c["nameFirst"].as_str().map(String::from),
+            last_name: c["nameLast"].as_str().map(String::from),
+            organization: c["organization"].as_str().map(String::from),
+            email: c["email"].as_str().map(String::from),
+            phone: c["phone"].as_str().map(String::from),
+            city: c["addressMailing"]
+                .get("city")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            state: c["addressMailing"]
+                .get("state")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            country: c["addressMailing"]
+                .get("country")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         });
 
         DomainInfo {

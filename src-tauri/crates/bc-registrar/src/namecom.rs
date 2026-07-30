@@ -51,17 +51,15 @@ impl NameComClient {
         let contact = d
             .get("contacts")
             .and_then(|c| c.get("registrant"))
-            .and_then(|r| {
-                Some(DomainContact {
-                    first_name: r["firstName"].as_str().map(String::from),
-                    last_name: r["lastName"].as_str().map(String::from),
-                    organization: r["companyName"].as_str().map(String::from),
-                    email: r["email"].as_str().map(String::from),
-                    phone: r["phone"].as_str().map(String::from),
-                    city: r["city"].as_str().map(String::from),
-                    state: r["state"].as_str().map(String::from),
-                    country: r["country"].as_str().map(String::from),
-                })
+            .map(|r| DomainContact {
+                first_name: r["firstName"].as_str().map(String::from),
+                last_name: r["lastName"].as_str().map(String::from),
+                organization: r["companyName"].as_str().map(String::from),
+                email: r["email"].as_str().map(String::from),
+                phone: r["phone"].as_str().map(String::from),
+                city: r["city"].as_str().map(String::from),
+                state: r["state"].as_str().map(String::from),
+                country: r["country"].as_str().map(String::from),
             });
 
         DomainInfo {
