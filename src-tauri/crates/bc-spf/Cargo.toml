@@ -7,4 +7,4 @@ description = "SPF record parser, simulator, and include/redirect graph builder"
 [dependencies]
 ipnet = "2"
 serde = { version = "1", features = ["derive"] }
-trust-dns-resolver = "0.23"
+hickory-resolver = "0.26.1"

@@ -19,7 +19,6 @@ chrono = { version = "0.4", features = ["serde"] }
 rfd = "0.15"
 dirs = "5"
 tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
 
 # Workspace crates
 bc-crypto = { path = "crates/bc-crypto" }
@@ -43,4 +42,5 @@ bc-ai-agent = { path = "crates/bc-ai-agent" }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-sqlite-backend = ["sqlx"]
+# Retain the build-matrix feature name; the current backend has no Rust SQLx callers.
+sqlite-backend = []

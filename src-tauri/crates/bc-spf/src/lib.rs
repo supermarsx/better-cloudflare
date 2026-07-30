@@ -3,11 +3,12 @@
 //! SPF (Sender Policy Framework) record parser, RFC-compliant simulator,
 //! and include/redirect dependency graph builder.
 
+use hickory_resolver::proto::rr::RData;
+use hickory_resolver::TokioResolver;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::str::FromStr;
-use trust_dns_resolver::TokioAsyncResolver;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -61,30 +62,31 @@ pub struct SPFGraph {
 
 // ── Resolver helpers ────────────────────────────────────────────────────────
 
-async fn resolver() -> Result<TokioAsyncResolver, String> {
-    TokioAsyncResolver::tokio_from_system_conf().map_err(|e| e.to_string())
+async fn resolver() -> Result<TokioResolver, String> {
+    TokioResolver::builder_tokio()
+        .and_then(|builder| builder.build())
+        .map_err(|e| e.to_string())
 }
 
-async fn resolve_txt(resolver: &TokioAsyncResolver, domain: &str) -> Result<Vec<String>, String> {
+async fn resolve_txt(resolver: &TokioResolver, domain: &str) -> Result<Vec<String>, String> {
     let lookup = resolver
         .txt_lookup(domain)
         .await
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for record in lookup.iter() {
-        let mut joined = String::new();
-        for part in record.txt_data() {
-            joined.push_str(&String::from_utf8_lossy(part));
+    for record in lookup.answers() {
+        if let RData::TXT(txt) = &record.data {
+            let mut joined = String::new();
+            for part in &txt.txt_data {
+                joined.push_str(&String::from_utf8_lossy(part));
+            }
+            out.push(joined);
         }
-        out.push(joined);
     }
     Ok(out)
 }
 
-async fn resolve_a_aaaa(
-    resolver: &TokioAsyncResolver,
-    domain: &str,
-) -> Result<Vec<IpAddr>, String> {
+async fn resolve_a_aaaa(resolver: &TokioResolver, domain: &str) -> Result<Vec<IpAddr>, String> {
     let lookup = resolver
         .lookup_ip(domain)
         .await
@@ -92,26 +94,30 @@ async fn resolve_a_aaaa(
     Ok(lookup.iter().collect())
 }
 
-async fn resolve_mx(resolver: &TokioAsyncResolver, domain: &str) -> Result<Vec<String>, String> {
+async fn resolve_mx(resolver: &TokioResolver, domain: &str) -> Result<Vec<String>, String> {
     let lookup = resolver
         .mx_lookup(domain)
         .await
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for record in lookup.iter() {
-        out.push(record.exchange().to_utf8());
+    for record in lookup.answers() {
+        if let RData::MX(mx) = &record.data {
+            out.push(mx.exchange.to_utf8());
+        }
     }
     Ok(out)
 }
 
-async fn resolve_ptr(resolver: &TokioAsyncResolver, ip: IpAddr) -> Result<Vec<String>, String> {
+async fn resolve_ptr(resolver: &TokioResolver, ip: IpAddr) -> Result<Vec<String>, String> {
     let lookup = resolver
         .reverse_lookup(ip)
         .await
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for record in lookup.iter() {
-        out.push(record.to_utf8());
+    for record in lookup.answers() {
+        if let RData::PTR(ptr) = &record.data {
+            out.push(ptr.to_string());
+        }
     }
     Ok(out)
 }
@@ -166,7 +172,7 @@ pub fn parse_spf(content: &str) -> Option<SPFRecord> {
 }
 
 async fn get_spf_record(
-    resolver: &TokioAsyncResolver,
+    resolver: &TokioResolver,
     domain: &str,
     lookups: &mut u32,
 ) -> Result<Option<String>, String> {
@@ -213,7 +219,7 @@ pub async fn simulate_spf(domain: &str, ip: &str) -> Result<SPFSimulation, Strin
     let mut max_lookups = 10_u32;
 
     async fn eval_mechanism(
-        resolver: &TokioAsyncResolver,
+        resolver: &TokioResolver,
         domain: &str,
         ip: IpAddr,
         m: &SPFMechanism,
@@ -362,7 +368,7 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
     let mut visited = HashSet::new();
 
     async fn walk(
-        resolver: &TokioAsyncResolver,
+        resolver: &TokioResolver,
         domain: &str,
         nodes: &mut Vec<SPFGraphNode>,
         edges: &mut Vec<SPFGraphEdge>,

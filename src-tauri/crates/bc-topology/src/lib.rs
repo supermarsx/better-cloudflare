@@ -5,6 +5,10 @@
 //! probing. Includes an in-process cache with configurable TTL.
 
 use chrono::Utc;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts, CLOUDFLARE};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::{RData, RecordType};
+use hickory_resolver::TokioResolver;
 use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -14,8 +18,6 @@ use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
-use trust_dns_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
 
 mod limits;
 pub use limits::*;
@@ -368,7 +370,7 @@ async fn query_doh_records(
 
 #[allow(clippy::too_many_arguments)]
 async fn resolve_chain_for_host(
-    resolver: &TokioAsyncResolver,
+    resolver: &TokioResolver,
     client: &reqwest::Client,
     doh_endpoints: &[String],
     host: &str,
@@ -402,19 +404,17 @@ async fn resolve_chain_for_host(
             let cname_lookup =
                 tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), async {
                     note_network_start();
-                    resolver
-                        .lookup(
-                            cur.clone(),
-                            trust_dns_resolver::proto::rr::RecordType::CNAME,
-                        )
-                        .await
+                    resolver.lookup(cur.clone(), RecordType::CNAME).await
                 })
                 .await;
             let direct_next = match cname_lookup {
-                Ok(Ok(lookup)) => lookup
-                    .iter()
-                    .next()
-                    .and_then(|record| bounded_domain(&record.to_string())),
+                Ok(Ok(lookup)) => lookup.answers().iter().find_map(|record| {
+                    if let RData::CNAME(cname) = &record.data {
+                        bounded_domain(&cname.to_string())
+                    } else {
+                        None
+                    }
+                }),
                 Err(_) | Ok(Err(_)) => None,
             };
             let next = if direct_next.is_some() {
@@ -449,16 +449,19 @@ async fn resolve_chain_for_host(
     let mut ipv4 = Vec::new();
     let mut seen_ipv4 = HashSet::new();
     if let Ok(Ok(v4)) = v4_lookup {
-        for ip in v4.iter() {
-            let v = ip.to_string();
-            if seen_ipv4.insert(v.clone()) {
+        for record in v4.answers() {
+            if let RData::A(ip) = &record.data {
+                let value = ip.to_string();
+                if !seen_ipv4.insert(value.clone()) {
+                    continue;
+                }
                 if ipv4.len() >= MAX_IPS_PER_FAMILY {
                     resource_error = Some(format!(
                         "IPv4 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
                     ));
                     break;
                 }
-                ipv4.push(v);
+                ipv4.push(value);
             }
         }
     }
@@ -466,16 +469,19 @@ async fn resolve_chain_for_host(
     let mut ipv6 = Vec::new();
     let mut seen_ipv6 = HashSet::new();
     if let Ok(Ok(v6)) = v6_lookup {
-        for ip in v6.iter() {
-            let v = ip.to_string();
-            if seen_ipv6.insert(v.clone()) {
+        for record in v6.answers() {
+            if let RData::AAAA(ip) = &record.data {
+                let value = ip.to_string();
+                if !seen_ipv6.insert(value.clone()) {
+                    continue;
+                }
                 if ipv6.len() >= MAX_IPS_PER_FAMILY {
                     resource_error = Some(format!(
                         "IPv6 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
                     ));
                     break;
                 }
-                ipv6.push(v);
+                ipv6.push(value);
             }
         }
     }
@@ -535,18 +541,20 @@ async fn resolve_chain_for_host(
                 })
                 .await;
             if let Ok(Ok(ptr_lookup)) = ptr_lookup {
-                for name in ptr_lookup.iter() {
-                    let Some(host) = bounded_domain(&name.to_utf8()) else {
-                        continue;
-                    };
-                    if seen_names.insert(host.clone()) {
-                        if names.len() >= MAX_REVERSE_HOSTNAMES_PER_IP {
-                            resource_error = Some(format!(
-                                "PTR answer count exceeds the safe {MAX_REVERSE_HOSTNAMES_PER_IP} item limit"
-                            ));
-                            break;
+                for record in ptr_lookup.answers() {
+                    if let RData::PTR(name) = &record.data {
+                        let Some(host) = bounded_domain(&name.to_string()) else {
+                            continue;
+                        };
+                        if seen_names.insert(host.clone()) {
+                            if names.len() >= MAX_REVERSE_HOSTNAMES_PER_IP {
+                                resource_error = Some(format!(
+                                    "PTR answer count exceeds the safe {MAX_REVERSE_HOSTNAMES_PER_IP} item limit"
+                                ));
+                                break;
+                            }
+                            names.push(host);
                         }
-                        names.push(host);
                     }
                 }
             }
@@ -921,24 +929,27 @@ pub fn build_dns_resolver(
     dns_server: Option<&str>,
     custom_dns_server: Option<&str>,
     legacy_provider: Option<&str>,
-) -> Result<TokioAsyncResolver, String> {
+) -> Result<TokioResolver, String> {
     let target = resolve_dns_server(dns_server, custom_dns_server, legacy_provider);
     if let Ok(ip) = target.parse() {
         let mut opts = ResolverOpts::default();
         opts.timeout = Duration::from_secs(2);
         opts.attempts = 1;
-        let group = NameServerConfigGroup::from_ips_clear(&[ip], 53, true);
-        return Ok(TokioAsyncResolver::tokio(
-            ResolverConfig::from_parts(None, vec![], group),
-            opts,
-        ));
+        let config =
+            ResolverConfig::from_parts(None, vec![], vec![NameServerConfig::udp_and_tcp(ip)]);
+        return TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+            .with_options(opts)
+            .build()
+            .map_err(|e| e.to_string());
     }
-    match TokioAsyncResolver::tokio_from_system_conf() {
+    match TokioResolver::builder_tokio().and_then(|builder| builder.build()) {
         Ok(resolver) => Ok(resolver),
-        Err(_) => Ok(TokioAsyncResolver::tokio(
-            ResolverConfig::cloudflare(),
-            ResolverOpts::default(),
-        )),
+        Err(_) => TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .map_err(|e| e.to_string()),
     }
 }
 
@@ -1619,8 +1630,24 @@ async fn query_single_resolver(
     let mut opts = ResolverOpts::default();
     opts.timeout = Duration::from_secs(3);
     opts.attempts = 1;
-    let group = NameServerConfigGroup::from_ips_clear(&[parsed_ip], 53, true);
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::from_parts(None, vec![], group), opts);
+    let config =
+        ResolverConfig::from_parts(None, vec![], vec![NameServerConfig::udp_and_tcp(parsed_ip)]);
+    let resolver = match TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .with_options(opts)
+        .build()
+    {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            return PropagationResolverResult {
+                resolver: ip.to_string(),
+                resolver_label: label.to_string(),
+                answers: vec![],
+                rcode: "SERVFAIL".to_string(),
+                latency_ms: 0,
+                error: Some(error.to_string()),
+            };
+        }
+    };
 
     note_network_start();
     let timeout_result = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1629,7 +1656,14 @@ async fn query_single_resolver(
                 let lookup = resolver.ipv4_lookup(domain).await;
                 match lookup {
                     Ok(l) => {
-                        let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
+                        let answers: Vec<String> = l
+                            .answers()
+                            .iter()
+                            .filter_map(|record| match &record.data {
+                                RData::A(address) => Some(address.to_string()),
+                                _ => None,
+                            })
+                            .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
                     Err(e) => (
@@ -1643,7 +1677,14 @@ async fn query_single_resolver(
                 let lookup = resolver.ipv6_lookup(domain).await;
                 match lookup {
                     Ok(l) => {
-                        let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
+                        let answers: Vec<String> = l
+                            .answers()
+                            .iter()
+                            .filter_map(|record| match &record.data {
+                                RData::AAAA(address) => Some(address.to_string()),
+                                _ => None,
+                            })
+                            .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
                     Err(e) => (
@@ -1658,13 +1699,15 @@ async fn query_single_resolver(
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
+                            .answers()
                             .iter()
-                            .map(|mx| {
-                                format!(
+                            .filter_map(|record| match &record.data {
+                                RData::MX(mx) => Some(format!(
                                     "{} {}",
-                                    mx.preference(),
-                                    normalize_domain(&mx.exchange().to_string())
-                                )
+                                    mx.preference,
+                                    normalize_domain(&mx.exchange.to_string())
+                                )),
+                                _ => None,
                             })
                             .collect();
                         (answers, "NOERROR".to_string(), None)
@@ -1680,7 +1723,14 @@ async fn query_single_resolver(
                 let lookup = resolver.txt_lookup(domain).await;
                 match lookup {
                     Ok(l) => {
-                        let answers: Vec<String> = l.iter().map(|txt| txt.to_string()).collect();
+                        let answers: Vec<String> = l
+                            .answers()
+                            .iter()
+                            .filter_map(|record| match &record.data {
+                                RData::TXT(txt) => Some(txt.to_string()),
+                                _ => None,
+                            })
+                            .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
                     Err(e) => (
@@ -1695,8 +1745,12 @@ async fn query_single_resolver(
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
+                            .answers()
                             .iter()
-                            .map(|ns| normalize_domain(&ns.to_string()))
+                            .filter_map(|record| match &record.data {
+                                RData::NS(ns) => Some(normalize_domain(&ns.to_string())),
+                                _ => None,
+                            })
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
@@ -1708,15 +1762,16 @@ async fn query_single_resolver(
                 }
             }
             "CNAME" => {
-                let lookup = resolver
-                    .lookup(domain, trust_dns_resolver::proto::rr::RecordType::CNAME)
-                    .await;
+                let lookup = resolver.lookup(domain, RecordType::CNAME).await;
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
-                            .record_iter()
-                            .filter_map(|r| r.data().map(|d| d.to_string()))
-                            .map(|s| normalize_domain(&s))
+                            .answers()
+                            .iter()
+                            .filter_map(|record| match &record.data {
+                                RData::CNAME(cname) => Some(normalize_domain(&cname.to_string())),
+                                _ => None,
+                            })
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
@@ -1729,17 +1784,13 @@ async fn query_single_resolver(
             }
             _ => {
                 // Generic lookup
-                let lookup = resolver
-                    .lookup(
-                        domain,
-                        trust_dns_resolver::proto::rr::RecordType::Unknown(0),
-                    )
-                    .await;
+                let lookup = resolver.lookup(domain, RecordType::Unknown(0)).await;
                 match lookup {
                     Ok(l) => {
                         let answers: Vec<String> = l
-                            .record_iter()
-                            .filter_map(|r| r.data().map(|d| d.to_string()))
+                            .answers()
+                            .iter()
+                            .map(|record| record.data.to_string())
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
@@ -1786,7 +1837,7 @@ async fn query_single_resolver(
     }
 }
 
-fn error_to_rcode(err: &trust_dns_resolver::error::ResolveError) -> String {
+fn error_to_rcode(err: &hickory_resolver::net::NetError) -> String {
     let s = err.to_string().to_lowercase();
     if s.contains("nxdomain") || s.contains("no records") || s.contains("no connections") {
         "NXDOMAIN".to_string()
@@ -2105,5 +2156,13 @@ mod tests {
         .await;
         assert!(parsed.is_none());
         server.await.unwrap();
+    }
+
+    #[test]
+    fn custom_resolver_preserves_timeout_and_attempt_limits() {
+        let resolver =
+            build_dns_resolver(Some("1.1.1.1"), None, None).expect("build custom DNS resolver");
+        assert_eq!(resolver.options().timeout, Duration::from_secs(2));
+        assert_eq!(resolver.options().attempts, 1);
     }
 }
