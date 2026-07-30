@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bc-ai-provider = { path = "../bc-ai-provider" }
+bc-error = { path = "../bc-error" }
 bc-mcp = { path = "../bc-mcp" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

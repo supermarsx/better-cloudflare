@@ -4,10 +4,12 @@
 //! tool calls, and enforces safety policies for destructive operations.
 
 pub mod converter;
+pub mod error;
 pub mod executor;
 pub mod registry;
 pub mod safety;
 
+pub use error::ToolExecutionError;
 pub use executor::ToolExecutor;
 pub use registry::ToolRegistry;
 pub use safety::{SafetyPolicy, ToolApproval};

@@ -19,10 +19,36 @@ use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY};
 use crate::error::AgentError;
 use crate::events::AgentEvent;
 
+const APPROVED_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 struct ActiveTurn {
     generation: Uuid,
     cancellation: watch::Sender<bool>,
     abort_handle: tokio::task::AbortHandle,
+}
+
+struct ActiveApproval {
+    generation: Uuid,
+    cancellation: watch::Sender<bool>,
+}
+
+struct ApprovalGuard {
+    approvals: Arc<Mutex<HashMap<Uuid, ActiveApproval>>>,
+    conversation_id: Uuid,
+    generation: Uuid,
+}
+
+impl Drop for ApprovalGuard {
+    fn drop(&mut self) {
+        if let Ok(mut approvals) = self.approvals.lock() {
+            if approvals
+                .get(&self.conversation_id)
+                .is_some_and(|approval| approval.generation == self.generation)
+            {
+                approvals.remove(&self.conversation_id);
+            }
+        }
+    }
 }
 
 /// Central AI agent manager, registered via `.manage()` in Tauri.
@@ -34,6 +60,7 @@ pub struct AgentManager {
     pub executor: Arc<ToolExecutor>,
     pub chat: Arc<ChatManager>,
     active_turns: Arc<Mutex<HashMap<Uuid, ActiveTurn>>>,
+    active_approvals: Arc<Mutex<HashMap<Uuid, ActiveApproval>>>,
 }
 
 impl Default for AgentManager {
@@ -46,31 +73,23 @@ impl Default for AgentManager {
             executor: Arc::new(ToolExecutor::default()),
             chat: Arc::new(ChatManager::default()),
             active_turns: Arc::new(Mutex::new(HashMap::new())),
+            active_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
 
 impl AgentManager {
     /// Configure a provider. Creates (or replaces) the provider instance.
-    pub async fn configure_provider(&self, config: ProviderConfig) -> Result<(), String> {
-        config.validate().map_err(|error| error.to_string())?;
+    pub async fn configure_provider(&self, config: ProviderConfig) -> Result<(), AgentError> {
+        config.validate()?;
         let kind = config.kind.clone();
         let provider: Arc<dyn AiProvider + Send + Sync> = match kind {
-            ProviderKind::OpenAi => {
-                Arc::new(OpenAiProvider::new(config.clone()).map_err(|error| error.to_string())?)
-            }
-            ProviderKind::Anthropic => {
-                Arc::new(AnthropicProvider::new(config.clone()).map_err(|error| error.to_string())?)
-            }
-            ProviderKind::Ollama => {
-                Arc::new(OllamaProvider::new(config.clone()).map_err(|error| error.to_string())?)
-            }
+            ProviderKind::OpenAi => Arc::new(OpenAiProvider::new(config.clone())?),
+            ProviderKind::Anthropic => Arc::new(AnthropicProvider::new(config.clone())?),
+            ProviderKind::Ollama => Arc::new(OllamaProvider::new(config.clone())?),
         };
 
-        provider
-            .health_check()
-            .await
-            .map_err(|error| format!("Provider health check failed: {error}"))?;
+        provider.health_check().await?;
 
         self.providers.write().await.insert(kind.clone(), provider);
         self.configs.write().await.insert(kind, config);
@@ -91,12 +110,6 @@ impl AgentManager {
         self.agent_config.read().await.clone()
     }
 
-    /// Compatibility setter; invalid configurations are rejected without
-    /// replacing the last known-good configuration.
-    pub async fn set_agent_config(&self, config: AgentConfig) {
-        let _ = self.try_set_agent_config(config).await;
-    }
-
     pub async fn try_set_agent_config(&self, config: AgentConfig) -> Result<(), AgentError> {
         config.validate()?;
         *self.agent_config.write().await = config;
@@ -112,18 +125,19 @@ impl AgentManager {
         &self,
         conversation_id: Uuid,
         provider_kind: ProviderKind,
-    ) -> Result<mpsc::Receiver<AgentEvent>, String> {
-        let provider = self
-            .provider(&provider_kind)
-            .await
-            .ok_or_else(|| format!("Provider {provider_kind:?} not configured"))?;
+    ) -> Result<mpsc::Receiver<AgentEvent>, AgentError> {
+        let provider = self.provider(&provider_kind).await.ok_or_else(|| {
+            AgentError::Provider(bc_ai_provider::AiProviderError::NotConfigured(
+                provider_kind.to_string(),
+            ))
+        })?;
         let config = self.agent_config.read().await.clone();
-        config.validate().map_err(|error| error.to_string())?;
+        config.validate()?;
         let disposal = self
             .chat
             .subscribe_disposal(conversation_id)
             .await
-            .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
 
         self.registry.init_all().await;
         let (event_tx, event_rx) = mpsc::channel(AGENT_EVENT_CHANNEL_CAPACITY);
@@ -133,7 +147,12 @@ impl AgentManager {
         let mut active_turns = self
             .active_turns
             .lock()
-            .map_err(|_| "Active turn lock poisoned".to_string())?;
+            .map_err(|_| AgentError::StateUnavailable)?;
+        if let Ok(mut approvals) = self.active_approvals.lock() {
+            if let Some(previous) = approvals.remove(&conversation_id) {
+                let _ = previous.cancellation.send(true);
+            }
+        }
         if let Some(previous) = active_turns.remove(&conversation_id) {
             let _ = previous.cancellation.send(true);
             previous.abort_handle.abort();
@@ -171,7 +190,7 @@ impl AgentManager {
                     let _ = task_event_tx
                         .send(AgentEvent::Error {
                             conversation_id,
-                            error: error.to_string(),
+                            error: error.public_message(),
                         })
                         .await;
                 }
@@ -207,21 +226,37 @@ impl AgentManager {
         &self,
         tool_call_id: &str,
         conversation_id: Uuid,
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentError> {
+        bc_ai_provider::limits::validate_string(
+            "tool-call id",
+            tool_call_id,
+            bc_ai_provider::limits::MAX_TOOL_CALL_ID_BYTES,
+        )?;
+        let disposal = self
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
         let conversation = self
             .chat
             .get_conversation(conversation_id)
             .await
-            .ok_or("Conversation not found")?;
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
         let pending = conversation
             .messages
             .iter()
             .flat_map(|message| message.pending_tool_calls.iter())
             .find(|tool_call| tool_call.id == tool_call_id)
             .cloned()
-            .ok_or("Tool call not found")?;
+            .ok_or(AgentError::ToolCallNotFound)?;
 
-        let result = self.executor.execute_approved(&pending).await;
+        let result = self
+            .run_approved_operation(
+                conversation_id,
+                disposal,
+                self.executor.execute_approved(&pending),
+            )
+            .await?;
         match result {
             bc_ai_tools::executor::ExecutionResult::Success(result)
             | bc_ai_tools::executor::ExecutionResult::Error(result) => {
@@ -229,8 +264,7 @@ impl AgentManager {
                     return Err(AgentError::ToolOutputLimit {
                         limit: bc_ai_provider::limits::MAX_TOOL_RESULT_BYTES,
                         actual: result.content.len(),
-                    }
-                    .to_string());
+                    });
                 }
                 let message = bc_ai_chat::ChatMessage {
                     id: Uuid::new_v4(),
@@ -244,30 +278,108 @@ impl AgentManager {
                     usage: None,
                     pending_tool_calls: Vec::new(),
                 };
-                self.chat
-                    .try_push_message(conversation_id, message)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                self.chat.try_push_message(conversation_id, message).await?;
                 Ok(())
             }
             bc_ai_tools::executor::ExecutionResult::NeedsApproval { .. } => {
-                Err("Unexpected: approved call still requires approval".into())
+                Err(AgentError::UnexpectedApproval)
+            }
+            bc_ai_tools::executor::ExecutionResult::Rejected(error) => Err(error.into()),
+        }
+    }
+
+    async fn run_approved_operation<F>(
+        &self,
+        conversation_id: Uuid,
+        disposal: watch::Receiver<bool>,
+        operation: F,
+    ) -> Result<bc_ai_tools::executor::ExecutionResult, AgentError>
+    where
+        F: std::future::Future<Output = bc_ai_tools::executor::ExecutionResult>,
+    {
+        self.run_approved_operation_with_timeout(
+            conversation_id,
+            disposal,
+            operation,
+            APPROVED_TOOL_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn run_approved_operation_with_timeout<F>(
+        &self,
+        conversation_id: Uuid,
+        mut disposal: watch::Receiver<bool>,
+        operation: F,
+        timeout: std::time::Duration,
+    ) -> Result<bc_ai_tools::executor::ExecutionResult, AgentError>
+    where
+        F: std::future::Future<Output = bc_ai_tools::executor::ExecutionResult>,
+    {
+        if *disposal.borrow() {
+            return Err(AgentError::ConversationDisposed(conversation_id));
+        }
+        let (cancellation_tx, mut cancellation_rx) = watch::channel(false);
+        let generation = Uuid::new_v4();
+        {
+            let mut approvals = self
+                .active_approvals
+                .lock()
+                .map_err(|_| AgentError::StateUnavailable)?;
+            if let Some(previous) = approvals.remove(&conversation_id) {
+                let _ = previous.cancellation.send(true);
+            }
+            approvals.insert(
+                conversation_id,
+                ActiveApproval {
+                    generation,
+                    cancellation: cancellation_tx,
+                },
+            );
+        }
+        let _guard = ApprovalGuard {
+            approvals: Arc::clone(&self.active_approvals),
+            conversation_id,
+            generation,
+        };
+
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => Ok(result),
+            _ = tokio::time::sleep(timeout) => {
+                Err(AgentError::OperationTimedOut {
+                    operation: "Approved AI tool operation",
+                })
+            }
+            changed = cancellation_rx.changed() => {
+                let _ = changed;
+                Err(AgentError::Cancelled)
+            }
+            changed = disposal.changed() => {
+                let _ = changed;
+                Err(AgentError::ConversationDisposed(conversation_id))
             }
         }
     }
 
     /// Signal cancellation. The running task observes this even while blocked
     /// on provider or event-channel backpressure.
-    pub async fn cancel(&self, conversation_id: Uuid) -> bool {
-        self.active_turns
+    pub async fn cancel(&self, conversation_id: Uuid) -> Result<bool, AgentError> {
+        let turn_cancelled = self
+            .active_turns
             .lock()
-            .ok()
-            .and_then(|active_turns| {
-                active_turns
-                    .get(&conversation_id)
-                    .map(|turn| turn.cancellation.send(true).is_ok())
-            })
-            .unwrap_or(false)
+            .map_err(|_| AgentError::StateUnavailable)?
+            .get(&conversation_id)
+            .map(|turn| turn.cancellation.send(true).is_ok())
+            .unwrap_or(false);
+        let approval_cancelled = self
+            .active_approvals
+            .lock()
+            .map_err(|_| AgentError::StateUnavailable)?
+            .get(&conversation_id)
+            .map(|approval| approval.cancellation.send(true).is_ok())
+            .unwrap_or(false);
+        Ok(turn_cancelled || approval_cancelled)
     }
 
     #[cfg(test)]
@@ -275,6 +387,14 @@ impl AgentManager {
         self.active_turns
             .lock()
             .map(|active_turns| active_turns.len())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    async fn active_approval_count(&self) -> usize {
+        self.active_approvals
+            .lock()
+            .map(|approvals| approvals.len())
             .unwrap_or_default()
     }
 }
@@ -285,6 +405,11 @@ impl Drop for AgentManager {
             for (_, turn) in active_turns.drain() {
                 let _ = turn.cancellation.send(true);
                 turn.abort_handle.abort();
+            }
+        }
+        if let Ok(mut approvals) = self.active_approvals.lock() {
+            for (_, approval) in approvals.drain() {
+                let _ = approval.cancellation.send(true);
             }
         }
     }
@@ -421,6 +546,16 @@ mod tests {
         .expect("active turn cleanup");
     }
 
+    async fn wait_for_active_approval(manager: &AgentManager) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while manager.active_approval_count().await != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("approved operation must register");
+    }
+
     #[tokio::test]
     async fn full_event_channel_applies_backpressure_until_drained() {
         let total = 1_000;
@@ -495,7 +630,10 @@ mod tests {
             .expect("start turn");
         events.recv().await.expect("first event");
 
-        assert!(manager.cancel(conversation_id).await);
+        assert!(manager
+            .cancel(conversation_id)
+            .await
+            .expect("cancel generation"));
         wait_for_flag(&stream_dropped).await;
         wait_for_no_active_turns(&manager).await;
     }
@@ -512,5 +650,93 @@ mod tests {
 
         drop(manager);
         wait_for_flag(&stream_dropped).await;
+    }
+
+    #[tokio::test]
+    async fn conversation_disposal_terminates_pending_approved_operation() {
+        let manager = Arc::new(AgentManager::default());
+        let conversation_id = create_conversation(&manager).await;
+        let disposal = manager
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .expect("disposal subscription");
+        let task_manager = Arc::clone(&manager);
+        let task = tokio::spawn(async move {
+            task_manager
+                .run_approved_operation(
+                    conversation_id,
+                    disposal,
+                    std::future::pending::<bc_ai_tools::executor::ExecutionResult>(),
+                )
+                .await
+        });
+
+        wait_for_active_approval(&manager).await;
+        assert!(manager.chat.delete_conversation(conversation_id).await);
+        assert!(matches!(
+            task.await.expect("approval task"),
+            Err(AgentError::ConversationDisposed(id)) if id == conversation_id
+        ));
+        assert_eq!(manager.active_approval_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_terminates_pending_approved_operation() {
+        let manager = Arc::new(AgentManager::default());
+        let conversation_id = create_conversation(&manager).await;
+        let disposal = manager
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .expect("disposal subscription");
+        let task_manager = Arc::clone(&manager);
+        let task = tokio::spawn(async move {
+            task_manager
+                .run_approved_operation(
+                    conversation_id,
+                    disposal,
+                    std::future::pending::<bc_ai_tools::executor::ExecutionResult>(),
+                )
+                .await
+        });
+
+        wait_for_active_approval(&manager).await;
+        assert!(manager
+            .cancel(conversation_id)
+            .await
+            .expect("cancel approved operation"));
+        assert!(matches!(
+            task.await.expect("approval task"),
+            Err(AgentError::Cancelled)
+        ));
+        assert_eq!(manager.active_approval_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn approved_operation_timeout_releases_lifecycle_state() {
+        let manager = AgentManager::default();
+        let conversation_id = create_conversation(&manager).await;
+        let disposal = manager
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .expect("disposal subscription");
+
+        let result = manager
+            .run_approved_operation_with_timeout(
+                conversation_id,
+                disposal,
+                std::future::pending::<bc_ai_tools::executor::ExecutionResult>(),
+                Duration::from_millis(1),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(AgentError::OperationTimedOut {
+                operation: "Approved AI tool operation"
+            })
+        ));
+        assert_eq!(manager.active_approval_count().await, 0);
     }
 }

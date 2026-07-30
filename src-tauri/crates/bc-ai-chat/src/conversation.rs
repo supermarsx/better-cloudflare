@@ -69,32 +69,6 @@ pub struct ChatManager {
 }
 
 impl ChatManager {
-    /// Compatibility entry point used by the existing command layer.
-    ///
-    /// New Rust callers should prefer [`Self::try_create_conversation`] so
-    /// invalid oversized fields are returned as a structured error.
-    pub async fn create_conversation(
-        &self,
-        provider: ProviderKind,
-        model: String,
-        title: Option<String>,
-        system_prompt: Option<String>,
-    ) -> ConversationMeta {
-        let fallback_provider = provider.clone();
-        match self
-            .try_create_conversation(provider, model, title, system_prompt)
-            .await
-        {
-            Ok(meta) => meta,
-            Err(_) => Conversation::new(
-                fallback_provider.clone(),
-                fallback_provider.default_model().to_string(),
-            )
-            .with_title("Conversation rejected by retention limits")
-            .meta(),
-        }
-    }
-
     /// Create a validated conversation and evict the deterministic oldest
     /// conversations if global count or byte limits are exceeded.
     pub async fn try_create_conversation(
@@ -148,13 +122,6 @@ impl ChatManager {
         self.state.write().await.remove(id).is_some()
     }
 
-    /// Compatibility wrapper returning `false` for missing or rejected input.
-    pub async fn push_message(&self, conversation_id: Uuid, message: ChatMessage) -> bool {
-        self.try_push_message(conversation_id, message)
-            .await
-            .is_ok()
-    }
-
     /// Add one validated message, evicting oldest messages/conversations before
     /// returning.
     pub async fn try_push_message(
@@ -174,16 +141,6 @@ impl ChatManager {
             return Err(ChatError::ConversationNotFound(conversation_id));
         }
         Ok(evicted_messages)
-    }
-
-    /// Compatibility wrapper returning `false` for missing or rejected input.
-    pub async fn update_last_assistant_message<F>(&self, conversation_id: Uuid, updater: F) -> bool
-    where
-        F: FnOnce(&mut ChatMessage),
-    {
-        self.try_update_last_assistant_message(conversation_id, updater)
-            .await
-            .unwrap_or(false)
     }
 
     /// Validate a streaming update before replacing retained state.
@@ -220,11 +177,7 @@ impl ChatManager {
         Ok(state.conversations.contains_key(&conversation_id))
     }
 
-    /// Update conversation title.
-    pub async fn set_title(&self, id: Uuid, title: String) -> bool {
-        self.try_set_title(id, title).await.is_ok()
-    }
-
+    /// Update a conversation title or return its bounded validation error.
     pub async fn try_set_title(&self, id: Uuid, title: String) -> Result<(), ChatError> {
         let mut state = self.state.write().await;
         let conversation = state

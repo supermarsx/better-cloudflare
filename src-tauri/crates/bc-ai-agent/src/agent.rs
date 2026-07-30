@@ -220,6 +220,7 @@ async fn execute_tool_calls(
                 .await?;
                 return Ok(true);
             }
+            ExecutionResult::Rejected(error) => return Err(error.into()),
         }
     }
     Ok(false)
@@ -297,7 +298,7 @@ pub async fn run_turn(
                     MessageStatus::Cancelled
                 } else {
                     MessageStatus::Error {
-                        message: error.to_string(),
+                        message: error.public_message(),
                     }
                 };
                 let _ = chat

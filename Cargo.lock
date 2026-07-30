@@ -510,6 +510,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bc-ai-provider",
+ "bc-error",
  "bc-mcp",
  "serde",
  "serde_json",
