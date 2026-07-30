@@ -2883,25 +2883,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
 
     const initialSynchronization = mcpStartupCompletedKeyRef.current === null;
-    if (!initialSynchronization && mcpStatus === null) {
-      return;
+    let synchronization: {
+      enabled: boolean;
+      host: string;
+      port: number;
+      enabledTools: string[];
+    };
+    if (initialSynchronization) {
+      synchronization = {
+        enabled: mcpServerEnabledRef.current,
+        host: mcpServerHostRef.current.trim() || "127.0.0.1",
+        port: Math.max(
+          1,
+          Math.min(65535, Math.round(mcpServerPortRef.current)),
+        ),
+        enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
+      };
+    } else {
+      if (mcpStatus === null) return;
+      synchronization = {
+        enabled: mcpStatus.running,
+        host: mcpStatus.host.trim() || "127.0.0.1",
+        port: Math.max(1, Math.min(65535, Math.round(mcpStatus.port))),
+        enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
+      };
     }
-    const synchronization = initialSynchronization
-      ? {
-          enabled: mcpServerEnabledRef.current,
-          host: mcpServerHostRef.current.trim() || "127.0.0.1",
-          port: Math.max(
-            1,
-            Math.min(65535, Math.round(mcpServerPortRef.current)),
-          ),
-          enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
-        }
-      : {
-          enabled: mcpStatus.running,
-          host: mcpStatus.host.trim() || "127.0.0.1",
-          port: Math.max(1, Math.min(65535, Math.round(mcpStatus.port))),
-          enabledTools: normalizeMcpToolIds(mcpEnabledToolsRef.current),
-        };
     mcpStartupInFlightKeyRef.current = synchronizationKey;
     setMcpBusy(true);
     setMcpActionError(null);
