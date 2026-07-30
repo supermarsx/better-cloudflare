@@ -5,6 +5,10 @@ import { createRequire } from "module";
 const dom = new JSDOM(`<!doctype html><html><body></body></html>`, {
   url: "http://localhost",
   pretendToBeVisual: true,
+  // Keep jsdom's synthetic code-unit quota above the application's 5 MiB
+  // UTF-8 cache budget so production resource limits—not the test harness—
+  // determine when cache eviction and rollback paths execute.
+  storageQuota: 25_000_000,
 });
 
 const jsdomWindow = dom.window;

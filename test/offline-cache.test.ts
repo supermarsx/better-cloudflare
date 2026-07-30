@@ -775,6 +775,7 @@ test("multi-entry rollback cleans its first restoration when generation changes"
     cacheZoneRecords("multi-race-incoming", "Incoming", [
       "y".repeat(Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 2)),
     ]);
+    assert.equal(indexFailureArmed, false);
     assert.equal(localStorage.getItem(firstKey), null);
     assert.equal(localStorage.getItem(secondKey), null);
     t.mock.timers.tick(10);
@@ -910,6 +911,7 @@ test("later rollback retry cleans an already-restored stale value exactly", (t) 
     cacheZoneRecords("retry-stale-incoming", "Incoming", [
       "y".repeat(Math.ceil(RESOURCE_LIMITS.offlineCache.hardBytes / 2)),
     ]);
+    assert.equal(indexFailureArmed, false);
     assert.equal(pendingRollbackTimers.size, 1);
 
     t.mock.timers.tick(10);
