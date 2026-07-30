@@ -44,6 +44,7 @@ const TIME_RANGES: { value: TimeRange; label: string }[] = [
 
 export const ANALYTICS_POINT_LIMIT = 5_000;
 export const ANALYTICS_TABLE_ROW_LIMIT = 250;
+export const ANALYTICS_NORMALIZATION_SCAN_LIMIT = 20_000;
 
 const ANALYTICS_METRICS: Array<keyof AnalyticsDataPoint> = [
   "requests",
@@ -52,6 +53,94 @@ const ANALYTICS_METRICS: Array<keyof AnalyticsDataPoint> = [
   "pageviews",
   "uniques",
 ];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeAnalyticsMetric(value: unknown): number {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : 0;
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, numeric));
+}
+
+function normalizeAnalyticsDate(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  try {
+    return new Date(timestamp).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAnalyticsPoint(value: unknown): AnalyticsTimeseries | null {
+  if (!isRecord(value)) return null;
+  const since = normalizeAnalyticsDate(value.since);
+  const until = normalizeAnalyticsDate(value.until);
+  if (!since || !until || Date.parse(until) < Date.parse(since)) return null;
+  return {
+    since,
+    until,
+    requests: normalizeAnalyticsMetric(value.requests),
+    bandwidth: normalizeAnalyticsMetric(value.bandwidth),
+    threats: normalizeAnalyticsMetric(value.threats),
+    pageviews: normalizeAnalyticsMetric(value.pageviews),
+    uniques: normalizeAnalyticsMetric(value.uniques),
+  };
+}
+
+function normalizeAnalyticsPayload(value: unknown): {
+  data: ZoneAnalyticsData;
+  sourcePointCount: number;
+} {
+  const payload = isRecord(value) ? value : {};
+  const rawTotals = isRecord(payload.totals) ? payload.totals : {};
+  const rawTimeseries = Array.isArray(payload.timeseries)
+    ? payload.timeseries
+    : [];
+  const normalized: AnalyticsTimeseries[] = [];
+  const scanCount = Math.min(
+    rawTimeseries.length,
+    ANALYTICS_NORMALIZATION_SCAN_LIMIT,
+  );
+
+  for (let sample = 0; sample < scanCount; sample += 1) {
+    const index =
+      rawTimeseries.length <= scanCount || scanCount <= 1
+        ? sample
+        : Math.round(
+            (sample * (rawTimeseries.length - 1)) / Math.max(1, scanCount - 1),
+          );
+    const point = normalizeAnalyticsPoint(rawTimeseries[index]);
+    if (point) normalized.push(point);
+  }
+
+  normalized.sort(
+    (left, right) => Date.parse(left.since) - Date.parse(right.since),
+  );
+  return {
+    data: {
+      totals: {
+        requests: normalizeAnalyticsMetric(rawTotals.requests),
+        bandwidth: normalizeAnalyticsMetric(rawTotals.bandwidth),
+        threats: normalizeAnalyticsMetric(rawTotals.threats),
+        pageviews: normalizeAnalyticsMetric(rawTotals.pageviews),
+        uniques: normalizeAnalyticsMetric(rawTotals.uniques),
+      },
+      timeseries: downsampleAnalyticsTimeseries(normalized),
+    },
+    sourcePointCount: rawTimeseries.length,
+  };
+}
 
 /**
  * Selects a deterministic bounded view while retaining the first and last
@@ -234,28 +323,18 @@ function AnalyticsPanelInner({
     setError(null);
     try {
       const since = sinceFromRange(range);
-      const result = (await getZoneAnalytics(
+      const result = await getZoneAnalytics(
         zoneId,
         since,
         undefined,
         controller.signal,
-      )) as ZoneAnalyticsData;
+      );
       if (controller.signal.aborted || requestVersionRef.current !== version) {
         return;
       }
-      const timeseries = Array.isArray(result?.timeseries)
-        ? result.timeseries
-        : [];
-      setSourcePointCount(timeseries.length);
-      setData({
-        totals: result?.totals ?? {
-          requests: 0,
-          bandwidth: 0,
-          threats: 0,
-          pageviews: 0,
-        },
-        timeseries: downsampleAnalyticsTimeseries(timeseries),
-      });
+      const normalized = normalizeAnalyticsPayload(result);
+      setSourcePointCount(normalized.sourcePointCount);
+      setData(normalized.data);
     } catch (err) {
       if (!controller.signal.aborted && requestVersionRef.current === version) {
         setError(err instanceof Error ? err.message : loadFailureMessage);
@@ -528,6 +607,7 @@ function AnalyticsPanelInner({
 }
 
 AnalyticsPanel.downsampleAnalyticsTimeseries = downsampleAnalyticsTimeseries;
+AnalyticsPanel.normalizeAnalyticsPayload = normalizeAnalyticsPayload;
 
 export function AnalyticsPanel(props: AnalyticsPanelProps) {
   return (

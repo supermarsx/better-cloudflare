@@ -1,13 +1,55 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { RequestError } from "../src/lib/api/request-error.ts";
 import { ServerClient } from "../src/lib/api/server-client.ts";
 import { RESOURCE_LIMITS } from "../src/lib/resource-limits.ts";
+import { TauriClient } from "../src/lib/api/tauri-client.ts";
 
 // Ensure web fetch shims are loaded if needed
 import "cloudflare/shims/web";
 
 const originalFetch = globalThis.fetch;
+
+test("desktop adapter forwards AbortSignal and rejects stale native results promptly", async () => {
+  const testWindow = window as typeof window & { __TAURI__?: unknown };
+  const previousTauri = testWindow.__TAURI__;
+  testWindow.__TAURI__ = {};
+  let receivedSignal: AbortSignal | undefined;
+  mock.method(
+    TauriClient,
+    "getZones",
+    async (
+      _apiKey: string,
+      _email?: string,
+      signal?: AbortSignal,
+    ): Promise<never> => {
+      receivedSignal = signal;
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  );
+
+  try {
+    const controller = new AbortController();
+    const request = new ServerClient("token").getZones(controller.signal);
+    controller.abort();
+    await assert.rejects(request, { name: "AbortError" });
+    assert.equal(receivedSignal, controller.signal);
+    assert.equal(receivedSignal?.aborted, true);
+  } finally {
+    mock.restoreAll();
+    if (previousTauri === undefined) {
+      delete testWindow.__TAURI__;
+    } else {
+      testWindow.__TAURI__ = previousTauri;
+    }
+  }
+});
 
 test("generates bearer token headers", () => {
   const client = new ServerClient("token", "http://example.com");

@@ -10,8 +10,44 @@ import { isDesktop } from "@/lib/environment";
 import { normalizeRequestError, RequestError } from "@/lib/api/request-error";
 
 const TAURI_UI_TIMEOUT_MS = 15_000;
-const BOUNDED_UI_COMMAND =
-  /(?:token|api_key|passkey|vault|biometric|encryption_settings|preferences)/;
+const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
+  create_bulk_dns_records: 60_000,
+  export_dns_records: 60_000,
+  get_dns_analytics: 60_000,
+  get_zone_analytics: 60_000,
+  registrar_health_check_all: 60_000,
+  registrar_list_all_domains: 60_000,
+  records_to_bind: 60_000,
+  records_to_csv: 60_000,
+  records_to_json: 60_000,
+  resolve_topology_batch: 120_000,
+  run_domain_audit: 120_000,
+  save_topology_asset: 60_000,
+};
+
+type TauriInvokeOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+export function getTauriInvokeTimeoutMs(command: string): number {
+  return TAURI_COMMAND_TIMEOUT_OVERRIDES_MS[command] ?? TAURI_UI_TIMEOUT_MS;
+}
+
+function tauriAbortError(command: string): RequestError {
+  return new RequestError(
+    "aborted",
+    "The desktop operation was cancelled. Its native task may still finish in the background; wait briefly before retrying a mutating command.",
+    {
+      source: "tauri",
+      operation: "Tauri invoke",
+      command,
+      retryable: false,
+      remediation:
+        "Wait for any native side effect to settle before retrying the operation.",
+    },
+  );
+}
 
 export function normalizeTauriInvokeError(
   error: unknown,
@@ -28,11 +64,19 @@ export async function withTauriUiTimeout<T>(
   operation: Promise<T>,
   command: string,
   timeoutMs = TAURI_UI_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let detachAbort: (() => void) | undefined;
+  const boundedTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.round(timeoutMs)
+      : TAURI_UI_TIMEOUT_MS;
+  if (signal?.aborted) throw tauriAbortError(command);
+
   try {
-    return await Promise.race([
-      operation,
+    const contenders: Promise<T>[] = [operation];
+    contenders.push(
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           reject(
@@ -49,27 +93,109 @@ export async function withTauriUiTimeout<T>(
               },
             ),
           );
-        }, timeoutMs);
+        }, boundedTimeoutMs);
       }),
-    ]);
+    );
+    if (signal) {
+      contenders.push(
+        new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(tauriAbortError(command));
+          signal.addEventListener("abort", abort, { once: true });
+          detachAbort = () => signal.removeEventListener("abort", abort);
+        }),
+      );
+    }
+    return await Promise.race(contenders);
   } finally {
-    if (timeout) clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
+    detachAbort?.();
   }
 }
 
 async function invoke<T>(
   command: string,
   args?: Record<string, unknown>,
+  options: TauriInvokeOptions = {},
 ): Promise<T> {
   try {
+    if (options.signal?.aborted) throw tauriAbortError(command);
     const operation = tauriInvoke<T>(command, args);
-    return await (BOUNDED_UI_COMMAND.test(command)
-      ? withTauriUiTimeout(operation, command)
-      : operation);
+    return await withTauriUiTimeout(
+      operation,
+      command,
+      options.timeoutMs ?? getTauriInvokeTimeoutMs(command),
+      options.signal,
+    );
   } catch (error) {
     throw normalizeTauriInvokeError(error, command);
   }
 }
+
+type PreferenceFields = Record<string, unknown>;
+
+export interface SerializedPreferenceWriter {
+  update(fields: PreferenceFields): Promise<void>;
+}
+
+/**
+ * Coalesces fields queued in the same turn and serializes later batches. Each
+ * batch re-reads the last committed native snapshot, so a slower older write
+ * cannot overwrite a newer JS-side preference change.
+ */
+export function createSerializedPreferenceWriter(
+  read: () => Promise<unknown>,
+  write: (preferences: PreferenceFields) => Promise<void>,
+): SerializedPreferenceWriter {
+  let pendingFields: PreferenceFields = {};
+  let pendingWaiters: Array<{
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  let drainPromise: Promise<void> | null = null;
+
+  const drain = async () => {
+    while (pendingWaiters.length > 0) {
+      const fields = pendingFields;
+      const waiters = pendingWaiters;
+      pendingFields = {};
+      pendingWaiters = [];
+      try {
+        const current = await read();
+        const snapshot =
+          current && typeof current === "object"
+            ? (current as PreferenceFields)
+            : {};
+        await write({ ...snapshot, ...fields });
+        for (const waiter of waiters) waiter.resolve();
+      } catch (error) {
+        for (const waiter of waiters) waiter.reject(error);
+      }
+    }
+  };
+
+  const ensureDrain = () => {
+    if (drainPromise) return;
+    drainPromise = Promise.resolve()
+      .then(drain)
+      .finally(() => {
+        drainPromise = null;
+        if (pendingWaiters.length > 0) ensureDrain();
+      });
+  };
+
+  return {
+    update(fields) {
+      Object.assign(pendingFields, fields);
+      const result = new Promise<void>((resolve, reject) => {
+        pendingWaiters.push({ resolve, reject });
+      });
+      ensureDrain();
+      return result;
+    },
+  };
+}
+
+let preferenceWriter: SerializedPreferenceWriter | undefined;
 
 export interface TauriZone {
   id: string;
@@ -178,8 +304,12 @@ export class TauriClient {
   }
 
   // Authentication & Key Management
-  static async verifyToken(apiKey: string, email?: string): Promise<boolean> {
-    return invoke("verify_token", { apiKey, email });
+  static async verifyToken(
+    apiKey: string,
+    email?: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    return invoke("verify_token", { apiKey, email }, { signal });
   }
 
   static async getApiKeys(): Promise<unknown[]> {
@@ -220,8 +350,12 @@ export class TauriClient {
   }
 
   // DNS Operations
-  static async getZones(apiKey: string, email?: string): Promise<TauriZone[]> {
-    return invoke("get_zones", { apiKey, email });
+  static async getZones(
+    apiKey: string,
+    email?: string,
+    signal?: AbortSignal,
+  ): Promise<TauriZone[]> {
+    return invoke("get_zones", { apiKey, email }, { signal });
   }
 
   static async getDNSRecords(
@@ -230,14 +364,19 @@ export class TauriClient {
     zoneId: string,
     page?: number,
     perPage?: number,
+    signal?: AbortSignal,
   ): Promise<TauriDNSRecord[]> {
-    return invoke("get_dns_records", {
-      apiKey,
-      email,
-      zoneId,
-      page,
-      perPage,
-    });
+    return invoke(
+      "get_dns_records",
+      {
+        apiKey,
+        email,
+        zoneId,
+        page,
+        perPage,
+      },
+      { signal },
+    );
   }
 
   static async createDNSRecord(
@@ -245,8 +384,13 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     record: TauriDNSRecordInput,
+    signal?: AbortSignal,
   ): Promise<TauriDNSRecord> {
-    return invoke("create_dns_record", { apiKey, email, zoneId, record });
+    return invoke(
+      "create_dns_record",
+      { apiKey, email, zoneId, record },
+      { signal },
+    );
   }
 
   static async updateDNSRecord(
@@ -255,14 +399,19 @@ export class TauriClient {
     zoneId: string,
     recordId: string,
     record: TauriDNSRecordInput,
+    signal?: AbortSignal,
   ): Promise<TauriDNSRecord> {
-    return invoke("update_dns_record", {
-      apiKey,
-      email,
-      zoneId,
-      recordId,
-      record,
-    });
+    return invoke(
+      "update_dns_record",
+      {
+        apiKey,
+        email,
+        zoneId,
+        recordId,
+        record,
+      },
+      { signal },
+    );
   }
 
   static async deleteDNSRecord(
@@ -270,8 +419,13 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     recordId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_dns_record", { apiKey, email, zoneId, recordId });
+    return invoke(
+      "delete_dns_record",
+      { apiKey, email, zoneId, recordId },
+      { signal },
+    );
   }
 
   static async createBulkDNSRecords(
@@ -280,14 +434,19 @@ export class TauriClient {
     zoneId: string,
     records: TauriDNSRecordInput[],
     _dryrun?: boolean,
+    signal?: AbortSignal,
   ): Promise<{ created: TauriDNSRecord[]; skipped: unknown[] }> {
-    return invoke("create_bulk_dns_records", {
-      apiKey,
-      email,
-      zoneId,
-      records,
-      dryrun: _dryrun,
-    });
+    return invoke(
+      "create_bulk_dns_records",
+      {
+        apiKey,
+        email,
+        zoneId,
+        records,
+        dryrun: _dryrun,
+      },
+      { signal },
+    );
   }
 
   static async exportDNSRecords(
@@ -297,15 +456,20 @@ export class TauriClient {
     format: string,
     page?: number,
     perPage?: number,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return invoke("export_dns_records", {
-      apiKey,
-      email,
-      zoneId,
-      format,
-      page,
-      perPage,
-    });
+    return invoke(
+      "export_dns_records",
+      {
+        apiKey,
+        email,
+        zoneId,
+        format,
+        page,
+        perPage,
+      },
+      { signal },
+    );
   }
 
   static async purgeCache(
@@ -314,14 +478,19 @@ export class TauriClient {
     zoneId: string,
     purgeEverything: boolean,
     files?: string[],
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("purge_cache", {
-      apiKey,
-      email,
-      zoneId,
-      purgeEverything,
-      files,
-    });
+    return invoke(
+      "purge_cache",
+      {
+        apiKey,
+        email,
+        zoneId,
+        purgeEverything,
+        files,
+      },
+      { signal },
+    );
   }
 
   static async getZoneSetting(
@@ -329,8 +498,13 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     settingId: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("get_zone_setting", { apiKey, email, zoneId, settingId });
+    return invoke(
+      "get_zone_setting",
+      { apiKey, email, zoneId, settingId },
+      { signal },
+    );
   }
 
   static async updateZoneSetting(
@@ -339,22 +513,28 @@ export class TauriClient {
     zoneId: string,
     settingId: string,
     value: unknown,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("update_zone_setting", {
-      apiKey,
-      email,
-      zoneId,
-      settingId,
-      value,
-    });
+    return invoke(
+      "update_zone_setting",
+      {
+        apiKey,
+        email,
+        zoneId,
+        settingId,
+        value,
+      },
+      { signal },
+    );
   }
 
   static async getDnssec(
     apiKey: string,
     email: string | undefined,
     zoneId: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("get_dnssec", { apiKey, email, zoneId });
+    return invoke("get_dnssec", { apiKey, email, zoneId }, { signal });
   }
 
   static async updateDnssec(
@@ -362,8 +542,13 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     payload: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("update_dnssec", { apiKey, email, zoneId, payload });
+    return invoke(
+      "update_dnssec",
+      { apiKey, email, zoneId, payload },
+      { signal },
+    );
   }
 
   // Vault Operations
@@ -406,8 +591,11 @@ export class TauriClient {
     return invoke("authenticate_passkey", { id, assertion });
   }
 
-  static async listPasskeys(id: string): Promise<unknown[]> {
-    return invoke("list_passkeys", { id });
+  static async listPasskeys(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return invoke("list_passkeys", { id }, { signal });
   }
 
   static async deletePasskey(id: string, credentialId: string): Promise<void> {
@@ -592,11 +780,11 @@ export class TauriClient {
   static async updatePreferenceFields(
     fields: Record<string, unknown>,
   ): Promise<void> {
-    const current = await this.getPreferences();
-    return this.updatePreferences({
-      ...(current as Record<string, unknown>),
-      ...fields,
-    });
+    preferenceWriter ??= createSerializedPreferenceWriter(
+      () => TauriClient.getPreferences(),
+      (preferences) => TauriClient.updatePreferences(preferences),
+    );
+    return preferenceWriter.update(fields);
   }
 
   // MCP Server
@@ -664,30 +852,43 @@ export class TauriClient {
     return invoke("verify_registrar_credential", { credentialId });
   }
 
-  static async registrarListDomains(credentialId: string): Promise<unknown[]> {
-    return invoke("registrar_list_domains", { credentialId });
+  static async registrarListDomains(
+    credentialId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return invoke("registrar_list_domains", { credentialId }, { signal });
   }
 
   static async registrarGetDomain(
     credentialId: string,
     domain: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("registrar_get_domain", { credentialId, domain });
+    return invoke("registrar_get_domain", { credentialId, domain }, { signal });
   }
 
-  static async registrarListAllDomains(): Promise<unknown[]> {
-    return invoke("registrar_list_all_domains");
+  static async registrarListAllDomains(
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return invoke("registrar_list_all_domains", undefined, { signal });
   }
 
   static async registrarHealthCheck(
     credentialId: string,
     domain: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    return invoke("registrar_health_check", { credentialId, domain });
+    return invoke(
+      "registrar_health_check",
+      { credentialId, domain },
+      { signal },
+    );
   }
 
-  static async registrarHealthCheckAll(): Promise<unknown[]> {
-    return invoke("registrar_health_check_all");
+  static async registrarHealthCheckAll(
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return invoke("registrar_health_check_all", undefined, { signal });
   }
 
   // ── DNS Tools ───────────────────────────────────────────────────────────
@@ -780,16 +981,25 @@ export class TauriClient {
     });
   }
 
-  static async recordsToCsv(records: TauriDNSRecord[]): Promise<string> {
-    return invoke("records_to_csv", { records });
+  static async recordsToCsv(
+    records: TauriDNSRecord[],
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return invoke("records_to_csv", { records }, { signal });
   }
 
-  static async recordsToBind(records: TauriDNSRecord[]): Promise<string> {
-    return invoke("records_to_bind", { records });
+  static async recordsToBind(
+    records: TauriDNSRecord[],
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return invoke("records_to_bind", { records }, { signal });
   }
 
-  static async recordsToJson(records: TauriDNSRecord[]): Promise<string> {
-    return invoke("records_to_json", { records });
+  static async recordsToJson(
+    records: TauriDNSRecord[],
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return invoke("records_to_json", { records }, { signal });
   }
 
   static async parseSpf(content: string): Promise<SPFRecord | null> {
@@ -847,15 +1057,20 @@ export class TauriClient {
     until?: string,
     email?: string,
     continuous?: boolean,
+    signal?: AbortSignal,
   ): Promise<ZoneAnalytics> {
-    return invoke("get_zone_analytics", {
-      apiKey,
-      zoneId,
-      since: since ?? null,
-      until: until ?? null,
-      email: email ?? null,
-      continuous: continuous ?? null,
-    });
+    return invoke(
+      "get_zone_analytics",
+      {
+        apiKey,
+        zoneId,
+        since: since ?? null,
+        until: until ?? null,
+        email: email ?? null,
+        continuous: continuous ?? null,
+      },
+      { signal },
+    );
   }
 
   static async getDnsAnalytics(
@@ -866,16 +1081,21 @@ export class TauriClient {
     email?: string,
     dimensions?: string[],
     metrics?: string[],
+    signal?: AbortSignal,
   ): Promise<DnsAnalyticsResponse> {
-    return invoke("get_dns_analytics", {
-      apiKey,
-      zoneId,
-      since: since ?? null,
-      until: until ?? null,
-      email: email ?? null,
-      dimensions: dimensions ?? null,
-      metrics: metrics ?? null,
-    });
+    return invoke(
+      "get_dns_analytics",
+      {
+        apiKey,
+        zoneId,
+        since: since ?? null,
+        until: until ?? null,
+        email: email ?? null,
+        dimensions: dimensions ?? null,
+        metrics: metrics ?? null,
+      },
+      { signal },
+    );
   }
 
   // ── Firewall / WAF ───────────────────────────────────────────────────────
@@ -884,8 +1104,9 @@ export class TauriClient {
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<FirewallRuleResponse[]> {
-    return invoke("get_firewall_rules", { apiKey, zoneId, email });
+    return invoke("get_firewall_rules", { apiKey, zoneId, email }, { signal });
   }
 
   static async createFirewallRule(
@@ -893,8 +1114,13 @@ export class TauriClient {
     zoneId: string,
     rule: FirewallRuleInput,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<FirewallRuleResponse[]> {
-    return invoke("create_firewall_rule", { apiKey, zoneId, rule, email });
+    return invoke(
+      "create_firewall_rule",
+      { apiKey, zoneId, rule, email },
+      { signal },
+    );
   }
 
   static async updateFirewallRule(
@@ -903,14 +1129,19 @@ export class TauriClient {
     ruleId: string,
     rule: FirewallRuleInput,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<FirewallRuleResponse> {
-    return invoke("update_firewall_rule", {
-      apiKey,
-      zoneId,
-      ruleId,
-      rule,
-      email,
-    });
+    return invoke(
+      "update_firewall_rule",
+      {
+        apiKey,
+        zoneId,
+        ruleId,
+        rule,
+        email,
+      },
+      { signal },
+    );
   }
 
   static async deleteFirewallRule(
@@ -918,16 +1149,22 @@ export class TauriClient {
     zoneId: string,
     ruleId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_firewall_rule", { apiKey, zoneId, ruleId, email });
+    return invoke(
+      "delete_firewall_rule",
+      { apiKey, zoneId, ruleId, email },
+      { signal },
+    );
   }
 
   static async getIpAccessRules(
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<IpAccessRuleResponse[]> {
-    return invoke("get_ip_access_rules", { apiKey, zoneId, email });
+    return invoke("get_ip_access_rules", { apiKey, zoneId, email }, { signal });
   }
 
   static async createIpAccessRule(
@@ -937,15 +1174,20 @@ export class TauriClient {
     ip: string,
     notes?: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<IpAccessRuleResponse> {
-    return invoke("create_ip_access_rule", {
-      apiKey,
-      zoneId,
-      mode,
-      ip,
-      notes,
-      email,
-    });
+    return invoke(
+      "create_ip_access_rule",
+      {
+        apiKey,
+        zoneId,
+        mode,
+        ip,
+        notes,
+        email,
+      },
+      { signal },
+    );
   }
 
   static async deleteIpAccessRule(
@@ -953,16 +1195,22 @@ export class TauriClient {
     zoneId: string,
     ruleId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_ip_access_rule", { apiKey, zoneId, ruleId, email });
+    return invoke(
+      "delete_ip_access_rule",
+      { apiKey, zoneId, ruleId, email },
+      { signal },
+    );
   }
 
   static async getWafRulesets(
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<WafRulesetResponse[]> {
-    return invoke("get_waf_rulesets", { apiKey, zoneId, email });
+    return invoke("get_waf_rulesets", { apiKey, zoneId, email }, { signal });
   }
 
   // ── Workers ───────────────────────────────────────────────────────────────
@@ -971,8 +1219,9 @@ export class TauriClient {
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<WorkerRouteResponse[]> {
-    return invoke("get_worker_routes", { apiKey, zoneId, email });
+    return invoke("get_worker_routes", { apiKey, zoneId, email }, { signal });
   }
 
   static async createWorkerRoute(
@@ -981,14 +1230,19 @@ export class TauriClient {
     pattern: string,
     script: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<WorkerRouteResponse> {
-    return invoke("create_worker_route", {
-      apiKey,
-      zoneId,
-      pattern,
-      script,
-      email,
-    });
+    return invoke(
+      "create_worker_route",
+      {
+        apiKey,
+        zoneId,
+        pattern,
+        script,
+        email,
+      },
+      { signal },
+    );
   }
 
   static async deleteWorkerRoute(
@@ -996,8 +1250,13 @@ export class TauriClient {
     zoneId: string,
     routeId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_worker_route", { apiKey, zoneId, routeId, email });
+    return invoke(
+      "delete_worker_route",
+      { apiKey, zoneId, routeId, email },
+      { signal },
+    );
   }
 
   // ── Email Routing ─────────────────────────────────────────────────────────
@@ -1006,16 +1265,26 @@ export class TauriClient {
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<EmailRoutingSettingsResponse> {
-    return invoke("get_email_routing_settings", { apiKey, zoneId, email });
+    return invoke(
+      "get_email_routing_settings",
+      { apiKey, zoneId, email },
+      { signal },
+    );
   }
 
   static async getEmailRoutingRules(
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<EmailRoutingRuleResponse[]> {
-    return invoke("get_email_routing_rules", { apiKey, zoneId, email });
+    return invoke(
+      "get_email_routing_rules",
+      { apiKey, zoneId, email },
+      { signal },
+    );
   }
 
   static async createEmailRoutingRule(
@@ -1023,8 +1292,13 @@ export class TauriClient {
     zoneId: string,
     rule: EmailRoutingRuleInput,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<EmailRoutingRuleResponse> {
-    return invoke("create_email_routing_rule", { apiKey, zoneId, rule, email });
+    return invoke(
+      "create_email_routing_rule",
+      { apiKey, zoneId, rule, email },
+      { signal },
+    );
   }
 
   static async deleteEmailRoutingRule(
@@ -1032,13 +1306,18 @@ export class TauriClient {
     zoneId: string,
     ruleId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_email_routing_rule", {
-      apiKey,
-      zoneId,
-      ruleId,
-      email,
-    });
+    return invoke(
+      "delete_email_routing_rule",
+      {
+        apiKey,
+        zoneId,
+        ruleId,
+        email,
+      },
+      { signal },
+    );
   }
 
   // ── Page Rules ────────────────────────────────────────────────────────────
@@ -1047,8 +1326,9 @@ export class TauriClient {
     apiKey: string,
     zoneId: string,
     email?: string,
+    signal?: AbortSignal,
   ): Promise<PageRuleResponse[]> {
-    return invoke("get_page_rules", { apiKey, zoneId, email });
+    return invoke("get_page_rules", { apiKey, zoneId, email }, { signal });
   }
 
   // ── Bulk Operations ───────────────────────────────────────────────────────
@@ -1058,13 +1338,18 @@ export class TauriClient {
     zoneId: string,
     recordIds: string[],
     email?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return invoke("delete_bulk_dns_records", {
-      apiKey,
-      zoneId,
-      recordIds,
-      email,
-    });
+    return invoke(
+      "delete_bulk_dns_records",
+      {
+        apiKey,
+        zoneId,
+        recordIds,
+        email,
+      },
+      { signal },
+    );
   }
 
   // ── DNS Propagation ───────────────────────────────────────────────────────
@@ -1073,12 +1358,17 @@ export class TauriClient {
     domain: string,
     recordType: string,
     extraResolvers?: string[],
+    signal?: AbortSignal,
   ): Promise<PropagationResult> {
-    return invoke("check_dns_propagation", {
-      domain,
-      recordType,
-      extraResolvers,
-    });
+    return invoke(
+      "check_dns_propagation",
+      {
+        domain,
+        recordType,
+        extraResolvers,
+      },
+      { signal },
+    );
   }
 }
 

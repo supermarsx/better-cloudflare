@@ -382,8 +382,141 @@ const DNS_TOPOLOGY_RECORD_LIMIT = TOPOLOGY_MODEL_NODE_LIMIT;
 const DNS_TOPOLOGY_SCAN_PAGE_LIMIT = 200;
 const DNS_EXPORT_PAGE_SIZE = DNS_API_PAGE_SIZE_LIMIT;
 const DNS_EXPORT_PAGE_LIMIT = 10_000;
+const DNS_EXPORT_RECORD_LIMIT = 50_000;
+const DNS_EXPORT_ESTIMATED_BYTE_LIMIT = 32 * 1024 * 1024;
+const DNS_OPEN_ZONE_TAB_LIMIT = 8;
+const DNS_INACTIVE_RECORD_EVICTION_THRESHOLD = 1_000;
+const DNS_AUTO_REFRESH_MIN_MS = 60_000;
+const DNS_AUTO_REFRESH_MAX_MS = 30 * 60_000;
 const DNS_MIN_PAGE_SIZE = 25;
 const DNS_DEFAULT_PAGE_SIZE = 50;
+
+function clampAutoRefreshInterval(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.min(
+    DNS_AUTO_REFRESH_MAX_MS,
+    Math.max(DNS_AUTO_REFRESH_MIN_MS, Math.round(numeric)),
+  );
+}
+
+function limitRestoredTabIds(values: readonly unknown[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  let zoneCount = 0;
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const id = value.trim();
+    if (!id || id.length > 256 || seen.has(id)) continue;
+    if (!id.startsWith("__")) {
+      if (zoneCount >= DNS_OPEN_ZONE_TAB_LIMIT) continue;
+      zoneCount += 1;
+    }
+    seen.add(id);
+    result.push(id);
+  }
+  return result;
+}
+
+function appendBoundedZoneTab(
+  tabs: ZoneTab[],
+  nextTab: ZoneTab,
+  activeTabId: string | null,
+): { tabs: ZoneTab[]; evictedTabId?: string } {
+  if (tabs.some((tab) => tab.zoneId === nextTab.zoneId)) return { tabs };
+  const openZoneTabs = tabs.filter((tab) => tab.kind === "zone");
+  if (openZoneTabs.length < DNS_OPEN_ZONE_TAB_LIMIT) {
+    return { tabs: [...tabs, nextTab] };
+  }
+  const evicted = tabs.find(
+    (tab) => tab.kind === "zone" && tab.id !== activeTabId,
+  );
+  if (!evicted) return { tabs };
+  return {
+    tabs: [...tabs.filter((tab) => tab.id !== evicted.id), nextTab],
+    evictedTabId: evicted.id,
+  };
+}
+
+function evictInactiveTabRecords(
+  tabs: ZoneTab[],
+  activeTabId: string | null,
+): ZoneTab[] {
+  let changed = false;
+  const next = tabs.map((tab) => {
+    if (
+      tab.kind !== "zone" ||
+      tab.id === activeTabId ||
+      tab.records.length < DNS_INACTIVE_RECORD_EVICTION_THRESHOLD ||
+      tab.editingRecord ||
+      tab.showAddRecord ||
+      tab.showImport
+    ) {
+      return tab;
+    }
+    changed = true;
+    return {
+      ...tab,
+      records: [],
+      selectedIds: [],
+    };
+  });
+  return changed ? next : tabs;
+}
+
+function createCompletionScheduledPoller(
+  task: () => Promise<void>,
+  intervalMs: number,
+  onError: (error: unknown) => void = () => {},
+): () => void {
+  let disposed = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const schedule = () => {
+    if (disposed) return;
+    timeout = setTimeout(() => {
+      timeout = undefined;
+      if (disposed) return;
+      void task()
+        .catch((error) => {
+          if (!disposed) onError(error);
+        })
+        .finally(() => {
+          if (!disposed) schedule();
+        });
+    }, intervalMs);
+  };
+
+  schedule();
+  return () => {
+    disposed = true;
+    if (timeout !== undefined) clearTimeout(timeout);
+    timeout = undefined;
+  };
+}
+
+function createRequestGenerationTracker() {
+  let nextGeneration = 0;
+  const currentByKey = new Map<string, number>();
+  return {
+    begin(key: string): number {
+      const generation = ++nextGeneration;
+      currentByKey.set(key, generation);
+      return generation;
+    },
+    isCurrent(key: string, generation: number): boolean {
+      return currentByKey.get(key) === generation;
+    },
+    invalidate(key: string): void {
+      currentByKey.delete(key);
+    },
+    clear(): void {
+      currentByKey.clear();
+      nextGeneration += 1;
+    },
+  };
+}
 
 function clampDnsPageSize(
   value: unknown,
@@ -489,6 +622,81 @@ function throwIfDnsOperationAborted(signal?: AbortSignal): void {
   throw new DOMException("DNS operation aborted", "AbortError");
 }
 
+type DnsExportFormat = "json" | "csv" | "bind";
+
+function estimateJsonValueBytes(
+  value: unknown,
+  remainingBytes = DNS_EXPORT_ESTIMATED_BYTE_LIMIT,
+  depth = 0,
+  ancestors = new Set<object>(),
+): number {
+  if (remainingBytes <= 0 || depth > 8) return remainingBytes + 1;
+  if (value === null || value === undefined) return 4;
+  if (typeof value === "string") return value.length * 6 + 2;
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return 32;
+  }
+  if (typeof value !== "object" || ancestors.has(value)) {
+    return remainingBytes + 1;
+  }
+
+  ancestors.add(value);
+  let bytes = 2;
+  let entries = 0;
+  try {
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      entries += 1;
+      if (entries > 2_048) return remainingBytes + 1;
+      bytes += key.length * 6 + 4;
+      const childBytes = estimateJsonValueBytes(
+        (value as Record<string, unknown>)[key],
+        remainingBytes - bytes,
+        depth + 1,
+        ancestors,
+      );
+      bytes += childBytes + 1;
+      if (bytes > remainingBytes) return bytes;
+    }
+    return bytes;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function estimateDnsExportRecordBytes(
+  record: DNSRecord,
+  format: DnsExportFormat,
+): number {
+  const textUpperBound = (value: unknown) => String(value ?? "").length * 6 + 8;
+  if (format === "csv") {
+    return (
+      16 +
+      textUpperBound(record.type) +
+      textUpperBound(record.name) +
+      textUpperBound(record.content) +
+      textUpperBound(record.ttl) +
+      textUpperBound(record.priority) +
+      textUpperBound(record.proxied)
+    );
+  }
+  if (format === "bind") {
+    return (
+      32 +
+      textUpperBound(record.name) +
+      textUpperBound(record.ttl) +
+      textUpperBound(record.type) +
+      textUpperBound(record.priority) +
+      textUpperBound(record.content)
+    );
+  }
+  return estimateJsonValueBytes(record);
+}
+
 function matchesDnsTopologyFilter(
   record: DNSRecord,
   filter: DnsTopologyFilter,
@@ -572,20 +780,37 @@ async function loadAuthoritativeDnsRecordsForTopology(
 
 /**
  * Export is intentionally separate from bounded UI retention. It walks every
- * authoritative API page and either returns the complete record set or throws;
- * it never turns a partial UI view into a silent partial export.
+ * authoritative API page until the explicit aggregate ceilings are reached.
+ * It either returns the complete record set or throws, and never turns a
+ * partial UI view into a silent partial export.
  */
 async function loadCompleteDnsRecordsForExport(
   loadPage: DnsRecordPageLoader,
   zoneId: string,
   signal?: AbortSignal,
+  format: DnsExportFormat = "json",
 ): Promise<DNSRecord[]> {
   const records: DNSRecord[] = [];
+  let estimatedBytes = 2;
   for (let page = 1; page <= DNS_EXPORT_PAGE_LIMIT; page += 1) {
     throwIfDnsOperationAborted(signal);
     const batch = await loadPage(zoneId, page, DNS_EXPORT_PAGE_SIZE, signal);
     throwIfDnsOperationAborted(signal);
-    records.push(...batch);
+    if (records.length + batch.length > DNS_EXPORT_RECORD_LIMIT) {
+      throw new Error(
+        `DNS export exceeds the ${DNS_EXPORT_RECORD_LIMIT.toLocaleString()}-record safety limit; no partial file was created.`,
+      );
+    }
+    for (const record of batch) {
+      const recordBytes = estimateDnsExportRecordBytes(record, format);
+      if (estimatedBytes + recordBytes > DNS_EXPORT_ESTIMATED_BYTE_LIMIT) {
+        throw new Error(
+          `DNS export exceeds the ${DNS_EXPORT_ESTIMATED_BYTE_LIMIT / (1024 * 1024)} MiB estimated output safety limit; no partial file was created.`,
+        );
+      }
+      estimatedBytes += recordBytes;
+      records.push(record);
+    }
     if (batch.length < DNS_EXPORT_PAGE_SIZE) return records;
   }
   throw new Error(
@@ -804,6 +1029,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
   const sessionProfileHydratedRef = useRef(false);
   const exportRequestRef = useRef<AbortController | null>(null);
+  const recordRequestGenerationsRef = useRef(createRequestGenerationTracker());
   const topologyRequestRef = useRef<{
     id: number;
     queryKey: string;
@@ -827,7 +1053,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.getZoneShowUnsupportedRecordTypesMap(),
     );
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
-    storageManager.getAutoRefreshInterval(),
+    clampAutoRefreshInterval(storageManager.getAutoRefreshInterval()),
   );
   const registrarMonitor = useRegistrarMonitor(apiKey, email);
   const [auditEntries, setAuditEntries] = useState<
@@ -1373,7 +1599,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         typeof profile.autoRefreshInterval === "number" ||
         profile.autoRefreshInterval === null
       ) {
-        setAutoRefreshInterval(profile.autoRefreshInterval ?? null);
+        setAutoRefreshInterval(
+          clampAutoRefreshInterval(profile.autoRefreshInterval),
+        );
       }
       if (typeof profile.defaultPerPage === "number") {
         setGlobalPerPage(clampDnsPageSize(profile.defaultPerPage));
@@ -1768,11 +1996,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       setTabs((prev) => {
         if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
         const perPage = clampDnsPageSize(zonePerPage[zoneId] ?? globalPerPage);
-        return [...prev, createZoneTab(zone, perPage)];
+        const bounded = appendBoundedZoneTab(
+          prev,
+          createZoneTab(zone, perPage),
+          activeTabId,
+        );
+        if (bounded.evictedTabId) {
+          recordRequestGenerationsRef.current.invalidate(bounded.evictedTabId);
+        }
+        return bounded.tabs;
       });
       setActiveTabId(zoneId);
     },
-    [availableZones, globalPerPage, zonePerPage],
+    [activeTabId, availableZones, globalPerPage, zonePerPage],
   );
 
   const activateTab = useCallback(
@@ -1790,6 +2026,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 
   const closeTab = useCallback((tabId: string) => {
+    recordRequestGenerationsRef.current.invalidate(tabId);
     setTabs((prev) => {
       if (!prev.some((tab) => tab.id === tabId)) return prev;
 
@@ -1814,6 +2051,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       return nextTabs;
     });
   }, []);
+
+  useEffect(() => {
+    setTabs((previous) => evictInactiveTabRecords(previous, activeTabId));
+  }, [activeTabId]);
   const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
     const id = `__${kind}`;
     setTabs((prev) => {
@@ -1829,6 +2070,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         const zonesData = await getZones(signal);
         setZones(zonesData);
       } catch (error) {
+        if (
+          signal?.aborted ||
+          (error as Error).name === "AbortError" ||
+          (error as { kind?: string }).kind === "aborted"
+        ) {
+          return;
+        }
         toast({
           title: t("Error", "Error"),
           description: t("Failed to load zones: {{error}}", {
@@ -1894,6 +2142,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const loadRecords = useCallback(
     async (tab: ZoneTab, signal?: AbortSignal) => {
       if (!tab.zoneId) return;
+      const generation = recordRequestGenerationsRef.current.begin(tab.id);
+      const ownsGeneration = () =>
+        recordRequestGenerationsRef.current.isCurrent(tab.id, generation);
+      const isCurrentRequest = () => !signal?.aborted && ownsGeneration();
+
       updateTab(tab.id, (prev) => ({ ...prev, isLoading: true }));
       try {
         let combined: DNSRecord[];
@@ -1911,6 +2164,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               pageSize,
               signal,
             );
+            if (!isCurrentRequest()) return;
             sourceRecordCount += batch.length;
             const available = DNS_RECORD_MEMORY_LIMIT - combined.length;
             if (batch.length > available) {
@@ -1934,6 +2188,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               pageSize,
               signal,
             );
+            if (!isCurrentRequest()) return;
             sourceRecordCount += overflowBatch.length;
             recordsLimited = overflowBatch.length > 0;
           }
@@ -1945,11 +2200,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             requestedPageSize,
             signal,
           );
+          if (!isCurrentRequest()) return;
           const bounded = retainDnsRecordsForUi(result);
           combined = bounded.records;
           recordsLimited = bounded.limited;
           sourceRecordCount = bounded.sourceRecordCount;
         }
+        if (!isCurrentRequest()) return;
         updateTab(tab.id, (prev) => ({
           ...prev,
           records: combined,
@@ -1957,21 +2214,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           sourceRecordCount,
         }));
         // Persist to offline cache on success
-        cacheZoneRecords(tab.zoneId, tab.zoneName, combined);
+        if (isCurrentRequest()) {
+          cacheZoneRecords(tab.zoneId, tab.zoneName, combined);
+        }
       } catch (error) {
-        if (signal?.aborted || (error as Error).name === "AbortError") return;
+        if (
+          !isCurrentRequest() ||
+          signal?.aborted ||
+          (error as Error).name === "AbortError"
+        ) {
+          return;
+        }
         // Try offline cache fallback
         const cached = getCachedZoneRecords(tab.zoneId);
+        if (!isCurrentRequest()) return;
         if (cached) {
           const bounded = retainDnsRecordsForUi(cached.records as DNSRecord[]);
           const cacheReachedUiCap =
             cached.records.length >= DNS_RECORD_MEMORY_LIMIT;
+          if (!isCurrentRequest()) return;
           updateTab(tab.id, (prev) => ({
             ...prev,
             records: bounded.records,
             recordsLimited: bounded.limited || cacheReachedUiCap,
             sourceRecordCount: bounded.sourceRecordCount,
           }));
+          if (!isCurrentRequest()) return;
           toast({
             title: t("Offline", "Offline"),
             description: t("Showing cached records from {{time}}", {
@@ -1980,6 +2248,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             }),
           });
         } else {
+          if (!isCurrentRequest()) return;
           toast({
             title: t("Error", "Error"),
             description: t("Failed to load DNS records: {{error}}", {
@@ -1990,7 +2259,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           });
         }
       } finally {
-        updateTab(tab.id, (prev) => ({ ...prev, isLoading: false }));
+        if (ownsGeneration()) {
+          updateTab(tab.id, (prev) => ({ ...prev, isLoading: false }));
+        }
       }
     },
     [getDNSRecords, toast, updateTab],
@@ -2121,7 +2392,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setTagManagerRecords(combined);
         setTagManagerRecordsLimited(limited);
       } catch (error) {
-        if ((error as Error).name === "AbortError") return;
+        if (
+          signal?.aborted ||
+          (error as Error).name === "AbortError" ||
+          (error as { kind?: string }).kind === "aborted"
+        ) {
+          return;
+        }
         setTagManagerRecordsError((error as Error).message);
       } finally {
         setTagManagerRecordsLoading(false);
@@ -2143,6 +2420,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       topologyRequestRef.current?.controller.abort();
       topologyRequestRef.current = null;
       nextTopologyRequestIdRef.current += 1;
+      recordRequestGenerationsRef.current.clear();
     },
     [],
   );
@@ -2499,7 +2777,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setPendingLastActiveTab(prefObj.last_active_tab);
           }
           if (typeof prefObj.auto_refresh_interval === "number") {
-            setAutoRefreshInterval(prefObj.auto_refresh_interval);
+            setAutoRefreshInterval(
+              clampAutoRefreshInterval(prefObj.auto_refresh_interval),
+            );
           }
           if (typeof prefObj.default_per_page === "number") {
             setGlobalPerPage(clampDnsPageSize(prefObj.default_per_page));
@@ -2533,7 +2813,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             setReopenZoneTabs(prefObj.reopen_zone_tabs);
           }
           if (Array.isArray(prefObj.last_open_tabs)) {
-            setLastOpenTabs(prefObj.last_open_tabs);
+            setLastOpenTabs(limitRestoredTabIds(prefObj.last_open_tabs));
           }
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
@@ -2788,7 +3068,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
     setReopenLastTabs(storageManager.getReopenLastTabs());
     setReopenZoneTabs(storageManager.getReopenZoneTabs());
-    setLastOpenTabs(storageManager.getLastOpenTabs());
+    setLastOpenTabs(limitRestoredTabIds(storageManager.getLastOpenTabs()));
     setPendingLastActiveTab(storageManager.getLastActiveTabId());
     setConfirmLogout(storageManager.getConfirmLogout());
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
@@ -2983,35 +3263,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
 
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            last_open_tabs: openTabIds,
-            last_active_tab: encoded || undefined,
-            last_zone:
-              activeTab?.kind === "zone" ? activeTab.zoneId : undefined,
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(error, "Persist desktop DNS tab state");
-        });
+      void TauriClient.updatePreferenceFields({
+        last_open_tabs: openTabIds,
+        last_active_tab: encoded || undefined,
+        last_zone: activeTab?.kind === "zone" ? activeTab.zoneId : undefined,
+      }).catch((error) => {
+        reportDnsManagerFailure(error, "Persist desktop DNS tab state");
+      });
     }
   }, [actionTab, activeTab, tabs]);
 
   useEffect(() => {
     if (!activeTab?.zoneId || activeTab.kind !== "zone") return;
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            last_zone: activeTab.zoneId,
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(error, "Persist last desktop DNS zone");
-        });
+      void TauriClient.updatePreferenceFields({
+        last_zone: activeTab.zoneId,
+      }).catch((error) => {
+        reportDnsManagerFailure(error, "Persist last desktop DNS zone");
+      });
     } else {
       storageManager.setLastZone(activeTab.zoneId);
     }
@@ -3029,39 +3298,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     storageManager.setLastActiveTabId(encoded);
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            last_active_tab: encoded,
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(error, "Persist active desktop DNS tab");
-        });
+      void TauriClient.updatePreferenceFields({
+        last_active_tab: encoded,
+      }).catch((error) => {
+        reportDnsManagerFailure(error, "Persist active desktop DNS tab");
+      });
     }
   }, [actionTab, activeTab, prefsReady, reopenLastTabs, restoredTabs]);
 
   useEffect(() => {
+    if (!prefsReady) return;
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            auto_refresh_interval: autoRefreshInterval ?? undefined,
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(
-            error,
-            "Persist desktop DNS auto-refresh preference",
-          );
-        });
+      void TauriClient.updatePreferenceFields({
+        auto_refresh_interval: autoRefreshInterval ?? undefined,
+      }).catch((error) => {
+        reportDnsManagerFailure(
+          error,
+          "Persist desktop DNS auto-refresh preference",
+        );
+      });
     } else {
       storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
     }
+  }, [autoRefreshInterval, prefsReady]);
+
+  useEffect(() => {
     if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
-    const id = setInterval(async () => {
+    let inFlightController: AbortController | null = null;
+    const disposePoller = createCompletionScheduledPoller(async () => {
       if (!activeTab || activeTab.kind !== "zone") return;
       if (
         activeTab.editingRecord ||
@@ -3071,10 +3335,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         return;
       }
       const controller = new AbortController();
-      await loadRecords(activeTab, controller.signal);
+      inFlightController = controller;
+      try {
+        await loadRecords(activeTab, controller.signal);
+      } finally {
+        if (inFlightController === controller) inFlightController = null;
+      }
     }, autoRefreshInterval);
-    return () => clearInterval(id);
-  }, [autoRefreshInterval, activeTab, loadRecords]);
+    return () => {
+      disposePoller();
+      inFlightController?.abort();
+      inFlightController = null;
+    };
+  }, [
+    activeTab?.editingRecord,
+    activeTab?.id,
+    activeTab?.kind,
+    activeTab?.page,
+    activeTab?.perPage,
+    activeTab?.showAddRecord,
+    activeTab?.showImport,
+    autoRefreshInterval,
+    loadRecords,
+  ]);
 
   useEffect(() => {
     if (!prefsReady) return;
@@ -3131,62 +3414,57 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
 
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            default_per_page: globalPerPage,
-            zone_per_page: zonePerPage,
-            show_unsupported_record_types: showUnsupportedRecordTypes,
-            zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
-            reopen_last_tabs: reopenLastTabs,
-            reopen_zone_tabs: reopenZoneTabs,
-            last_open_tabs: lastOpenTabs,
-            confirm_logout: confirmLogout,
-            idle_logout_ms: idleLogoutMs,
-            confirm_window_close: confirmWindowClose,
-            close_tab_on_middle_click: closeTabOnMiddleClick,
-            mcp_server_enabled: mcpServerEnabled,
-            mcp_server_host: mcpServerHost,
-            mcp_server_port: mcpServerPort,
-            mcp_enabled_tools: mcpEnabledTools,
-            loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
-            topology_resolution_max_hops: topologyResolutionMaxHops,
-            topology_resolver_mode: topologyResolverMode,
-            topology_dns_server: topologyDnsServer,
-            topology_custom_dns_server: topologyCustomDnsServer,
-            topology_doh_provider: topologyDohProvider,
-            topology_doh_custom_url: topologyDohCustomUrl,
-            topology_export_confirm_path: topologyExportConfirmPath,
-            topology_export_folder_preset: topologyExportFolderPreset,
-            topology_export_custom_path: topologyExportCustomPath,
-            topology_copy_actions: topologyCopyActions,
-            topology_export_actions: topologyExportActions,
-            topology_disable_annotations: topologyDisableAnnotations,
-            topology_disable_full_window: topologyDisableFullWindow,
-            topology_lookup_timeout_ms: topologyLookupTimeoutMs,
-            topology_disable_ptr_lookups: topologyDisablePtrLookups,
-            topology_disable_geo_lookups: topologyDisableGeoLookups,
-            topology_geo_provider: topologyGeoProvider,
-            topology_scan_resolution_chain: topologyScanResolutionChain,
-            topology_disable_service_discovery: topologyDisableServiceDiscovery,
-            topology_tcp_services: topologyTcpServices,
-            audit_export_default_documents: auditExportDefaultDocuments,
-            confirm_clear_audit_logs: confirmClearAuditLogs,
-            audit_export_folder_preset: auditExportFolderPreset,
-            audit_export_custom_path: auditExportCustomPath,
-            audit_export_skip_destination_confirm:
-              auditExportSkipDestinationConfirm,
-            domain_audit_categories: domainAuditCategories,
-            session_settings_profiles: {
-              ...sessionSettingsProfiles,
-              [currentSessionId]: buildSessionSettingsProfile(),
-            },
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(error, "Persist desktop DNS preferences");
-        });
+      void TauriClient.updatePreferenceFields({
+        default_per_page: globalPerPage,
+        zone_per_page: zonePerPage,
+        show_unsupported_record_types: showUnsupportedRecordTypes,
+        zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
+        reopen_last_tabs: reopenLastTabs,
+        reopen_zone_tabs: reopenZoneTabs,
+        last_open_tabs: lastOpenTabs,
+        confirm_logout: confirmLogout,
+        idle_logout_ms: idleLogoutMs,
+        confirm_window_close: confirmWindowClose,
+        close_tab_on_middle_click: closeTabOnMiddleClick,
+        mcp_server_enabled: mcpServerEnabled,
+        mcp_server_host: mcpServerHost,
+        mcp_server_port: mcpServerPort,
+        mcp_enabled_tools: mcpEnabledTools,
+        loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
+        topology_resolution_max_hops: topologyResolutionMaxHops,
+        topology_resolver_mode: topologyResolverMode,
+        topology_dns_server: topologyDnsServer,
+        topology_custom_dns_server: topologyCustomDnsServer,
+        topology_doh_provider: topologyDohProvider,
+        topology_doh_custom_url: topologyDohCustomUrl,
+        topology_export_confirm_path: topologyExportConfirmPath,
+        topology_export_folder_preset: topologyExportFolderPreset,
+        topology_export_custom_path: topologyExportCustomPath,
+        topology_copy_actions: topologyCopyActions,
+        topology_export_actions: topologyExportActions,
+        topology_disable_annotations: topologyDisableAnnotations,
+        topology_disable_full_window: topologyDisableFullWindow,
+        topology_lookup_timeout_ms: topologyLookupTimeoutMs,
+        topology_disable_ptr_lookups: topologyDisablePtrLookups,
+        topology_disable_geo_lookups: topologyDisableGeoLookups,
+        topology_geo_provider: topologyGeoProvider,
+        topology_scan_resolution_chain: topologyScanResolutionChain,
+        topology_disable_service_discovery: topologyDisableServiceDiscovery,
+        topology_tcp_services: topologyTcpServices,
+        audit_export_default_documents: auditExportDefaultDocuments,
+        confirm_clear_audit_logs: confirmClearAuditLogs,
+        audit_export_folder_preset: auditExportFolderPreset,
+        audit_export_custom_path: auditExportCustomPath,
+        audit_export_skip_destination_confirm:
+          auditExportSkipDestinationConfirm,
+        domain_audit_categories: domainAuditCategories,
+        session_settings_profiles: {
+          ...sessionSettingsProfiles,
+          [currentSessionId]: buildSessionSettingsProfile(),
+        },
+      }).catch((error) => {
+        reportDnsManagerFailure(error, "Persist desktop DNS preferences");
+      });
     }
   }, [
     globalPerPage,
@@ -3337,16 +3615,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const openTabIds = tabs.map((tab) => tab.id);
     setLastOpenTabs(openTabIds);
     if (isDesktop()) {
-      TauriClient.getPreferences()
-        .then((prefs) =>
-          TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
-            last_open_tabs: openTabIds,
-          }),
-        )
-        .catch((error) => {
-          reportDnsManagerFailure(error, "Persist open desktop DNS tabs");
-        });
+      void TauriClient.updatePreferenceFields({
+        last_open_tabs: openTabIds,
+      }).catch((error) => {
+        reportDnsManagerFailure(error, "Persist open desktop DNS tabs");
+      });
       return;
     }
     storageManager.setLastOpenTabs(openTabIds);
@@ -3995,9 +4268,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setSessionSettingsProfiles(nextProfiles);
         storageManager.setSessionSettingsProfile(currentSessionId, profile);
         if (isDesktop()) {
-          const prefs = await TauriClient.getPreferences();
-          await TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
+          await TauriClient.updatePreferenceFields({
             session_settings_profiles: nextProfiles,
           });
         }
@@ -4050,9 +4321,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.setSessionSettingsProfile(currentSessionId, profile);
       if (isDesktop()) {
         try {
-          const prefs = await TauriClient.getPreferences();
-          await TauriClient.updatePreferences({
-            ...(prefs as Record<string, unknown>),
+          await TauriClient.updatePreferenceFields({
             session_settings_profiles: nextProfiles,
           });
         } catch {
@@ -4292,6 +4561,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         getDNSRecords,
         activeTab.zoneId,
         controller.signal,
+        format,
       );
       throwIfDnsOperationAborted(controller.signal);
 
@@ -4305,22 +4575,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         try {
           switch (format) {
             case "json":
-              content = await TauriClient.recordsToJson(desktopRecords);
+              content = await TauriClient.recordsToJson(
+                desktopRecords,
+                controller.signal,
+              );
               filename = `${activeTab.zoneId}-records.json`;
               mimeType = "application/json";
               break;
             case "csv":
-              content = await TauriClient.recordsToCsv(desktopRecords);
+              content = await TauriClient.recordsToCsv(
+                desktopRecords,
+                controller.signal,
+              );
               filename = `${activeTab.zoneId}-records.csv`;
               mimeType = "text/csv";
               break;
             case "bind":
-              content = await TauriClient.recordsToBind(desktopRecords);
+              content = await TauriClient.recordsToBind(
+                desktopRecords,
+                controller.signal,
+              );
               filename = `${activeTab.zoneId}.zone`;
               mimeType = "text/plain";
               break;
           }
         } catch {
+          throwIfDnsOperationAborted(controller.signal);
           // Fall back to the frontend serializers using the same complete set.
         }
       }
@@ -4377,6 +4657,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
 
       throwIfDnsOperationAborted(controller.signal);
+      if (content.length * 2 > DNS_EXPORT_ESTIMATED_BYTE_LIMIT) {
+        throw new Error(
+          `DNS export exceeds the ${DNS_EXPORT_ESTIMATED_BYTE_LIMIT / (1024 * 1024)} MiB in-memory output safety limit; no file was created.`,
+        );
+      }
       const blob = new Blob([content], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -8470,8 +8755,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             <Select
                               value={String(autoRefreshInterval ?? 0)}
                               onValueChange={(v) => {
-                                const next = v ? Number(v) : 0;
-                                setAutoRefreshInterval(next ? next : null);
+                                const next = clampAutoRefreshInterval(v);
+                                setAutoRefreshInterval(next);
                                 notifySaved(
                                   next
                                     ? t("Auto refresh set to {{seconds}}s.", {
@@ -10418,12 +10703,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 }
 
 DNSManager.clampDnsPageSize = clampDnsPageSize;
+DNSManager.clampAutoRefreshInterval = clampAutoRefreshInterval;
 DNSManager.retainDnsRecordsForUi = retainDnsRecordsForUi;
 DNSManager.loadCompleteDnsRecordsForExport = loadCompleteDnsRecordsForExport;
 DNSManager.loadAuthoritativeDnsRecordsForTopology =
   loadAuthoritativeDnsRecordsForTopology;
+DNSManager.limitRestoredTabIds = limitRestoredTabIds;
+DNSManager.appendBoundedZoneTab = appendBoundedZoneTab;
+DNSManager.evictInactiveTabRecords = evictInactiveTabRecords;
+DNSManager.createCompletionScheduledPoller = createCompletionScheduledPoller;
+DNSManager.createRequestGenerationTracker = createRequestGenerationTracker;
 DNSManager.DNS_RECORD_MEMORY_LIMIT = DNS_RECORD_MEMORY_LIMIT;
 DNSManager.DNS_RECORD_RENDER_LIMIT = DNS_RECORD_RENDER_LIMIT;
 DNSManager.DNS_API_PAGE_SIZE_LIMIT = DNS_API_PAGE_SIZE_LIMIT;
+DNSManager.DNS_EXPORT_RECORD_LIMIT = DNS_EXPORT_RECORD_LIMIT;
+DNSManager.DNS_EXPORT_ESTIMATED_BYTE_LIMIT = DNS_EXPORT_ESTIMATED_BYTE_LIMIT;
+DNSManager.DNS_OPEN_ZONE_TAB_LIMIT = DNS_OPEN_ZONE_TAB_LIMIT;
 DNSManager.DNS_TOPOLOGY_RECORD_LIMIT = DNS_TOPOLOGY_RECORD_LIMIT;
 DNSManager.DNS_TOPOLOGY_SCAN_PAGE_LIMIT = DNS_TOPOLOGY_SCAN_PAGE_LIMIT;

@@ -30,11 +30,20 @@ import { Toaster } from "../src/components/ui/toaster";
 
 const {
   DNS_API_PAGE_SIZE_LIMIT,
+  DNS_EXPORT_ESTIMATED_BYTE_LIMIT,
+  DNS_EXPORT_RECORD_LIMIT,
+  DNS_OPEN_ZONE_TAB_LIMIT,
   DNS_RECORD_MEMORY_LIMIT,
   DNS_RECORD_RENDER_LIMIT,
   DNS_TOPOLOGY_RECORD_LIMIT,
   DNS_TOPOLOGY_SCAN_PAGE_LIMIT,
+  appendBoundedZoneTab,
+  clampAutoRefreshInterval,
   clampDnsPageSize,
+  createCompletionScheduledPoller,
+  createRequestGenerationTracker,
+  evictInactiveTabRecords,
+  limitRestoredTabIds,
   loadAuthoritativeDnsRecordsForTopology,
   loadCompleteDnsRecordsForExport,
   retainDnsRecordsForUi,
@@ -227,6 +236,35 @@ function dnsRecord(index: number): DNSRecord {
   };
 }
 
+function zoneTab(
+  index: number,
+  records: DNSRecord[] = [],
+): Parameters<typeof appendBoundedZoneTab>[0][number] {
+  return {
+    kind: "zone",
+    id: `zone-${index}`,
+    zoneId: `zone-${index}`,
+    zoneName: `zone-${index}.example.com`,
+    records,
+    recordsLimited: false,
+    sourceRecordCount: records.length,
+    isLoading: false,
+    editingRecord: null,
+    searchTerm: "",
+    typeFilter: "",
+    page: 1,
+    perPage: 50,
+    sortKey: null,
+    sortDir: null,
+    selectedIds: [],
+    showAddRecord: false,
+    showImport: false,
+    newRecord: {},
+    importData: "",
+    importFormat: "json",
+  };
+}
+
 test("bounds DNS retention and page sizes at exact deterministic limits", () => {
   const records = Array.from(
     { length: DNS_RECORD_MEMORY_LIMIT + 1 },
@@ -289,6 +327,130 @@ test("walks every authoritative DNS page for export and aborts without returning
       return true;
     },
   );
+});
+
+test("refuses DNS exports before aggregate record or estimated-byte limits are exceeded", async () => {
+  let requestedPages = 0;
+  const minimalRecord: DNSRecord = {
+    id: "",
+    type: "A",
+    name: "",
+    content: "",
+    ttl: 1,
+    proxied: false,
+    zone_id: "",
+    zone_name: "",
+    created_on: "",
+    modified_on: "",
+  };
+  await assert.rejects(
+    () =>
+      loadCompleteDnsRecordsForExport(async () => {
+        requestedPages += 1;
+        return Array.from(
+          { length: DNS_API_PAGE_SIZE_LIMIT },
+          () => minimalRecord,
+        );
+      }, "too-large-zone"),
+    new RegExp(DNS_EXPORT_RECORD_LIMIT.toLocaleString()),
+  );
+  assert.equal(
+    requestedPages,
+    DNS_EXPORT_RECORD_LIMIT / DNS_API_PAGE_SIZE_LIMIT + 1,
+  );
+
+  const oversizedRecord = {
+    ...dnsRecord(1),
+    content: "x".repeat(Math.ceil(DNS_EXPORT_ESTIMATED_BYTE_LIMIT / 6) + 1),
+  };
+  await assert.rejects(
+    () =>
+      loadCompleteDnsRecordsForExport(
+        async () => [oversizedRecord],
+        "oversized-content-zone",
+      ),
+    /estimated output safety limit/i,
+  );
+});
+
+test("clamps restored refresh settings and caps excessive restored zone tabs", () => {
+  assert.equal(clampAutoRefreshInterval(null), null);
+  assert.equal(clampAutoRefreshInterval(Number.NaN), null);
+  assert.equal(clampAutoRefreshInterval(1), 60_000);
+  assert.equal(clampAutoRefreshInterval(60 * 60_000), 30 * 60_000);
+
+  const restored = limitRestoredTabIds([
+    "__settings",
+    ...Array.from(
+      { length: DNS_OPEN_ZONE_TAB_LIMIT + 5 },
+      (_, index) => `zone-${index}`,
+    ),
+    "zone-0",
+    "",
+    null,
+  ]);
+  assert.deepEqual(restored.slice(0, 2), ["__settings", "zone-0"]);
+  assert.equal(
+    restored.filter((tabId) => !tabId.startsWith("__")).length,
+    DNS_OPEN_ZONE_TAB_LIMIT,
+  );
+  assert.equal(new Set(restored).size, restored.length);
+
+  const openTabs = Array.from({ length: DNS_OPEN_ZONE_TAB_LIMIT }, (_, index) =>
+    zoneTab(index),
+  );
+  const bounded = appendBoundedZoneTab(
+    openTabs,
+    zoneTab(DNS_OPEN_ZONE_TAB_LIMIT),
+    "zone-0",
+  );
+  assert.equal(bounded.tabs.length, DNS_OPEN_ZONE_TAB_LIMIT);
+  assert.ok(bounded.tabs.some((tab) => tab.id === "zone-0"));
+  assert.ok(
+    bounded.tabs.some((tab) => tab.id === `zone-${DNS_OPEN_ZONE_TAB_LIMIT}`),
+  );
+
+  const largeRecords = Array.from({ length: 1_000 }, (_, index) =>
+    dnsRecord(index),
+  );
+  const evicted = evictInactiveTabRecords(
+    [zoneTab(0, largeRecords), zoneTab(1, largeRecords)],
+    "zone-0",
+  );
+  assert.equal(evicted[0]?.records.length, largeRecords.length);
+  assert.equal(evicted[1]?.records.length, 0);
+});
+
+test("completion-scheduled refresh remains single-flight and cleanup prevents another call", async () => {
+  const gate = deferred<void>();
+  let calls = 0;
+  const dispose = createCompletionScheduledPoller(async () => {
+    calls += 1;
+    await gate.promise;
+  }, 5);
+
+  const deadline = Date.now() + 500;
+  while (calls === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(calls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 1, "an unresolved refresh cannot overlap itself");
+
+  dispose();
+  gate.resolve(undefined);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 1, "cleanup suppresses completion rescheduling");
+});
+
+test("record request generations reject reverse stale completions", () => {
+  const generations = createRequestGenerationTracker();
+  const older = generations.begin("zone-id");
+  const newer = generations.begin("zone-id");
+  assert.equal(generations.isCurrent("zone-id", older), false);
+  assert.equal(generations.isCurrent("zone-id", newer), true);
+  generations.invalidate("zone-id");
+  assert.equal(generations.isCurrent("zone-id", newer), false);
 });
 
 test("renders at most 200 rows for an exact 5,000-record UI dataset", async () => {

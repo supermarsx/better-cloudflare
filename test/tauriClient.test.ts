@@ -3,6 +3,8 @@ import { test, afterEach } from "node:test";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 import {
+  createSerializedPreferenceWriter,
+  getTauriInvokeTimeoutMs,
   normalizeTauriInvokeError,
   TauriClient,
   withTauriUiTimeout,
@@ -10,6 +12,17 @@ import {
 import { formatRequestError, RequestError } from "../src/lib/api/request-error";
 
 const originalWindow = (globalThis as unknown as { window?: unknown }).window;
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 afterEach(() => {
   clearMocks();
@@ -388,6 +401,93 @@ test("bounds stalled auth and passkey Tauri UI operations", async () => {
       },
     );
   }
+});
+
+test("applies a timeout to every Tauri command and clears the fast-path timer", async () => {
+  assert.equal(getTauriInvokeTimeoutMs("get_zones"), 15_000);
+  assert.equal(getTauriInvokeTimeoutMs("resolve_topology_batch"), 120_000);
+  assert.equal(
+    await withTauriUiTimeout(Promise.resolve("ready"), "get_zones", 60_000),
+    "ready",
+  );
+});
+
+test("desktop invokes reject promptly on abort and suppress pre-aborted native work", async () => {
+  let invocationCount = 0;
+  let resolveNative!: (value: unknown[]) => void;
+  mockIPC(() => {
+    invocationCount += 1;
+    return new Promise<unknown[]>((resolve) => {
+      resolveNative = resolve;
+    });
+  });
+
+  const controller = new AbortController();
+  const request = TauriClient.getZones("api-key", undefined, controller.signal);
+  await Promise.resolve();
+  assert.equal(invocationCount, 1);
+  controller.abort();
+  await assert.rejects(request, (error: unknown) => {
+    assert.ok(error instanceof RequestError);
+    assert.equal(error.kind, "aborted");
+    assert.match(error.message, /native task may still finish/i);
+    return true;
+  });
+
+  resolveNative([]);
+  await Promise.resolve();
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    () => TauriClient.getZones("api-key", undefined, preAborted.signal),
+    (error: unknown) => {
+      assert.ok(error instanceof RequestError);
+      assert.equal(error.kind, "aborted");
+      return true;
+    },
+  );
+  assert.equal(invocationCount, 1);
+});
+
+test("serializes reverse-ready preference writes and preserves the newest fields", async () => {
+  let stored: Record<string, unknown> = { retained: true };
+  const firstWrite = deferred<void>();
+  const secondWrite = deferred<void>();
+  const writes: Record<string, unknown>[] = [];
+  const writer = createSerializedPreferenceWriter(
+    async () => stored,
+    async (snapshot) => {
+      writes.push(snapshot);
+      const gate =
+        writes.length === 1 ? firstWrite.promise : secondWrite.promise;
+      await gate;
+      stored = snapshot;
+    },
+  );
+
+  const older = writer.update({ selected_zone: "older" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(writes.length, 1);
+
+  const newer = writer.update({ selected_zone: "newer", page_size: 100 });
+  secondWrite.resolve(undefined);
+  await Promise.resolve();
+  assert.equal(
+    writes.length,
+    1,
+    "the newer native write cannot start before the older one settles",
+  );
+
+  firstWrite.resolve(undefined);
+  await older;
+  await newer;
+  assert.deepEqual(stored, {
+    retained: true,
+    selected_zone: "newer",
+    page_size: 100,
+  });
+  assert.equal(writes.length, 2);
 });
 
 test("gives unknown native failures a diagnostic ID", () => {

@@ -11,13 +11,15 @@ import {
 } from "@testing-library/react";
 
 import {
+  ANALYTICS_NORMALIZATION_SCAN_LIMIT,
   ANALYTICS_POINT_LIMIT,
   ANALYTICS_TABLE_ROW_LIMIT,
   AnalyticsPanel,
   type AnalyticsTimeseries,
 } from "../src/components/analytics/AnalyticsPanel";
 
-const { downsampleAnalyticsTimeseries } = AnalyticsPanel;
+const { downsampleAnalyticsTimeseries, normalizeAnalyticsPayload } =
+  AnalyticsPanel;
 
 afterEach(() => {
   cleanup();
@@ -87,6 +89,75 @@ test("reports original and rendered analytics counts and bounds table DOM rows",
   assert.equal(
     screen.getAllByTestId("analytics-timeseries-row").length,
     ANALYTICS_TABLE_ROW_LIMIT,
+  );
+});
+
+test("normalizes malformed and oversized analytics payloads before rendering", async () => {
+  const rawTimeseries = Array.from(
+    { length: ANALYTICS_NORMALIZATION_SCAN_LIMIT + 101 },
+    (_, index): unknown =>
+      index % 11 === 0
+        ? {
+            since: "not-a-date",
+            until: undefined,
+            requests: Number.NaN,
+          }
+        : {
+            since: new Date(index * 60_000).toISOString(),
+            until: new Date((index + 1) * 60_000).toISOString(),
+            requests: String(index),
+            bandwidth: index === 3 ? Number.POSITIVE_INFINITY : "2048",
+            threats: undefined,
+            pageviews: "7",
+            uniques: "-10",
+          },
+  );
+  const payload = {
+    totals: {
+      requests: "12",
+      bandwidth: Number.NaN,
+      threats: Number.POSITIVE_INFINITY,
+      pageviews: undefined,
+    },
+    timeseries: rawTimeseries,
+  };
+  const normalized = normalizeAnalyticsPayload(payload);
+
+  assert.deepEqual(normalized.data.totals, {
+    requests: 12,
+    bandwidth: 0,
+    threats: 0,
+    pageviews: 0,
+    uniques: 0,
+  });
+  assert.equal(normalized.sourcePointCount, rawTimeseries.length);
+  assert.ok(normalized.data.timeseries.length <= ANALYTICS_POINT_LIMIT);
+  for (const point of normalized.data.timeseries) {
+    assert.ok(Number.isFinite(Date.parse(point.since)));
+    assert.ok(Number.isFinite(Date.parse(point.until)));
+    assert.ok(
+      [point.requests, point.bandwidth, point.threats, point.pageviews].every(
+        Number.isFinite,
+      ),
+    );
+    assert.ok((point.uniques ?? 0) >= 0);
+  }
+
+  render(
+    <AnalyticsPanel
+      zoneId="malformed-zone"
+      getZoneAnalytics={async () => payload}
+    />,
+  );
+  assert.ok(await screen.findByText("Zone Analytics"));
+  await screen.findByTestId("analytics-sampling-notice");
+  assert.ok(
+    screen.getAllByTestId("analytics-timeseries-row").length <=
+      ANALYTICS_TABLE_ROW_LIMIT,
+  );
+  assert.doesNotMatch(
+    document.body.textContent ?? "",
+    /NaN|Infinity|Invalid Date/,
   );
 });
 

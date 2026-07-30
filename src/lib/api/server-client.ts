@@ -353,7 +353,7 @@ export class ServerClient {
    */
   async verifyToken(signal?: AbortSignal): Promise<void> {
     if (isDesktop()) {
-      const ok = await TauriClient.verifyToken(this.apiKey, this.email);
+      const ok = await TauriClient.verifyToken(this.apiKey, this.email, signal);
       if (!ok) {
         throw new Error("Token verification failed");
       }
@@ -374,7 +374,9 @@ export class ServerClient {
    */
   async getZones(signal?: AbortSignal): Promise<Zone[]> {
     if (isDesktop()) {
-      return TauriClient.getZones(this.apiKey, this.email) as Promise<Zone[]>;
+      return TauriClient.getZones(this.apiKey, this.email, signal) as Promise<
+        Zone[]
+      >;
     }
     return this.request("/zones", { signal });
   }
@@ -399,6 +401,7 @@ export class ServerClient {
         zoneId,
         page,
         perPage,
+        signal,
       ) as Promise<DNSRecord[]>;
     }
     const qsParts = [] as string[];
@@ -427,6 +430,7 @@ export class ServerClient {
         this.email,
         zoneId,
         normalizeTauriRecordInput(record),
+        signal,
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records`, {
@@ -454,6 +458,7 @@ export class ServerClient {
         zoneId,
         records.map((r) => normalizeTauriRecordInput(r)),
         dryrun,
+        signal,
       ) as Promise<{ created: DNSRecord[]; skipped: unknown[] }>;
     }
     /**
@@ -490,6 +495,7 @@ export class ServerClient {
         zoneId,
         recordId,
         normalizeTauriRecordInput(record),
+        signal,
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
@@ -518,6 +524,7 @@ export class ServerClient {
         this.email,
         zoneId,
         recordId,
+        signal,
       );
     }
     await this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
@@ -659,7 +666,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<{ id: string; counter?: number }[]> {
     if (isDesktop()) {
-      return TauriClient.listPasskeys(id) as Promise<
+      return TauriClient.listPasskeys(id, signal) as Promise<
         { id: string; counter?: number }[]
       >;
     }
@@ -682,6 +689,7 @@ export class ServerClient {
     format: "json" | "csv" | "bind" = "json",
     page?: number,
     perPage?: number,
+    signal?: AbortSignal,
   ): Promise<string> {
     /**
      * Export DNS records for a zone in a specific format. Supported formats
@@ -689,14 +697,24 @@ export class ServerClient {
      * forwarded to the server.
      */
     if (isDesktop()) {
-      return TauriClient.exportDNSRecords(
-        this.apiKey,
-        this.email,
-        zoneId,
-        format,
-        page,
-        perPage,
-      );
+      return signal
+        ? TauriClient.exportDNSRecords(
+            this.apiKey,
+            this.email,
+            zoneId,
+            format,
+            page,
+            perPage,
+            signal,
+          )
+        : TauriClient.exportDNSRecords(
+            this.apiKey,
+            this.email,
+            zoneId,
+            format,
+            page,
+            perPage,
+          );
     }
     const q: string[] = [];
     q.push(`format=${format}`);
@@ -705,6 +723,7 @@ export class ServerClient {
     const query = q.length ? `?${q.join("&")}` : "";
     return this.request(`/zones/${zoneId}/dns_records/export${query}`, {
       responseMode: "text",
+      signal,
     });
   }
 
@@ -720,6 +739,7 @@ export class ServerClient {
         zoneId,
         payload.purge_everything === true,
         payload.files,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/purge_cache`, {
@@ -740,6 +760,7 @@ export class ServerClient {
         this.email,
         zoneId,
         settingId,
+        signal,
       ) as Promise<ZoneSetting<T>>;
     }
     return this.request(`/zones/${zoneId}/settings/${settingId}`, { signal });
@@ -758,6 +779,7 @@ export class ServerClient {
         zoneId,
         settingId,
         value,
+        signal,
       ) as Promise<ZoneSetting<T>>;
     }
     return this.request(`/zones/${zoneId}/settings/${settingId}`, {
@@ -769,7 +791,7 @@ export class ServerClient {
 
   async getDnssec(zoneId: string, signal?: AbortSignal): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.getDnssec(this.apiKey, this.email, zoneId);
+      return TauriClient.getDnssec(this.apiKey, this.email, zoneId, signal);
     }
     return this.request(`/zones/${zoneId}/dnssec`, { signal });
   }
@@ -780,7 +802,13 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.updateDnssec(this.apiKey, this.email, zoneId, payload);
+      return TauriClient.updateDnssec(
+        this.apiKey,
+        this.email,
+        zoneId,
+        payload,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/dnssec`, {
       method: "PATCH",
@@ -850,7 +878,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.registrarListDomains(credentialId);
+      return TauriClient.registrarListDomains(credentialId, signal);
     }
     return this.request(`/registrar/credentials/${credentialId}/domains`, {
       signal,
@@ -863,7 +891,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.registrarGetDomain(credentialId, domain);
+      return TauriClient.registrarGetDomain(credentialId, domain, signal);
     }
     return this.request(
       `/registrar/credentials/${credentialId}/domains/${encodeURIComponent(domain)}`,
@@ -873,7 +901,7 @@ export class ServerClient {
 
   async registrarListAllDomains(signal?: AbortSignal): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.registrarListAllDomains();
+      return TauriClient.registrarListAllDomains(signal);
     }
     return this.request("/registrar/domains", { signal });
   }
@@ -884,7 +912,7 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (isDesktop()) {
-      return TauriClient.registrarHealthCheck(credentialId, domain);
+      return TauriClient.registrarHealthCheck(credentialId, domain, signal);
     }
     return this.request(
       `/registrar/credentials/${credentialId}/domains/${encodeURIComponent(domain)}/health`,
@@ -894,7 +922,7 @@ export class ServerClient {
 
   async registrarHealthCheckAll(signal?: AbortSignal): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.registrarHealthCheckAll();
+      return TauriClient.registrarHealthCheckAll(signal);
     }
     return this.request("/registrar/health", { signal });
   }
@@ -969,6 +997,8 @@ export class ServerClient {
         since,
         until,
         this.email,
+        undefined,
+        signal,
       );
     }
     const params = new URLSearchParams();
@@ -994,6 +1024,9 @@ export class ServerClient {
         since,
         until,
         this.email,
+        undefined,
+        undefined,
+        signal,
       );
     }
     const params = new URLSearchParams();
@@ -1013,7 +1046,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getFirewallRules(this.apiKey, zoneId, this.email);
+      return TauriClient.getFirewallRules(
+        this.apiKey,
+        zoneId,
+        this.email,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/firewall/rules`, { signal });
   }
@@ -1033,6 +1071,7 @@ export class ServerClient {
         zoneId,
         rule,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/firewall/rules`, {
@@ -1059,6 +1098,7 @@ export class ServerClient {
         ruleId,
         rule,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
@@ -1079,6 +1119,7 @@ export class ServerClient {
         zoneId,
         ruleId,
         this.email,
+        signal,
       );
     }
     await this.request(`/zones/${zoneId}/firewall/rules/${ruleId}`, {
@@ -1093,7 +1134,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getIpAccessRules(this.apiKey, zoneId, this.email);
+      return TauriClient.getIpAccessRules(
+        this.apiKey,
+        zoneId,
+        this.email,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, {
       signal,
@@ -1115,6 +1161,7 @@ export class ServerClient {
         ip,
         notes,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/firewall/access_rules/rules`, {
@@ -1135,6 +1182,7 @@ export class ServerClient {
         zoneId,
         ruleId,
         this.email,
+        signal,
       );
     }
     await this.request(
@@ -1152,7 +1200,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getWafRulesets(this.apiKey, zoneId, this.email);
+      return TauriClient.getWafRulesets(
+        this.apiKey,
+        zoneId,
+        this.email,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/rulesets`, { signal });
   }
@@ -1164,7 +1217,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getWorkerRoutes(this.apiKey, zoneId, this.email);
+      return TauriClient.getWorkerRoutes(
+        this.apiKey,
+        zoneId,
+        this.email,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/workers/routes`, { signal });
   }
@@ -1182,6 +1240,7 @@ export class ServerClient {
         pattern,
         script,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/workers/routes`, {
@@ -1202,6 +1261,7 @@ export class ServerClient {
         zoneId,
         routeId,
         this.email,
+        signal,
       );
     }
     await this.request(`/zones/${zoneId}/workers/routes/${routeId}`, {
@@ -1222,6 +1282,7 @@ export class ServerClient {
         this.apiKey,
         zoneId,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/email/routing`, { signal });
@@ -1232,7 +1293,12 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getEmailRoutingRules(this.apiKey, zoneId, this.email);
+      return TauriClient.getEmailRoutingRules(
+        this.apiKey,
+        zoneId,
+        this.email,
+        signal,
+      );
     }
     return this.request(`/zones/${zoneId}/email/routing/rules`, { signal });
   }
@@ -1248,6 +1314,7 @@ export class ServerClient {
         zoneId,
         rule,
         this.email,
+        signal,
       );
     }
     return this.request(`/zones/${zoneId}/email/routing/rules`, {
@@ -1268,6 +1335,7 @@ export class ServerClient {
         zoneId,
         ruleId,
         this.email,
+        signal,
       );
     }
     await this.request(`/zones/${zoneId}/email/routing/rules/${ruleId}`, {
@@ -1281,7 +1349,7 @@ export class ServerClient {
 
   async getPageRules(zoneId: string, signal?: AbortSignal): Promise<unknown[]> {
     if (isDesktop()) {
-      return TauriClient.getPageRules(this.apiKey, zoneId, this.email);
+      return TauriClient.getPageRules(this.apiKey, zoneId, this.email, signal);
     }
     return this.request(`/zones/${zoneId}/pagerules`, { signal });
   }
@@ -1299,6 +1367,7 @@ export class ServerClient {
         zoneId,
         recordIds,
         this.email,
+        signal,
       );
     }
     // Web mode: delete one-by-one
@@ -1324,6 +1393,7 @@ export class ServerClient {
         domain,
         recordType,
         extraResolvers,
+        signal,
       );
     }
     // Web mode: hit our server API
