@@ -39,6 +39,7 @@ namespace BetterCloudflare
     {
         private const int JobObjectBasicProcessIdList = 3;
         private const int JobObjectExtendedLimitInformationClass = 9;
+        private const uint JobObjectLimitJobMemory = 0x00000200;
         private const uint JobObjectLimitKillOnJobClose = 0x00002000;
         private IntPtr handle;
 
@@ -116,8 +117,13 @@ namespace BetterCloudflare
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
 
-        public ProcessJob()
+        public ProcessJob(long memoryLimitBytes)
         {
+            if (memoryLimitBytes < 0)
+            {
+                throw new ArgumentOutOfRangeException("memoryLimitBytes");
+            }
+
             handle = CreateJobObject(IntPtr.Zero, null);
             if (handle == IntPtr.Zero)
             {
@@ -131,6 +137,20 @@ namespace BetterCloudflare
                 new JobObjectExtendedLimitInformation();
             limits.BasicLimitInformation.LimitFlags =
                 JobObjectLimitKillOnJobClose;
+            if (memoryLimitBytes > 0)
+            {
+                if (UIntPtr.Size == 4 && memoryLimitBytes > UInt32.MaxValue)
+                {
+                    throw new PlatformNotSupportedException(
+                        "The requested job memory limit requires a 64-bit process."
+                    );
+                }
+                limits.BasicLimitInformation.LimitFlags |=
+                    JobObjectLimitJobMemory;
+                limits.JobMemoryLimit = new UIntPtr(
+                    checked((ulong)memoryLimitBytes)
+                );
+            }
 
             int length = Marshal.SizeOf(limits);
             IntPtr buffer = Marshal.AllocHGlobal(length);
@@ -200,6 +220,42 @@ namespace BetterCloudflare
                     processIds[index] = checked((int)processId);
                 }
                 return processIds;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        public ulong GetPeakJobMemoryUsed()
+        {
+            int length = Marshal.SizeOf(
+                typeof(JobObjectExtendedLimitInformation)
+            );
+            IntPtr buffer = Marshal.AllocHGlobal(length);
+            try
+            {
+                uint returnLength;
+                if (!QueryInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformationClass,
+                    buffer,
+                    (uint)length,
+                    out returnLength
+                ))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "QueryInformationJobObject failed"
+                    );
+                }
+
+                JobObjectExtendedLimitInformation information =
+                    (JobObjectExtendedLimitInformation)Marshal.PtrToStructure(
+                        buffer,
+                        typeof(JobObjectExtendedLimitInformation)
+                    );
+                return information.PeakJobMemoryUsed.ToUInt64();
             }
             finally
             {
@@ -333,17 +389,20 @@ $exitCodeMap = [System.IO.MemoryMappedFiles.MemoryMappedFile]::CreateNew(
   4
 )
 $exitCodeAccessor = $exitCodeMap.CreateViewAccessor()
-$job = New-Object BetterCloudflare.ProcessJob
+$memoryLimitBytes = $MemoryLimitMiB * 1MB
+$job = New-Object BetterCloudflare.ProcessJob(
+  [long]$memoryLimitBytes
+)
 $process = $null
 $outputPump = $null
 $status = "starting"
 $exitCode = 1
 $peakSingleRssBytes = [long]0
 $peakAggregateRssBytes = [long]0
+$peakJobCommitBytes = [uint64]0
 $samples = 0
 $startedAt = [DateTimeOffset]::UtcNow
 $deadline = $startedAt.AddSeconds($TimeoutSeconds)
-$memoryLimitBytes = $MemoryLimitMiB * 1MB
 
 $bootstrap = @'
 $ErrorActionPreference = "Stop"
@@ -657,6 +716,7 @@ try {
     }
   }
   $outputPump.WaitForDrain(5000)
+  $peakJobCommitBytes = $job.GetPeakJobMemoryUsed()
 }
 finally {
   if ($null -ne $outputPump) {
@@ -678,6 +738,8 @@ $result = [ordered]@{
   exitCode = $exitCode
   timeoutSeconds = $TimeoutSeconds
   memoryLimitMiB = $MemoryLimitMiB
+  hardMemoryLimitEnabled = $MemoryLimitMiB -gt 0
+  hardMemoryLimitBytes = [long]$memoryLimitBytes
   pollIntervalMilliseconds = $PollIntervalMilliseconds
   samples = $samples
   elapsedMilliseconds = [long]($finishedAt - $startedAt).TotalMilliseconds
@@ -685,6 +747,8 @@ $result = [ordered]@{
   peakSingleRssMiB = [Math]::Round($peakSingleRssBytes / 1MB, 2)
   peakAggregateRssBytes = $peakAggregateRssBytes
   peakAggregateRssMiB = [Math]::Round($peakAggregateRssBytes / 1MB, 2)
+  peakJobCommitBytes = $peakJobCommitBytes
+  peakJobCommitMiB = [Math]::Round($peakJobCommitBytes / 1MB, 2)
 }
 
 Write-Output "PROCESS_TREE_WATCHDOG_RESULT $(ConvertTo-Json -Compress -InputObject $result)"

@@ -444,6 +444,15 @@ test(
       .find((line) => line.startsWith("["));
 
     assert.equal(result.exitCode, 0);
+    if (process.platform === "win32") {
+      assert.equal(result.watchdog?.hardMemoryLimitEnabled, true);
+      assert.equal(result.watchdog?.hardMemoryLimitBytes, 512 * 1024 * 1024);
+      assert.ok((result.watchdog?.peakJobCommitBytes ?? 0) > 0);
+      assert.ok(
+        (result.watchdog?.peakJobCommitBytes ?? Number.POSITIVE_INFINITY) <=
+          512 * 1024 * 1024,
+      );
+    }
     assert.notEqual(argumentLine, undefined);
     assert.deepEqual(JSON.parse(argumentLine ?? "[]"), expected);
   },

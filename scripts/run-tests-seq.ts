@@ -63,10 +63,14 @@ export interface TestSummary {
 export interface WatchdogSummary {
   status: string;
   exitCode: number;
+  hardMemoryLimitEnabled: boolean;
+  hardMemoryLimitBytes: number;
   peakSingleRssBytes: number;
   peakSingleRssMiB: number;
   peakAggregateRssBytes: number;
   peakAggregateRssMiB: number;
+  peakJobCommitBytes: number;
+  peakJobCommitMiB: number;
 }
 
 export interface GuardedProcessResult {
@@ -495,8 +499,11 @@ export function parseWatchdogSummary(output: string): WatchdogSummary | null {
   if (
     typeof parsed.status !== "string" ||
     typeof parsed.exitCode !== "number" ||
+    typeof parsed.hardMemoryLimitEnabled !== "boolean" ||
+    typeof parsed.hardMemoryLimitBytes !== "number" ||
     typeof parsed.peakSingleRssBytes !== "number" ||
-    typeof parsed.peakAggregateRssBytes !== "number"
+    typeof parsed.peakAggregateRssBytes !== "number" ||
+    typeof parsed.peakJobCommitBytes !== "number"
   ) {
     throw new Error("The process-tree watchdog returned an invalid result.");
   }
@@ -504,12 +511,17 @@ export function parseWatchdogSummary(output: string): WatchdogSummary | null {
   return {
     status: parsed.status,
     exitCode: parsed.exitCode,
+    hardMemoryLimitEnabled: parsed.hardMemoryLimitEnabled,
+    hardMemoryLimitBytes: parsed.hardMemoryLimitBytes,
     peakSingleRssBytes: parsed.peakSingleRssBytes,
     peakSingleRssMiB:
       parsed.peakSingleRssMiB ?? parsed.peakSingleRssBytes / 1024 / 1024,
     peakAggregateRssBytes: parsed.peakAggregateRssBytes,
     peakAggregateRssMiB:
       parsed.peakAggregateRssMiB ?? parsed.peakAggregateRssBytes / 1024 / 1024,
+    peakJobCommitBytes: parsed.peakJobCommitBytes,
+    peakJobCommitMiB:
+      parsed.peakJobCommitMiB ?? parsed.peakJobCommitBytes / 1024 / 1024,
   };
 }
 
