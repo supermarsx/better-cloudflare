@@ -184,7 +184,7 @@ test("sends the complete topology invoke contract in camelCase and preserves opt
     3456,
     true,
     [443, 8443],
-    true,
+    false,
     "internal",
     false,
   );
@@ -221,7 +221,7 @@ test("sends the complete topology invoke contract in camelCase and preserves opt
         lookupTimeoutMs: 3456,
         disablePtrLookups: true,
         tcpServicePorts: [443, 8443],
-        disableGeoLookups: true,
+        disableGeoLookups: false,
         geoProvider: "internal",
         scanResolutionChain: false,
       },
