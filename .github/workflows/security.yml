@@ -47,10 +47,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate fail-closed OSV exception policy
+        run: >-
+          python3 .github/scripts/validate-osv-policy.py
+          --config=./osv-scanner.toml
+          --lockfile=./package-lock.json
+          --lockfile=./Cargo.lock
+          --workflow=./.github/workflows/ci.yml
+          --workflow=./.github/workflows/security.yml
       - name: Scan JavaScript and Rust lockfiles
         uses: docker://ghcr.io/google/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba # v2.3.8
         with:
           args: >-
+            --config=./osv-scanner.toml
             --lockfile=./package-lock.json
             --lockfile=./Cargo.lock
 

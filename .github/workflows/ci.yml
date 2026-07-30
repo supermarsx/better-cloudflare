@@ -218,10 +218,19 @@ jobs:
         run: node .github/scripts/release-contract.mjs diagnostics 1024 4096
       - name: Test release contract
         run: npm run test:release-contract -- --test-concurrency=1
+      - name: Validate fail-closed OSV exception policy
+        run: >-
+          python3 .github/scripts/validate-osv-policy.py
+          --config=./osv-scanner.toml
+          --lockfile=./package-lock.json
+          --lockfile=./Cargo.lock
+          --workflow=./.github/workflows/ci.yml
+          --workflow=./.github/workflows/security.yml
       - name: Scan JavaScript and Rust lockfiles for known vulnerabilities
         uses: docker://ghcr.io/google/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba # v2.3.8
         with:
           args: >-
+            --config=./osv-scanner.toml
             --lockfile=./package-lock.json
             --lockfile=./Cargo.lock
 
