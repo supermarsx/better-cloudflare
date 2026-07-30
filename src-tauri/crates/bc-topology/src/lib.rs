@@ -6,14 +6,19 @@
 
 use chrono::Utc;
 use reqwest::redirect::Policy;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use trust_dns_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
+
+mod limits;
+pub use limits::*;
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -98,6 +103,145 @@ fn normalize_domain(input: &str) -> String {
     input.trim().trim_end_matches('.').to_lowercase()
 }
 
+fn bounded_domain(input: &str) -> Option<String> {
+    let trimmed = input.trim().trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.len() > MAX_HOSTNAME_BYTES {
+        return None;
+    }
+    let normalized = trimmed.to_lowercase();
+    if normalized.is_empty() || normalized.len() > MAX_HOSTNAME_BYTES {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn bounded_error(message: impl AsRef<str>) -> String {
+    let message = message.as_ref();
+    if message.len() <= MAX_ERROR_BYTES {
+        return message.to_string();
+    }
+    let mut end = MAX_ERROR_BYTES;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
+}
+
+#[cfg(test)]
+static TEST_NETWORK_STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn note_network_start() {
+    TEST_NETWORK_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(not(test))]
+fn note_network_start() {}
+
+async fn read_json_limited<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    timeout: Duration,
+) -> Option<T> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return None;
+    }
+    tokio::time::timeout(timeout, async move {
+        let mut bytes = Vec::new();
+        if let Some(length) = response.content_length() {
+            bytes.try_reserve(length as usize).ok()?;
+        }
+        while let Some(chunk) = response.chunk().await.ok()? {
+            if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                return None;
+            }
+            bytes.try_reserve(chunk.len()).ok()?;
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn bounded_answers<I>(answers: I) -> Result<Vec<String>, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut output = Vec::new();
+    let mut seen = HashSet::new();
+    let mut retained_bytes = 0usize;
+    for answer in answers {
+        let answer = answer.trim().to_string();
+        if answer.is_empty() {
+            continue;
+        }
+        if answer.len() > MAX_DNS_ANSWER_BYTES {
+            return Err(format!(
+                "DNS answer exceeds the safe {MAX_DNS_ANSWER_BYTES} byte limit"
+            ));
+        }
+        if !seen.insert(answer.clone()) {
+            continue;
+        }
+        if output.len() >= MAX_DNS_ANSWERS {
+            return Err(format!(
+                "DNS answer count exceeds the safe {MAX_DNS_ANSWERS} item limit"
+            ));
+        }
+        retained_bytes = retained_bytes.saturating_add(answer.len());
+        if retained_bytes > MAX_DNS_ANSWER_TOTAL_BYTES {
+            return Err(format!(
+                "DNS answers exceed the safe {MAX_DNS_ANSWER_TOTAL_BYTES} byte aggregate limit"
+            ));
+        }
+        output.push(answer);
+    }
+    output.sort();
+    Ok(output)
+}
+
+async fn bounded_parallel_map<T, U, F, Fut>(
+    items: Vec<T>,
+    concurrency: usize,
+    operation: F,
+) -> Vec<U>
+where
+    T: Send + 'static,
+    U: Send + 'static,
+    F: Fn(T) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+{
+    let total = items.len();
+    let mut ordered: Vec<Option<U>> = (0..total).map(|_| None).collect();
+    let mut pending = items.into_iter().enumerate();
+    let mut tasks = tokio::task::JoinSet::new();
+    let concurrency = concurrency.max(1);
+
+    for _ in 0..concurrency {
+        let Some((index, item)) = pending.next() else {
+            break;
+        };
+        let operation = operation.clone();
+        tasks.spawn(async move { (index, operation(item).await) });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((index, value)) = joined {
+            ordered[index] = Some(value);
+        }
+        if let Some((index, item)) = pending.next() {
+            let operation = operation.clone();
+            tasks.spawn(async move { (index, operation(item).await) });
+        }
+    }
+    ordered.into_iter().flatten().collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct DnsGoogleAnswer {
     data: Option<String>,
@@ -151,6 +295,7 @@ async fn query_doh_records(
         record_type: String,
         lookup_timeout_ms: u32,
     ) -> Option<Vec<String>> {
+        note_network_start();
         let send_fut = client
             .get(endpoint)
             .header("accept", "application/dns-json")
@@ -168,34 +313,27 @@ async fn query_doh_records(
         if !resp.status().is_success() {
             return None;
         }
-        let Ok(payload) = tokio::time::timeout(
+        let payload = read_json_limited::<DnsGoogleResponse>(
+            resp,
+            MAX_DOH_RESPONSE_BYTES,
             Duration::from_millis(u64::from(lookup_timeout_ms)),
-            resp.json::<DnsGoogleResponse>(),
         )
-        .await
-        else {
-            return None;
-        };
-        let Ok(payload) = payload else { return None };
-        let mut out = Vec::new();
-        for ans in payload.answer.unwrap_or_default() {
-            let raw = ans.data.unwrap_or_default().trim().to_string();
-            if raw.is_empty() {
-                continue;
-            }
-            let value = if record_type == "CNAME" {
-                normalize_domain(&raw)
-            } else {
-                raw
-            };
-            if !value.is_empty() && !out.contains(&value) {
-                out.push(value);
-            }
-        }
-        if !out.is_empty() {
-            return Some(out);
-        }
-        None
+        .await?;
+        let answers = payload
+            .answer
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|answer| answer.data)
+            .filter_map(|raw| {
+                if record_type == "CNAME" {
+                    bounded_domain(&raw)
+                } else {
+                    Some(raw)
+                }
+            });
+        bounded_answers(answers)
+            .ok()
+            .filter(|answers| !answers.is_empty())
     }
 
     let mut set = tokio::task::JoinSet::new();
@@ -218,6 +356,7 @@ async fn query_doh_records(
 
 // ─── DNS chain resolution ──────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_chain_for_host(
     resolver: &TokioAsyncResolver,
     client: &reqwest::Client,
@@ -229,6 +368,7 @@ async fn resolve_chain_for_host(
     disable_ptr_lookups: bool,
 ) -> HostnameChainResult {
     let name = normalize_domain(host);
+    let mut resource_error = None;
     if name.is_empty() {
         return HostnameChainResult {
             name,
@@ -249,20 +389,22 @@ async fn resolve_chain_for_host(
 
     if scan_resolution_chain {
         for _ in 0..max_hops {
-            let cname_lookup = tokio::time::timeout(
-                Duration::from_millis(u64::from(lookup_timeout_ms)),
-                resolver.lookup(
-                    cur.clone(),
-                    trust_dns_resolver::proto::rr::RecordType::CNAME,
-                ),
-            )
-            .await;
+            let cname_lookup =
+                tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), async {
+                    note_network_start();
+                    resolver
+                        .lookup(
+                            cur.clone(),
+                            trust_dns_resolver::proto::rr::RecordType::CNAME,
+                        )
+                        .await
+                })
+                .await;
             let direct_next = match cname_lookup {
                 Ok(Ok(lookup)) => lookup
                     .iter()
                     .next()
-                    .map(|r| normalize_domain(&r.to_string()))
-                    .filter(|s| !s.is_empty()),
+                    .and_then(|record| bounded_domain(&record.to_string())),
                 Err(_) | Ok(Err(_)) => None,
             };
             let next = if direct_next.is_some() {
@@ -284,31 +426,45 @@ async fn resolve_chain_for_host(
     }
 
     let (v4_lookup, v6_lookup) = tokio::join!(
-        tokio::time::timeout(
-            Duration::from_millis(u64::from(lookup_timeout_ms)),
-            resolver.ipv4_lookup(cur.clone())
-        ),
-        tokio::time::timeout(
-            Duration::from_millis(u64::from(lookup_timeout_ms)),
-            resolver.ipv6_lookup(cur.clone())
-        )
+        tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), async {
+            note_network_start();
+            resolver.ipv4_lookup(cur.clone()).await
+        }),
+        tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), async {
+            note_network_start();
+            resolver.ipv6_lookup(cur.clone()).await
+        })
     );
 
     let mut ipv4 = Vec::new();
+    let mut seen_ipv4 = HashSet::new();
     if let Ok(Ok(v4)) = v4_lookup {
         for ip in v4.iter() {
             let v = ip.to_string();
-            if !ipv4.contains(&v) {
+            if seen_ipv4.insert(v.clone()) {
+                if ipv4.len() >= MAX_IPS_PER_FAMILY {
+                    resource_error = Some(format!(
+                        "IPv4 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
+                    ));
+                    break;
+                }
                 ipv4.push(v);
             }
         }
     }
 
     let mut ipv6 = Vec::new();
+    let mut seen_ipv6 = HashSet::new();
     if let Ok(Ok(v6)) = v6_lookup {
         for ip in v6.iter() {
             let v = ip.to_string();
-            if !ipv6.contains(&v) {
+            if seen_ipv6.insert(v.clone()) {
+                if ipv6.len() >= MAX_IPS_PER_FAMILY {
+                    resource_error = Some(format!(
+                        "IPv6 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
+                    ));
+                    break;
+                }
                 ipv6.push(v);
             }
         }
@@ -333,9 +489,21 @@ async fn resolve_chain_for_host(
         );
         if ipv4.is_empty() {
             ipv4 = doh_v4;
+            if ipv4.len() > MAX_IPS_PER_FAMILY {
+                ipv4.truncate(MAX_IPS_PER_FAMILY);
+                resource_error = Some(format!(
+                    "IPv4 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
+                ));
+            }
         }
         if ipv6.is_empty() {
             ipv6 = doh_v6;
+            if ipv6.len() > MAX_IPS_PER_FAMILY {
+                ipv6.truncate(MAX_IPS_PER_FAMILY);
+                resource_error = Some(format!(
+                    "IPv6 answer count exceeds the safe {MAX_IPS_PER_FAMILY} item limit"
+                ));
+            }
         }
     }
 
@@ -349,15 +517,25 @@ async fn resolve_chain_for_host(
                 continue;
             };
             let mut names = Vec::new();
-            let ptr_lookup = tokio::time::timeout(
-                Duration::from_millis(u64::from(lookup_timeout_ms)),
-                resolver.reverse_lookup(parsed),
-            )
-            .await;
+            let mut seen_names = HashSet::new();
+            let ptr_lookup =
+                tokio::time::timeout(Duration::from_millis(u64::from(lookup_timeout_ms)), async {
+                    note_network_start();
+                    resolver.reverse_lookup(parsed).await
+                })
+                .await;
             if let Ok(Ok(ptr_lookup)) = ptr_lookup {
                 for name in ptr_lookup.iter() {
-                    let host = normalize_domain(&name.to_utf8());
-                    if !host.is_empty() && !names.contains(&host) {
+                    let Some(host) = bounded_domain(&name.to_utf8()) else {
+                        continue;
+                    };
+                    if seen_names.insert(host.clone()) {
+                        if names.len() >= MAX_REVERSE_HOSTNAMES_PER_IP {
+                            resource_error = Some(format!(
+                                "PTR answer count exceeds the safe {MAX_REVERSE_HOSTNAMES_PER_IP} item limit"
+                            ));
+                            break;
+                        }
                         names.push(host);
                     }
                 }
@@ -380,7 +558,9 @@ async fn resolve_chain_for_host(
         ipv6,
         reverse_hostnames,
         geo_by_ip: Vec::new(),
-        error: if unresolved {
+        error: if let Some(error) = resource_error {
+            Some(error)
+        } else if unresolved {
             Some("no CNAME/A/AAAA records found".to_string())
         } else {
             None
@@ -448,6 +628,7 @@ async fn fetch_ip_geo_ipwhois(
     lookup_timeout_ms: u32,
 ) -> Option<IpGeoResult> {
     let url = format!("https://ipwho.is/{}", ip);
+    note_network_start();
     let send_fut = client.get(url).send();
     let Ok(resp) = tokio::time::timeout(
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
@@ -461,26 +642,23 @@ async fn fetch_ip_geo_ipwhois(
     if !resp.status().is_success() {
         return None;
     }
-    let Ok(payload) = tokio::time::timeout(
+    let payload = read_json_limited::<IpWhoisResponse>(
+        resp,
+        MAX_GEO_RESPONSE_BYTES,
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
-        resp.json::<IpWhoisResponse>(),
     )
-    .await
-    else {
-        return None;
-    };
-    let Ok(payload) = payload else { return None };
+    .await?;
     if payload.success == Some(false) {
         return None;
     }
     let country = payload.country.unwrap_or_default().trim().to_string();
-    if country.is_empty() {
+    if country.is_empty() || country.len() > MAX_GEO_COUNTRY_BYTES {
         return None;
     }
     let country_code = payload
         .country_code
         .map(|value| value.trim().to_uppercase())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty() && value.len() <= MAX_GEO_COUNTRY_CODE_BYTES);
     Some(IpGeoResult {
         ip: ip.to_string(),
         country,
@@ -494,6 +672,7 @@ async fn fetch_ip_geo_ipapi_co(
     lookup_timeout_ms: u32,
 ) -> Option<IpGeoResult> {
     let url = format!("https://ipapi.co/{}/json/", ip);
+    note_network_start();
     let send_fut = client.get(url).send();
     let Ok(resp) = tokio::time::timeout(
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
@@ -507,26 +686,23 @@ async fn fetch_ip_geo_ipapi_co(
     if !resp.status().is_success() {
         return None;
     }
-    let Ok(payload) = tokio::time::timeout(
+    let payload = read_json_limited::<IpApiCoResponse>(
+        resp,
+        MAX_GEO_RESPONSE_BYTES,
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
-        resp.json::<IpApiCoResponse>(),
     )
-    .await
-    else {
-        return None;
-    };
-    let Ok(payload) = payload else { return None };
+    .await?;
     if payload.error == Some(true) {
         return None;
     }
     let country = payload.country_name.unwrap_or_default().trim().to_string();
-    if country.is_empty() {
+    if country.is_empty() || country.len() > MAX_GEO_COUNTRY_BYTES {
         return None;
     }
     let country_code = payload
         .country_code
         .map(|value| value.trim().to_uppercase())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty() && value.len() <= MAX_GEO_COUNTRY_CODE_BYTES);
     Some(IpGeoResult {
         ip: ip.to_string(),
         country,
@@ -540,9 +716,10 @@ async fn fetch_ip_geo_ip_api(
     lookup_timeout_ms: u32,
 ) -> Option<IpGeoResult> {
     let url = format!(
-        "http://ip-api.com/json/{}?fields=status,country,countryCode",
+        "https://ip-api.com/json/{}?fields=status,country,countryCode",
         ip
     );
+    note_network_start();
     let send_fut = client.get(url).send();
     let Ok(resp) = tokio::time::timeout(
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
@@ -556,26 +733,23 @@ async fn fetch_ip_geo_ip_api(
     if !resp.status().is_success() {
         return None;
     }
-    let Ok(payload) = tokio::time::timeout(
+    let payload = read_json_limited::<IpApiComResponse>(
+        resp,
+        MAX_GEO_RESPONSE_BYTES,
         Duration::from_millis(u64::from(lookup_timeout_ms).saturating_mul(2)),
-        resp.json::<IpApiComResponse>(),
     )
-    .await
-    else {
-        return None;
-    };
-    let Ok(payload) = payload else { return None };
+    .await?;
     if payload.status.unwrap_or_default().to_lowercase() != "success" {
         return None;
     }
     let country = payload.country.unwrap_or_default().trim().to_string();
-    if country.is_empty() {
+    if country.is_empty() || country.len() > MAX_GEO_COUNTRY_BYTES {
         return None;
     }
     let country_code = payload
         .country_code
         .map(|value| value.trim().to_uppercase())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty() && value.len() <= MAX_GEO_COUNTRY_CODE_BYTES);
     Some(IpGeoResult {
         ip: ip.to_string(),
         country,
@@ -636,33 +810,27 @@ async fn resolve_geo_for_ips(
     }
 
     if !unresolved.is_empty() {
-        let mut set = tokio::task::JoinSet::new();
-        for ip in unresolved {
-            let ip_owned = ip.clone();
-            let client_cloned = client.clone();
-            let geo_provider_owned = geo_provider.to_string();
-            set.spawn(async move {
-                (
-                    ip_owned.clone(),
-                    fetch_ip_geo(
-                        &client_cloned,
-                        &ip_owned,
-                        lookup_timeout_ms,
-                        &geo_provider_owned,
-                    )
-                    .await,
-                )
-            });
-        }
+        let client = client.clone();
+        let geo_provider = geo_provider.to_string();
+        let geo_provider_for_tasks = geo_provider.clone();
+        let resolved =
+            bounded_parallel_map(unresolved, NETWORK_CONCURRENCY, move |ip_owned: String| {
+                let client = client.clone();
+                let geo_provider = geo_provider_for_tasks.clone();
+                async move {
+                    let value =
+                        fetch_ip_geo(&client, &ip_owned, lookup_timeout_ms, &geo_provider).await;
+                    (ip_owned, value)
+                }
+            })
+            .await;
         let write_ts = Utc::now().timestamp_millis();
         let mut cache_updates: Vec<(String, Option<IpGeoResult>)> = Vec::new();
-        while let Some(joined) = set.join_next().await {
-            if let Ok((ip, maybe_geo)) = joined {
-                if let Some(geo) = &maybe_geo {
-                    out.insert(ip.clone(), geo.clone());
-                }
-                cache_updates.push((ip, maybe_geo));
+        for (ip, maybe_geo) in resolved {
+            if let Some(geo) = &maybe_geo {
+                out.insert(ip.clone(), geo.clone());
             }
+            cache_updates.push((ip, maybe_geo));
         }
         if !cache_updates.is_empty() {
             let mut cache = topology_ip_geo_cache().write().await;
@@ -694,12 +862,14 @@ async fn resolve_geo_for_ips(
 // ─── Service probing ───────────────────────────────────────────────────────
 
 async fn probe_url(client: &reqwest::Client, url: String) -> bool {
+    note_network_start();
     let fut = client.get(url).send();
     let resp = tokio::time::timeout(Duration::from_secs(5), fut).await;
     matches!(resp, Ok(Ok(_)))
 }
 
 async fn probe_tcp(host: &str, port: u16, timeout_ms: u32) -> bool {
+    note_network_start();
     let fut = tokio::net::TcpStream::connect((host, port));
     matches!(
         tokio::time::timeout(Duration::from_millis(u64::from(timeout_ms)), fut).await,
@@ -790,7 +960,7 @@ fn resolve_doh_endpoints(
     custom_dns_server: Option<&str>,
     custom_doh_url: Option<&str>,
     legacy_provider: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let selected_dns = resolve_dns_server(dns_server, custom_dns_server, legacy_provider);
     let preferred = map_dns_server_to_doh_endpoint(&selected_dns, custom_doh_url);
     let mut out = vec![
@@ -801,13 +971,165 @@ fn resolve_doh_endpoints(
     ];
     let mut seen = HashSet::new();
     out.retain(|value| seen.insert(value.clone()));
-    out
+    for endpoint in &out {
+        validate_https_url("DoH endpoint", endpoint)?;
+    }
+    Ok(out)
 }
 
 // ─── Main batch resolver ──────────────────────────────────────────────────
 
+fn validate_text_collection(
+    label: &'static str,
+    values: &[String],
+    max_count: usize,
+    max_item_bytes: usize,
+    max_total_bytes: usize,
+) -> Result<(), String> {
+    if values.len() > max_count {
+        return Err(format!(
+            "{label} count exceeds the safe {max_count} item limit (actual: {})",
+            values.len()
+        ));
+    }
+    let mut total_bytes = 0usize;
+    for value in values {
+        let trimmed = value.trim().trim_end_matches('.');
+        if trimmed.len() > max_item_bytes {
+            return Err(format!(
+                "{label} entry exceeds the safe {max_item_bytes} byte limit (actual: {})",
+                trimmed.len()
+            ));
+        }
+        let value = normalize_domain(value);
+        if value.len() > max_item_bytes {
+            return Err(format!(
+                "{label} entry exceeds the safe {max_item_bytes} byte limit (actual: {})",
+                value.len()
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(value.len());
+        if total_bytes > max_total_bytes {
+            return Err(format!(
+                "{label} exceeds the safe {max_total_bytes} byte aggregate limit"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_https_url(label: &'static str, value: &str) -> Result<(), String> {
+    if value.len() > MAX_CUSTOM_URL_BYTES {
+        return Err(format!(
+            "{label} exceeds the safe {MAX_CUSTOM_URL_BYTES} byte limit (actual: {})",
+            value.len()
+        ));
+    }
+    let parsed = reqwest::Url::parse(value).map_err(|_| format!("{label} is not a valid URL"))?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(format!("{label} must use HTTPS and include a host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("{label} must not contain embedded credentials"));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_topology_request(
+    hostnames: &[String],
+    service_hosts: Option<&[String]>,
+    doh_provider: Option<&str>,
+    doh_custom_url: Option<&str>,
+    resolver_mode: Option<&str>,
+    dns_server: Option<&str>,
+    custom_dns_server: Option<&str>,
+    geo_provider: Option<&str>,
+    tcp_service_ports: Option<&[u16]>,
+) -> Result<(), String> {
+    validate_text_collection(
+        "topology hostnames",
+        hostnames,
+        MAX_TOPOLOGY_HOSTS,
+        MAX_HOSTNAME_BYTES,
+        MAX_TOPOLOGY_HOST_BYTES,
+    )?;
+    let services = service_hosts.unwrap_or_default();
+    validate_text_collection(
+        "service hosts",
+        services,
+        MAX_SERVICE_HOSTS,
+        MAX_HOSTNAME_BYTES,
+        MAX_SERVICE_HOSTS * MAX_HOSTNAME_BYTES,
+    )?;
+    let ports = tcp_service_ports.unwrap_or_default();
+    if ports.len() > MAX_TCP_SERVICE_PORTS {
+        return Err(format!(
+            "TCP service port count exceeds the safe {MAX_TCP_SERVICE_PORTS} item limit (actual: {})",
+            ports.len()
+        ));
+    }
+    if ports.contains(&0) {
+        return Err("TCP service ports must be greater than zero".to_string());
+    }
+    let work = services.len().saturating_mul(ports.len());
+    if work > MAX_TCP_PROBE_PRODUCT {
+        return Err(format!(
+            "service host and port product exceeds the safe {MAX_TCP_PROBE_PRODUCT} probe limit (actual: {work})"
+        ));
+    }
+    if let Some(url) = doh_custom_url.map(str::trim).filter(|url| !url.is_empty()) {
+        validate_https_url("custom DoH URL", url)?;
+    }
+    for (label, value) in [
+        ("DoH provider", doh_provider),
+        ("resolver mode", resolver_mode),
+        ("geolocation provider", geo_provider),
+    ] {
+        if value.is_some_and(|value| value.len() > MAX_SELECTOR_BYTES) {
+            return Err(format!(
+                "{label} exceeds the safe {MAX_SELECTOR_BYTES} byte limit"
+            ));
+        }
+    }
+    for (label, value) in [
+        ("DNS server", dns_server),
+        ("custom DNS server", custom_dns_server),
+    ] {
+        if let Some(value) = value {
+            if value.len() > MAX_HOSTNAME_BYTES {
+                return Err(format!(
+                    "{label} exceeds the safe {MAX_HOSTNAME_BYTES} byte limit"
+                ));
+            }
+        }
+    }
+    if !matches!(
+        resolver_mode
+            .unwrap_or("dns")
+            .trim()
+            .to_lowercase()
+            .as_str(),
+        "dns" | "doh"
+    ) {
+        return Err("resolver mode must be dns or doh".to_string());
+    }
+    if !matches!(
+        geo_provider
+            .unwrap_or("auto")
+            .trim()
+            .to_lowercase()
+            .as_str(),
+        "auto" | "internal" | "ipwhois" | "ipapi_co" | "ip_api"
+    ) {
+        return Err("geolocation provider is not supported".to_string());
+    }
+    Ok(())
+}
+
 /// Resolve a batch of hostnames with CNAME chain following, IP
 /// geolocation, and HTTP/TCP service probing.
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_topology_batch(
     hostnames: Vec<String>,
     max_hops: Option<u8>,
@@ -824,6 +1146,17 @@ pub async fn resolve_topology_batch(
     scan_resolution_chain: Option<bool>,
     tcp_service_ports: Option<Vec<u16>>,
 ) -> Result<TopologyBatchResult, String> {
+    validate_topology_request(
+        &hostnames,
+        service_hosts.as_deref(),
+        doh_provider.as_deref(),
+        doh_custom_url.as_deref(),
+        resolver_mode.as_deref(),
+        dns_server.as_deref(),
+        custom_dns_server.as_deref(),
+        geo_provider.as_deref(),
+        tcp_service_ports.as_deref(),
+    )?;
     let max_hops = usize::from(max_hops.unwrap_or(15)).clamp(1, 15);
     let lookup_timeout_ms = lookup_timeout_ms.unwrap_or(1200).clamp(250, 10000);
     let disable_ptr_lookups = disable_ptr_lookups.unwrap_or(false);
@@ -848,7 +1181,7 @@ pub async fn resolve_topology_batch(
             custom_dns_server.as_deref(),
             doh_custom_url.as_deref(),
             doh_provider.as_deref(),
-        )
+        )?
     } else {
         Vec::new()
     };
@@ -864,7 +1197,7 @@ pub async fn resolve_topology_batch(
         doh_provider.as_deref(),
     )?;
     let resolver_http_client = reqwest::Client::builder()
-        .redirect(Policy::limited(4))
+        .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(6))
         .build()
@@ -873,8 +1206,10 @@ pub async fn resolve_topology_batch(
     let mut seen_hosts = HashSet::new();
     let mut unique_hosts = Vec::new();
     for h in hostnames {
-        let normalized = normalize_domain(&h);
-        if normalized.is_empty() || !seen_hosts.insert(normalized.clone()) {
+        let Some(normalized) = bounded_domain(&h) else {
+            continue;
+        };
+        if !seen_hosts.insert(normalized.clone()) {
             continue;
         }
         unique_hosts.push(normalized);
@@ -909,7 +1244,7 @@ pub async fn resolve_topology_batch(
     }
 
     let mut cache_updates: Vec<(String, HostnameChainResult)> = Vec::new();
-    let resolve_parallelism = 16usize;
+    let resolve_parallelism = NETWORK_CONCURRENCY;
     for chunk in unresolved_hosts.chunks(resolve_parallelism) {
         let mut set = tokio::task::JoinSet::new();
         for host in chunk {
@@ -985,19 +1320,23 @@ pub async fn resolve_topology_batch(
         }
     }
 
-    let mut ip_set = HashSet::new();
-    let mut all_ips = Vec::new();
-    for result in &resolutions {
-        for ip in result.ipv4.iter().chain(result.ipv6.iter()) {
-            if ip_set.insert(ip.clone()) {
-                all_ips.push(ip.clone());
-            }
-        }
-    }
-
     let geo_by_ip = if disable_geo_lookups {
         HashMap::new()
     } else {
+        let mut ip_set = HashSet::new();
+        let mut all_ips = Vec::new();
+        for result in &resolutions {
+            for ip in result.ipv4.iter().chain(result.ipv6.iter()) {
+                if ip_set.insert(ip.clone()) {
+                    if all_ips.len() >= MAX_BATCH_GEO_IPS {
+                        return Err(format!(
+                            "topology geolocation input exceeds the safe {MAX_BATCH_GEO_IPS} unique IP limit; disable geolocation or use a smaller batch"
+                        ));
+                    }
+                    all_ips.push(ip.clone());
+                }
+            }
+        }
         resolve_geo_for_ips(
             &resolver_http_client,
             &all_ips,
@@ -1027,8 +1366,10 @@ pub async fn resolve_topology_batch(
     let mut seen_probe_hosts = HashSet::new();
     let mut unique_probe_hosts = Vec::new();
     for host in service_hosts.unwrap_or_default() {
-        let normalized = normalize_domain(&host);
-        if normalized.is_empty() || !seen_probe_hosts.insert(normalized.clone()) {
+        let Some(normalized) = bounded_domain(&host) else {
+            continue;
+        };
+        if !seen_probe_hosts.insert(normalized.clone()) {
             continue;
         }
         unique_probe_hosts.push(normalized);
@@ -1136,6 +1477,58 @@ const PROPAGATION_RESOLVERS: &[(&str, &str)] = &[
     ("8.26.56.26", "Comodo"),
 ];
 
+type ValidatedPropagationRequest = (String, String, Vec<(String, String)>);
+
+fn validate_propagation_request(
+    domain: &str,
+    record_type: &str,
+    extra_resolvers: Option<&[String]>,
+) -> Result<ValidatedPropagationRequest, String> {
+    let domain = bounded_domain(domain)
+        .ok_or_else(|| format!("domain must contain 1 to {MAX_HOSTNAME_BYTES} UTF-8 bytes"))?;
+    let record_type = record_type.trim().to_uppercase();
+    if record_type.is_empty()
+        || record_type.len() > 16
+        || !record_type
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("record type must be a short DNS record identifier".to_string());
+    }
+
+    let extras = extra_resolvers.unwrap_or_default();
+    if extras.len() > MAX_EXTRA_RESOLVERS {
+        return Err(format!(
+            "extra resolver count exceeds the safe {MAX_EXTRA_RESOLVERS} item limit (actual: {})",
+            extras.len()
+        ));
+    }
+    let mut resolver_list: Vec<(String, String)> = PROPAGATION_RESOLVERS
+        .iter()
+        .map(|(ip, label)| (ip.to_string(), label.to_string()))
+        .collect();
+    let mut seen: HashSet<String> = resolver_list
+        .iter()
+        .map(|(resolver, _)| resolver.clone())
+        .collect();
+    for resolver in extras {
+        let resolver = resolver.trim();
+        if resolver.len() > MAX_IP_LITERAL_BYTES {
+            return Err(format!(
+                "extra resolver exceeds the safe {MAX_IP_LITERAL_BYTES} byte IP literal limit"
+            ));
+        }
+        let parsed = resolver
+            .parse::<IpAddr>()
+            .map_err(|_| format!("extra resolver is not a valid IP address: {resolver}"))?;
+        let normalized = parsed.to_string();
+        if seen.insert(normalized.clone()) {
+            resolver_list.push((normalized.clone(), format!("Custom ({normalized})")));
+        }
+    }
+    Ok((domain, record_type, resolver_list))
+}
+
 /// Check DNS propagation across multiple global resolvers.
 ///
 /// Queries the given domain for `record_type` against each well-known
@@ -1145,64 +1538,28 @@ pub async fn check_propagation(
     record_type: String,
     extra_resolvers: Option<Vec<String>>,
 ) -> Result<PropagationResult, String> {
-    let domain = normalize_domain(&domain);
-    let mut resolver_list: Vec<(String, String)> = PROPAGATION_RESOLVERS
+    let (domain, record_type, resolver_list) =
+        validate_propagation_request(&domain, &record_type, extra_resolvers.as_deref())?;
+    let query_domain = domain.clone();
+    let query_record_type = record_type.clone();
+    let results = bounded_parallel_map(
+        resolver_list,
+        NETWORK_CONCURRENCY,
+        move |(ip, label): (String, String)| {
+            let domain = query_domain.clone();
+            let record_type = query_record_type.clone();
+            async move { query_single_resolver(&ip, &label, &domain, &record_type).await }
+        },
+    )
+    .await;
+
+    // Answers are already deduplicated and sorted by `query_single_resolver`.
+    let mut good_results = results
         .iter()
-        .map(|(ip, label)| (ip.to_string(), label.to_string()))
-        .collect();
-
-    if let Some(extras) = extra_resolvers {
-        for ip in extras {
-            let ip = ip.trim().to_string();
-            if !ip.is_empty() && !resolver_list.iter().any(|(r, _)| r == &ip) {
-                let label = format!("Custom ({})", ip);
-                resolver_list.push((ip, label));
-            }
-        }
-    }
-
-    let mut handles = Vec::new();
-    for (ip, label) in &resolver_list {
-        let ip = ip.clone();
-        let label = label.clone();
-        let domain = domain.clone();
-        let record_type = record_type.clone();
-        handles.push(tokio::spawn(async move {
-            query_single_resolver(&ip, &label, &domain, &record_type).await
-        }));
-    }
-
-    let mut results = Vec::new();
-    for handle in handles {
-        match handle.await {
-            Ok(r) => results.push(r),
-            Err(e) => results.push(PropagationResolverResult {
-                resolver: "unknown".to_string(),
-                resolver_label: "unknown".to_string(),
-                answers: vec![],
-                rcode: "SERVFAIL".to_string(),
-                latency_ms: 0,
-                error: Some(e.to_string()),
-            }),
-        }
-    }
-
-    // Check consistency: all non-error resolvers should have same sorted answers
-    let good_answers: Vec<Vec<String>> = results
-        .iter()
-        .filter(|r| r.error.is_none() && r.rcode == "NOERROR")
-        .map(|r| {
-            let mut a = r.answers.clone();
-            a.sort();
-            a
-        })
-        .collect();
-
-    let consistent = if good_answers.is_empty() {
-        false
-    } else {
-        good_answers.windows(2).all(|w| w[0] == w[1])
-    };
+        .filter(|result| result.error.is_none() && result.rcode == "NOERROR");
+    let consistent = good_results
+        .next()
+        .is_some_and(|first| good_results.all(|result| result.answers == first.answers));
 
     Ok(PropagationResult {
         domain,
@@ -1228,7 +1585,7 @@ async fn query_single_resolver(
                 answers: vec![],
                 rcode: "SERVFAIL".to_string(),
                 latency_ms: 0,
-                error: Some(format!("Invalid IP: {}", e)),
+                error: Some(bounded_error(format!("Invalid IP: {}", e))),
             };
         }
     };
@@ -1239,6 +1596,7 @@ async fn query_single_resolver(
     let group = NameServerConfigGroup::from_ips_clear(&[parsed_ip], 53, true);
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::from_parts(None, vec![], group), opts);
 
+    note_network_start();
     let timeout_result = tokio::time::timeout(Duration::from_secs(5), async {
         match record_type.to_uppercase().as_str() {
             "A" => {
@@ -1248,7 +1606,11 @@ async fn query_single_resolver(
                         let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             "AAAA" => {
@@ -1258,7 +1620,11 @@ async fn query_single_resolver(
                         let answers: Vec<String> = l.iter().map(|a| a.to_string()).collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             "MX" => {
@@ -1277,7 +1643,11 @@ async fn query_single_resolver(
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             "TXT" => {
@@ -1287,7 +1657,11 @@ async fn query_single_resolver(
                         let answers: Vec<String> = l.iter().map(|txt| txt.to_string()).collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             "NS" => {
@@ -1300,7 +1674,11 @@ async fn query_single_resolver(
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             "CNAME" => {
@@ -1316,7 +1694,11 @@ async fn query_single_resolver(
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
             _ => {
@@ -1335,7 +1717,11 @@ async fn query_single_resolver(
                             .collect();
                         (answers, "NOERROR".to_string(), None)
                     }
-                    Err(e) => (vec![], error_to_rcode(&e), Some(e.to_string())),
+                    Err(e) => (
+                        vec![],
+                        error_to_rcode(&e),
+                        Some(bounded_error(e.to_string())),
+                    ),
                 }
             }
         }
@@ -1345,13 +1731,23 @@ async fn query_single_resolver(
     let elapsed = start.elapsed().as_millis() as u64;
 
     match timeout_result {
-        Ok((answers, rcode, error)) => PropagationResolverResult {
-            resolver: ip.to_string(),
-            resolver_label: label.to_string(),
-            answers,
-            rcode,
-            latency_ms: elapsed,
-            error,
+        Ok((answers, rcode, error)) => match bounded_answers(answers) {
+            Ok(answers) => PropagationResolverResult {
+                resolver: ip.to_string(),
+                resolver_label: label.to_string(),
+                answers,
+                rcode,
+                latency_ms: elapsed,
+                error,
+            },
+            Err(error) => PropagationResolverResult {
+                resolver: ip.to_string(),
+                resolver_label: label.to_string(),
+                answers: Vec::new(),
+                rcode: "SERVFAIL".to_string(),
+                latency_ms: elapsed,
+                error: Some(error),
+            },
         },
         Err(_) => PropagationResolverResult {
             resolver: ip.to_string(),
@@ -1380,6 +1776,8 @@ fn error_to_rcode(err: &trust_dns_resolver::error::ResolveError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn normalize_domain_works() {
@@ -1412,5 +1810,223 @@ mod tests {
             resolve_dns_server(Some("custom"), Some("9.9.9.9"), None),
             "9.9.9.9"
         );
+    }
+
+    #[test]
+    fn topology_host_count_accepts_limit_minus_one_and_exact_but_rejects_plus_one() {
+        for count in [MAX_TOPOLOGY_HOSTS - 1, MAX_TOPOLOGY_HOSTS] {
+            let hostnames = vec!["a.example".to_string(); count];
+            assert!(validate_topology_request(
+                &hostnames, None, None, None, None, None, None, None, None,
+            )
+            .is_ok());
+        }
+        let hostnames = vec!["a.example".to_string(); MAX_TOPOLOGY_HOSTS + 1];
+        assert!(validate_topology_request(
+            &hostnames, None, None, None, None, None, None, None, None,
+        )
+        .is_err());
+
+        let aggregate_exact = vec!["a".repeat(MAX_HOSTNAME_BYTES); MAX_TOPOLOGY_HOSTS];
+        assert!(validate_topology_request(
+            &aggregate_exact,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_ok());
+        assert!(validate_topology_request(
+            &["a".repeat(MAX_HOSTNAME_BYTES + 1)],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn custom_https_url_accepts_exact_limit_and_rejects_plus_one_or_cleartext() {
+        let prefix = "https://example.com/";
+        let exact = format!(
+            "{}{}",
+            prefix,
+            "a".repeat(MAX_CUSTOM_URL_BYTES - prefix.len())
+        );
+        assert_eq!(exact.len(), MAX_CUSTOM_URL_BYTES);
+        assert!(validate_https_url("custom DoH URL", &exact).is_ok());
+        assert!(validate_https_url("custom DoH URL", &(exact + "a")).is_err());
+        assert!(validate_https_url("custom DoH URL", "http://example.com/dns-query").is_err());
+    }
+
+    #[test]
+    fn service_and_port_limits_accept_exact_product_and_reject_plus_one_vectors() {
+        let services = vec!["service.example".to_string(); MAX_SERVICE_HOSTS];
+        let ports: Vec<u16> = (1..=MAX_TCP_SERVICE_PORTS as u16).collect();
+        assert!(validate_topology_request(
+            &[],
+            Some(&services),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&ports),
+        )
+        .is_ok());
+
+        let too_many_services = vec!["service.example".to_string(); MAX_SERVICE_HOSTS + 1];
+        assert!(validate_topology_request(
+            &[],
+            Some(&too_many_services),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&ports),
+        )
+        .is_err());
+        let too_many_ports: Vec<u16> = (1..=(MAX_TCP_SERVICE_PORTS + 1) as u16).collect();
+        assert!(validate_topology_request(
+            &[],
+            Some(&services),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&too_many_ports),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn extra_resolver_limit_is_exact_and_all_entries_are_validated_before_work() {
+        let exact: Vec<String> = (1..=MAX_EXTRA_RESOLVERS)
+            .map(|index| format!("192.0.2.{index}"))
+            .collect();
+        let validated = validate_propagation_request("example.com", "A", Some(&exact)).unwrap();
+        assert_eq!(
+            validated.2.len(),
+            PROPAGATION_RESOLVERS.len() + MAX_EXTRA_RESOLVERS
+        );
+        let mut oversized = exact;
+        oversized.push("198.51.100.1".to_string());
+        assert!(validate_propagation_request("example.com", "A", Some(&oversized)).is_err());
+        assert!(
+            validate_propagation_request("example.com", "A", Some(&["not-an-ip".to_string()]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn answer_limits_deduplicate_and_reject_adversarial_payloads() {
+        let exact: Vec<String> = (0..MAX_DNS_ANSWERS)
+            .map(|index| format!("answer-{index}.example"))
+            .collect();
+        assert_eq!(
+            bounded_answers(exact.clone()).unwrap().len(),
+            MAX_DNS_ANSWERS
+        );
+        let mut oversized = exact;
+        oversized.push("one-too-many.example".to_string());
+        assert!(bounded_answers(oversized).is_err());
+        assert!(bounded_answers(["x".repeat(MAX_DNS_ANSWER_BYTES + 1)]).is_err());
+        assert_eq!(
+            bounded_answers(["same".to_string(), "same".to_string()])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_topology_request_starts_zero_network_work() {
+        TEST_NETWORK_STARTS.store(0, Ordering::SeqCst);
+        let hostnames = vec!["a.example".to_string(); MAX_TOPOLOGY_HOSTS + 1];
+        let result = resolve_topology_batch(
+            hostnames, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(TEST_NETWORK_STARTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_propagation_request_starts_zero_network_work() {
+        TEST_NETWORK_STARTS.store(0, Ordering::SeqCst);
+        let extras = vec!["192.0.2.1".to_string(); MAX_EXTRA_RESOLVERS + 1];
+        let result =
+            check_propagation("example.com".to_string(), "A".to_string(), Some(extras)).await;
+        assert!(result.is_err());
+        assert_eq!(TEST_NETWORK_STARTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_parallel_map_never_exceeds_network_concurrency() {
+        let current = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let current_for_operation = current.clone();
+        let peak_for_operation = peak.clone();
+        let output =
+            bounded_parallel_map((0usize..100).collect(), NETWORK_CONCURRENCY, move |value| {
+                let current = current_for_operation.clone();
+                let peak = peak_for_operation.clone();
+                async move {
+                    let active = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(active, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    current.fetch_sub(1, Ordering::SeqCst);
+                    value
+                }
+            })
+            .await;
+        assert_eq!(output, (0usize..100).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= NETWORK_CONCURRENCY);
+        assert!(peak.load(Ordering::SeqCst) > 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_http_body_is_rejected_from_content_length() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_DOH_RESPONSE_BYTES + 1
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        let parsed = read_json_limited::<DnsGoogleResponse>(
+            response,
+            MAX_DOH_RESPONSE_BYTES,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(parsed.is_none());
+        server.await.unwrap();
     }
 }

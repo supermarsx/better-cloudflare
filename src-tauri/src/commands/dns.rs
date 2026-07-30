@@ -5,6 +5,9 @@ use crate::storage::Storage;
 
 use super::log_audit;
 
+const MAX_NATIVE_EXPORT_PAGE: u32 = 10_000;
+const MAX_NATIVE_EXPORT_PER_PAGE: u32 = 500;
+
 // ─── DNS Operations ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -146,11 +149,30 @@ pub async fn export_dns_records(
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Result<String, String> {
+    if page.unwrap_or(1) == 0 || page.unwrap_or(1) > MAX_NATIVE_EXPORT_PAGE {
+        return Err(format!(
+            "DNS export page must be between 1 and {MAX_NATIVE_EXPORT_PAGE}"
+        ));
+    }
+    if per_page.unwrap_or(100) == 0 || per_page.unwrap_or(100) > MAX_NATIVE_EXPORT_PER_PAGE {
+        return Err(format!(
+            "DNS export page size must be between 1 and {MAX_NATIVE_EXPORT_PER_PAGE}"
+        ));
+    }
+    if !matches!(format.as_str(), "json" | "csv" | "bind") {
+        return Err("DNS export format must be json, csv, or bind".to_string());
+    }
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let data = client
         .export_dns_records(&zone_id, &format, page, per_page)
         .await
         .map_err(|e| e.to_string())?;
+    if data.len() > bc_dns_tools::MAX_EXPORT_OUTPUT_BYTES {
+        return Err(format!(
+            "DNS export output exceeds the safe {} byte limit",
+            bc_dns_tools::MAX_EXPORT_OUTPUT_BYTES
+        ));
+    }
     log_audit(
         &storage,
         serde_json::json!({
@@ -348,13 +370,13 @@ pub async fn resolve_topology_batch(
 // ─── DNS Tools ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn parse_csv_records(text: String) -> Vec<bc_dns_tools::PartialDNSRecord> {
-    bc_dns_tools::parse_csv_records(&text)
+pub fn parse_csv_records(text: String) -> Result<Vec<bc_dns_tools::PartialDNSRecord>, String> {
+    bc_dns_tools::try_parse_csv_records(&text).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn parse_bind_zone(text: String) -> Vec<bc_dns_tools::PartialDNSRecord> {
-    bc_dns_tools::parse_bind_zone(&text)
+pub fn parse_bind_zone(text: String) -> Result<Vec<bc_dns_tools::PartialDNSRecord>, String> {
+    bc_dns_tools::try_parse_bind_zone(&text).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -422,18 +444,18 @@ pub fn compose_naptr(
 }
 
 #[tauri::command]
-pub fn records_to_csv(records: Vec<DNSRecord>) -> String {
-    bc_dns_tools::records_to_csv(&records)
+pub fn records_to_csv(records: Vec<DNSRecord>) -> Result<String, String> {
+    bc_dns_tools::try_records_to_csv(&records).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn records_to_bind(records: Vec<DNSRecord>) -> String {
-    bc_dns_tools::records_to_bind(&records)
+pub fn records_to_bind(records: Vec<DNSRecord>) -> Result<String, String> {
+    bc_dns_tools::try_records_to_bind(&records).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn records_to_json(records: Vec<DNSRecord>) -> String {
-    bc_dns_tools::records_to_json(&records)
+pub fn records_to_json(records: Vec<DNSRecord>) -> Result<String, String> {
+    bc_dns_tools::try_records_to_json(&records).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
