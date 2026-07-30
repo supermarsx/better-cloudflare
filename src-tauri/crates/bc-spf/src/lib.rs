@@ -358,36 +358,40 @@ pub async fn simulate_spf(domain: &str, ip: &str) -> Result<SPFSimulation, Strin
 
 // ── Graph builder ───────────────────────────────────────────────────────────
 
-/// Build a dependency graph of SPF include/redirect chains.
-pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
-    let resolver = resolver().await?;
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    let mut lookups = 0_u32;
-    let mut cyclic = false;
-    let mut visited = HashSet::new();
+struct SPFGraphWalker<'a> {
+    resolver: &'a TokioResolver,
+    nodes: Vec<SPFGraphNode>,
+    edges: Vec<SPFGraphEdge>,
+    lookups: u32,
+    visited: HashSet<String>,
+    cyclic: bool,
+    max_depth: u32,
+}
 
-    async fn walk(
-        resolver: &TokioResolver,
-        domain: &str,
-        nodes: &mut Vec<SPFGraphNode>,
-        edges: &mut Vec<SPFGraphEdge>,
-        lookups: &mut u32,
-        visited: &mut HashSet<String>,
-        cyclic: &mut bool,
-        depth: u32,
-        max_depth: u32,
-    ) -> Result<(), String> {
-        if depth > max_depth {
+impl<'a> SPFGraphWalker<'a> {
+    fn new(resolver: &'a TokioResolver, max_depth: u32) -> Self {
+        Self {
+            resolver,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            lookups: 0,
+            visited: HashSet::new(),
+            cyclic: false,
+            max_depth,
+        }
+    }
+
+    async fn walk(&mut self, domain: &str, depth: u32) -> Result<(), String> {
+        if depth > self.max_depth {
             return Ok(());
         }
-        if visited.contains(domain) {
-            *cyclic = true;
+        if self.visited.contains(domain) {
+            self.cyclic = true;
             return Ok(());
         }
-        visited.insert(domain.to_string());
-        let txt = get_spf_record(resolver, domain, lookups).await?;
-        nodes.push(SPFGraphNode {
+        self.visited.insert(domain.to_string());
+        let txt = get_spf_record(self.resolver, domain, &mut self.lookups).await?;
+        self.nodes.push(SPFGraphNode {
             domain: domain.to_string(),
             txt: txt.clone(),
         });
@@ -396,69 +400,41 @@ pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
             for m in &record.mechanisms {
                 if m.mechanism == "include" {
                     if let Some(target) = &m.value {
-                        edges.push(SPFGraphEdge {
+                        self.edges.push(SPFGraphEdge {
                             from: domain.to_string(),
                             to: target.clone(),
                             edge_type: "include".to_string(),
                         });
-                        Box::pin(walk(
-                            resolver,
-                            target,
-                            nodes,
-                            edges,
-                            lookups,
-                            visited,
-                            cyclic,
-                            depth + 1,
-                            max_depth,
-                        ))
-                        .await?;
+                        Box::pin(self.walk(target, depth + 1)).await?;
                     }
                 }
             }
             for modif in &record.modifiers {
                 if modif.key == "redirect" && !modif.value.is_empty() {
-                    edges.push(SPFGraphEdge {
+                    self.edges.push(SPFGraphEdge {
                         from: domain.to_string(),
                         to: modif.value.clone(),
                         edge_type: "redirect".to_string(),
                     });
-                    Box::pin(walk(
-                        resolver,
-                        &modif.value,
-                        nodes,
-                        edges,
-                        lookups,
-                        visited,
-                        cyclic,
-                        depth + 1,
-                        max_depth,
-                    ))
-                    .await?;
+                    Box::pin(self.walk(&modif.value, depth + 1)).await?;
                 }
             }
         }
         Ok(())
     }
+}
 
-    walk(
-        &resolver,
-        domain,
-        &mut nodes,
-        &mut edges,
-        &mut lookups,
-        &mut visited,
-        &mut cyclic,
-        0,
-        10,
-    )
-    .await?;
+/// Build a dependency graph of SPF include/redirect chains.
+pub async fn build_spf_graph(domain: &str) -> Result<SPFGraph, String> {
+    let resolver = resolver().await?;
+    let mut walker = SPFGraphWalker::new(&resolver, 10);
+    walker.walk(domain, 0).await?;
 
     Ok(SPFGraph {
-        nodes,
-        edges,
-        lookups,
-        cyclic,
+        nodes: walker.nodes,
+        edges: walker.edges,
+        lookups: walker.lookups,
+        cyclic: walker.cyclic,
     })
 }
 
