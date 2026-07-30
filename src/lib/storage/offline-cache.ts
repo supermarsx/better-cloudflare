@@ -1327,7 +1327,17 @@ function scheduleClear(): void {
   if (clearTimer !== undefined || !pendingClear) return;
   clearTimer = setTimeout(() => {
     clearTimer = undefined;
-    continueClear();
+    try {
+      continueClear();
+    } catch (error) {
+      const state = pendingClear;
+      if (state) state.firstError ??= error;
+      pendingClear = undefined;
+      reportCacheFailure(
+        state?.firstError ?? error,
+        "Clear DNS offline cache after storage access changed",
+      );
+    }
   }, 0);
 }
 
@@ -1388,13 +1398,23 @@ export function clearOfflineCache(): void {
   recoveryFailureCount = 0;
   recoveryFailureStartedAt = 0;
   pendingRollback = undefined;
-  pendingClear = {
-    cursor: localStorage.length,
-    discovered: 0,
-    pass: 0,
-    firstError: undefined,
-  };
-  continueClear();
+  try {
+    pendingClear = {
+      cursor: localStorage.length,
+      discovered: 0,
+      pass: 0,
+      firstError: undefined,
+    };
+    continueClear();
+  } catch (error) {
+    const state = pendingClear;
+    if (state) state.firstError ??= error;
+    pendingClear = undefined;
+    reportCacheFailure(
+      state?.firstError ?? error,
+      "Clear DNS offline cache after storage access changed",
+    );
+  }
 }
 
 /**

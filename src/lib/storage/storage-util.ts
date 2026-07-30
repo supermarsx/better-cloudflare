@@ -3,6 +3,13 @@ import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 const LEGACY_DATABASE_NAME = "better-cloudflare";
 const LEGACY_STORE_NAME = "kv";
 const MIGRATION_MARKER_KEY = "better-cloudflare-storage-v2-migrated";
+const LEGACY_STORAGE_KEYS = [
+  "cloudflare-dns-manager",
+  "encryption-settings",
+] as const;
+const LEGACY_MIGRATION_TIMEOUT_MS = 10_000;
+const LEGACY_MIGRATION_MAX_ENTRIES = 64;
+const LEGACY_MIGRATION_MAX_BYTES = 2 * 1024 * 1024 + 128 * 1024;
 
 /**
  * Minimal synchronous storage contract used by the application. Async stores
@@ -77,6 +84,123 @@ class MemoryStorage implements StorageLike {
 
 export type LegacyStorageLoader = () => Promise<ReadonlyMap<string, string>>;
 
+export interface LegacyMigrationSafetyOptions {
+  timeoutMs?: number;
+  allowedKeys?: readonly string[];
+  maxEntries?: number;
+  maxBytes?: number;
+}
+
+function utf8ByteLengthUpTo(value: string, maximum: number): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+    if (bytes > maximum) return bytes;
+  }
+  return bytes;
+}
+
+function boundedIntegerOption(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const normalized =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : fallback;
+  return Math.max(minimum, Math.min(maximum, normalized));
+}
+
+function assertLegacyValuesWithinLimits(
+  values: ReadonlyMap<string, string>,
+  options: LegacyMigrationSafetyOptions,
+): void {
+  const maxEntries = boundedIntegerOption(
+    options.maxEntries,
+    LEGACY_MIGRATION_MAX_ENTRIES,
+    0,
+    LEGACY_MIGRATION_MAX_ENTRIES,
+  );
+  const maxBytes = boundedIntegerOption(
+    options.maxBytes,
+    LEGACY_MIGRATION_MAX_BYTES,
+    0,
+    LEGACY_MIGRATION_MAX_BYTES,
+  );
+  if (values.size > maxEntries) {
+    throw new RangeError(
+      "Legacy storage contains too many entries to migrate.",
+    );
+  }
+
+  const allowedKeys = options.allowedKeys
+    ? new Set(options.allowedKeys)
+    : undefined;
+  let retainedBytes = 0;
+  for (const [key, value] of values) {
+    if (typeof key !== "string" || typeof value !== "string") {
+      throw new TypeError("Legacy storage contained a non-string entry.");
+    }
+    if (allowedKeys && !allowedKeys.has(key)) {
+      throw new TypeError(`Unexpected legacy storage key: ${key}`);
+    }
+    retainedBytes += utf8ByteLengthUpTo(
+      key,
+      Math.max(0, maxBytes - retainedBytes),
+    );
+    if (retainedBytes > maxBytes) {
+      throw new RangeError("Legacy storage exceeds the migration byte limit.");
+    }
+    retainedBytes += utf8ByteLengthUpTo(
+      value,
+      Math.max(0, maxBytes - retainedBytes),
+    );
+    if (retainedBytes > maxBytes) {
+      throw new RangeError("Legacy storage exceeds the migration byte limit.");
+    }
+  }
+}
+
+async function loadLegacyValuesWithinTimeout(
+  loadLegacyValues: LegacyStorageLoader,
+  timeoutMs: number,
+): Promise<ReadonlyMap<string, string>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      loadLegacyValues(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Legacy browser storage migration timed out before startup could complete safely.",
+              ),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /**
  * Build a synchronous durable adapter behind an explicit async readiness
  * barrier. Legacy IndexedDB values are copied transactionally into the
@@ -85,20 +209,28 @@ export type LegacyStorageLoader = () => Promise<ReadonlyMap<string, string>>;
 export function createMigratingStorage(
   storage: StorageLike,
   loadLegacyValues: LegacyStorageLoader,
+  options: LegacyMigrationSafetyOptions = {},
 ): StorageLike {
   let ready = false;
   let failure: unknown;
+  const timeoutMs = boundedIntegerOption(
+    options.timeoutMs,
+    LEGACY_MIGRATION_TIMEOUT_MS,
+    1,
+    LEGACY_MIGRATION_TIMEOUT_MS,
+  );
 
   const readiness = (async () => {
-    const legacyValues = await loadLegacyValues();
+    const legacyValues = await loadLegacyValuesWithinTimeout(
+      loadLegacyValues,
+      timeoutMs,
+    );
+    assertLegacyValuesWithinLimits(legacyValues, options);
     const previous = new Map<string, string | null>();
     const written: string[] = [];
 
     try {
       for (const [key, value] of legacyValues) {
-        if (typeof key !== "string" || typeof value !== "string") {
-          throw new TypeError("Legacy storage contained a non-string entry.");
-        }
         const oldValue = storage.getItem(key);
         if (oldValue === value) continue;
         previous.set(key, oldValue);
@@ -173,17 +305,14 @@ async function loadLegacyIndexedDbValues(): Promise<
   });
 
   try {
-    const keys = await db.getAllKeys(LEGACY_STORE_NAME);
     const values = new Map<string, string>();
-    for (const rawKey of keys) {
-      if (typeof rawKey !== "string") {
-        throw new TypeError("Legacy IndexedDB contained a non-string key.");
-      }
-      const value: unknown = await db.get(LEGACY_STORE_NAME, rawKey);
+    for (const key of LEGACY_STORAGE_KEYS) {
+      const value: unknown = await db.get(LEGACY_STORE_NAME, key);
+      if (value === undefined) continue;
       if (typeof value !== "string") {
         throw new TypeError("Legacy IndexedDB contained a non-string value.");
       }
-      values.set(rawKey, value);
+      values.set(key, value);
     }
     return values;
   } finally {
@@ -225,7 +354,9 @@ export function getStorage(storage?: StorageLike): StorageLike {
           maybeStorage.getItem(MIGRATION_MARKER_KEY) === "1";
         selectedStorage = migrationComplete
           ? syncStorage
-          : createMigratingStorage(syncStorage, loadLegacyIndexedDbValues);
+          : createMigratingStorage(syncStorage, loadLegacyIndexedDbValues, {
+              allowedKeys: LEGACY_STORAGE_KEYS,
+            });
         selectedBackend = "localstorage";
         return selectedStorage;
       }

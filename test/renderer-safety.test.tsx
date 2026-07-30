@@ -281,6 +281,21 @@ test("hostile DNS, Mermaid, SVG, and print annotation markup remains inert", () 
   );
   assert.match(sanitized, /marker-end="url\(#safe-marker\)"/);
 
+  const escapedCssUrl = sanitizeTopologySvg(`
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+      <style>.remote { fill: u\\72 l(https://attacker.invalid/style.svg); }</style>
+      <rect class="remote" cursor="url(https://attacker.invalid/cursor.cur)" width="10" height="10" />
+      <path d="M0 0 L1 1" style="stroke:u\\72 l(https://attacker.invalid/stroke.svg)" />
+    </svg>
+  `);
+  assert.doesNotMatch(escapedCssUrl, /attacker\.invalid|u\\72/i);
+  const continuedCssUrl = sanitizeTopologySvg(`
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+      <rect style="${"fill:u\\\nrl(https://attacker.invalid/continued.svg)"}" width="10" height="10" />
+    </svg>
+  `);
+  assert.doesNotMatch(continuedCssUrl, /attacker\.invalid/i);
+
   const printDocument = document.implementation.createHTMLDocument();
   populateTopologyPrintDocument(printDocument, sanitized, hostile, [
     { text: hostile, x: 1, y: 2 },

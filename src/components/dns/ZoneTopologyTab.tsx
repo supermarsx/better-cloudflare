@@ -284,27 +284,43 @@ const ALLOWED_TOPOLOGY_SVG_ELEMENTS = new Set([
   "tspan",
 ]);
 
-const TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES = new Set([
-  "clip-path",
-  "fill",
-  "filter",
-  "marker",
-  "marker-end",
-  "marker-mid",
-  "marker-start",
-  "mask",
-  "stroke",
-]);
+function normalizeCssForInspection(css: string): string {
+  return (
+    css
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\\(?:\r\n|[\n\r\f])/g, "")
+      // XML normalizes attribute newlines to spaces before CSS inspection.
+      // Treat backslash-whitespace conservatively as a continued token.
+      .replace(/\\[ \t]+/g, "")
+      .replace(
+        /\\([0-9a-f]{1,6})\s?|\\([^\r\n\f])/gi,
+        (
+          _match,
+          hexadecimal: string | undefined,
+          escaped: string | undefined,
+        ) => {
+          if (hexadecimal) {
+            const codePoint = Number.parseInt(hexadecimal, 16);
+            return codePoint > 0 && codePoint <= 0x10ffff
+              ? String.fromCodePoint(codePoint)
+              : "\uFFFD";
+          }
+          return escaped ?? "";
+        },
+      )
+  );
+}
 
 function hasUnsafeCss(css: string): boolean {
+  const normalized = normalizeCssForInspection(css);
   if (
-    /@import|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|behavior\s*:|-moz-binding/i.test(
-      css,
+    /@import|expression\s*\(|\b(?:javascript|vbscript|data)\s*:|behavior\s*:|-moz-binding/i.test(
+      normalized,
     )
   ) {
     return true;
   }
-  for (const match of css.matchAll(/url\s*\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
+  for (const match of normalized.matchAll(/url\s*\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
     if (!/^#[A-Za-z_][A-Za-z0-9_.:-]*$/.test(match[2].trim())) return true;
   }
   return false;
@@ -356,16 +372,9 @@ export function sanitizeTopologySvg(input: string): string {
         element.removeAttribute(attribute.name);
         continue;
       }
-      if (attributeName === "style" && hasUnsafeCss(attributeValue)) {
+      if (hasUnsafeCss(attributeValue)) {
         element.removeAttribute(attribute.name);
         continue;
-      }
-      if (
-        TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES.has(attributeName) &&
-        /url\s*\(/i.test(attributeValue) &&
-        hasUnsafeCss(attributeValue)
-      ) {
-        element.removeAttribute(attribute.name);
       }
     }
   }
@@ -377,10 +386,7 @@ export function sanitizeTopologySvg(input: string): string {
       attributeName === "href" ||
       attributeName === "xlink:href" ||
       attributeName === "src" ||
-      (attributeName === "style" && hasUnsafeCss(attribute.value)) ||
-      (TOPOLOGY_SVG_FRAGMENT_URL_ATTRIBUTES.has(attributeName) &&
-        /url\s*\(/i.test(attribute.value) &&
-        hasUnsafeCss(attribute.value))
+      hasUnsafeCss(attribute.value)
     ) {
       svg.removeAttribute(attribute.name);
     }

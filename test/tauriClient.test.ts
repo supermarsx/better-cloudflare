@@ -395,7 +395,11 @@ test("bounds stalled auth and passkey Tauri UI operations", async () => {
         assert.equal(error.kind, "timeout");
         assert.equal(error.source, "tauri");
         assert.equal(error.command, command);
-        assert.equal(error.retryable, true);
+        assert.equal(
+          error.retryable,
+          false,
+          "an unresolved native operation must never invite an automatic retry",
+        );
         assert.match(error.message, /native task may still finish/i);
         return true;
       },

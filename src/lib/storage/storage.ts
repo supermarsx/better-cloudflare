@@ -151,6 +151,17 @@ function utf8Bytes(value: string, stopAfterBytes = MAX_STORAGE_BYTES): number {
   return bytes;
 }
 
+function boundedStorageFailureMessage(error: unknown): string {
+  const message =
+    error instanceof Error && error.message.trim()
+      ? error.message
+      : "unknown storage failure";
+  return message
+    .replace(/\p{Cc}+/gu, " ")
+    .trim()
+    .slice(0, 512);
+}
+
 function assertStringWithin(
   value: unknown,
   maximumBytes: number,
@@ -299,7 +310,10 @@ function parseRecordTags(
 ): Record<string, Record<string, string[]>> | undefined {
   if (!value || typeof value !== "object") return undefined;
   const byZone = value as Record<string, unknown>;
-  const result: Record<string, Record<string, string[]>> = {};
+  const result = Object.create(null) as Record<
+    string,
+    Record<string, string[]>
+  >;
   let recordCount = 0;
 
   for (const [zoneId, zoneValue] of Object.entries(byZone).slice(
@@ -309,7 +323,7 @@ function parseRecordTags(
     if (!assertStringWithin(zoneId, MAX_API_KEY_ID_BYTES, "zone id")) continue;
     if (!zoneValue || typeof zoneValue !== "object") continue;
     const byRecord = zoneValue as Record<string, unknown>;
-    const zoneResult: Record<string, string[]> = {};
+    const zoneResult = Object.create(null) as Record<string, string[]>;
 
     for (const [recordId, tagsValue] of Object.entries(byRecord)) {
       if (recordCount >= MAX_TAG_RECORDS) break;
@@ -337,7 +351,7 @@ function parseRecordTags(
 function parseTagCatalog(value: unknown): Record<string, string[]> | undefined {
   if (!value || typeof value !== "object") return undefined;
   const byZone = value as Record<string, unknown>;
-  const result: Record<string, string[]> = {};
+  const result = Object.create(null) as Record<string, string[]>;
   for (const [zoneId, tagsValue] of Object.entries(byZone).slice(
     0,
     MAX_TAG_ZONES,
@@ -731,7 +745,9 @@ export class StorageManager {
         error instanceof StorageRecoveryRequiredError
           ? error
           : new StoragePersistenceError(
-              "The browser could not persist this change. The in-memory mutation was rolled back.",
+              `The browser could not persist this change: ${boundedStorageFailureMessage(
+                error,
+              )}. The in-memory mutation was rolled back.`,
               { cause: error },
             );
       this.reportFailure(surfaced, "Persist browser storage data");

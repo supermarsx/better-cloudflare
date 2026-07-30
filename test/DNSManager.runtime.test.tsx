@@ -410,6 +410,31 @@ test("clamps restored refresh settings and caps excessive restored zone tabs", (
     bounded.tabs.some((tab) => tab.id === `zone-${DNS_OPEN_ZONE_TAB_LIMIT}`),
   );
 
+  const dirtyFirst = {
+    ...zoneTab(0),
+    showImport: true,
+    importData:
+      '[{"type":"A","name":"draft.example.com","content":"192.0.2.1"}]',
+  };
+  const withDirtyTab = appendBoundedZoneTab(
+    [
+      dirtyFirst,
+      ...Array.from({ length: DNS_OPEN_ZONE_TAB_LIMIT - 1 }, (_, index) =>
+        zoneTab(index + 1),
+      ),
+    ],
+    zoneTab(DNS_OPEN_ZONE_TAB_LIMIT),
+    `zone-${DNS_OPEN_ZONE_TAB_LIMIT - 1}`,
+  );
+  assert.ok(
+    withDirtyTab.tabs.some(
+      (tab) =>
+        tab.id === dirtyFirst.id && tab.importData === dirtyFirst.importData,
+    ),
+    "a tab with an unsubmitted import draft must never be evicted",
+  );
+  assert.equal(withDirtyTab.evictedTabId, "zone-1");
+
   const largeRecords = Array.from({ length: 1_000 }, (_, index) =>
     dnsRecord(index),
   );

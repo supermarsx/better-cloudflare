@@ -345,3 +345,32 @@ test("importData sanitizes record tags and tag catalog payloads", () => {
   assert.deepEqual(mgr.getRecordTags("zone-1", "r1"), ["alpha"]);
   assert.deepEqual(mgr.getZoneTags("zone-1"), ["beta"]);
 });
+
+test("reserved dictionary-like identifiers survive import and restart as own data", () => {
+  const storage = new LocalStorageMock();
+  const crypto = new CryptoManager({}, storage);
+  const mgr = new StorageManager(storage, crypto);
+  const imported = JSON.parse(`{
+    "apiKeys": [],
+    "recordTags": {
+      "__proto__": {
+        "constructor": [" protected "]
+      }
+    },
+    "tagCatalog": {
+      "__proto__": [" protected "]
+    }
+  }`);
+
+  mgr.importData(JSON.stringify(imported));
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+
+  assert.deepEqual(restarted.getRecordTags("__proto__", "constructor"), [
+    "protected",
+  ]);
+  assert.deepEqual(restarted.getZoneTags("__proto__"), ["protected"]);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(Object.prototype, "protected"),
+    false,
+  );
+});

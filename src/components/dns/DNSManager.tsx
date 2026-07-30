@@ -423,19 +423,30 @@ function appendBoundedZoneTab(
   tabs: ZoneTab[],
   nextTab: ZoneTab,
   activeTabId: string | null,
-): { tabs: ZoneTab[]; evictedTabId?: string } {
-  if (tabs.some((tab) => tab.zoneId === nextTab.zoneId)) return { tabs };
+): { tabs: ZoneTab[]; evictedTabId?: string; opened: boolean } {
+  if (tabs.some((tab) => tab.zoneId === nextTab.zoneId)) {
+    return { tabs, opened: true };
+  }
   const openZoneTabs = tabs.filter((tab) => tab.kind === "zone");
   if (openZoneTabs.length < DNS_OPEN_ZONE_TAB_LIMIT) {
-    return { tabs: [...tabs, nextTab] };
+    return { tabs: [...tabs, nextTab], opened: true };
   }
   const evicted = tabs.find(
-    (tab) => tab.kind === "zone" && tab.id !== activeTabId,
+    (tab) =>
+      tab.kind === "zone" &&
+      tab.id !== activeTabId &&
+      !tab.editingRecord &&
+      !tab.showAddRecord &&
+      !tab.showImport &&
+      !tab.importData.trim() &&
+      !String(tab.newRecord.name ?? "").trim() &&
+      !String(tab.newRecord.content ?? "").trim(),
   );
-  if (!evicted) return { tabs };
+  if (!evicted) return { tabs, opened: false };
   return {
     tabs: [...tabs.filter((tab) => tab.id !== evicted.id), nextTab],
     evictedTabId: evicted.id,
+    opened: true,
   };
 }
 
@@ -1993,22 +2004,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     (zoneId: string) => {
       const zone = availableZones.find((item) => item.id === zoneId);
       if (!zone) return;
-      setTabs((prev) => {
-        if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
-        const perPage = clampDnsPageSize(zonePerPage[zoneId] ?? globalPerPage);
-        const bounded = appendBoundedZoneTab(
-          prev,
-          createZoneTab(zone, perPage),
-          activeTabId,
-        );
-        if (bounded.evictedTabId) {
-          recordRequestGenerationsRef.current.invalidate(bounded.evictedTabId);
-        }
-        return bounded.tabs;
-      });
+      if (tabs.some((tab) => tab.zoneId === zoneId)) {
+        setActiveTabId(zoneId);
+        return;
+      }
+      const perPage = clampDnsPageSize(zonePerPage[zoneId] ?? globalPerPage);
+      const bounded = appendBoundedZoneTab(
+        tabs,
+        createZoneTab(zone, perPage),
+        activeTabId,
+      );
+      if (!bounded.opened) {
+        toast({
+          title: t("Tab limit reached", "Tab limit reached"),
+          description: t(
+            "Close or finish an inactive DNS draft before opening another zone.",
+            "Close or finish an inactive DNS draft before opening another zone.",
+          ),
+          variant: "destructive",
+        });
+        return;
+      }
+      if (bounded.evictedTabId) {
+        recordRequestGenerationsRef.current.invalidate(bounded.evictedTabId);
+      }
+      setTabs(bounded.tabs);
       setActiveTabId(zoneId);
     },
-    [activeTabId, availableZones, globalPerPage, zonePerPage],
+    [activeTabId, availableZones, globalPerPage, tabs, t, toast, zonePerPage],
   );
 
   const activateTab = useCallback(

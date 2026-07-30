@@ -1311,3 +1311,59 @@ test("clear yields with a hard per-turn inspection bound across 20,000 unrelated
     });
   }
 });
+
+test("clear contains asynchronous storage access failures and leaves no retry timer", () => {
+  const originalStorage = globalThis.localStorage;
+  const originalSetTimeout = globalThis.setTimeout;
+  const scheduledTurns: Array<() => void> = [];
+  let keyCalls = 0;
+  const storageLength = RESOURCE_LIMITS.offlineCache.discoveryBatchKeys + 1;
+  const failingStorage: Storage = {
+    get length() {
+      return storageLength;
+    },
+    clear() {},
+    getItem() {
+      return null;
+    },
+    key(index) {
+      keyCalls += 1;
+      if (keyCalls > RESOURCE_LIMITS.offlineCache.discoveryBatchKeys) {
+        throw new DOMException("revoked", "SecurityError");
+      }
+      return `unrelated-${index}`;
+    },
+    removeItem() {},
+    setItem() {},
+  };
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: failingStorage,
+  });
+  globalThis.setTimeout = ((callback: TimerHandler, ...args: unknown[]) => {
+    scheduledTurns.push(() => {
+      if (typeof callback === "function") callback(...args);
+    });
+    return scheduledTurns.length as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    clearOfflineCache();
+    assert.equal(scheduledTurns.length, 1);
+    const turn = scheduledTurns.shift();
+    assert.ok(turn);
+    assert.doesNotThrow(turn);
+    assert.equal(scheduledTurns.length, 0);
+    assert.ok(
+      getRuntimeDiagnostics().some((diagnostic) =>
+        diagnostic.label?.includes("Clear DNS offline cache"),
+      ),
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  }
+});

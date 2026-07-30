@@ -81,6 +81,51 @@ test("migration blocks pre-hydration access and preserves legacy values", async 
   assert.equal(durable.getItem("saved"), "new");
 });
 
+test("migration fails closed within a bounded startup window and ignores late hydration", async () => {
+  const durable = new MapStorage();
+  let release!: (values: ReadonlyMap<string, string>) => void;
+  const deferred = new Promise<ReadonlyMap<string, string>>((resolve) => {
+    release = resolve;
+  });
+  const storage = createMigratingStorage(durable, () => deferred, {
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(storage.ready?.(), /timed out/i);
+  release(new Map([["saved", "late-value"]]));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(durable.getItem("saved"), null);
+  assert.throws(() => storage.setItem("later", "value"), /timed out/i);
+});
+
+test("migration refuses unexpected or oversized legacy key sets", async () => {
+  const durable = new MapStorage();
+  const storage = createMigratingStorage(
+    durable,
+    async () =>
+      new Map([
+        ["cloudflare-dns-manager", '{"apiKeys":[]}'],
+        ["encryption-settings", "{}"],
+        ["unrelated-origin-data", "must-not-be-copied"],
+      ]),
+    {
+      allowedKeys: ["cloudflare-dns-manager", "encryption-settings"],
+    },
+  );
+
+  await assert.rejects(storage.ready?.(), /unexpected legacy storage key/i);
+  assert.equal(durable.values.size, 0);
+
+  const oversized = createMigratingStorage(
+    durable,
+    async () =>
+      new Map([["cloudflare-dns-manager", "x".repeat(3 * 1024 * 1024)]]),
+  );
+  await assert.rejects(oversized.ready?.(), /migration byte limit/i);
+  assert.equal(durable.values.size, 0);
+});
+
 test("migration rolls back partial writes and keeps the adapter failed closed", async () => {
   const durable = new MapStorage();
   let writes = 0;

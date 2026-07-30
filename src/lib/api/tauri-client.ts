@@ -87,9 +87,9 @@ export async function withTauriUiTimeout<T>(
                 source: "tauri",
                 operation: "Tauri invoke",
                 command,
-                retryable: true,
+                retryable: false,
                 remediation:
-                  "Check desktop connectivity and logs, then retry once.",
+                  "Wait for the native side effect to settle, verify the current state, and retry only if no change occurred.",
               },
             ),
           );
