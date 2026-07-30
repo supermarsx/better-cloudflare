@@ -49,6 +49,21 @@ pub enum AiProviderError {
     #[error("Token limit exceeded: {0}")]
     TokenLimitExceeded(String),
 
+    /// A request, response, stream, or retained value exceeded a fixed limit.
+    #[error("{resource} exceeded limit of {limit} bytes/items (actual: {actual})")]
+    LimitExceeded {
+        resource: &'static str,
+        limit: usize,
+        actual: usize,
+    },
+
+    /// A bounded request/configuration field was invalid.
+    #[error("Invalid request field {field}: {message}")]
+    InvalidRequest {
+        field: &'static str,
+        message: String,
+    },
+
     /// Catch-all for other errors.
     #[error("{0}")]
     Other(String),

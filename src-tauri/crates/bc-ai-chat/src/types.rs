@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use bc_ai_provider::{Message, ProviderKind, ToolCall, Usage};
 
+use crate::error::ChatError;
+use crate::limits::{enforce_conversation_limits, validate_chat_message};
+
 /// Status of an individual chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,8 +126,15 @@ impl Conversation {
 
     /// Add a message and update the timestamp.
     pub fn push_message(&mut self, msg: ChatMessage) {
+        let _ = self.try_push_message(msg);
+    }
+
+    /// Add a validated message and evict the oldest retained messages as needed.
+    pub fn try_push_message(&mut self, msg: ChatMessage) -> Result<Vec<Uuid>, ChatError> {
+        validate_chat_message(&msg)?;
         self.updated_at = Utc::now();
         self.messages.push(msg);
+        Ok(enforce_conversation_limits(self))
     }
 
     /// Get lightweight metadata for listing.

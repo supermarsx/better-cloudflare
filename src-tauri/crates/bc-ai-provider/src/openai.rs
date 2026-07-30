@@ -11,6 +11,12 @@ use tokio::sync::mpsc;
 
 use crate::config::ProviderConfig;
 use crate::error::AiProviderError;
+use crate::limits::{
+    parse_tool_arguments, read_error_body, read_json_body, send_delta, validate_completion_request,
+    validate_response_message, validate_string, BoundedString, LineDecoder, StreamBudget,
+    MAX_MODEL_BYTES, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE,
+    MAX_TOOL_CALL_ID_BYTES, MAX_TOOL_NAME_BYTES,
+};
 use crate::traits::AiProvider;
 use crate::types::*;
 
@@ -22,6 +28,7 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, AiProviderError> {
+        config.validate()?;
         let api_key = config.api_key.as_deref().unwrap_or_default();
         if api_key.is_empty() {
             return Err(AiProviderError::NotConfigured(
@@ -36,6 +43,7 @@ impl OpenAiProvider {
 
     /// Shared reqwest client variant (connection pooling).
     pub fn with_client(client: Client, config: ProviderConfig) -> Result<Self, AiProviderError> {
+        config.validate()?;
         let api_key = config.api_key.as_deref().unwrap_or_default();
         if api_key.is_empty() {
             return Err(AiProviderError::NotConfigured(
@@ -135,20 +143,32 @@ impl OpenAiProvider {
         let finish_reason = choice["finish_reason"].as_str().map(String::from);
 
         let message = if let Some(tool_calls) = msg["tool_calls"].as_array() {
-            let calls: Vec<ToolCall> = tool_calls
-                .iter()
-                .filter_map(|tc| {
-                    let id = tc["id"].as_str()?;
-                    let name = tc["function"]["name"].as_str()?;
-                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                    let arguments = serde_json::from_str(args_str).unwrap_or(json!({}));
-                    Some(ToolCall {
-                        id: id.to_string(),
-                        name: name.to_string(),
-                        arguments,
-                    })
-                })
-                .collect();
+            if tool_calls.len() > MAX_TOOL_CALLS_PER_MESSAGE {
+                return Err(AiProviderError::LimitExceeded {
+                    resource: "response tool calls",
+                    limit: MAX_TOOL_CALLS_PER_MESSAGE,
+                    actual: tool_calls.len(),
+                });
+            }
+            let mut calls = Vec::with_capacity(tool_calls.len());
+            for tc in tool_calls {
+                let id = tc["id"].as_str().ok_or_else(|| {
+                    AiProviderError::Parse("OpenAI tool call omitted its id".into())
+                })?;
+                let name = tc["function"]["name"].as_str().ok_or_else(|| {
+                    AiProviderError::Parse("OpenAI tool call omitted its function name".into())
+                })?;
+                let args_str = tc["function"]["arguments"].as_str().ok_or_else(|| {
+                    AiProviderError::Parse("OpenAI tool call omitted its arguments".into())
+                })?;
+                validate_string("tool-call id", id, MAX_TOOL_CALL_ID_BYTES)?;
+                validate_string("tool name", name, MAX_TOOL_NAME_BYTES)?;
+                calls.push(ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    arguments: parse_tool_arguments(args_str)?,
+                });
+            }
             Message {
                 role: Role::Assistant,
                 content: MessageContent::ToolUse { tool_calls: calls },
@@ -170,11 +190,227 @@ impl OpenAiProvider {
             .unwrap_or(&self.config.model)
             .to_string();
 
+        validate_response_message(&message)?;
         Ok(CompletionResponse {
             message,
             usage,
             model,
             finish_reason,
+        })
+    }
+}
+
+struct PendingOpenAiToolCall {
+    id: BoundedString,
+    name: BoundedString,
+    arguments: BoundedString,
+    start_emitted: bool,
+}
+
+impl PendingOpenAiToolCall {
+    fn new() -> Self {
+        Self {
+            id: BoundedString::new("streamed tool-call id", MAX_TOOL_CALL_ID_BYTES),
+            name: BoundedString::new("streamed tool name", MAX_TOOL_NAME_BYTES),
+            arguments: BoundedString::new("streamed tool-call arguments", MAX_TOOL_ARGUMENT_BYTES),
+            start_emitted: false,
+        }
+    }
+}
+
+struct OpenAiStreamState {
+    full_text: BoundedString,
+    tool_calls: Vec<PendingOpenAiToolCall>,
+    retained_output_bytes: usize,
+    usage: Option<Usage>,
+    finish_reason: Option<String>,
+    saw_done: bool,
+}
+
+impl OpenAiStreamState {
+    fn new() -> Self {
+        Self {
+            full_text: BoundedString::new("streamed response output", MAX_STREAM_OUTPUT_BYTES),
+            tool_calls: Vec::new(),
+            retained_output_bytes: 0,
+            usage: None,
+            finish_reason: None,
+            saw_done: false,
+        }
+    }
+
+    fn retain(&mut self, bytes: usize) -> Result<(), AiProviderError> {
+        let actual = self.retained_output_bytes.saturating_add(bytes);
+        if actual > MAX_STREAM_OUTPUT_BYTES {
+            return Err(AiProviderError::LimitExceeded {
+                resource: "streamed response output",
+                limit: MAX_STREAM_OUTPUT_BYTES,
+                actual,
+            });
+        }
+        self.retained_output_bytes = actual;
+        Ok(())
+    }
+
+    fn tool_call_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<&mut PendingOpenAiToolCall, AiProviderError> {
+        if index >= MAX_TOOL_CALLS_PER_MESSAGE {
+            return Err(AiProviderError::LimitExceeded {
+                resource: "streamed tool calls",
+                limit: MAX_TOOL_CALLS_PER_MESSAGE,
+                actual: index.saturating_add(1),
+            });
+        }
+        while self.tool_calls.len() <= index {
+            self.tool_calls.push(PendingOpenAiToolCall::new());
+        }
+        Ok(&mut self.tool_calls[index])
+    }
+
+    async fn process_line(
+        &mut self,
+        line: &str,
+        tx: &mpsc::Sender<StreamDelta>,
+    ) -> Result<(), AiProviderError> {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
+            return Ok(());
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            return Ok(());
+        };
+        let data = data.trim_start();
+        if data == "[DONE]" {
+            self.saw_done = true;
+            return Ok(());
+        }
+
+        let chunk_json: Value = serde_json::from_str(data)
+            .map_err(|error| AiProviderError::Parse(format!("invalid OpenAI SSE JSON: {error}")))?;
+        if let Some(choice) = chunk_json["choices"].get(0) {
+            let delta = &choice["delta"];
+            if let Some(text) = delta["content"].as_str() {
+                self.retain(text.len())?;
+                self.full_text.push_str(text)?;
+                send_delta(
+                    tx,
+                    StreamDelta::Text {
+                        text: text.to_string(),
+                    },
+                )
+                .await?;
+            }
+
+            if let Some(tool_calls) = delta["tool_calls"].as_array() {
+                for tool_call in tool_calls {
+                    let index = tool_call["index"].as_u64().ok_or_else(|| {
+                        AiProviderError::Parse("OpenAI tool delta omitted its index".into())
+                    })? as usize;
+                    let function = tool_call.get("function");
+                    let id_fragment = tool_call["id"].as_str();
+                    let name_fragment = function.and_then(|value| value["name"].as_str());
+                    let argument_fragment = function.and_then(|value| value["arguments"].as_str());
+
+                    let retained = id_fragment.map_or(0, str::len)
+                        + name_fragment.map_or(0, str::len)
+                        + argument_fragment.map_or(0, str::len);
+                    self.retain(retained)?;
+
+                    let pending = self.tool_call_mut(index)?;
+                    if let Some(id) = id_fragment {
+                        pending.id.push_str(id)?;
+                    }
+                    if let Some(name) = name_fragment {
+                        pending.name.push_str(name)?;
+                    }
+                    if !pending.start_emitted && !pending.name.as_str().is_empty() {
+                        send_delta(
+                            tx,
+                            StreamDelta::ToolCallStart {
+                                id: pending.id.as_str().to_string(),
+                                name: pending.name.as_str().to_string(),
+                            },
+                        )
+                        .await?;
+                        pending.start_emitted = true;
+                    }
+                    if let Some(arguments) = argument_fragment {
+                        pending.arguments.push_str(arguments)?;
+                        send_delta(
+                            tx,
+                            StreamDelta::ToolCallDelta {
+                                id: pending.id.as_str().to_string(),
+                                arguments: arguments.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            if let Some(reason) = choice["finish_reason"].as_str() {
+                validate_string("finish reason", reason, MAX_MODEL_BYTES)?;
+                self.finish_reason = Some(reason.to_string());
+            }
+        }
+
+        if let Some(raw_usage) = chunk_json.get("usage") {
+            let usage = Usage {
+                prompt_tokens: raw_usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                completion_tokens: raw_usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                total_tokens: raw_usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+            };
+            send_delta(tx, StreamDelta::Usage(usage.clone())).await?;
+            self.usage = Some(usage);
+        }
+        Ok(())
+    }
+
+    async fn finish(
+        self,
+        tx: &mpsc::Sender<StreamDelta>,
+        model: String,
+    ) -> Result<CompletionResponse, AiProviderError> {
+        if !self.saw_done {
+            return Err(AiProviderError::StreamClosed(
+                "OpenAI stream ended before [DONE]".into(),
+            ));
+        }
+
+        let message = if self.tool_calls.is_empty() {
+            Message::assistant(self.full_text.into_string())
+        } else {
+            let mut tool_calls = Vec::with_capacity(self.tool_calls.len());
+            for pending in self.tool_calls {
+                if pending.id.as_str().is_empty() || pending.name.as_str().is_empty() {
+                    return Err(AiProviderError::Parse(
+                        "OpenAI stream ended with an incomplete tool-call identity".into(),
+                    ));
+                }
+                let id = pending.id.into_string();
+                let arguments = parse_tool_arguments(pending.arguments.as_str())?;
+                send_delta(tx, StreamDelta::ToolCallEnd { id: id.clone() }).await?;
+                tool_calls.push(ToolCall {
+                    id,
+                    name: pending.name.into_string(),
+                    arguments,
+                });
+            }
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolUse { tool_calls },
+                tool_call_id: None,
+            }
+        };
+        validate_response_message(&message)?;
+        send_delta(tx, StreamDelta::Done).await?;
+        Ok(CompletionResponse {
+            message,
+            usage: self.usage,
+            model,
+            finish_reason: self.finish_reason,
         })
     }
 }
@@ -212,6 +448,7 @@ impl AiProvider for OpenAiProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, AiProviderError> {
+        validate_completion_request(&request)?;
         let url = format!("{}/chat/completions", self.base_url());
 
         let mut body = json!({
@@ -241,7 +478,7 @@ impl AiProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let status_code = status.as_u16();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             let parsed: ApiErrorBody =
                 serde_json::from_str(&text).unwrap_or(ApiErrorBody { error: None });
             let message = parsed
@@ -266,7 +503,7 @@ impl AiProvider for OpenAiProvider {
             });
         }
 
-        let json_body: Value = resp.json().await?;
+        let json_body = read_json_body(resp).await?;
         self.parse_response(json_body)
     }
 
@@ -275,6 +512,7 @@ impl AiProvider for OpenAiProvider {
         request: CompletionRequest,
         tx: mpsc::Sender<StreamDelta>,
     ) -> Result<CompletionResponse, AiProviderError> {
+        validate_completion_request(&request)?;
         let url = format!("{}/chat/completions", self.base_url());
 
         let mut body = json!({
@@ -304,7 +542,7 @@ impl AiProvider for OpenAiProvider {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             return Err(AiProviderError::Api {
                 status,
                 message: text,
@@ -312,135 +550,24 @@ impl AiProvider for OpenAiProvider {
             });
         }
 
-        let mut full_text = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut usage = None;
-        let mut finish_reason = None;
         let model = request.model.clone();
-
-        // Process SSE stream
         let mut stream = resp.bytes_stream();
-        let mut buffer = String::new();
+        let mut decoder = LineDecoder::new();
+        let mut budget = StreamBudget::new();
+        let mut state = OpenAiStreamState::new();
 
         use futures::StreamExt;
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(AiProviderError::Http)?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-            while let Some(line_end) = buffer.find('\n') {
-                let line = buffer[..line_end].trim().to_string();
-                buffer = buffer[line_end + 1..].to_string();
-
-                if line.is_empty() || line == "data: [DONE]" {
-                    if line == "data: [DONE]" {
-                        let _ = tx.send(StreamDelta::Done).await;
-                    }
-                    continue;
-                }
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if let Ok(chunk_json) = serde_json::from_str::<Value>(data) {
-                        if let Some(choice) = chunk_json["choices"].get(0) {
-                            let delta = &choice["delta"];
-
-                            // Text delta
-                            if let Some(text) = delta["content"].as_str() {
-                                full_text.push_str(text);
-                                let _ = tx
-                                    .send(StreamDelta::Text {
-                                        text: text.to_string(),
-                                    })
-                                    .await;
-                            }
-
-                            // Tool call deltas
-                            if let Some(tcs) = delta["tool_calls"].as_array() {
-                                for tc in tcs {
-                                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                                    if let Some(func) = tc.get("function") {
-                                        if let Some(name) = func["name"].as_str() {
-                                            let id =
-                                                tc["id"].as_str().unwrap_or_default().to_string();
-                                            // Expand tool_calls vec
-                                            while tool_calls.len() <= idx {
-                                                tool_calls.push(ToolCall {
-                                                    id: String::new(),
-                                                    name: String::new(),
-                                                    arguments: json!({}),
-                                                });
-                                            }
-                                            tool_calls[idx].id = id.clone();
-                                            tool_calls[idx].name = name.to_string();
-                                            let _ = tx
-                                                .send(StreamDelta::ToolCallStart {
-                                                    id,
-                                                    name: name.to_string(),
-                                                })
-                                                .await;
-                                        }
-                                        if let Some(args) = func["arguments"].as_str() {
-                                            while tool_calls.len() <= idx {
-                                                tool_calls.push(ToolCall {
-                                                    id: String::new(),
-                                                    name: String::new(),
-                                                    arguments: json!({}),
-                                                });
-                                            }
-                                            let _ = tx
-                                                .send(StreamDelta::ToolCallDelta {
-                                                    id: tool_calls[idx].id.clone(),
-                                                    arguments: args.to_string(),
-                                                })
-                                                .await;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Finish reason
-                            if let Some(fr) = choice["finish_reason"].as_str() {
-                                finish_reason = Some(fr.to_string());
-                            }
-                        }
-
-                        // Usage (in some APIs sent at the end)
-                        if let Some(u) = chunk_json.get("usage") {
-                            let u = Usage {
-                                prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0)
-                                    as u32,
-                                total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-                            };
-                            let _ = tx.send(StreamDelta::Usage(u.clone())).await;
-                            usage = Some(u);
-                        }
-                    }
-                }
+            budget.add(bytes.len())?;
+            for line in decoder.push(&bytes)? {
+                state.process_line(&line, &tx).await?;
             }
         }
-
-        // Finalize tool call arguments from accumulated string deltas
-        for tc in &mut tool_calls {
-            let _ = tx
-                .send(StreamDelta::ToolCallEnd { id: tc.id.clone() })
-                .await;
+        if let Some(line) = decoder.finish()? {
+            state.process_line(&line, &tx).await?;
         }
-
-        let message = if !tool_calls.is_empty() {
-            Message {
-                role: Role::Assistant,
-                content: MessageContent::ToolUse { tool_calls },
-                tool_call_id: None,
-            }
-        } else {
-            Message::assistant(full_text)
-        };
-
-        Ok(CompletionResponse {
-            message,
-            usage,
-            model,
-            finish_reason,
-        })
+        state.finish(&tx, model).await
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, AiProviderError> {
@@ -454,7 +581,7 @@ impl AiProvider for OpenAiProvider {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             return Err(AiProviderError::Api {
                 status,
                 message: text,
@@ -462,10 +589,8 @@ impl AiProvider for OpenAiProvider {
             });
         }
 
-        let body: ModelsResponse = resp
-            .json()
-            .await
-            .map_err(|e| AiProviderError::Parse(e.to_string()))?;
+        let body: ModelsResponse = serde_json::from_value(read_json_body(resp).await?)
+            .map_err(|error| AiProviderError::Parse(error.to_string()))?;
         let models = body
             .data
             .into_iter()
@@ -505,5 +630,55 @@ impl AiProvider for OpenAiProvider {
                 provider_code: None,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn streamed_tool_arguments_are_assembled_only_after_valid_json() {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut state = OpenAiStreamState::new();
+        state
+            .process_line(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"zone\":"}}]}}]}"#,
+                &tx,
+            )
+            .await
+            .expect("first fragment");
+        state
+            .process_line(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"example.com\"}"}}]}}]}"#,
+                &tx,
+            )
+            .await
+            .expect("second fragment");
+        state.process_line("data: [DONE]", &tx).await.expect("done");
+
+        let response = state.finish(&tx, "mock".into()).await.expect("valid tool");
+        let MessageContent::ToolUse { tool_calls } = response.message.content else {
+            panic!("expected tool call");
+        };
+        assert_eq!(tool_calls[0].arguments["zone"], "example.com");
+    }
+
+    #[tokio::test]
+    async fn streamed_partial_tool_json_is_an_explicit_error() {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut state = OpenAiStreamState::new();
+        state
+            .process_line(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{"}}]}}]}"#,
+                &tx,
+            )
+            .await
+            .expect("partial fragment");
+        state.process_line("data: [DONE]", &tx).await.expect("done");
+        assert!(matches!(
+            state.finish(&tx, "mock".into()).await,
+            Err(AiProviderError::Parse(_))
+        ));
     }
 }

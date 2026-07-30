@@ -10,6 +10,12 @@ use tokio::sync::mpsc;
 
 use crate::config::ProviderConfig;
 use crate::error::AiProviderError;
+use crate::limits::{
+    read_error_body, read_json_body, send_delta, serialized_len_limited,
+    validate_completion_request, validate_response_message, validate_string, BoundedString,
+    LineDecoder, StreamBudget, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+    MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_NAME_BYTES,
+};
 use crate::traits::AiProvider;
 use crate::types::*;
 
@@ -20,15 +26,17 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn new(config: ProviderConfig) -> Self {
-        Self {
+    pub fn new(config: ProviderConfig) -> Result<Self, AiProviderError> {
+        config.validate()?;
+        Ok(Self {
             client: Client::new(),
             config,
-        }
+        })
     }
 
-    pub fn with_client(client: Client, config: ProviderConfig) -> Self {
-        Self { client, config }
+    pub fn with_client(client: Client, config: ProviderConfig) -> Result<Self, AiProviderError> {
+        config.validate()?;
+        Ok(Self { client, config })
     }
 
     fn base_url(&self) -> &str {
@@ -100,6 +108,180 @@ impl OllamaProvider {
     }
 }
 
+struct OllamaStreamState {
+    full_text: BoundedString,
+    tool_calls: Vec<ToolCall>,
+    retained_output_bytes: usize,
+    usage: Option<Usage>,
+    finish_reason: Option<String>,
+    saw_done: bool,
+}
+
+impl OllamaStreamState {
+    fn new() -> Self {
+        Self {
+            full_text: BoundedString::new("streamed response output", MAX_STREAM_OUTPUT_BYTES),
+            tool_calls: Vec::new(),
+            retained_output_bytes: 0,
+            usage: None,
+            finish_reason: None,
+            saw_done: false,
+        }
+    }
+
+    fn retain(&mut self, bytes: usize) -> Result<(), AiProviderError> {
+        let actual = self.retained_output_bytes.saturating_add(bytes);
+        if actual > MAX_STREAM_OUTPUT_BYTES {
+            return Err(AiProviderError::LimitExceeded {
+                resource: "streamed response output",
+                limit: MAX_STREAM_OUTPUT_BYTES,
+                actual,
+            });
+        }
+        self.retained_output_bytes = actual;
+        Ok(())
+    }
+
+    async fn process_line(
+        &mut self,
+        line: &str,
+        tx: &mpsc::Sender<StreamDelta>,
+    ) -> Result<(), AiProviderError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        }
+        let event: Value = serde_json::from_str(line)
+            .map_err(|error| AiProviderError::Parse(format!("invalid Ollama NDJSON: {error}")))?;
+
+        if let Some(message) = event.get("message") {
+            if let Some(text) = message["content"].as_str() {
+                if !text.is_empty() {
+                    self.retain(text.len())?;
+                    self.full_text.push_str(text)?;
+                    send_delta(
+                        tx,
+                        StreamDelta::Text {
+                            text: text.to_string(),
+                        },
+                    )
+                    .await?;
+                }
+            }
+            if let Some(raw_calls) = message["tool_calls"].as_array() {
+                for raw_call in raw_calls {
+                    if self.tool_calls.len() >= MAX_TOOL_CALLS_PER_MESSAGE {
+                        return Err(AiProviderError::LimitExceeded {
+                            resource: "streamed tool calls",
+                            limit: MAX_TOOL_CALLS_PER_MESSAGE,
+                            actual: self.tool_calls.len().saturating_add(1),
+                        });
+                    }
+                    let function = &raw_call["function"];
+                    let name = function["name"].as_str().ok_or_else(|| {
+                        AiProviderError::Parse("Ollama tool call omitted function name".into())
+                    })?;
+                    validate_string("tool name", name, MAX_TOOL_NAME_BYTES)?;
+                    let arguments = function.get("arguments").cloned().ok_or_else(|| {
+                        AiProviderError::Parse("Ollama tool call omitted arguments".into())
+                    })?;
+                    let argument_bytes = serialized_len_limited(
+                        "tool-call arguments",
+                        &arguments,
+                        MAX_TOOL_ARGUMENT_BYTES,
+                    )?;
+                    self.retain(name.len().saturating_add(argument_bytes))?;
+                    let id = format!("ollama_{}", self.tool_calls.len());
+                    send_delta(
+                        tx,
+                        StreamDelta::ToolCallStart {
+                            id: id.clone(),
+                            name: name.to_string(),
+                        },
+                    )
+                    .await?;
+                    let serialized_arguments =
+                        serde_json::to_string(&arguments).map_err(|error| {
+                            AiProviderError::Parse(format!(
+                                "could not serialize Ollama tool arguments: {error}"
+                            ))
+                        })?;
+                    send_delta(
+                        tx,
+                        StreamDelta::ToolCallDelta {
+                            id: id.clone(),
+                            arguments: serialized_arguments,
+                        },
+                    )
+                    .await?;
+                    self.tool_calls.push(ToolCall {
+                        id,
+                        name: name.to_string(),
+                        arguments,
+                    });
+                }
+            }
+        }
+
+        if event["done"].as_bool().unwrap_or(false) {
+            self.saw_done = true;
+            let prompt = event["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
+            let completion = event["eval_count"].as_u64().unwrap_or(0) as u32;
+            self.usage = Some(Usage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt.saturating_add(completion),
+            });
+            self.finish_reason = event["done_reason"].as_str().map(String::from);
+        }
+        Ok(())
+    }
+
+    async fn finish(
+        self,
+        tx: &mpsc::Sender<StreamDelta>,
+        model: String,
+    ) -> Result<CompletionResponse, AiProviderError> {
+        if !self.saw_done {
+            return Err(AiProviderError::StreamClosed(
+                "Ollama stream ended before done=true".into(),
+            ));
+        }
+
+        let message = if self.tool_calls.is_empty() {
+            Message::assistant(self.full_text.into_string())
+        } else {
+            for tool_call in &self.tool_calls {
+                send_delta(
+                    tx,
+                    StreamDelta::ToolCallEnd {
+                        id: tool_call.id.clone(),
+                    },
+                )
+                .await?;
+            }
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolUse {
+                    tool_calls: self.tool_calls,
+                },
+                tool_call_id: None,
+            }
+        };
+        validate_response_message(&message)?;
+        if let Some(usage) = &self.usage {
+            send_delta(tx, StreamDelta::Usage(usage.clone())).await?;
+        }
+        send_delta(tx, StreamDelta::Done).await?;
+        Ok(CompletionResponse {
+            message,
+            usage: self.usage,
+            model,
+            finish_reason: self.finish_reason,
+        })
+    }
+}
+
 #[async_trait]
 impl AiProvider for OllamaProvider {
     fn kind(&self) -> &str {
@@ -110,6 +292,7 @@ impl AiProvider for OllamaProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, AiProviderError> {
+        validate_completion_request(&request)?;
         let url = format!("{}/api/chat", self.base_url());
         let messages = self.build_messages(&request);
 
@@ -131,7 +314,7 @@ impl AiProvider for OllamaProvider {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             return Err(AiProviderError::Api {
                 status: status.as_u16(),
                 message: text,
@@ -139,25 +322,36 @@ impl AiProvider for OllamaProvider {
             });
         }
 
-        let json_body: Value = resp.json().await?;
+        let json_body = read_json_body(resp).await?;
         let msg_body = &json_body["message"];
 
         // Ollama may return tool_calls in the message
         let tool_calls_raw = msg_body["tool_calls"].as_array();
         let message = if let Some(tcs) = tool_calls_raw {
-            let calls: Vec<ToolCall> = tcs
-                .iter()
-                .enumerate()
-                .filter_map(|(i, tc)| {
-                    let func = &tc["function"];
-                    let name = func["name"].as_str()?;
-                    Some(ToolCall {
-                        id: format!("ollama_{i}"),
-                        name: name.to_string(),
-                        arguments: func["arguments"].clone(),
-                    })
-                })
-                .collect();
+            if tcs.len() > MAX_TOOL_CALLS_PER_MESSAGE {
+                return Err(AiProviderError::LimitExceeded {
+                    resource: "response tool calls",
+                    limit: MAX_TOOL_CALLS_PER_MESSAGE,
+                    actual: tcs.len(),
+                });
+            }
+            let mut calls = Vec::with_capacity(tcs.len());
+            for (index, tool_call) in tcs.iter().enumerate() {
+                let function = &tool_call["function"];
+                let name = function["name"].as_str().ok_or_else(|| {
+                    AiProviderError::Parse("Ollama tool call omitted function name".into())
+                })?;
+                validate_string("tool name", name, MAX_TOOL_NAME_BYTES)?;
+                let arguments = function.get("arguments").cloned().ok_or_else(|| {
+                    AiProviderError::Parse("Ollama tool call omitted arguments".into())
+                })?;
+                serialized_len_limited("tool-call arguments", &arguments, MAX_TOOL_ARGUMENT_BYTES)?;
+                calls.push(ToolCall {
+                    id: format!("ollama_{index}"),
+                    name: name.to_string(),
+                    arguments,
+                });
+            }
             if calls.is_empty() {
                 Message::assistant(msg_body["content"].as_str().unwrap_or_default().to_string())
             } else {
@@ -174,6 +368,7 @@ impl AiProvider for OllamaProvider {
         let prompt_tokens = json_body["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
         let completion_tokens = json_body["eval_count"].as_u64().unwrap_or(0) as u32;
 
+        validate_response_message(&message)?;
         Ok(CompletionResponse {
             message,
             usage: Some(Usage {
@@ -194,6 +389,7 @@ impl AiProvider for OllamaProvider {
         request: CompletionRequest,
         tx: mpsc::Sender<StreamDelta>,
     ) -> Result<CompletionResponse, AiProviderError> {
+        validate_completion_request(&request)?;
         let url = format!("{}/api/chat", self.base_url());
         let messages = self.build_messages(&request);
 
@@ -215,7 +411,7 @@ impl AiProvider for OllamaProvider {
 
         let status_code = resp.status();
         if !status_code.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             return Err(AiProviderError::Api {
                 status: status_code.as_u16(),
                 message: text,
@@ -223,66 +419,25 @@ impl AiProvider for OllamaProvider {
             });
         }
 
-        let mut full_text = String::new();
         let model = request.model.clone();
-        let mut usage = None;
-        let mut finish_reason = None;
 
         let mut stream = resp.bytes_stream();
-        let mut buffer = String::new();
+        let mut decoder = LineDecoder::new();
+        let mut budget = StreamBudget::new();
+        let mut state = OllamaStreamState::new();
 
         use futures::StreamExt;
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(AiProviderError::Http)?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-            // Ollama sends NDJSON: one JSON object per line
-            while let Some(line_end) = buffer.find('\n') {
-                let line = buffer[..line_end].trim().to_string();
-                buffer = buffer[line_end + 1..].to_string();
-
-                if line.is_empty() {
-                    continue;
-                }
-
-                if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                    let done = event["done"].as_bool().unwrap_or(false);
-
-                    if done {
-                        let prompt_tokens = event["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
-                        let completion_tokens = event["eval_count"].as_u64().unwrap_or(0) as u32;
-                        usage = Some(Usage {
-                            prompt_tokens,
-                            completion_tokens,
-                            total_tokens: prompt_tokens + completion_tokens,
-                        });
-                        finish_reason = event["done_reason"].as_str().map(String::from);
-                        if let Some(ref u) = usage {
-                            let _ = tx.send(StreamDelta::Usage(u.clone())).await;
-                        }
-                        let _ = tx.send(StreamDelta::Done).await;
-                    } else if let Some(msg) = event.get("message") {
-                        if let Some(text) = msg["content"].as_str() {
-                            if !text.is_empty() {
-                                full_text.push_str(text);
-                                let _ = tx
-                                    .send(StreamDelta::Text {
-                                        text: text.to_string(),
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
-                }
+            budget.add(bytes.len())?;
+            for line in decoder.push(&bytes)? {
+                state.process_line(&line, &tx).await?;
             }
         }
-
-        Ok(CompletionResponse {
-            message: Message::assistant(full_text),
-            usage,
-            model,
-            finish_reason,
-        })
+        if let Some(line) = decoder.finish()? {
+            state.process_line(&line, &tx).await?;
+        }
+        state.finish(&tx, model).await
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, AiProviderError> {
@@ -297,7 +452,7 @@ impl AiProvider for OllamaProvider {
             });
         }
 
-        let body: Value = resp.json().await?;
+        let body = read_json_body(resp).await?;
         let models = body["models"]
             .as_array()
             .map(|arr| {
@@ -332,5 +487,56 @@ impl AiProvider for OllamaProvider {
                 provider_code: None,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ollama_ndjson_requires_valid_lines_and_done_marker() {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut malformed = OllamaStreamState::new();
+        assert!(matches!(
+            malformed.process_line("{not-json}", &tx).await,
+            Err(AiProviderError::Parse(_))
+        ));
+
+        let mut incomplete = OllamaStreamState::new();
+        incomplete
+            .process_line(r#"{"message":{"content":"partial"},"done":false}"#, &tx)
+            .await
+            .expect("valid partial line");
+        assert!(matches!(
+            incomplete.finish(&tx, "mock".into()).await,
+            Err(AiProviderError::StreamClosed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn ollama_tool_arguments_remain_structured() {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut state = OllamaStreamState::new();
+        state
+            .process_line(
+                r#"{"message":{"content":"","tool_calls":[{"function":{"name":"lookup","arguments":{"zone":"example.com"}}}]},"done":false}"#,
+                &tx,
+            )
+            .await
+            .expect("tool line");
+        state
+            .process_line(
+                r#"{"done":true,"prompt_eval_count":1,"eval_count":2,"done_reason":"stop"}"#,
+                &tx,
+            )
+            .await
+            .expect("done line");
+
+        let response = state.finish(&tx, "mock".into()).await.expect("response");
+        let MessageContent::ToolUse { tool_calls } = response.message.content else {
+            panic!("expected tool call");
+        };
+        assert_eq!(tool_calls[0].arguments["zone"], "example.com");
     }
 }

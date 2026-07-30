@@ -1,20 +1,232 @@
-//! Core agent loop: the agentic cycle of LLM calls + tool execution.
+//! Core agent loop with bounded channels and lifecycle-aware cancellation.
 
-use tokio::sync::mpsc;
+use std::future::Future;
+
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use bc_ai_chat::{ChatManager, ChatMessage, MessageStatus};
+use bc_ai_provider::limits::{
+    validate_string, MAX_ERROR_BODY_BYTES, MAX_TOOL_RESULT_BYTES, STREAM_CHANNEL_CAPACITY,
+};
 use bc_ai_provider::*;
 use bc_ai_tools::executor::{ExecutionResult, ToolExecutor};
 use bc_ai_tools::ToolRegistry;
 
 use crate::config::AgentConfig;
+use crate::error::AgentError;
 use crate::events::AgentEvent;
 
-/// Run one agentic turn: send user message → stream response → execute tools → loop.
-///
-/// Returns when the assistant produces a final text response (no more tool
-/// calls) or the max tool rounds are exceeded.
+async fn lifecycle_termination(
+    cancellation: &mut watch::Receiver<bool>,
+    disposal: &mut watch::Receiver<bool>,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    conversation_id: Uuid,
+) -> AgentError {
+    if *cancellation.borrow() {
+        return AgentError::Cancelled;
+    }
+    if *disposal.borrow() {
+        return AgentError::ConversationDisposed(conversation_id);
+    }
+
+    loop {
+        tokio::select! {
+            changed = cancellation.changed() => {
+                if changed.is_err() || *cancellation.borrow() {
+                    return AgentError::Cancelled;
+                }
+            }
+            changed = disposal.changed() => {
+                if changed.is_err() || *disposal.borrow() {
+                    return AgentError::ConversationDisposed(conversation_id);
+                }
+            }
+            _ = event_tx.closed() => {
+                return AgentError::ConsumerDropped;
+            }
+        }
+    }
+}
+
+async fn until_lifecycle<F, T>(
+    future: F,
+    cancellation: &mut watch::Receiver<bool>,
+    disposal: &mut watch::Receiver<bool>,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    conversation_id: Uuid,
+) -> Result<T, AgentError>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(future);
+    tokio::select! {
+        output = &mut future => Ok(output),
+        error = lifecycle_termination(cancellation, disposal, event_tx, conversation_id) => {
+            Err(error)
+        }
+    }
+}
+
+async fn send_event(
+    event_tx: &mpsc::Sender<AgentEvent>,
+    event: AgentEvent,
+    cancellation: &mut watch::Receiver<bool>,
+    disposal: &mut watch::Receiver<bool>,
+    conversation_id: Uuid,
+) -> Result<(), AgentError> {
+    until_lifecycle(
+        event_tx.send(event),
+        cancellation,
+        disposal,
+        event_tx,
+        conversation_id,
+    )
+    .await?
+    .map_err(|_| AgentError::ConsumerDropped)
+}
+
+async fn forward_stream(
+    mut stream_rx: mpsc::Receiver<StreamDelta>,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    conversation_id: Uuid,
+    message_id: Uuid,
+) -> Result<(), AgentError> {
+    while let Some(delta) = stream_rx.recv().await {
+        let event = match delta {
+            StreamDelta::Text { text } => Some(AgentEvent::TextDelta {
+                conversation_id,
+                message_id,
+                text,
+            }),
+            StreamDelta::ToolCallStart { id, name } => Some(AgentEvent::ToolCallStart {
+                conversation_id,
+                tool_call_id: id,
+                tool_name: name,
+            }),
+            StreamDelta::Usage(usage) => Some(AgentEvent::UsageUpdate {
+                conversation_id,
+                usage,
+            }),
+            StreamDelta::Error { message } => {
+                return Err(AgentError::Provider(AiProviderError::Other(message)));
+            }
+            StreamDelta::ToolCallDelta { .. }
+            | StreamDelta::ToolCallEnd { .. }
+            | StreamDelta::Done => None,
+        };
+        if let Some(event) = event {
+            event_tx
+                .send(event)
+                .await
+                .map_err(|_| AgentError::ConsumerDropped)?;
+        }
+    }
+    Ok(())
+}
+
+async fn stream_completion(
+    provider: &dyn AiProvider,
+    request: CompletionRequest,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    conversation_id: Uuid,
+    message_id: Uuid,
+) -> Result<CompletionResponse, AgentError> {
+    let (stream_tx, stream_rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+    let provider_future = provider.stream(request, stream_tx);
+    let consumer_future = forward_stream(stream_rx, event_tx, conversation_id, message_id);
+    let (response, ()) = tokio::try_join!(
+        async { provider_future.await.map_err(AgentError::from) },
+        consumer_future
+    )?;
+    Ok(response)
+}
+
+fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMessage {
+    ChatMessage {
+        id: Uuid::new_v4(),
+        message: Message::tool_result(result.tool_call_id, result.content, result.is_error),
+        status: MessageStatus::Complete,
+        created_at: chrono::Utc::now(),
+        usage: None,
+        pending_tool_calls: Vec::new(),
+    }
+}
+
+async fn execute_tool_calls(
+    tool_calls: &[ToolCall],
+    executor: &ToolExecutor,
+    chat: &ChatManager,
+    conversation_id: Uuid,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    cancellation: &mut watch::Receiver<bool>,
+    disposal: &mut watch::Receiver<bool>,
+) -> Result<bool, AgentError> {
+    for tool_call in tool_calls {
+        let result = until_lifecycle(
+            executor.execute(tool_call, false),
+            cancellation,
+            disposal,
+            event_tx,
+            conversation_id,
+        )
+        .await?;
+
+        match result {
+            ExecutionResult::Success(result) | ExecutionResult::Error(result) => {
+                if result.content.len() > MAX_TOOL_RESULT_BYTES {
+                    return Err(AgentError::ToolOutputLimit {
+                        limit: MAX_TOOL_RESULT_BYTES,
+                        actual: result.content.len(),
+                    });
+                }
+                send_event(
+                    event_tx,
+                    AgentEvent::ToolCallComplete {
+                        conversation_id,
+                        tool_call_id: tool_call.id.clone(),
+                        tool_name: tool_call.name.clone(),
+                        result: result.content.clone(),
+                        is_error: result.is_error,
+                    },
+                    cancellation,
+                    disposal,
+                    conversation_id,
+                )
+                .await?;
+                chat.try_push_message(conversation_id, tool_result_message(result))
+                    .await?;
+            }
+            ExecutionResult::NeedsApproval { tool_call, reason } => {
+                validate_string("tool approval reason", &reason, MAX_ERROR_BODY_BYTES)?;
+                let pending = tool_call.clone();
+                chat.try_update_last_assistant_message(conversation_id, |message| {
+                    message.pending_tool_calls.push(pending);
+                })
+                .await?;
+                send_event(
+                    event_tx,
+                    AgentEvent::ToolApprovalRequired {
+                        conversation_id,
+                        tool_call_id: tool_call.id,
+                        tool_name: tool_call.name,
+                        arguments: tool_call.arguments,
+                        reason,
+                    },
+                    cancellation,
+                    disposal,
+                    conversation_id,
+                )
+                .await?;
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Run one agentic turn until final text, approval pause, cancellation, or error.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
     provider: &dyn AiProvider,
     chat: &ChatManager,
@@ -22,40 +234,29 @@ pub async fn run_turn(
     executor: &ToolExecutor,
     config: &AgentConfig,
     conversation_id: Uuid,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-) -> Result<Uuid, String> {
+    event_tx: mpsc::Sender<AgentEvent>,
+    mut cancellation: watch::Receiver<bool>,
+    mut disposal: watch::Receiver<bool>,
+) -> Result<Uuid, AgentError> {
+    config.validate()?;
     let system_prompt = chat.system_prompt(conversation_id).await;
-
-    // Create a pending assistant message
-    let assistant_msg = ChatMessage::assistant_pending();
-    let message_id = assistant_msg.id;
-    chat.push_message(conversation_id, assistant_msg).await;
-
+    let model = chat
+        .model(conversation_id)
+        .await
+        .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
     let tools = if config.tools_enabled {
         Some(registry.definitions().await)
     } else {
         None
     };
 
-    let mut rounds = 0u32;
-
-    loop {
-        rounds += 1;
-        if rounds > config.max_tool_rounds {
-            let _ = event_tx.send(AgentEvent::Error {
-                conversation_id,
-                error: format!("Exceeded max tool rounds ({})", config.max_tool_rounds),
-            });
-            break;
-        }
-
+    for _round in 0..config.max_tool_rounds {
         let messages = chat
             .provider_messages(conversation_id)
             .await
-            .ok_or("Conversation not found")?;
-
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
         let request = CompletionRequest {
-            model: String::new(), // Filled by provider config
+            model: model.clone(),
             messages,
             system: system_prompt.clone(),
             temperature: None,
@@ -63,214 +264,96 @@ pub async fn run_turn(
             tools: tools.clone(),
         };
 
-        if config.stream {
-            let (tx, mut rx) = mpsc::channel(128);
+        let assistant_message = ChatMessage::assistant_pending();
+        let message_id = assistant_message.id;
+        chat.try_push_message(conversation_id, assistant_message)
+            .await?;
 
-            // Spawn stream consumer
-            let event_tx_clone = event_tx.clone();
-            let conv_id = conversation_id;
-            let msg_id = message_id;
-            let stream_handle = tokio::spawn(async move {
-                let mut full_text = String::new();
-                while let Some(delta) = rx.recv().await {
-                    match &delta {
-                        StreamDelta::Text { text } => {
-                            full_text.push_str(text);
-                            let _ = event_tx_clone.send(AgentEvent::TextDelta {
-                                conversation_id: conv_id,
-                                message_id: msg_id,
-                                text: text.clone(),
-                            });
-                        }
-                        StreamDelta::ToolCallStart { id, name } => {
-                            let _ = event_tx_clone.send(AgentEvent::ToolCallStart {
-                                conversation_id: conv_id,
-                                tool_call_id: id.clone(),
-                                tool_name: name.clone(),
-                            });
-                        }
-                        StreamDelta::Usage(usage) => {
-                            let _ = event_tx_clone.send(AgentEvent::UsageUpdate {
-                                conversation_id: conv_id,
-                                usage: usage.clone(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                full_text
-            });
-
-            let result = provider
-                .stream(request, tx)
-                .await
-                .map_err(|e| e.to_string())?;
-            let _full_text = stream_handle.await.unwrap_or_default();
-
-            // Update the assistant message
-            let response = result;
-            chat.update_last_assistant_message(conversation_id, |msg| {
-                msg.message = response.message.clone();
-                msg.status = MessageStatus::Complete;
-                msg.usage = response.usage.clone();
-            })
-            .await;
-
-            // Check if there are tool calls
-            if let MessageContent::ToolUse { ref tool_calls } = response.message.content {
-                let tool_results =
-                    execute_tool_calls(tool_calls, executor, conversation_id, &event_tx).await;
-
-                // Add tool results as messages
-                for tr in tool_results {
-                    match tr {
-                        ExecutionResult::Success(result) => {
-                            let msg = ChatMessage {
-                                id: Uuid::new_v4(),
-                                message: Message::tool_result(
-                                    result.tool_call_id,
-                                    result.content,
-                                    result.is_error,
-                                ),
-                                status: MessageStatus::Complete,
-                                created_at: chrono::Utc::now(),
-                                usage: None,
-                                pending_tool_calls: Vec::new(),
-                            };
-                            chat.push_message(conversation_id, msg).await;
-                        }
-                        ExecutionResult::NeedsApproval { tool_call, reason } => {
-                            let _ = event_tx.send(AgentEvent::ToolApprovalRequired {
-                                conversation_id,
-                                tool_call_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                arguments: tool_call.arguments.clone(),
-                                reason,
-                            });
-                            // Pause the loop — the manager will resume after approval
-                            return Ok(message_id);
-                        }
-                        ExecutionResult::Error(result) => {
-                            let msg = ChatMessage {
-                                id: Uuid::new_v4(),
-                                message: Message::tool_result(
-                                    result.tool_call_id,
-                                    result.content,
-                                    result.is_error,
-                                ),
-                                status: MessageStatus::Complete,
-                                created_at: chrono::Utc::now(),
-                                usage: None,
-                                pending_tool_calls: Vec::new(),
-                            };
-                            chat.push_message(conversation_id, msg).await;
-                        }
-                    }
-                }
-
-                // Continue the loop — the next iteration will call the LLM
-                // with the tool results included in the conversation.
-                continue;
-            }
+        let response_result = if config.stream {
+            until_lifecycle(
+                stream_completion(provider, request, &event_tx, conversation_id, message_id),
+                &mut cancellation,
+                &mut disposal,
+                &event_tx,
+                conversation_id,
+            )
+            .await
+            .and_then(|result| result)
         } else {
-            // Non-streaming
-            let response = provider
-                .complete(request)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            chat.update_last_assistant_message(conversation_id, |msg| {
-                msg.message = response.message.clone();
-                msg.status = MessageStatus::Complete;
-                msg.usage = response.usage.clone();
-            })
-            .await;
-
-            if let MessageContent::ToolUse { ref tool_calls } = response.message.content {
-                let tool_results =
-                    execute_tool_calls(tool_calls, executor, conversation_id, &event_tx).await;
-
-                for tr in tool_results {
-                    match tr {
-                        ExecutionResult::Success(result) | ExecutionResult::Error(result) => {
-                            let msg = ChatMessage {
-                                id: Uuid::new_v4(),
-                                message: Message::tool_result(
-                                    result.tool_call_id,
-                                    result.content,
-                                    result.is_error,
-                                ),
-                                status: MessageStatus::Complete,
-                                created_at: chrono::Utc::now(),
-                                usage: None,
-                                pending_tool_calls: Vec::new(),
-                            };
-                            chat.push_message(conversation_id, msg).await;
-                        }
-                        ExecutionResult::NeedsApproval { tool_call, reason } => {
-                            let _ = event_tx.send(AgentEvent::ToolApprovalRequired {
-                                conversation_id,
-                                tool_call_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                arguments: tool_call.arguments.clone(),
-                                reason,
-                            });
-                            return Ok(message_id);
-                        }
+            until_lifecycle(
+                provider.complete(request),
+                &mut cancellation,
+                &mut disposal,
+                &event_tx,
+                conversation_id,
+            )
+            .await
+            .and_then(|result| result.map_err(AgentError::from))
+        };
+        let response = match response_result {
+            Ok(response) => response,
+            Err(error) => {
+                let status = if matches!(error, AgentError::Cancelled) {
+                    MessageStatus::Cancelled
+                } else {
+                    MessageStatus::Error {
+                        message: error.to_string(),
                     }
-                }
-                continue;
+                };
+                let _ = chat
+                    .try_update_last_assistant_message(conversation_id, |message| {
+                        message.status = status;
+                    })
+                    .await;
+                return Err(error);
             }
+        };
+
+        let response_message = response.message.clone();
+        let response_usage = response.usage.clone();
+        if !chat
+            .try_update_last_assistant_message(conversation_id, |message| {
+                message.message = response_message;
+                message.status = MessageStatus::Complete;
+                message.usage = response_usage;
+            })
+            .await?
+        {
+            return Err(AgentError::Chat(
+                bc_ai_chat::ChatError::ConversationNotFound(conversation_id),
+            ));
         }
 
-        // No tool calls → final response, break
-        break;
-    }
-
-    let _ = event_tx.send(AgentEvent::TurnComplete {
-        conversation_id,
-        message_id,
-    });
-
-    Ok(message_id)
-}
-
-/// Execute a batch of tool calls, emitting events for each.
-async fn execute_tool_calls(
-    tool_calls: &[ToolCall],
-    executor: &ToolExecutor,
-    conversation_id: Uuid,
-    event_tx: &mpsc::UnboundedSender<AgentEvent>,
-) -> Vec<ExecutionResult> {
-    let mut results = Vec::new();
-
-    for tc in tool_calls {
-        let result = executor.execute(tc, false).await;
-
-        match &result {
-            ExecutionResult::Success(tr) => {
-                let _ = event_tx.send(AgentEvent::ToolCallComplete {
-                    conversation_id,
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    result: tr.content.clone(),
-                    is_error: false,
-                });
+        if let MessageContent::ToolUse { tool_calls } = response.message.content {
+            let paused = execute_tool_calls(
+                &tool_calls,
+                executor,
+                chat,
+                conversation_id,
+                &event_tx,
+                &mut cancellation,
+                &mut disposal,
+            )
+            .await?;
+            if paused {
+                return Ok(message_id);
             }
-            ExecutionResult::Error(tr) => {
-                let _ = event_tx.send(AgentEvent::ToolCallComplete {
-                    conversation_id,
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    result: tr.content.clone(),
-                    is_error: true,
-                });
-            }
-            ExecutionResult::NeedsApproval { .. } => {}
+            continue;
         }
 
-        results.push(result);
+        send_event(
+            &event_tx,
+            AgentEvent::TurnComplete {
+                conversation_id,
+                message_id,
+            },
+            &mut cancellation,
+            &mut disposal,
+            conversation_id,
+        )
+        .await?;
+        return Ok(message_id);
     }
 
-    results
+    Err(AgentError::ToolRoundLimit(config.max_tool_rounds))
 }

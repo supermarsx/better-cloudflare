@@ -6,10 +6,12 @@
 
 pub mod agent;
 pub mod config;
+pub mod error;
 pub mod events;
 pub mod manager;
 pub mod presets;
 
 pub use config::AgentConfig;
+pub use error::AgentError;
 pub use events::AgentEvent;
 pub use manager::AgentManager;

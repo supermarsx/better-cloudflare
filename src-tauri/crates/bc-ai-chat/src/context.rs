@@ -18,7 +18,7 @@ pub fn estimate_tokens(message: &Message) -> usize {
 
 /// Estimate total tokens for a list of messages.
 pub fn estimate_total_tokens(messages: &[Message]) -> usize {
-    messages.iter().map(|m| estimate_tokens(m)).sum()
+    messages.iter().map(estimate_tokens).sum()
 }
 
 /// Truncate messages to fit within a context window.
