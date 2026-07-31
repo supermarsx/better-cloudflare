@@ -102,6 +102,7 @@ import {
 } from "@/lib/errors/runtime-reporting";
 import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
 import { DnsAppCommandBar } from "./DnsAppCommandBar";
+import { DnsConnectionBar } from "./DnsConnectionBar";
 import {
   McpToolPermissions,
   type McpToolPermissionsApplication,
@@ -5342,6 +5343,44 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     <AuthenticatedAppShell
       commandBar={
         <DnsAppCommandBar
+          accountLabel={
+            email?.trim() ||
+            t("Cloudflare API session", "Cloudflare API session")
+          }
+          sessionLabel={
+            currentSessionId === "__default"
+              ? t("Active session", "Active session")
+              : currentSessionId
+          }
+          showAudit={isDesktop()}
+          onOpenAudit={() => openActionTab("audit")}
+          onOpenRegistry={() => openActionTab("registry")}
+          onOpenSettings={() => openActionTab("settings")}
+          onOpenTags={() => openActionTab("tags")}
+          onLogout={handleLogout}
+        />
+      }
+      workspaceTabs={
+        <DnsWorkspaceTabs
+          items={tabs.map((tab) => ({
+            id: tab.id,
+            label:
+              tab.kind === "zone"
+                ? tab.zoneName
+                : t(tab.zoneName, tab.zoneName),
+            kind: tab.kind,
+            status: tab.status,
+          }))}
+          activeId={activeTabId}
+          closeOnMiddleClick={closeTabOnMiddleClick}
+          onActivate={activateTab}
+          onClose={closeTab}
+          onReorder={reorderTabs}
+          onMoveToEnd={moveTabToEnd}
+        />
+      }
+      connectionBar={
+        <DnsConnectionBar
           zoneSelector={
             <>
               <Label className="sr-only" htmlFor="zone-select">
@@ -5377,15 +5416,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               </Select>
             </>
           }
-          accountLabel={
-            email?.trim() ||
-            t("Cloudflare API session", "Cloudflare API session")
-          }
-          sessionLabel={
-            currentSessionId === "__default"
-              ? t("Active session", "Active session")
-              : currentSessionId
-          }
           activeContext={
             activeTab
               ? activeTab.kind === "zone"
@@ -5406,31 +5436,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           visibleCount={
             activeTab?.kind === "zone" ? filteredRecords.length : undefined
           }
-          showAudit={isDesktop()}
-          onOpenAudit={() => openActionTab("audit")}
-          onOpenRegistry={() => openActionTab("registry")}
-          onOpenSettings={() => openActionTab("settings")}
-          onOpenTags={() => openActionTab("tags")}
-          onLogout={handleLogout}
-        />
-      }
-      workspaceTabs={
-        <DnsWorkspaceTabs
-          items={tabs.map((tab) => ({
-            id: tab.id,
-            label:
-              tab.kind === "zone"
-                ? tab.zoneName
-                : t(tab.zoneName, tab.zoneName),
-            kind: tab.kind,
-            status: tab.status,
-          }))}
-          activeId={activeTabId}
-          closeOnMiddleClick={closeTabOnMiddleClick}
-          onActivate={activateTab}
-          onClose={closeTab}
-          onReorder={reorderTabs}
-          onMoveToEnd={moveTabToEnd}
         />
       }
     >

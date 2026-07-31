@@ -4,6 +4,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { DnsAppCommandBar } from "../src/components/dns/DnsAppCommandBar";
+import { DnsConnectionBar } from "../src/components/dns/DnsConnectionBar";
 import {
   DnsWorkspaceTabs,
   getDnsWorkspacePanelId,
@@ -45,6 +46,7 @@ test("authenticated shell keeps command bar, tabs, and one body scroll region in
     <AuthenticatedAppShell
       commandBar={<button type="button">Command</button>}
       workspaceTabs={<div role="tablist">Tabs</div>}
+      connectionBar={<div>Session context</div>}
     >
       <div role="tabpanel">Workspace</div>
     </AuthenticatedAppShell>,
@@ -54,12 +56,13 @@ test("authenticated shell keeps command bar, tabs, and one body scroll region in
   const children = Array.from(shell.children);
   assert.deepEqual(
     children.map((element) => element.tagName),
-    ["HEADER", "NAV", "DIV"],
+    ["HEADER", "NAV", "DIV", "FOOTER"],
   );
 
   const commandBar = screen.getByTestId("app-command-bar");
   const tabBar = screen.getByTestId("dns-workspace-tab-bar");
   const scrollRegion = screen.getByTestId("dns-workspace-scroll-region");
+  const connectionBar = screen.getByTestId("dns-connection-bar");
 
   for (const bar of [commandBar, tabBar]) {
     assert.match(bar.className, /\bsticky\b/);
@@ -75,7 +78,17 @@ test("authenticated shell keeps command bar, tabs, and one body scroll region in
   assert.match(scrollRegion.className, /\bmin-h-0\b/);
   assert.match(scrollRegion.className, /\bflex-1\b/);
   assert.match(scrollRegion.className, /\boverflow-y-auto\b/);
+  assert.match(scrollRegion.className, /\bapp-shell-workspace-scroll\b/);
   assert.doesNotMatch(scrollRegion.className, /fade/);
+  assert.match(connectionBar.className, /\bshrink-0\b/);
+  assert.match(connectionBar.className, /\bsticky\b/);
+  assert.match(connectionBar.className, /\bbottom-0\b/);
+  assert.doesNotMatch(connectionBar.className, /\b(?:absolute|fixed)\b/);
+  assert.equal(scrollRegion.nextElementSibling, connectionBar);
+  assert.equal(
+    connectionBar.getAttribute("aria-label"),
+    "DNS session and workspace context",
+  );
 });
 
 test("authenticated command-bar controls remain labelled and clickable", () => {
@@ -84,13 +97,8 @@ test("authenticated command-bar controls remain labelled and clickable", () => {
 
   render(
     <DnsAppCommandBar
-      zoneSelector={<button type="button">Choose domain</button>}
       accountLabel="operator@example.com"
       sessionLabel="Primary session"
-      activeContext="example.com"
-      activeStatus="active"
-      recordCount={8}
-      visibleCount={5}
       showAudit
       onOpenAudit={recordClick("audit")}
       onOpenRegistry={recordClick("registry")}
@@ -104,10 +112,9 @@ test("authenticated command-bar controls remain labelled and clickable", () => {
     screen.getByRole("toolbar", { name: "Global application controls" }),
   );
   assert.ok(screen.getByRole("heading", { name: "DNS Manager" }));
-  assert.ok(screen.getByText("Connected"));
   assert.ok(screen.getByText("operator@example.com"));
   assert.ok(screen.getByText("Primary session"));
-  assert.ok(screen.getByText("example.com"));
+  assert.equal(screen.queryByText("Connected"), null);
 
   for (const name of [
     "Audit log",
@@ -120,6 +127,29 @@ test("authenticated command-bar controls remain labelled and clickable", () => {
   }
 
   assert.deepEqual(clicks, ["audit", "registry", "settings", "tags", "logout"]);
+});
+
+test("bottom connection bar labels authenticated session and current workspace context", () => {
+  render(
+    <DnsConnectionBar
+      zoneSelector={<button type="button">Choose domain</button>}
+      activeContext="example.com"
+      activeStatus="active"
+      recordCount={8}
+      visibleCount={5}
+    />,
+  );
+
+  assert.ok(
+    screen.getByRole("status", { name: "Session status: Authenticated" }),
+  );
+  assert.ok(screen.getByText("Authenticated session"));
+  assert.ok(screen.getByRole("button", { name: "Choose domain" }));
+  assert.ok(screen.getByText("example.com"));
+  assert.ok(screen.getByText("active"));
+  assert.ok(screen.getByText("8 records"));
+  assert.ok(screen.getByText("5 visible"));
+  assert.equal(screen.queryByText("Connected"), null);
 });
 
 const INITIAL_TABS: DnsWorkspaceTabItem[] = [

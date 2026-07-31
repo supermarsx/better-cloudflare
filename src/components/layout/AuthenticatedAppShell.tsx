@@ -3,12 +3,14 @@ import type { ReactNode } from "react";
 interface AuthenticatedAppShellProps {
   commandBar: ReactNode;
   workspaceTabs: ReactNode;
+  connectionBar: ReactNode;
   children: ReactNode;
 }
 
 export function AuthenticatedAppShell({
   commandBar,
   workspaceTabs,
+  connectionBar,
   children,
 }: AuthenticatedAppShellProps) {
   return (
@@ -34,10 +36,18 @@ export function AuthenticatedAppShell({
       <div
         data-app-shell-scroll-region="body"
         data-testid="dns-workspace-scroll-region"
-        className="scrollbar-themed min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth"
+        className="app-shell-workspace-scroll scrollbar-themed min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth"
       >
         {children}
       </div>
+      <footer
+        aria-label="DNS session and workspace context"
+        data-app-shell-bar="bottom"
+        data-testid="dns-connection-bar"
+        className="app-no-drag sticky bottom-0 z-20 shrink-0 border-t border-border/70 bg-background/94 backdrop-blur-xl"
+      >
+        {connectionBar}
+      </footer>
     </section>
   );
 }
