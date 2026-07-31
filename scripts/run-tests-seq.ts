@@ -42,6 +42,7 @@ const UNSAFE_RESOURCE_OPTIONS = new Set([
   "--max-old-space-size",
   "--max-old-space-size-percentage",
 ]);
+const MAX_TEST_FILTER_LENGTH = 1024;
 const MAX_PROCESS_TREE_MEMORY_MIB = 1792;
 const MAX_OLD_SPACE_SIZE_MIB = 1536;
 
@@ -301,29 +302,66 @@ function optionValue(
   return equalsIndex === -1 ? nextArgument : argument.slice(equalsIndex + 1);
 }
 
-function globPatternToRegExp(pattern: string): RegExp {
-  let source = "^";
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index];
-    if (character === "*") {
-      if (pattern[index + 1] === "*") {
-        source += ".*";
-        index += 1;
-      } else {
-        source += "[^/]*";
-      }
-    } else if (character === "?") {
-      source += "[^/]";
-    } else if ("\\^$+.|(){}[]".includes(character)) {
-      source += `\\${character}`;
-    } else {
-      source += character;
+export function matchesGlobPattern(value: string, pattern: string): boolean {
+  const valueCodePoints = Array.from(value);
+  const patternCodePoints = Array.from(pattern);
+  let reachable = new Uint8Array(valueCodePoints.length + 1);
+  reachable[0] = 1;
+
+  for (
+    let patternIndex = 0;
+    patternIndex < patternCodePoints.length;
+    patternIndex += 1
+  ) {
+    const character = patternCodePoints[patternIndex];
+    const next = new Uint8Array(valueCodePoints.length + 1);
+    const crossesDirectories =
+      character === "*" && patternCodePoints[patternIndex + 1] === "*";
+    if (crossesDirectories) {
+      patternIndex += 1;
     }
+
+    if (character === "*") {
+      next[0] = reachable[0];
+      for (
+        let valueIndex = 1;
+        valueIndex <= valueCodePoints.length;
+        valueIndex += 1
+      ) {
+        next[valueIndex] =
+          reachable[valueIndex] === 1 ||
+          (next[valueIndex - 1] === 1 &&
+            (crossesDirectories || valueCodePoints[valueIndex - 1] !== "/"))
+            ? 1
+            : 0;
+      }
+    } else {
+      for (
+        let valueIndex = 1;
+        valueIndex <= valueCodePoints.length;
+        valueIndex += 1
+      ) {
+        next[valueIndex] =
+          reachable[valueIndex - 1] === 1 &&
+          (character === "?"
+            ? valueCodePoints[valueIndex - 1] !== "/"
+            : valueCodePoints[valueIndex - 1] === character)
+            ? 1
+            : 0;
+      }
+    }
+    reachable = next;
   }
-  return new RegExp(`${source}$`, "u");
+
+  return reachable[valueCodePoints.length] === 1;
 }
 
 function matchesTestFilter(file: string, rawFilter: string): boolean {
+  if (rawFilter.length > MAX_TEST_FILTER_LENGTH) {
+    throw new Error(
+      `Test filters must not exceed ${MAX_TEST_FILTER_LENGTH} characters.`,
+    );
+  }
   const filter = rawFilter
     .replaceAll("\\", "/")
     .replace(/^\.\/+/u, "")
@@ -334,7 +372,7 @@ function matchesTestFilter(file: string, rawFilter: string): boolean {
     return comparableFile.startsWith("test/");
   }
   if (filter.includes("*") || filter.includes("?")) {
-    return globPatternToRegExp(filter).test(comparableFile);
+    return matchesGlobPattern(comparableFile, filter);
   }
   return comparableFile === filter || comparableFile.startsWith(`${filter}/`);
 }
@@ -545,8 +583,15 @@ function terminateProcessTree(
     return;
   }
 
+  signalPosixProcessGroup(processId, "SIGKILL");
+}
+
+function signalPosixProcessGroup(
+  processId: number,
+  signal: NodeJS.Signals,
+): void {
   try {
-    process.kill(-processId, "SIGKILL");
+    process.kill(-processId, signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
       throw error;
@@ -626,6 +671,10 @@ export async function runGuardedProcess(
   let stdout = "";
   let stderr = "";
   let abortedExitCode: number | null = null;
+  let rootExitStatus: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null = null;
   let settled = false;
   const writeOutput = options.writeOutput ?? true;
 
@@ -645,12 +694,20 @@ export async function runGuardedProcess(
       process.stderr.write(text);
     }
   });
+  child.once("exit", (code, signal) => {
+    rootExitStatus = { code, signal };
+    if (platform !== "win32" && child.pid !== undefined) {
+      signalPosixProcessGroup(child.pid, "SIGTERM");
+    }
+  });
 
   const abort = (): void => {
     if (settled || child.pid === undefined) {
       return;
     }
-    abortedExitCode = signalExitCode(options.signal?.reason) ?? 1;
+    if (rootExitStatus === null && abortedExitCode === null) {
+      abortedExitCode = signalExitCode(options.signal?.reason) ?? 1;
+    }
     terminateProcessTree(child.pid, platform);
   };
   options.signal?.addEventListener("abort", abort, { once: true });
@@ -662,7 +719,9 @@ export async function runGuardedProcess(
     platform === "win32" ? options.timeoutMs + 15_000 : options.timeoutMs;
   const emergencyTimeout = setTimeout(() => {
     if (child.pid !== undefined) {
-      abortedExitCode = 124;
+      if (rootExitStatus === null && abortedExitCode === null) {
+        abortedExitCode = 124;
+      }
       terminateProcessTree(child.pid, platform);
     }
   }, emergencyTimeoutMs);
@@ -681,12 +740,15 @@ export async function runGuardedProcess(
       options.signal?.removeEventListener("abort", abort);
 
       const combinedOutput = `${stdout}\n${stderr}`;
+      const rootCode = rootExitStatus === null ? code : rootExitStatus.code;
+      const rootSignal =
+        rootExitStatus === null ? signal : rootExitStatus.signal;
       resolve({
         exitCode:
           abortedExitCode ??
-          code ??
-          (signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 1),
-        signal,
+          rootCode ??
+          (rootSignal === "SIGINT" ? 130 : rootSignal === "SIGTERM" ? 143 : 1),
+        signal: rootSignal,
         stdout,
         stderr,
         watchdog: parseWatchdogSummary(combinedOutput),

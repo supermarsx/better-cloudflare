@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   buildNodeTestArguments,
   discoverTestFiles,
   installSignalHandlers,
+  matchesGlobPattern,
   normalizeTestFilePath,
   prepareTestInvocation,
   runGuardedProcess,
@@ -322,6 +324,24 @@ test("filters, help, reporting, and concurrency overrides are handled safely", (
   assert.deepEqual(prepareTestInvocation(files, ["test/ZETA.test.ts"]).files, [
     "test/zeta.test.ts",
   ]);
+  assert.deepEqual(
+    prepareTestInvocation(
+      [...files, "test/meta+[1].test.ts"],
+      ["test/meta+[?].test.ts"],
+    ).files,
+    ["test/meta+[1].test.ts"],
+  );
+  assert.deepEqual(
+    [
+      matchesGlobPattern("test/😀.test.ts", "test/?.test.ts"),
+      matchesGlobPattern("test/😀.test.ts", "test?😀.test.ts"),
+    ],
+    [true, false],
+  );
+  assert.throws(
+    () => prepareTestInvocation(files, ["*".repeat(1025)]),
+    /must not exceed 1024/u,
+  );
   assert.throws(
     () => prepareTestInvocation(files, ["--test-concurrency=8"]),
     /cannot override/u,
@@ -389,9 +409,8 @@ test(
   "a custom visible reporter still produces an exact machine summary",
   { timeout: 45_000 },
   async () => {
-    const fixtureFile = `test/.runner-reporter-${process.pid}.test.ts`;
+    const fixtureFile = `test/.runner-reporter-${process.pid}-${randomUUID()}.test.ts`;
     const fixturePath = path.join(repositoryRoot, ...fixtureFile.split("/"));
-    assert.equal(fs.existsSync(fixturePath), false);
     fs.writeFileSync(
       fixturePath,
       [
@@ -399,6 +418,11 @@ test(
         'test("runner reporter fixture", () => {});',
         "",
       ].join("\n"),
+      { flag: "wx" },
+    );
+    assert.throws(
+      () => fs.writeFileSync(fixturePath, "collision", { flag: "wx" }),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST",
     );
 
     try {
