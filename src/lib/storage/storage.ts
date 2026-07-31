@@ -1,8 +1,4 @@
-/**
- * Client-side storage manager used for storing encrypted API keys and
- * session metadata. This provides convenience methods to add, remove,
- * update, and export/import encrypted data.
- */
+/** Browser preferences persist; web credentials remain runtime-only. */
 import {
   ENCRYPTION_ALGORITHMS,
   type ApiKey,
@@ -18,19 +14,20 @@ import {
   reconcileMcpEnabledToolIds,
   reconcileMcpEnabledToolIdsDetailed,
 } from "../mcp/tool-permissions";
-import { getStorage, type StorageLike } from "./storage-util";
+import {
+  type BrowserPreferenceData,
+  type BrowserSessionSettingsProfile,
+  assertBoundedStorageValue,
+  getStorage,
+  sanitizeBrowserPreferencesValue,
+  type StorageLike,
+} from "./storage-util";
 import { generateUUID } from "../utils";
 import { reportRuntimeError } from "../errors/runtime-reporting";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
 const STORAGE_RECOVERY_KEY = `${STORAGE_KEY}:recovery`;
 const MAX_STORAGE_BYTES = 2 * 1024 * 1024;
-const MAX_JSON_DEPTH = 12;
-const MAX_JSON_NODES = 20_000;
-const MAX_OBJECT_PROPERTIES = 5_000;
-const MAX_ARRAY_ITEMS = 5_000;
-const MAX_STRING_BYTES = 64 * 1024;
-const MAX_PROPERTY_NAME_BYTES = 512;
 const MAX_API_KEYS = 256;
 const MAX_API_KEY_LABEL_BYTES = 256;
 const MAX_API_KEY_EMAIL_BYTES = 320;
@@ -56,71 +53,9 @@ export class StorageRecoveryRequiredError extends Error {
   }
 }
 
-interface StorageData {
+interface StorageData extends BrowserPreferenceData {
   apiKeys: ApiKey[];
-  __storageRevision?: number;
   currentSession?: string;
-  lastZone?: string;
-  lastActiveTabId?: string;
-  dnsTableColumns?: string[];
-  zoneDnsTableColumns?: Record<string, string[]>;
-  vaultEnabled?: boolean;
-  autoRefreshInterval?: number;
-  defaultPerPage?: number;
-  zonePerPage?: Record<string, number>;
-  showUnsupportedRecordTypes?: boolean;
-  zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
-  confirmDeleteRecord?: boolean;
-  zoneConfirmDeleteRecord?: Record<string, boolean>;
-  reopenLastTabs?: boolean;
-  reopenZoneTabs?: Record<string, boolean>;
-  lastOpenTabs?: string[];
-  recordTags?: Record<string, Record<string, string[]>>;
-  tagCatalog?: Record<string, string[]>;
-  confirmLogout?: boolean;
-  idleLogoutMs?: number | null;
-  confirmWindowClose?: boolean;
-  closeTabOnMiddleClick?: boolean;
-  mcpServerEnabled?: boolean;
-  mcpServerHost?: string;
-  mcpServerPort?: number;
-  mcpEnabledTools?: string[];
-  mcpPendingHighRiskTools?: string[];
-  mcpRemovedImportedToolIds?: string[];
-  mcpPermissionPolicyVersion?: number;
-  loadingOverlayTimeoutMs?: number;
-  topologyResolutionMaxHops?: number;
-  topologyResolverMode?: "dns" | "doh";
-  topologyDnsServer?: string;
-  topologyCustomDnsServer?: string;
-  topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
-  topologyDohCustomUrl?: string;
-  topologyExportFolderPreset?: string;
-  topologyExportCustomPath?: string;
-  topologyExportConfirmPath?: boolean;
-  topologyCopyActions?: string[];
-  topologyExportActions?: string[];
-  topologyDisableAnnotations?: boolean;
-  topologyDisableFullWindow?: boolean;
-  topologyLookupTimeoutMs?: number;
-  topologyDisablePtrLookups?: boolean;
-  topologyDisableGeoLookups?: boolean;
-  topologyGeoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
-  topologyScanResolutionChain?: boolean;
-  topologyDisableServiceDiscovery?: boolean;
-  topologyTcpServices?: string[];
-  auditExportDefaultDocuments?: boolean;
-  confirmClearAuditLogs?: boolean;
-  auditExportFolderPreset?: string;
-  auditExportCustomPath?: string;
-  auditExportSkipDestinationConfirm?: boolean;
-  domainAuditCategories?: {
-    email?: boolean;
-    security?: boolean;
-    hygiene?: boolean;
-  };
-  sessionSettingsProfiles?: Record<string, SessionSettingsProfile>;
-  auditOverrides?: Record<string, string[]>;
 }
 
 export interface StorageRecoverySnapshot {
@@ -175,67 +110,6 @@ function assertStringWithin(
   );
 }
 
-function assertBoundedJsonValue(value: unknown): void {
-  const pending: Array<{ value: unknown; depth: number }> = [
-    { value, depth: 0 },
-  ];
-  let nodes = 0;
-
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    nodes += 1;
-    if (nodes > MAX_JSON_NODES) {
-      throw new RangeError("Storage data contains too many values.");
-    }
-    if (current.depth > MAX_JSON_DEPTH) {
-      throw new RangeError("Storage data is nested too deeply.");
-    }
-    if (typeof current.value === "string") {
-      if (!assertStringWithin(current.value, MAX_STRING_BYTES, "string")) {
-        throw new RangeError("Storage data contains an oversized string.");
-      }
-      continue;
-    }
-    if (typeof current.value === "number") {
-      if (!Number.isFinite(current.value)) {
-        throw new TypeError("Storage data contains a non-finite number.");
-      }
-      continue;
-    }
-    if (
-      current.value === null ||
-      typeof current.value === "boolean" ||
-      current.value === undefined
-    ) {
-      continue;
-    }
-    if (typeof current.value !== "object") {
-      throw new TypeError("Storage data contains an unsupported value.");
-    }
-    if (Array.isArray(current.value)) {
-      if (current.value.length > MAX_ARRAY_ITEMS) {
-        throw new RangeError("Storage data contains an oversized array.");
-      }
-      for (const child of current.value) {
-        pending.push({ value: child, depth: current.depth + 1 });
-      }
-      continue;
-    }
-    const entries = Object.entries(current.value);
-    if (entries.length > MAX_OBJECT_PROPERTIES) {
-      throw new RangeError("Storage data contains an oversized object.");
-    }
-    for (const [key, child] of entries) {
-      if (!assertStringWithin(key, MAX_PROPERTY_NAME_BYTES, "property name")) {
-        throw new RangeError(
-          "Storage data contains an oversized property name.",
-        );
-      }
-      pending.push({ value: child, depth: current.depth + 1 });
-    }
-  }
-}
-
 function parseBoundedJson(raw: string): unknown {
   if (utf8Bytes(raw) > MAX_STORAGE_BYTES) {
     throw new RangeError(
@@ -243,7 +117,7 @@ function parseBoundedJson(raw: string): unknown {
     );
   }
   const parsed: unknown = JSON.parse(raw);
-  assertBoundedJsonValue(parsed);
+  assertBoundedStorageValue(parsed);
   return parsed;
 }
 
@@ -256,54 +130,7 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export interface SessionSettingsProfile {
-  autoRefreshInterval?: number | null;
-  defaultPerPage?: number;
-  zonePerPage?: Record<string, number>;
-  showUnsupportedRecordTypes?: boolean;
-  zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
-  reopenLastTabs?: boolean;
-  reopenZoneTabs?: Record<string, boolean>;
-  confirmLogout?: boolean;
-  idleLogoutMs?: number | null;
-  confirmWindowClose?: boolean;
-  closeTabOnMiddleClick?: boolean;
-  mcpServerEnabled?: boolean;
-  mcpServerHost?: string;
-  mcpServerPort?: number;
-  mcpEnabledTools?: string[];
-  loadingOverlayTimeoutMs?: number;
-  topologyResolutionMaxHops?: number;
-  topologyResolverMode?: "dns" | "doh";
-  topologyDnsServer?: string;
-  topologyCustomDnsServer?: string;
-  topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
-  topologyDohCustomUrl?: string;
-  topologyExportFolderPreset?: string;
-  topologyExportCustomPath?: string;
-  topologyExportConfirmPath?: boolean;
-  topologyCopyActions?: string[];
-  topologyExportActions?: string[];
-  topologyDisableAnnotations?: boolean;
-  topologyDisableFullWindow?: boolean;
-  topologyLookupTimeoutMs?: number;
-  topologyDisablePtrLookups?: boolean;
-  topologyDisableGeoLookups?: boolean;
-  topologyGeoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
-  topologyScanResolutionChain?: boolean;
-  topologyDisableServiceDiscovery?: boolean;
-  topologyTcpServices?: string[];
-  auditExportDefaultDocuments?: boolean;
-  confirmClearAuditLogs?: boolean;
-  auditExportFolderPreset?: string;
-  auditExportCustomPath?: string;
-  auditExportSkipDestinationConfirm?: boolean;
-  domainAuditCategories?: {
-    email?: boolean;
-    security?: boolean;
-    hygiene?: boolean;
-  };
-}
+export type SessionSettingsProfile = BrowserSessionSettingsProfile;
 
 function parseRecordTags(
   value: unknown,
@@ -369,117 +196,95 @@ function parseTagCatalog(value: unknown): Record<string, string[]> | undefined {
   return result;
 }
 
-/**
- * Type guard to assert a value conforms to the StorageData interface.
- * Useful when parsing JSON from storage and verifying shape before
- * assigning into the in-memory representation.
- */
-export function isStorageData(value: unknown): value is StorageData {
-  /**
-   * @param value - value to validate against the StorageData shape
-   * @returns true when the value conforms to StorageData, false otherwise
-   */
-  if (!value || typeof value !== "object") return false;
-  try {
-    assertBoundedJsonValue(value);
-  } catch {
-    return false;
-  }
-  const obj = value as {
-    apiKeys?: unknown;
-    __storageRevision?: unknown;
-    currentSession?: unknown;
-    lastZone?: unknown;
-    confirmLogout?: unknown;
-    idleLogoutMs?: unknown;
-    confirmWindowClose?: unknown;
-    closeTabOnMiddleClick?: unknown;
-  };
-  if (!Array.isArray(obj.apiKeys) || obj.apiKeys.length > MAX_API_KEYS) {
-    return false;
-  }
+function parseApiKey(value: unknown): ApiKey | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const key = value as Record<string, unknown>;
   if (
-    obj.__storageRevision !== undefined &&
-    (!Number.isSafeInteger(obj.__storageRevision) ||
-      (obj.__storageRevision as number) < 0)
-  ) {
-    return false;
-  }
-  if (
-    obj.currentSession !== undefined &&
+    !assertStringWithin(key.id, MAX_API_KEY_ID_BYTES, "API key id") ||
+    !assertStringWithin(key.label, MAX_API_KEY_LABEL_BYTES, "API key label") ||
     !assertStringWithin(
-      obj.currentSession,
-      MAX_API_KEY_ID_BYTES,
-      "current session",
-    )
-  ) {
-    return false;
-  }
-  if (
-    obj.lastZone !== undefined &&
-    !assertStringWithin(obj.lastZone, MAX_API_KEY_ID_BYTES, "last zone")
-  ) {
-    return false;
-  }
-  if (
-    obj.confirmLogout !== undefined &&
-    typeof obj.confirmLogout !== "boolean"
-  ) {
-    return false;
-  }
-  if (
-    obj.idleLogoutMs !== undefined &&
-    obj.idleLogoutMs !== null &&
-    (typeof obj.idleLogoutMs !== "number" || !Number.isFinite(obj.idleLogoutMs))
-  ) {
-    return false;
-  }
-  if (
-    obj.confirmWindowClose !== undefined &&
-    typeof obj.confirmWindowClose !== "boolean"
-  ) {
-    return false;
-  }
-  if (
-    obj.closeTabOnMiddleClick !== undefined &&
-    typeof obj.closeTabOnMiddleClick !== "boolean"
-  ) {
-    return false;
-  }
-  return obj.apiKeys.every((k) => {
-    if (!k || typeof k !== "object") return false;
-    const key = k as Record<string, unknown>;
-    return (
-      assertStringWithin(key.id, MAX_API_KEY_ID_BYTES, "API key id") &&
-      assertStringWithin(key.label, MAX_API_KEY_LABEL_BYTES, "API key label") &&
-      assertStringWithin(
-        key.encryptedKey,
-        MAX_CRYPTO_METADATA_BYTES,
-        "encrypted API key",
-      ) &&
-      assertStringWithin(key.salt, 1024, "API key salt") &&
-      assertStringWithin(key.iv, 1024, "API key IV") &&
-      Number.isSafeInteger(key.iterations) &&
-      (key.iterations as number) > 0 &&
-      (key.iterations as number) <= 10_000_000 &&
-      Number.isSafeInteger(key.keyLength) &&
-      (key.keyLength as number) > 0 &&
-      (key.keyLength as number) <= 4_096 &&
-      assertStringWithin(key.algorithm, 32, "encryption algorithm") &&
-      ENCRYPTION_ALGORITHMS.includes(key.algorithm as EncryptionAlgorithm) &&
-      assertStringWithin(key.createdAt, 64, "creation timestamp") &&
-      (key.email === undefined ||
-        assertStringWithin(key.email, MAX_API_KEY_EMAIL_BYTES, "API key email"))
-    );
-  });
+      key.encryptedKey,
+      MAX_CRYPTO_METADATA_BYTES,
+      "encrypted API key",
+    ) ||
+    !assertStringWithin(key.salt, 1024, "API key salt") ||
+    !assertStringWithin(key.iv, 1024, "API key IV") ||
+    !Number.isSafeInteger(key.iterations) ||
+    (key.iterations as number) <= 0 ||
+    (key.iterations as number) > 10_000_000 ||
+    !Number.isSafeInteger(key.keyLength) ||
+    (key.keyLength as number) <= 0 ||
+    (key.keyLength as number) > 4_096 ||
+    !assertStringWithin(key.algorithm, 32, "encryption algorithm") ||
+    !ENCRYPTION_ALGORITHMS.includes(key.algorithm as EncryptionAlgorithm) ||
+    !assertStringWithin(key.createdAt, 64, "creation timestamp") ||
+    (key.email !== undefined &&
+      !assertStringWithin(key.email, MAX_API_KEY_EMAIL_BYTES, "API key email"))
+  )
+    return;
+  const result: ApiKey = {
+    id: key.id,
+    label: key.label,
+    encryptedKey: key.encryptedKey,
+    salt: key.salt,
+    iv: key.iv,
+    iterations: key.iterations as number,
+    keyLength: key.keyLength as number,
+    algorithm: key.algorithm as EncryptionAlgorithm,
+    createdAt: key.createdAt,
+  };
+  if (typeof key.email === "string") result.email = key.email;
+  return result;
 }
 
-/**
- * Manage API keys persisted in storage. Keys are stored encrypted with a
- * password passphrase; the encryption metadata (salt, iv, algorithm)
- * is stored alongside encrypted blobs. This manager provides helpers to
- * add keys, retrieve decrypted keys, and manipulate the local session.
- */
+function parseStorageDataValue(
+  value: unknown,
+  requireApiKeys: boolean,
+): StorageData | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  try {
+    assertBoundedStorageValue(value);
+    const obj = value as Record<string, unknown>;
+    const rawKeys = obj.apiKeys;
+    if (requireApiKeys && !Array.isArray(rawKeys)) return;
+    if (
+      rawKeys !== undefined &&
+      (!Array.isArray(rawKeys) || rawKeys.length > MAX_API_KEYS)
+    )
+      return;
+    const apiKeys: ApiKey[] = [];
+    for (const candidate of Array.isArray(rawKeys) ? rawKeys : []) {
+      const key = parseApiKey(candidate);
+      if (!key) return;
+      apiKeys.push(key);
+    }
+    if (
+      obj.currentSession !== undefined &&
+      !assertStringWithin(
+        obj.currentSession,
+        MAX_API_KEY_ID_BYTES,
+        "current session",
+      )
+    )
+      return;
+    const preferences = sanitizeBrowserPreferencesValue(value);
+    const result = Object.assign({ apiKeys }, preferences) as StorageData;
+    result.recordTags = parseRecordTags(preferences.recordTags);
+    result.tagCatalog = parseTagCatalog(preferences.tagCatalog);
+    if (typeof obj.currentSession === "string")
+      result.currentSession = obj.currentSession;
+    assertBoundedStorageValue(result);
+    return result;
+  } catch {
+    return;
+  }
+}
+
+export function isStorageData(value: unknown): value is StorageData {
+  return parseStorageDataValue(value, true) !== undefined;
+}
+
+/** Manage runtime credentials and durable non-secret preferences. */
 export class StorageManager {
   private data: StorageData = { apiKeys: [] };
   private lastPersistedData: StorageData = { apiKeys: [] };
@@ -519,106 +324,100 @@ export class StorageManager {
     reportRuntimeError(error, { source: "runtime", label });
   }
 
-  private preserveCorruptedData(raw: string, error: unknown): void {
-    this.recoveryRaw = raw;
-    if (utf8Bytes(raw) > MAX_STORAGE_BYTES) {
-      this.reportFailure(error, "Preserve oversized browser storage data");
-      return;
-    }
+  private dropLegacyRecoveryData(): void {
     try {
-      if (this.storage.getItem(STORAGE_RECOVERY_KEY) !== null) return;
-      const envelope: StorageRecoverySnapshot = {
-        capturedAt: new Date().toISOString(),
-        reason: error instanceof Error ? error.message : String(error),
-        raw,
-      };
-      this.storage.setItem(STORAGE_RECOVERY_KEY, JSON.stringify(envelope));
-    } catch (preserveError) {
-      this.reportFailure(
-        preserveError,
-        "Quarantine corrupted browser storage data",
-      );
+      this.storage.removeItem(STORAGE_RECOVERY_KEY);
+    } catch (error) {
+      this.reportFailure(error, "Drop legacy browser recovery data");
     }
+  }
+
+  private preserveCorruptedData(raw: string, error: unknown): void {
+    this.recoveryRaw = utf8Bytes(raw) <= MAX_STORAGE_BYTES ? raw : undefined;
+    this.dropLegacyRecoveryData();
+    try {
+      this.storage.removeItem(STORAGE_KEY);
+    } catch (removeError) {
+      this.reportFailure(removeError, "Drop invalid browser storage data");
+    }
+    this.reportFailure(error, "Reject invalid browser storage data");
   }
 
   private parseStorageData(raw: string): StorageData {
     const parsed = parseBoundedJson(raw);
-    if (!isStorageData(parsed)) {
+    const result = parseStorageDataValue(parsed, false);
+    if (!result) {
       throw new TypeError(
         "Stored browser data does not match the safe schema.",
       );
     }
-    const obj = parsed as StorageData & {
-      recordTags?: unknown;
-      tagCatalog?: unknown;
-    };
-    return {
-      ...obj,
-      recordTags: parseRecordTags(obj.recordTags),
-      tagCatalog: parseTagCatalog(obj.tagCatalog),
-    };
+    result.apiKeys = [];
+    delete result.currentSession;
+    return result;
+  }
+
+  private serializeForPersistence(data: StorageData): string {
+    assertBoundedStorageValue(data);
+    const completeRaw = JSON.stringify(data);
+    if (utf8Bytes(completeRaw) > MAX_STORAGE_BYTES) {
+      throw new RangeError(
+        `Storage data exceeds the ${MAX_STORAGE_BYTES}-byte safety limit.`,
+      );
+    }
+    const persistentRaw = JSON.stringify(sanitizeBrowserPreferencesValue(data));
+    if (utf8Bytes(persistentRaw) > MAX_STORAGE_BYTES) {
+      throw new RangeError(
+        `Storage data exceeds the ${MAX_STORAGE_BYTES}-byte safety limit.`,
+      );
+    }
+    assertBoundedStorageValue(JSON.parse(persistentRaw));
+    return persistentRaw;
+  }
+
+  private isCanonicalLegacyEmptyKeyList(raw: string, safeRaw: string): boolean {
+    try {
+      const parsed = parseBoundedJson(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return false;
+      const candidate = structuredClone(parsed) as Record<string, unknown>;
+      if (
+        !Array.isArray(candidate.apiKeys) ||
+        candidate.apiKeys.length !== 0 ||
+        candidate.currentSession !== undefined
+      )
+        return false;
+      delete candidate.apiKeys;
+      return JSON.stringify(candidate) === safeRaw;
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Load persisted storage data from the configured StorageLike instance.
    */
   private load(): void {
+    this.dropLegacyRecoveryData();
+    let stored: string | null = null;
     try {
-      const stored = this.storage.getItem(STORAGE_KEY);
+      stored = this.storage.getItem(STORAGE_KEY);
       if (stored) {
         this.data = this.parseStorageData(stored);
+        const safeRaw = this.serializeForPersistence(this.data);
+        if (
+          safeRaw !== stored &&
+          !this.isCanonicalLegacyEmptyKeyList(stored, safeRaw)
+        )
+          this.storage.setItem(STORAGE_KEY, safeRaw);
       }
       this.lastPersistedData = cloneStorageData(this.data);
       this.recoveryRaw = undefined;
     } catch (error) {
-      let stored: string | null = null;
-      try {
-        stored = this.storage.getItem(STORAGE_KEY);
-      } catch {
-        // The primary read error is already reported below.
-      }
       if (stored !== null) this.preserveCorruptedData(stored, error);
       this.data = { apiKeys: [] };
       this.lastPersistedData = { apiKeys: [] };
       this.reportFailure(error, "Load browser storage data");
     }
-  }
-
-  private mergeApiKeys(
-    baseline: ApiKey[],
-    current: ApiKey[],
-    latest: ApiKey[],
-  ): ApiKey[] {
-    const baselineById = new Map(baseline.map((key) => [key.id, key]));
-    const currentById = new Map(current.map((key) => [key.id, key]));
-    const merged = new Map(latest.map((key) => [key.id, key]));
-
-    for (const id of baselineById.keys()) {
-      if (!currentById.has(id)) merged.delete(id);
-    }
-    for (const key of current) {
-      const baselineKey = baselineById.get(key.id);
-      if (!baselineKey || !jsonEqual(key, baselineKey)) {
-        merged.set(key.id, structuredClone(key));
-      }
-    }
-
-    const ordered: ApiKey[] = [];
-    for (const key of latest) {
-      const next = merged.get(key.id);
-      if (next) {
-        ordered.push(next);
-        merged.delete(key.id);
-      }
-    }
-    for (const key of current) {
-      const next = merged.get(key.id);
-      if (next) {
-        ordered.push(next);
-        merged.delete(key.id);
-      }
-    }
-    return ordered.slice(0, MAX_API_KEYS);
   }
 
   private mergeWithLatest(latest: StorageData): StorageData {
@@ -633,6 +432,8 @@ export class StorageManager {
     >;
     const fields = new Set([...Object.keys(baseline), ...Object.keys(current)]);
     fields.delete("__storageRevision");
+    fields.delete("apiKeys");
+    fields.delete("currentSession");
 
     for (const field of fields) {
       const baselineHas = Object.prototype.hasOwnProperty.call(baseline, field);
@@ -647,16 +448,13 @@ export class StorageManager {
       }
       if (!currentHas) {
         delete merged[field];
-      } else if (field === "apiKeys") {
-        merged.apiKeys = this.mergeApiKeys(
-          this.lastPersistedData.apiKeys,
-          this.data.apiKeys,
-          latest.apiKeys,
-        );
       } else {
         merged[field] = structuredClone(currentValue);
       }
     }
+    merged.apiKeys = this.data.apiKeys.map((key) => structuredClone(key));
+    if (this.data.currentSession === undefined) delete merged.currentSession;
+    else merged.currentSession = this.data.currentSession;
     return merged as unknown as StorageData;
   }
 
@@ -677,26 +475,23 @@ export class StorageManager {
           "Browser storage is not ready; the change was not applied.",
         );
       }
-      assertBoundedJsonValue(this.data);
-      if (this.recoveryRaw !== undefined && !options.replace) {
-        throw new StorageRecoveryRequiredError(
-          "Stored data needs recovery before new changes can be saved.",
-        );
-      }
-
+      assertBoundedStorageValue(this.data);
       previousRaw = this.storage.getItem(STORAGE_KEY);
       let latest: StorageData = { apiKeys: [] };
       if (previousRaw !== null) {
         try {
           latest = this.parseStorageData(previousRaw);
+          const safePreviousRaw = this.serializeForPersistence(latest);
+          if (
+            safePreviousRaw !== previousRaw &&
+            !this.isCanonicalLegacyEmptyKeyList(previousRaw, safePreviousRaw)
+          ) {
+            this.storage.setItem(STORAGE_KEY, safePreviousRaw);
+            previousRaw = safePreviousRaw;
+          }
         } catch (error) {
           this.preserveCorruptedData(previousRaw, error);
-          if (!options.replace) {
-            throw new StorageRecoveryRequiredError(
-              "Stored data needs recovery before new changes can be saved.",
-              { cause: error },
-            );
-          }
+          previousRaw = null;
         }
       }
 
@@ -708,13 +503,7 @@ export class StorageManager {
           latest.__storageRevision ?? 0,
           this.lastPersistedData.__storageRevision ?? 0,
         ) + 1;
-      assertBoundedJsonValue(next);
-      attemptedRaw = JSON.stringify(next);
-      if (utf8Bytes(attemptedRaw) > MAX_STORAGE_BYTES) {
-        throw new RangeError(
-          `Storage data exceeds the ${MAX_STORAGE_BYTES}-byte safety limit.`,
-        );
-      }
+      attemptedRaw = this.serializeForPersistence(next);
 
       this.storage.setItem(STORAGE_KEY, attemptedRaw);
       if (this.storage.getItem(STORAGE_KEY) !== attemptedRaw) {
@@ -724,7 +513,7 @@ export class StorageManager {
       }
       this.data = next;
       this.lastPersistedData = cloneStorageData(next);
-      if (options.replace) this.recoveryRaw = undefined;
+      this.recoveryRaw = undefined;
     } catch (error) {
       if (previousRaw !== undefined && attemptedRaw !== undefined) {
         try {
@@ -1189,7 +978,9 @@ export class StorageManager {
   }
 
   setZoneShowUnsupportedRecordTypesMap(map: Record<string, boolean>): void {
-    this.data.zoneShowUnsupportedRecordTypes = { ...map };
+    this.data.zoneShowUnsupportedRecordTypes =
+      sanitizeBrowserPreferencesValue({ zoneShowUnsupportedRecordTypes: map })
+        .zoneShowUnsupportedRecordTypes ?? Object.create(null);
     this.save();
   }
 
@@ -1220,7 +1011,9 @@ export class StorageManager {
   }
 
   setZoneConfirmDeleteRecordMap(map: Record<string, boolean>): void {
-    this.data.zoneConfirmDeleteRecord = { ...map };
+    this.data.zoneConfirmDeleteRecord =
+      sanitizeBrowserPreferencesValue({ zoneConfirmDeleteRecord: map })
+        .zoneConfirmDeleteRecord ?? Object.create(null);
     this.save();
   }
 
@@ -1836,18 +1629,18 @@ export class StorageManager {
   ): void {
     const id = String(sessionId || "").trim();
     if (!id) return;
-    if (!this.data.sessionSettingsProfiles)
-      this.data.sessionSettingsProfiles = {};
-    this.data.sessionSettingsProfiles[id] = {
-      ...profile,
-      ...(Array.isArray(profile.mcpEnabledTools)
-        ? {
-            mcpEnabledTools: reconcileMcpEnabledToolIds(
-              profile.mcpEnabledTools,
-            ),
-          }
-        : {}),
-    };
+    const profiles = (this.data.sessionSettingsProfiles ??= Object.create(
+      null,
+    ) as Record<string, SessionSettingsProfile>);
+    const safeProfile =
+      sanitizeBrowserPreferencesValue({
+        sessionSettingsProfiles: { profile },
+      }).sessionSettingsProfiles?.profile ?? {};
+    if (safeProfile.mcpEnabledTools)
+      safeProfile.mcpEnabledTools = reconcileMcpEnabledToolIds(
+        safeProfile.mcpEnabledTools,
+      );
+    profiles[id] = safeProfile;
     this.save();
     this.dispatchPreferencesChanged({
       sessionSettingsProfiles: this.data.sessionSettingsProfiles,
@@ -1860,11 +1653,11 @@ export class StorageManager {
     const id = String(sessionId || "").trim();
     if (!id) return undefined;
     const profile = this.data.sessionSettingsProfiles?.[id];
-    return profile ? { ...profile } : undefined;
+    return profile ? structuredClone(profile) : undefined;
   }
 
   getSessionSettingsProfiles(): Record<string, SessionSettingsProfile> {
-    return { ...(this.data.sessionSettingsProfiles ?? {}) };
+    return structuredClone(this.data.sessionSettingsProfiles ?? {});
   }
 
   setZonePerPage(zoneId: string, value: number | null): void {
@@ -1880,7 +1673,9 @@ export class StorageManager {
   }
 
   setZonePerPageMap(map: Record<string, number>): void {
-    this.data.zonePerPage = { ...map };
+    this.data.zonePerPage =
+      sanitizeBrowserPreferencesValue({ zonePerPage: map }).zonePerPage ??
+      Object.create(null);
     this.save();
   }
 
@@ -1898,7 +1693,9 @@ export class StorageManager {
   }
 
   setReopenZoneTabs(map: Record<string, boolean>): void {
-    this.data.reopenZoneTabs = { ...map };
+    this.data.reopenZoneTabs =
+      sanitizeBrowserPreferencesValue({ reopenZoneTabs: map }).reopenZoneTabs ??
+      Object.create(null);
     this.save();
   }
 
@@ -1940,7 +1737,9 @@ export class StorageManager {
   }
 
   setZoneDnsTableColumnsMap(map: Record<string, string[]>): void {
-    this.data.zoneDnsTableColumns = { ...map };
+    this.data.zoneDnsTableColumns =
+      sanitizeBrowserPreferencesValue({ zoneDnsTableColumns: map })
+        .zoneDnsTableColumns ?? Object.create(null);
     this.save();
     this.dispatchPreferencesChanged({ zoneDnsTableColumns: map });
   }
@@ -2016,10 +1815,17 @@ export class StorageManager {
     const previousData = cloneStorageData(this.data);
     const previousPersisted = cloneStorageData(this.lastPersistedData);
     let primaryRaw: string | null = null;
-    let recoveryRaw: string | null = null;
     try {
-      primaryRaw = this.storage.getItem(STORAGE_KEY);
-      recoveryRaw = this.storage.getItem(STORAGE_RECOVERY_KEY);
+      const stored = this.storage.getItem(STORAGE_KEY);
+      if (stored !== null) {
+        try {
+          primaryRaw = this.serializeForPersistence(
+            this.parseStorageData(stored),
+          );
+        } catch {
+          primaryRaw = null;
+        }
+      }
       this.storage.removeItem(STORAGE_KEY);
       this.storage.removeItem(STORAGE_RECOVERY_KEY);
       this.data = { apiKeys: [] };
@@ -2028,9 +1834,6 @@ export class StorageManager {
     } catch (error) {
       try {
         if (primaryRaw !== null) this.storage.setItem(STORAGE_KEY, primaryRaw);
-        if (recoveryRaw !== null) {
-          this.storage.setItem(STORAGE_RECOVERY_KEY, recoveryRaw);
-        }
       } catch (rollbackError) {
         this.reportFailure(
           rollbackError,
@@ -2051,30 +1854,7 @@ export class StorageManager {
   }
 
   getRecoverySnapshot(): StorageRecoverySnapshot | null {
-    try {
-      const rawEnvelope = this.storage.getItem(STORAGE_RECOVERY_KEY);
-      if (rawEnvelope) {
-        const parsed = parseBoundedJson(rawEnvelope);
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          "capturedAt" in parsed &&
-          typeof parsed.capturedAt === "string" &&
-          "reason" in parsed &&
-          typeof parsed.reason === "string" &&
-          "raw" in parsed &&
-          typeof parsed.raw === "string"
-        ) {
-          return {
-            capturedAt: parsed.capturedAt,
-            reason: parsed.reason,
-            raw: parsed.raw,
-          };
-        }
-      }
-    } catch (error) {
-      this.reportFailure(error, "Read browser storage recovery snapshot");
-    }
+    this.dropLegacyRecoveryData();
     return this.recoveryRaw === undefined
       ? null
       : {
@@ -2116,14 +1896,8 @@ export class StorageManager {
       );
     }
 
-    if (!isStorageData(imported)) {
-      throw new Error("Invalid data format");
-    }
-
-    const obj = imported as StorageData & {
-      recordTags?: unknown;
-      tagCatalog?: unknown;
-    };
+    const obj = parseStorageDataValue(imported, true);
+    if (!obj) throw new Error("Invalid data format");
     const importedMcpSelection = Array.isArray(obj.mcpEnabledTools)
       ? reconcileMcpEnabledToolIdsDetailed(obj.mcpEnabledTools)
       : null;
@@ -2132,27 +1906,21 @@ export class StorageManager {
           .newlyEnabledHighRiskToolIds
       : [];
     const importedHighRiskToolIdSet = new Set(importedHighRiskToolIds);
-    this.data = {
-      ...obj,
-      __storageRevision: undefined,
-      recordTags: parseRecordTags(obj.recordTags),
-      tagCatalog: parseTagCatalog(obj.tagCatalog),
-      ...(importedMcpSelection
-        ? {
-            mcpEnabledTools: importedMcpSelection.enabledToolIds.filter(
-              (id) => !importedHighRiskToolIdSet.has(id),
-            ),
-            mcpPendingHighRiskTools: importedHighRiskToolIds,
-            mcpRemovedImportedToolIds: importedMcpSelection.removedToolIds,
-            mcpPermissionPolicyVersion: MCP_PERMISSION_POLICY_VERSION,
-          }
-        : {
-            mcpEnabledTools: undefined,
-            mcpPendingHighRiskTools: undefined,
-            mcpRemovedImportedToolIds: undefined,
-            mcpPermissionPolicyVersion: undefined,
-          }),
-    };
+    delete obj.__storageRevision;
+    if (importedMcpSelection) {
+      obj.mcpEnabledTools = importedMcpSelection.enabledToolIds.filter(
+        (id) => !importedHighRiskToolIdSet.has(id),
+      );
+      obj.mcpPendingHighRiskTools = importedHighRiskToolIds;
+      obj.mcpRemovedImportedToolIds = importedMcpSelection.removedToolIds;
+      obj.mcpPermissionPolicyVersion = MCP_PERMISSION_POLICY_VERSION;
+    } else {
+      delete obj.mcpEnabledTools;
+      delete obj.mcpPendingHighRiskTools;
+      delete obj.mcpRemovedImportedToolIds;
+      delete obj.mcpPermissionPolicyVersion;
+    }
+    this.data = obj;
     this.save(true, { replace: true });
   }
 
@@ -2188,8 +1956,5 @@ export class StorageManager {
     this.save();
   }
 }
-/**
- * Shared singleton storage manager instance used by the UI to persist API
- * keys and session metadata. Tests may create their own manager instance.
- */
+/** Shared UI storage manager; tests may create isolated instances. */
 export const storageManager = new StorageManager();

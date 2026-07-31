@@ -10,6 +10,84 @@ const LEGACY_STORAGE_KEYS = [
 const LEGACY_MIGRATION_TIMEOUT_MS = 10_000;
 const LEGACY_MIGRATION_MAX_ENTRIES = 64;
 const LEGACY_MIGRATION_MAX_BYTES = 2 * 1024 * 1024 + 128 * 1024;
+const BROWSER_STATE_KEY = "cloudflare-dns-manager";
+const BROWSER_RECOVERY_KEY = `${BROWSER_STATE_KEY}:recovery`;
+const BROWSER_STATE_MAX_BYTES = 2 * 1024 * 1024;
+const BROWSER_STATE_MAX_DEPTH = 12;
+const BROWSER_STATE_MAX_NODES = 20_000;
+const BROWSER_STATE_MAX_PROPERTIES = 5_000;
+const BROWSER_STATE_MAX_ARRAY_ITEMS = 5_000;
+const BROWSER_STATE_MAX_STRING_BYTES = 64 * 1024;
+const BROWSER_STATE_MAX_PROPERTY_BYTES = 512;
+
+export interface BrowserSessionSettingsProfile {
+  autoRefreshInterval?: number | null;
+  defaultPerPage?: number;
+  zonePerPage?: Record<string, number>;
+  showUnsupportedRecordTypes?: boolean;
+  zoneShowUnsupportedRecordTypes?: Record<string, boolean>;
+  reopenLastTabs?: boolean;
+  reopenZoneTabs?: Record<string, boolean>;
+  confirmLogout?: boolean;
+  idleLogoutMs?: number | null;
+  confirmWindowClose?: boolean;
+  closeTabOnMiddleClick?: boolean;
+  mcpServerEnabled?: boolean;
+  mcpServerHost?: string;
+  mcpServerPort?: number;
+  mcpEnabledTools?: string[];
+  loadingOverlayTimeoutMs?: number;
+  topologyResolutionMaxHops?: number;
+  topologyResolverMode?: "dns" | "doh";
+  topologyDnsServer?: string;
+  topologyCustomDnsServer?: string;
+  topologyDohProvider?: "google" | "cloudflare" | "quad9" | "custom";
+  topologyDohCustomUrl?: string;
+  topologyExportFolderPreset?: string;
+  topologyExportCustomPath?: string;
+  topologyExportConfirmPath?: boolean;
+  topologyCopyActions?: string[];
+  topologyExportActions?: string[];
+  topologyDisableAnnotations?: boolean;
+  topologyDisableFullWindow?: boolean;
+  topologyLookupTimeoutMs?: number;
+  topologyDisablePtrLookups?: boolean;
+  topologyDisableGeoLookups?: boolean;
+  topologyGeoProvider?: "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
+  topologyScanResolutionChain?: boolean;
+  topologyDisableServiceDiscovery?: boolean;
+  topologyTcpServices?: string[];
+  auditExportDefaultDocuments?: boolean;
+  confirmClearAuditLogs?: boolean;
+  auditExportFolderPreset?: string;
+  auditExportCustomPath?: string;
+  auditExportSkipDestinationConfirm?: boolean;
+  domainAuditCategories?: {
+    email?: boolean;
+    security?: boolean;
+    hygiene?: boolean;
+  };
+}
+
+export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
+  __storageRevision?: number;
+  lastZone?: string;
+  lastActiveTabId?: string;
+  dnsTableColumns?: string[];
+  zoneDnsTableColumns?: Record<string, string[]>;
+  vaultEnabled?: boolean;
+  autoRefreshInterval?: number;
+  confirmDeleteRecord?: boolean;
+  zoneConfirmDeleteRecord?: Record<string, boolean>;
+  lastOpenTabs?: string[];
+  recordTags?: Record<string, Record<string, string[]>>;
+  tagCatalog?: Record<string, string[]>;
+  mcpPendingHighRiskTools?: string[];
+  mcpRemovedImportedToolIds?: string[];
+  mcpPermissionPolicyVersion?: number;
+  sessionSettingsProfiles?: Record<string, BrowserSessionSettingsProfile>;
+  auditOverrides?: Record<string, string[]>;
+}
 
 /**
  * Minimal synchronous storage contract used by the application. Async stores
@@ -111,6 +189,261 @@ function utf8ByteLengthUpTo(value: string, maximum: number): number {
     if (bytes > maximum) return bytes;
   }
   return bytes;
+}
+
+type PreferenceKind =
+  | "string"
+  | "number"
+  | "nullable-number"
+  | "revision"
+  | "boolean"
+  | "strings"
+  | "number-map"
+  | "boolean-map"
+  | "string-array-map"
+  | "nested-string-array-map"
+  | "categories"
+  | "profiles"
+  | readonly string[];
+
+const SESSION_PROFILE_SCHEMA = {
+  autoRefreshInterval: "nullable-number",
+  defaultPerPage: "number",
+  zonePerPage: "number-map",
+  showUnsupportedRecordTypes: "boolean",
+  zoneShowUnsupportedRecordTypes: "boolean-map",
+  reopenLastTabs: "boolean",
+  reopenZoneTabs: "boolean-map",
+  confirmLogout: "boolean",
+  idleLogoutMs: "nullable-number",
+  confirmWindowClose: "boolean",
+  closeTabOnMiddleClick: "boolean",
+  mcpServerEnabled: "boolean",
+  mcpServerHost: "string",
+  mcpServerPort: "number",
+  mcpEnabledTools: "strings",
+  loadingOverlayTimeoutMs: "number",
+  topologyResolutionMaxHops: "number",
+  topologyResolverMode: ["dns", "doh"],
+  topologyDnsServer: "string",
+  topologyCustomDnsServer: "string",
+  topologyDohProvider: ["google", "cloudflare", "quad9", "custom"],
+  topologyDohCustomUrl: "string",
+  topologyExportFolderPreset: "string",
+  topologyExportCustomPath: "string",
+  topologyExportConfirmPath: "boolean",
+  topologyCopyActions: "strings",
+  topologyExportActions: "strings",
+  topologyDisableAnnotations: "boolean",
+  topologyDisableFullWindow: "boolean",
+  topologyLookupTimeoutMs: "number",
+  topologyDisablePtrLookups: "boolean",
+  topologyDisableGeoLookups: "boolean",
+  topologyGeoProvider: ["auto", "ipwhois", "ipapi_co", "ip_api", "internal"],
+  topologyScanResolutionChain: "boolean",
+  topologyDisableServiceDiscovery: "boolean",
+  topologyTcpServices: "strings",
+  auditExportDefaultDocuments: "boolean",
+  confirmClearAuditLogs: "boolean",
+  auditExportFolderPreset: "string",
+  auditExportCustomPath: "string",
+  auditExportSkipDestinationConfirm: "boolean",
+  domainAuditCategories: "categories",
+} as const satisfies Record<
+  keyof BrowserSessionSettingsProfile,
+  PreferenceKind
+>;
+
+const BROWSER_PREFERENCE_SCHEMA = {
+  ...SESSION_PROFILE_SCHEMA,
+  __storageRevision: "revision",
+  lastZone: "string",
+  lastActiveTabId: "string",
+  dnsTableColumns: "strings",
+  zoneDnsTableColumns: "string-array-map",
+  vaultEnabled: "boolean",
+  autoRefreshInterval: "number",
+  confirmDeleteRecord: "boolean",
+  zoneConfirmDeleteRecord: "boolean-map",
+  lastOpenTabs: "strings",
+  recordTags: "nested-string-array-map",
+  tagCatalog: "string-array-map",
+  mcpPendingHighRiskTools: "strings",
+  mcpRemovedImportedToolIds: "strings",
+  mcpPermissionPolicyVersion: "number",
+  sessionSettingsProfiles: "profiles",
+  auditOverrides: "string-array-map",
+} as const satisfies Record<keyof BrowserPreferenceData, PreferenceKind>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+export function assertBoundedStorageValue(value: unknown): void {
+  const pending = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    nodes += 1;
+    if (nodes > BROWSER_STATE_MAX_NODES)
+      throw new RangeError("Browser state contains too many values.");
+    if (current.depth > BROWSER_STATE_MAX_DEPTH)
+      throw new RangeError("Browser state is nested too deeply.");
+    if (typeof current.value === "string") {
+      if (
+        utf8ByteLengthUpTo(current.value, BROWSER_STATE_MAX_STRING_BYTES) >
+        BROWSER_STATE_MAX_STRING_BYTES
+      )
+        throw new RangeError("Browser state contains an oversized string.");
+      continue;
+    }
+    if (typeof current.value === "number") {
+      if (!Number.isFinite(current.value))
+        throw new TypeError("Browser state contains a non-finite number.");
+      continue;
+    }
+    if (
+      current.value === null ||
+      typeof current.value === "boolean" ||
+      current.value === undefined
+    )
+      continue;
+    if (!current.value || typeof current.value !== "object")
+      throw new TypeError("Browser state contains an unsupported value.");
+    if (
+      Array.isArray(current.value) &&
+      current.value.length > BROWSER_STATE_MAX_ARRAY_ITEMS
+    )
+      throw new RangeError("Browser state contains an oversized array.");
+    const entries = Object.entries(current.value);
+    const limit = Array.isArray(current.value)
+      ? BROWSER_STATE_MAX_ARRAY_ITEMS
+      : BROWSER_STATE_MAX_PROPERTIES;
+    if (entries.length > limit)
+      throw new RangeError("Browser state contains an oversized collection.");
+    for (const [key, child] of entries) {
+      if (
+        utf8ByteLengthUpTo(key, BROWSER_STATE_MAX_PROPERTY_BYTES) >
+        BROWSER_STATE_MAX_PROPERTY_BYTES
+      )
+        throw new RangeError(
+          "Browser state contains an oversized property name.",
+        );
+      pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+}
+
+function parseStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : undefined;
+}
+
+function parseLeafMap(
+  value: unknown,
+  kind: "number" | "boolean" | "strings",
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const [key, leaf] of Object.entries(value)) {
+    const parsed = parsePreference(leaf, kind);
+    if (parsed !== undefined) result[key] = parsed;
+  }
+  return result;
+}
+
+function parseNestedStringArrayMap(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const [key, child] of Object.entries(value)) {
+    const parsed = parseLeafMap(child, "strings");
+    if (parsed !== undefined) result[key] = parsed;
+  }
+  return result;
+}
+
+function parseSchemaObject(
+  value: unknown,
+  schema: Readonly<Record<string, PreferenceKind>>,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const [key, kind] of Object.entries(schema)) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const parsed = parsePreference(value[key], kind);
+    if (parsed !== undefined) result[key] = parsed;
+  }
+  return result;
+}
+
+function parsePreference(value: unknown, kind: PreferenceKind): unknown {
+  if (typeof kind !== "string")
+    return typeof value === "string" && kind.includes(value)
+      ? value
+      : undefined;
+  if (kind === "string") return typeof value === "string" ? value : undefined;
+  if (kind === "boolean") return typeof value === "boolean" ? value : undefined;
+  if (kind === "number")
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : undefined;
+  if (kind === "nullable-number")
+    return value === null ||
+      (typeof value === "number" && Number.isFinite(value))
+      ? value
+      : undefined;
+  if (kind === "revision")
+    return Number.isSafeInteger(value) && (value as number) >= 0
+      ? value
+      : undefined;
+  if (kind === "strings") return parseStringArray(value);
+  if (kind === "number-map") return parseLeafMap(value, "number");
+  if (kind === "boolean-map") return parseLeafMap(value, "boolean");
+  if (kind === "string-array-map") return parseLeafMap(value, "strings");
+  if (kind === "nested-string-array-map")
+    return parseNestedStringArrayMap(value);
+  if (kind === "categories")
+    return parseSchemaObject(value, {
+      email: "boolean",
+      security: "boolean",
+      hygiene: "boolean",
+    });
+  if (kind === "profiles") {
+    if (!isRecord(value)) return undefined;
+    const profiles = Object.create(null) as Record<string, unknown>;
+    for (const [id, profile] of Object.entries(value)) {
+      const parsed = parseSchemaObject(profile, SESSION_PROFILE_SCHEMA);
+      if (parsed !== undefined) profiles[id] = parsed;
+    }
+    return profiles;
+  }
+  return undefined;
+}
+
+export function sanitizeBrowserPreferencesValue(
+  value: unknown,
+): BrowserPreferenceData {
+  assertBoundedStorageValue(value);
+  const result = parseSchemaObject(value, BROWSER_PREFERENCE_SCHEMA);
+  if (!result) throw new TypeError("Browser state must be an object.");
+  assertBoundedStorageValue(result);
+  const raw = JSON.stringify(result);
+  if (
+    utf8ByteLengthUpTo(raw, BROWSER_STATE_MAX_BYTES) > BROWSER_STATE_MAX_BYTES
+  )
+    throw new RangeError("Browser state exceeds the byte limit.");
+  return result as BrowserPreferenceData;
+}
+
+export function sanitizeBrowserPreferencesRaw(raw: string): string {
+  if (
+    utf8ByteLengthUpTo(raw, BROWSER_STATE_MAX_BYTES) > BROWSER_STATE_MAX_BYTES
+  )
+    throw new RangeError("Browser state exceeds the byte limit.");
+  return JSON.stringify(sanitizeBrowserPreferencesValue(JSON.parse(raw)));
 }
 
 function boundedIntegerOption(
@@ -231,11 +564,15 @@ export function createMigratingStorage(
 
     try {
       for (const [key, value] of legacyValues) {
+        const preparedValue =
+          key === BROWSER_STATE_KEY
+            ? sanitizeBrowserPreferencesRaw(value)
+            : value;
         const oldValue = storage.getItem(key);
-        if (oldValue === value) continue;
+        if (oldValue === preparedValue) continue;
         previous.set(key, oldValue);
         written.push(key);
-        storage.setItem(key, value);
+        storage.setItem(key, preparedValue);
       }
       previous.set(MIGRATION_MARKER_KEY, storage.getItem(MIGRATION_MARKER_KEY));
       written.push(MIGRATION_MARKER_KEY);
@@ -320,6 +657,51 @@ async function loadLegacyIndexedDbValues(): Promise<
   }
 }
 
+function readSanitizedBrowserState(storage: Storage): string | null {
+  const raw = storage.getItem(BROWSER_STATE_KEY);
+  if (raw === null) return null;
+  try {
+    const safe = sanitizeBrowserPreferencesRaw(raw);
+    if (safe !== raw) storage.setItem(BROWSER_STATE_KEY, safe);
+    return safe;
+  } catch (error) {
+    storage.removeItem(BROWSER_STATE_KEY);
+    reportStorageFailure(error, "Drop unsafe browser storage data");
+    return null;
+  }
+}
+
+function createBrowserStorageAdapter(storage: Storage): StorageLike {
+  storage.removeItem(BROWSER_RECOVERY_KEY);
+  readSanitizedBrowserState(storage);
+  const transient = (globalThis as { sessionStorage?: Storage }).sessionStorage;
+  transient?.removeItem(BROWSER_STATE_KEY);
+  transient?.removeItem(BROWSER_RECOVERY_KEY);
+  return {
+    backend: "localstorage",
+    getItem: (key) => {
+      if (key === BROWSER_STATE_KEY) return readSanitizedBrowserState(storage);
+      if (key === BROWSER_RECOVERY_KEY) {
+        storage.removeItem(key);
+        return null;
+      }
+      return storage.getItem(key);
+    },
+    setItem: (key, value) => {
+      if (key === BROWSER_STATE_KEY) {
+        storage.setItem(key, sanitizeBrowserPreferencesRaw(value));
+      } else if (key === BROWSER_RECOVERY_KEY) {
+        storage.removeItem(key);
+      } else {
+        storage.setItem(key, value);
+      }
+    },
+    removeItem: (key) => storage.removeItem(key),
+    isReady: () => true,
+    ready: () => Promise.resolve(),
+  };
+}
+
 let selectedStorage: StorageLike | undefined;
 let selectedBackend: "localstorage" | "memory" | undefined;
 
@@ -342,14 +724,7 @@ export function getStorage(storage?: StorageLike): StorageLike {
         typeof maybeStorage.setItem === "function" &&
         typeof maybeStorage.removeItem === "function"
       ) {
-        const syncStorage: StorageLike = {
-          backend: "localstorage",
-          getItem: (key) => maybeStorage.getItem(key),
-          setItem: (key, value) => maybeStorage.setItem(key, value),
-          removeItem: (key) => maybeStorage.removeItem(key),
-          isReady: () => true,
-          ready: () => Promise.resolve(),
-        };
+        const syncStorage = createBrowserStorageAdapter(maybeStorage);
         const migrationComplete =
           maybeStorage.getItem(MIGRATION_MARKER_KEY) === "1";
         selectedStorage = migrationComplete

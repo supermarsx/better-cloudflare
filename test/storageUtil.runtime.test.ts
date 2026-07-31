@@ -9,7 +9,11 @@ import {
   createMigratingStorage,
   getStorage,
   resetStorageSelectionForTests,
+  sanitizeBrowserPreferencesRaw,
+  sanitizeBrowserPreferencesValue,
 } from "../src/lib/storage/storage-util";
+import { CryptoManager } from "../src/lib/auth/crypto";
+import { StorageManager } from "../src/lib/storage/storage";
 
 const originalIndexedDBDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -18,6 +22,10 @@ const originalIndexedDBDescriptor = Object.getOwnPropertyDescriptor(
 const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "localStorage",
+);
+const originalSessionStorageDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "sessionStorage",
 );
 
 afterEach(() => {
@@ -36,6 +44,15 @@ afterEach(() => {
     );
   } else {
     delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
+  if (originalSessionStorageDescriptor) {
+    Object.defineProperty(
+      globalThis,
+      "sessionStorage",
+      originalSessionStorageDescriptor,
+    );
+  } else {
+    delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
   }
 });
 
@@ -186,4 +203,170 @@ test("storage selection falls back to memory when localStorage access is denied"
       .join("\n"),
     /Select browser storage: access denied/,
   );
+});
+
+test("IndexedDB migration sanitizes the primary payload and writes its marker last", async () => {
+  const durable = new MapStorage();
+  const writes: Array<[string, string]> = [];
+  const setItem = durable.setItem.bind(durable);
+  durable.setItem = (key, value) => {
+    writes.push([key, value]);
+    setItem(key, value);
+  };
+  const secret = "legacy-encrypted-secret";
+  const storage = createMigratingStorage(
+    durable,
+    async () =>
+      new Map([
+        [
+          "cloudflare-dns-manager",
+          JSON.stringify({
+            apiKeys: [{ encryptedKey: secret, email: "legacy@example.test" }],
+            currentSession: "legacy-session",
+            lastZone: "safe-zone",
+          }),
+        ],
+        ["encryption-settings", '{"algorithm":"AES-GCM"}'],
+      ]),
+  );
+
+  await storage.ready?.();
+  assert.deepEqual(
+    JSON.parse(durable.getItem("cloudflare-dns-manager") ?? ""),
+    {
+      lastZone: "safe-zone",
+    },
+  );
+  assert.equal(
+    JSON.stringify([...durable.values.values()]).includes(secret),
+    false,
+  );
+  assert.equal(writes.at(-1)?.[0], "better-cloudflare-storage-v2-migrated");
+});
+
+test("browser credentials are runtime-only and stale session blobs are purged", async () => {
+  const local = new MapStorage();
+  const session = new MapStorage();
+  local.setItem("better-cloudflare-storage-v2-migrated", "1");
+  local.setItem(
+    "cloudflare-dns-manager",
+    JSON.stringify({
+      apiKeys: [],
+      currentSession: "legacy",
+      lastZone: "legacy-zone",
+    }),
+  );
+  local.setItem("cloudflare-dns-manager:recovery", "raw-secret");
+  session.setItem("cloudflare-dns-manager", "session-secret");
+  session.setItem("cloudflare-dns-manager:recovery", "recovery-secret");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: local,
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: session,
+  });
+  resetStorageSelectionForTests();
+
+  const storage = getStorage();
+  const manager = new StorageManager(storage, new CryptoManager({}, storage));
+  const id = await manager.addApiKey(
+    "runtime key",
+    "live-api-secret",
+    "password",
+    "live@example.test",
+  );
+  manager.setCurrentSession(id);
+  manager.setLastZone("retained-zone");
+  assert.equal(
+    (await manager.getDecryptedApiKey(id, "password"))?.key,
+    "live-api-secret",
+  );
+  await manager.updateApiKey(id, {
+    currentPassword: "password",
+    newPassword: "rotated-password",
+    email: "rotated@example.test",
+  });
+  assert.equal(
+    (await manager.getDecryptedApiKey(id, "rotated-password"))?.key,
+    "live-api-secret",
+  );
+  manager.removeApiKey(id);
+  manager.setConfirmLogout(false);
+
+  const persisted = local.getItem("cloudflare-dns-manager") ?? "";
+  assert.doesNotMatch(
+    persisted,
+    /apiKeys|currentSession|encryptedKey|email|secret/,
+  );
+  assert.equal(local.getItem("cloudflare-dns-manager:recovery"), null);
+  assert.equal(session.getItem("cloudflare-dns-manager"), null);
+  assert.equal(session.getItem("cloudflare-dns-manager:recovery"), null);
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+  assert.equal(restarted.getApiKeys().length, 0);
+  assert.equal(restarted.getCurrentSession(), undefined);
+  assert.equal(restarted.getLastZone(), "retained-zone");
+});
+
+test("preference reconstruction drops unknown, inherited, and invalid nested leaves", () => {
+  const profile = Object.create({ password: "inherited-secret" }) as Record<
+    string,
+    unknown
+  >;
+  profile.defaultPerPage = 25;
+  profile.email = "nested@example.test";
+  profile.zonePerPage = { good: 50, bad: "secret" };
+  const zoneMap = Object.create({ inherited: 100 }) as Record<string, unknown>;
+  zoneMap.own = 20;
+  const safe = sanitizeBrowserPreferencesValue({
+    apiKeys: [{ encryptedKey: "secret" }],
+    currentSession: "secret-session",
+    unknown: "secret",
+    zonePerPage: zoneMap,
+    sessionSettingsProfiles: { profile },
+  });
+  const plain = JSON.parse(JSON.stringify(safe)) as typeof safe;
+
+  assert.deepEqual(plain.zonePerPage, { own: 20 });
+  assert.deepEqual(plain.sessionSettingsProfiles?.profile, {
+    defaultPerPage: 25,
+    zonePerPage: { good: 50 },
+  });
+  assert.equal(JSON.stringify(safe).includes("secret"), false);
+});
+
+test("browser preference byte limits are exact for multibyte and astral text", () => {
+  const limit = 2 * 1024 * 1024;
+  const makeRaw = (target: number, finalCharacter: string): string => {
+    const values: string[] = [];
+    while (
+      Buffer.byteLength(
+        JSON.stringify({
+          topologyTcpServices: [...values, "a".repeat(60_000), finalCharacter],
+        }),
+      ) <= target
+    )
+      values.push("a".repeat(60_000));
+    const base = JSON.stringify({
+      topologyTcpServices: [...values, finalCharacter],
+    });
+    const fill = target - Buffer.byteLength(base);
+    return JSON.stringify({
+      topologyTcpServices: [...values, `${"a".repeat(fill)}${finalCharacter}`],
+    });
+  };
+
+  for (const character of ["é", "😀"]) {
+    const exact = makeRaw(limit, character);
+    assert.equal(Buffer.byteLength(exact), limit);
+    assert.equal(
+      Buffer.byteLength(sanitizeBrowserPreferencesRaw(exact)),
+      limit,
+    );
+    assert.throws(
+      () => sanitizeBrowserPreferencesRaw(makeRaw(limit + 1, character)),
+      /byte limit/,
+    );
+  }
 });

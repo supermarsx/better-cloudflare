@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   StorageManager,
   StoragePersistenceError,
-  StorageRecoveryRequiredError,
   isStorageData,
 } from "../src/lib/storage/storage.ts";
 import { CryptoManager } from "../src/lib/auth/crypto.ts";
@@ -25,6 +24,7 @@ class LocalStorageMock {
 }
 
 const STORAGE_KEY = "cloudflare-dns-manager";
+const RECOVERY_KEY = `${STORAGE_KEY}:recovery`;
 
 test("importData accepts valid data", () => {
   const storage = new LocalStorageMock();
@@ -50,6 +50,9 @@ test("importData accepts valid data", () => {
   mgr.importData(JSON.stringify(sample));
   assert.equal(mgr.getApiKeys().length, 1);
   assert.equal(mgr.getCurrentSession(), "1");
+  assert.deepEqual(JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}"), {
+    __storageRevision: 1,
+  });
 });
 
 test("importData throws on invalid data without modifying existing state", () => {
@@ -66,7 +69,7 @@ test("importData throws on invalid data without modifying existing state", () =>
   assert.equal(mgr.getCurrentSession(), undefined);
 });
 
-test("load uses valid stored data", () => {
+test("load scrubs legacy credentials and retains preferences", () => {
   const storage = new LocalStorageMock();
   const sample = {
     apiKeys: [
@@ -83,29 +86,34 @@ test("load uses valid stored data", () => {
       },
     ],
     currentSession: "1",
+    lastZone: "zone-1",
   };
   storage.setItem(STORAGE_KEY, JSON.stringify(sample));
   const crypto = new CryptoManager({}, storage);
   const mgr = new StorageManager(storage, crypto);
-  assert.equal(mgr.getApiKeys().length, 1);
-  assert.equal(mgr.getCurrentSession(), "1");
+  assert.equal(mgr.getApiKeys().length, 0);
+  assert.equal(mgr.getCurrentSession(), undefined);
+  assert.equal(mgr.getLastZone(), "zone-1");
+  assert.deepEqual(JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}"), {
+    lastZone: "zone-1",
+  });
 });
 
-test("load preserves invalid stored data for explicit recovery", () => {
+test("load removes invalid primary and recovery data before a safe rewrite", () => {
   const storage = new LocalStorageMock();
   const corruptRaw = JSON.stringify({ apiKeys: "nope" });
   storage.setItem(STORAGE_KEY, corruptRaw);
+  storage.setItem(RECOVERY_KEY, JSON.stringify({ raw: corruptRaw }));
   const crypto = new CryptoManager({}, storage);
   const mgr = new StorageManager(storage, crypto);
   assert.equal(mgr.getApiKeys().length, 0);
   assert.equal(mgr.getCurrentSession(), undefined);
-  assert.equal(storage.getItem(STORAGE_KEY), corruptRaw);
+  assert.equal(storage.getItem(STORAGE_KEY), null);
+  assert.equal(storage.getItem(RECOVERY_KEY), null);
   assert.equal(mgr.getRecoverySnapshot()?.raw, corruptRaw);
-  assert.throws(
-    () => mgr.setCurrentSession("must-not-overwrite"),
-    StorageRecoveryRequiredError,
-  );
-  assert.equal(storage.getItem(STORAGE_KEY), corruptRaw);
+  mgr.setLastZone("recovered");
+  assert.equal(mgr.getRecoverySnapshot(), null);
+  assert.equal(storage.getItem(STORAGE_KEY)?.includes(corruptRaw), false);
 });
 
 test("deferred legacy hydration blocks writes and loads durable keys before use", async () => {
@@ -130,11 +138,11 @@ test("deferred legacy hydration blocks writes and loads durable keys before use"
   release(new Map([[STORAGE_KEY, JSON.stringify(sample)]]));
   await mgr.ready();
 
-  assert.equal(mgr.getCurrentSession(), "legacy-session");
+  assert.equal(mgr.getCurrentSession(), undefined);
   mgr.setLastZone("zone-after-ready");
   const restarted = new StorageManager(storage, new CryptoManager({}, storage));
   await restarted.ready();
-  assert.equal(restarted.getCurrentSession(), "legacy-session");
+  assert.equal(restarted.getCurrentSession(), undefined);
   assert.equal(restarted.getLastZone(), "zone-after-ready");
 });
 
@@ -183,7 +191,7 @@ test("failed clear restores durable and in-memory data", () => {
   assert.equal(storage.getItem(STORAGE_KEY), stableRaw);
 });
 
-test("nonconflicting multi-instance writes merge instead of replacing a stale blob", () => {
+test("nonconflicting preferences merge while sessions remain runtime-only", () => {
   const storage = new LocalStorageMock();
   const first = new StorageManager(storage, new CryptoManager({}, storage));
   const second = new StorageManager(storage, new CryptoManager({}, storage));
@@ -192,11 +200,12 @@ test("nonconflicting multi-instance writes merge instead of replacing a stale bl
   second.setLastZone("zone-b");
 
   const restarted = new StorageManager(storage, new CryptoManager({}, storage));
-  assert.equal(restarted.getCurrentSession(), "session-a");
+  assert.equal(first.getCurrentSession(), "session-a");
+  assert.equal(restarted.getCurrentSession(), undefined);
   assert.equal(restarted.getLastZone(), "zone-b");
 });
 
-test("multi-instance API key additions survive stale whole-blob snapshots", async () => {
+test("API keys stay in their manager and unrelated saves cannot persist them", async () => {
   const storage = new LocalStorageMock();
   const first = new StorageManager(storage, new CryptoManager({}, storage));
   const second = new StorageManager(storage, new CryptoManager({}, storage));
@@ -207,10 +216,10 @@ test("multi-instance API key additions survive stale whole-blob snapshots", asyn
   ]);
 
   const restarted = new StorageManager(storage, new CryptoManager({}, storage));
-  assert.deepEqual(
-    new Set(restarted.getApiKeys().map((key) => key.id)),
-    new Set([firstId, secondId]),
-  );
+  assert.equal(first.getApiKeys()[0]?.id, firstId);
+  assert.equal(second.getApiKeys()[0]?.id, secondId);
+  assert.equal(restarted.getApiKeys().length, 0);
+  assert.doesNotMatch(storage.getItem(STORAGE_KEY) ?? "", /encryptedKey|email/);
 });
 
 test("import rejects oversized, deep and non-finite storage metadata", () => {
@@ -256,7 +265,7 @@ test("falls back to in-memory storage when localStorage is unavailable", async (
   assert.ok(id);
   assert.equal(mgr.getApiKeys().length, 1);
   const mgr2 = new StorageManager(undefined, crypto);
-  assert.equal(mgr2.getApiKeys().length, 1);
+  assert.equal(mgr2.getApiKeys().length, 0);
 
   if (originalDescriptor) {
     Object.defineProperty(globalThis, "localStorage", originalDescriptor);
