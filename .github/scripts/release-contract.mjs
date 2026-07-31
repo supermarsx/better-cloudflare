@@ -6,19 +6,20 @@ import {
   appendFileSync,
   closeSync,
   constants,
-  copyFileSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
-  readFileSync,
   readSync,
   readdirSync,
+  renameSync,
+  rmSync,
   statfsSync,
-  statSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { freemem, totalmem } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const RELEASE_MATRIX = Object.freeze(
@@ -114,10 +115,80 @@ function fail(message) {
   throw new Error(message);
 }
 
-function requireRealDirectory(path, label) {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-  if (!metadata || !metadata.isDirectory() || metadata.isSymbolicLink()) {
-    fail(`${label} must be a real directory, not a symlink: ${path}.`);
+function pathsFromRoot(path) {
+  const paths = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    paths.push(current);
+    if (dirname(current) === current) break;
+  }
+  return paths.reverse();
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino !== 0n && left.ino === right.ino;
+}
+
+function pathMetadata(path, label) {
+  let metadata;
+  for (const component of pathsFromRoot(path)) {
+    metadata = lstatSync(component, {
+      bigint: true,
+      throwIfNoEntry: false,
+    });
+    if (!metadata) fail(`${label} is missing: ${component}.`);
+    if (metadata.isSymbolicLink()) {
+      fail(`${label} contains a link or reparse point: ${component}.`);
+    }
+  }
+  return metadata;
+}
+
+function openedPathMetadata(file, path, label, expectedType) {
+  const descriptor = fstatSync(file, { bigint: true });
+  const pathname = pathMetadata(path, label);
+  if (
+    !pathname ||
+    pathname.isSymbolicLink() ||
+    !descriptor[expectedType]() ||
+    !pathname[expectedType]() ||
+    !sameIdentity(descriptor, pathname)
+  ) {
+    fail(`${label} pathname/descriptor identity mismatch: ${path}.`);
+  }
+  return descriptor;
+}
+
+function openRealDirectory(path, label) {
+  const before = pathMetadata(path, label);
+  let file;
+  try {
+    file = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const metadata = openedPathMetadata(file, path, label, "isDirectory");
+    if (!sameIdentity(before, metadata))
+      fail(`${label} path identity changed.`);
+    return { file, metadata };
+  } catch (error) {
+    if (file !== undefined) closeSync(file);
+    throw error;
+  }
+}
+
+function withRealDirectory(path, label, operation, finalPath = () => path) {
+  const opened = openRealDirectory(path, label);
+  try {
+    const result = operation(opened.file);
+    const after = openedPathMetadata(
+      opened.file,
+      finalPath(),
+      label,
+      "isDirectory",
+    );
+    if (!sameIdentity(after, opened.metadata)) {
+      fail(`${label} path identity changed.`);
+    }
+    return result;
+  } finally {
+    closeSync(opened.file);
   }
 }
 
@@ -176,31 +247,52 @@ export function expectedAssetNames(matrix = RELEASE_MATRIX) {
 }
 
 export function nextReleaseTag(year, tags) {
-  if (!/^\d{2}$/.test(year)) {
+  const requestedYear = parseReleaseTag(`${year}.0`)?.year;
+  if (requestedYear !== year) {
     fail(`Release year must contain exactly two digits; received "${year}".`);
   }
 
-  const pattern = new RegExp(`^${year}\\.(0|[1-9]\\d*)$`);
   let maximum = 0;
 
   for (const rawTag of tags) {
-    const tag = rawTag.replace(/^refs\/tags\//, "");
-    const match = pattern.exec(tag);
-    if (!match) {
+    const parsed = parseReleaseTag(rawTag);
+    if (!parsed || parsed.year !== year) {
       continue;
     }
-
-    const sequence = Number(match[1]);
-    if (!Number.isSafeInteger(sequence)) {
-      fail(`Release sequence is outside the safe integer range: ${tag}.`);
-    }
-    maximum = Math.max(maximum, sequence);
+    maximum = Math.max(maximum, releaseSequence(parsed));
   }
 
   if (maximum === Number.MAX_SAFE_INTEGER) {
     fail(`Release sequence cannot be incremented safely for year ${year}.`);
   }
   return `${year}.${maximum + 1}`;
+}
+
+function parseReleaseTag(rawTag) {
+  if (typeof rawTag !== "string") return undefined;
+  const tag = rawTag.startsWith("refs/tags/") ? rawTag.slice(10) : rawTag;
+  const parts = tag.split(".");
+  if (parts.length !== 2) return undefined;
+  const [year, sequenceText] = parts;
+  if (
+    year.length !== 2 ||
+    sequenceText.length === 0 ||
+    (sequenceText.length > 1 && sequenceText[0] === "0")
+  ) {
+    return undefined;
+  }
+  for (const character of year + sequenceText) {
+    if (character < "0" || character > "9") return undefined;
+  }
+  return { tag, year, sequenceText };
+}
+
+function releaseSequence({ tag, sequenceText }) {
+  const sequence = Number(sequenceText);
+  if (!Number.isSafeInteger(sequence)) {
+    fail(`Release sequence is outside the safe integer range: ${tag}.`);
+  }
+  return sequence;
 }
 
 function matrixEntry(platform, arch) {
@@ -220,6 +312,9 @@ function filesRecursively(directory, depth = 0, budget = { files: 0 }) {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      fail(`Bundle tree contains a symlink or junction: ${path}.`);
+    }
     if (entry.isDirectory()) {
       files.push(...filesRecursively(path, depth + 1, budget));
     } else if (entry.isFile()) {
@@ -233,46 +328,73 @@ function filesRecursively(directory, depth = 0, budget = { files: 0 }) {
   return files;
 }
 
-function releaseAssetSize(path) {
-  const size = statSync(path, { throwIfNoEntry: false })?.size;
-  if (!size) {
-    fail(`Release asset is missing or empty: ${basename(path)}.`);
+function withReleaseFile(
+  path,
+  { label, minimumBytes = 1, maximumBytes = MAX_RELEASE_ASSET_BYTES },
+  operation,
+) {
+  const before = pathMetadata(path, label);
+  if (!before?.isFile()) {
+    fail(`${label} is missing or not a regular file: ${basename(path)}.`);
   }
-  if (size > MAX_RELEASE_ASSET_BYTES) {
-    fail(
-      `Release asset exceeds the 1 GiB contract: ${basename(path)} (${size} bytes).`,
-    );
-  }
-  return size;
-}
-
-function sha256(path) {
-  releaseAssetSize(path);
-  const hash = createHash("sha256");
-  const file = openSync(path, "r");
-  const buffer = Buffer.alloc(1024 * 1024);
+  let file;
   try {
-    while (true) {
-      const bytesRead = readSync(file, buffer, 0, buffer.length, null);
-      if (bytesRead === 0) {
-        break;
-      }
-      hash.update(buffer.subarray(0, bytesRead));
+    file = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (!["ENOENT", "ELOOP"].includes(error?.code)) throw error;
+    fail(`${label} path changed or is not a regular file: ${basename(path)}.`);
+  }
+  try {
+    const metadata = fstatSync(file, { bigint: true });
+    if (!metadata.isFile() || !sameIdentity(before, metadata)) {
+      fail(`${label} path changed while opening: ${basename(path)}.`);
     }
+    if (metadata.size < BigInt(minimumBytes)) {
+      fail(`${label} is empty or too small: ${basename(path)}.`);
+    }
+    if (metadata.size > BigInt(maximumBytes)) {
+      fail(`${label} exceeds ${maximumBytes} bytes: ${basename(path)}.`);
+    }
+    const result = operation(file, Number(metadata.size));
+    const after = openedPathMetadata(file, path, label, "isFile");
+    if (after.size !== metadata.size || after.ctimeNs !== metadata.ctimeNs) {
+      fail(`${label} changed while it was being read: ${basename(path)}.`);
+    }
+    return result;
   } finally {
     closeSync(file);
+  }
+}
+
+function readExact(file, path, size, at = 0) {
+  const buffer = Buffer.alloc(size);
+  let read = 0;
+  while (read < size) {
+    const count = readSync(file, buffer, read, size - read, at + read);
+    if (count === 0) {
+      fail(`File changed or is truncated: ${basename(path)}.`);
+    }
+    read += count;
+  }
+  return buffer;
+}
+
+function sha256(file, size, path) {
+  const hash = createHash("sha256");
+  for (let position = 0; position < size; position += 1024 * 1024) {
+    hash.update(
+      readExact(file, path, Math.min(1024 * 1024, size - position), position),
+    );
   }
   return hash.digest("hex");
 }
 
 function readChecksum(path) {
-  const size = statSync(path, { throwIfNoEntry: false })?.size;
-  if (!size || size > MAX_CHECKSUM_BYTES) {
-    fail(
-      `Checksum file must contain 1-${MAX_CHECKSUM_BYTES} bytes: ${basename(path)}.`,
-    );
-  }
-  return readFileSync(path, "utf8").trimEnd();
+  return withReleaseFile(
+    path,
+    { label: "Checksum file", maximumBytes: MAX_CHECKSUM_BYTES },
+    (file, size) => readExact(file, path, size).toString("utf8").trimEnd(),
+  );
 }
 
 function readStdinBounded(maximumBytes = MAX_STDIN_BYTES) {
@@ -293,103 +415,273 @@ function readStdinBounded(maximumBytes = MAX_STDIN_BYTES) {
   return Buffer.concat(chunks, retainedBytes).toString("utf8");
 }
 
-function readExact(path, length, position = 0) {
-  const file = openSync(path, "r");
+function withNewFile(destination, label, operation) {
+  const parent = pathMetadata(dirname(destination), label);
+  let file;
   try {
-    const buffer = Buffer.alloc(length);
-    const bytesRead = readSync(file, buffer, 0, length, position);
-    if (bytesRead !== length) {
-      fail(
-        `Executable header is truncated at offset ${position}: ${basename(path)}.`,
-      );
+    file = openSync(
+      destination,
+      constants.O_RDWR | constants.O_CREAT | constants.O_EXCL,
+      0o666,
+    );
+    openedPathMetadata(file, destination, label, "isFile");
+    if (!sameIdentity(parent, pathMetadata(dirname(destination), label))) {
+      fail(`${label} parent path identity changed.`);
     }
-    return buffer;
+    const result = operation(file);
+    const metadata = openedPathMetadata(file, destination, label, "isFile");
+    closeSync(file);
+    file = undefined;
+    return { ...result, metadata };
+  } catch (error) {
+    if (file !== undefined) {
+      const metadata = fstatSync(file, { bigint: true });
+      closeSync(file);
+      const pathname = lstatSync(destination, {
+        bigint: true,
+        throwIfNoEntry: false,
+      });
+      if (pathname && sameIdentity(metadata, pathname)) {
+        rmSync(destination, { force: true });
+      }
+    }
+    throw error;
+  }
+}
+
+function copyOpenedFile(file, size, source, destination) {
+  return withNewFile(destination, "Staged release file", (out) => {
+    const hash = createHash("sha256");
+    for (let position = 0; position < size; position += 1024 * 1024) {
+      const buffer = readExact(
+        file,
+        source,
+        Math.min(1024 * 1024, size - position),
+        position,
+      );
+      let offset = 0;
+      hash.update(buffer);
+      while (offset < buffer.length) {
+        const count = writeSync(out, buffer, offset, buffer.length - offset);
+        if (!count) fail(`Copy stalled: ${basename(destination)}.`);
+        offset += count;
+      }
+    }
+    if (fstatSync(file).size !== size) {
+      fail(`File size changed while copying: ${basename(source)}.`);
+    }
+    const sourceDigest = hash.digest("hex");
+    const output = fstatSync(out, { bigint: true });
+    if (output.size !== BigInt(size)) {
+      fail(`Copied file has an unexpected size: ${basename(destination)}.`);
+    }
+    const outputDigest = sha256(out, size, destination);
+    if (outputDigest !== sourceDigest) {
+      fail(`Copied bytes differ from source: ${basename(source)}.`);
+    }
+    return { digest: outputDigest };
+  });
+}
+
+function writeOpenedFile(destination, contents) {
+  const data = Buffer.from(contents);
+  return withNewFile(destination, "Staged checksum file", (file) => {
+    for (let offset = 0; offset < data.length; ) {
+      const count = writeSync(file, data, offset, data.length - offset);
+      if (!count) fail(`Write stalled: ${basename(destination)}.`);
+      offset += count;
+    }
+    const metadata = fstatSync(file, { bigint: true });
+    if (
+      metadata.size !== BigInt(data.length) ||
+      !readExact(file, destination, data.length).equals(data)
+    ) {
+      fail("Staged checksum bytes differ from its descriptor.");
+    }
+    const digest = createHash("sha256").update(data).digest("hex");
+    return { digest };
+  });
+}
+
+function verifyTrackedFile(path, expected) {
+  pathMetadata(path, "Staged release file");
+  const file = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const metadata = openedPathMetadata(
+      file,
+      path,
+      "Staged release file",
+      "isFile",
+    );
+    if (
+      !sameIdentity(metadata, expected.metadata) ||
+      metadata.size !== expected.metadata.size ||
+      sha256(file, Number(metadata.size), path) !== expected.digest
+    ) {
+      fail(`Staged release file identity or bytes changed: ${path}.`);
+    }
   } finally {
     closeSync(file);
   }
 }
 
+// Node has no openat/renameat: verify identities around the same-parent atomic
+// rename, but callers must still protect paths from swaps after this returns.
+function publishOutputDirectory(outputDirectory, label, operation) {
+  const destination = resolve(outputDirectory);
+  const paths = pathsFromRoot(destination);
+  let missing = paths.length;
+  for (let index = 0; index < paths.length; index += 1) {
+    const metadata = lstatSync(paths[index], { throwIfNoEntry: false });
+    if (!metadata) {
+      missing = index;
+      break;
+    }
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      fail(`${label} contains a link or reparse point: ${paths[index]}.`);
+    }
+  }
+  if (missing === paths.length) fail(`${label} must not already exist.`);
+  const publishTarget = paths[missing];
+  const parent = dirname(publishTarget);
+  let stage;
+  let stageMetadata;
+  let published = false;
+  const stagedFiles = [];
+  try {
+    return withRealDirectory(parent, label, () => {
+      stage = mkdtempSync(join(parent, `.${basename(publishTarget)}.staging-`));
+      stageMetadata = lstatSync(stage, { bigint: true });
+      const work = join(stage, relative(publishTarget, destination));
+      if (work !== stage) mkdirSync(work, { recursive: true });
+      let currentStage = stage;
+      return withRealDirectory(
+        stage,
+        "Private staging directory",
+        () => {
+          const track = (opened, path) => stagedFiles.push({ ...opened, path });
+          const result = operation(work, track);
+          for (const opened of stagedFiles) {
+            verifyTrackedFile(opened.path, opened);
+          }
+          if (lstatSync(publishTarget, { throwIfNoEntry: false })) {
+            fail(`${label} appeared before publication: ${publishTarget}.`);
+          }
+          renameSync(stage, publishTarget);
+          published = true;
+          currentStage = publishTarget;
+          for (const opened of stagedFiles) {
+            const finalPath = join(destination, relative(work, opened.path));
+            verifyTrackedFile(finalPath, opened);
+          }
+          return result;
+        },
+        () => currentStage,
+      );
+    });
+  } catch (error) {
+    const cleanup = published ? publishTarget : stage;
+    const cleanupMetadata = cleanup
+      ? lstatSync(cleanup, { bigint: true, throwIfNoEntry: false })
+      : undefined;
+    if (
+      stageMetadata &&
+      cleanupMetadata &&
+      sameIdentity(cleanupMetadata, stageMetadata)
+    ) {
+      rmSync(cleanup, { recursive: true, force: true });
+    }
+    throw error;
+  }
+}
+
 export function detectExecutableArchitecture(path) {
   const executable = resolve(path);
-  const size = statSync(executable, { throwIfNoEntry: false })?.size;
-  if (!size || size < 8) {
-    fail(`Executable is missing or too small to inspect: ${executable}.`);
-  }
+  return withReleaseFile(
+    executable,
+    { label: "Executable", minimumBytes: 8 },
+    (file, size) => {
+      const header = readExact(file, executable, Math.min(64, size));
 
-  const header = readExact(executable, Math.min(64, size));
+      if (
+        header[0] === 0x7f &&
+        header[1] === 0x45 &&
+        header[2] === 0x4c &&
+        header[3] === 0x46
+      ) {
+        if (header.length < 20 || header[4] !== 2) {
+          fail(`Only 64-bit ELF executables are supported: ${executable}.`);
+        }
+        const machine =
+          header[5] === 1
+            ? header.readUInt16LE(18)
+            : header[5] === 2
+              ? header.readUInt16BE(18)
+              : fail(`ELF byte order is invalid: ${executable}.`);
+        const arch =
+          machine === 62 ? "x64" : machine === 183 ? "arm64" : undefined;
+        if (!arch) {
+          fail(`Unsupported ELF machine ${machine}: ${executable}.`);
+        }
+        return { format: "elf", arch };
+      }
 
-  if (
-    header[0] === 0x7f &&
-    header[1] === 0x45 &&
-    header[2] === 0x4c &&
-    header[3] === 0x46
-  ) {
-    if (header.length < 20 || header[4] !== 2) {
-      fail(`Only 64-bit ELF executables are supported: ${executable}.`);
-    }
-    const machine =
-      header[5] === 1
-        ? header.readUInt16LE(18)
-        : header[5] === 2
-          ? header.readUInt16BE(18)
-          : fail(`ELF byte order is invalid: ${executable}.`);
-    const arch = machine === 62 ? "x64" : machine === 183 ? "arm64" : undefined;
-    if (!arch) {
-      fail(`Unsupported ELF machine ${machine}: ${executable}.`);
-    }
-    return { format: "elf", arch };
-  }
+      if (header[0] === 0x4d && header[1] === 0x5a) {
+        if (header.length < 64) {
+          fail(`PE DOS header is truncated: ${executable}.`);
+        }
+        const peOffset = header.readUInt32LE(0x3c);
+        if (peOffset > 1024 * 1024 || peOffset + 6 > size) {
+          fail(`PE header offset is invalid: ${executable}.`);
+        }
+        const peHeader = readExact(file, executable, 6, peOffset);
+        if (
+          peHeader[0] !== 0x50 ||
+          peHeader[1] !== 0x45 ||
+          peHeader[2] !== 0 ||
+          peHeader[3] !== 0
+        ) {
+          fail(`PE signature is invalid: ${executable}.`);
+        }
+        const machine = peHeader.readUInt16LE(4);
+        const arch =
+          machine === 0x8664 ? "x64" : machine === 0xaa64 ? "arm64" : undefined;
+        if (!arch) {
+          fail(
+            `Unsupported PE machine 0x${machine.toString(16)}: ${executable}.`,
+          );
+        }
+        return { format: "pe", arch };
+      }
 
-  if (header[0] === 0x4d && header[1] === 0x5a) {
-    if (header.length < 64) {
-      fail(`PE DOS header is truncated: ${executable}.`);
-    }
-    const peOffset = header.readUInt32LE(0x3c);
-    if (peOffset > 1024 * 1024 || peOffset + 6 > size) {
-      fail(`PE header offset is invalid: ${executable}.`);
-    }
-    const peHeader = readExact(executable, 6, peOffset);
-    if (
-      peHeader[0] !== 0x50 ||
-      peHeader[1] !== 0x45 ||
-      peHeader[2] !== 0 ||
-      peHeader[3] !== 0
-    ) {
-      fail(`PE signature is invalid: ${executable}.`);
-    }
-    const machine = peHeader.readUInt16LE(4);
-    const arch =
-      machine === 0x8664 ? "x64" : machine === 0xaa64 ? "arm64" : undefined;
-    if (!arch) {
-      fail(`Unsupported PE machine 0x${machine.toString(16)}: ${executable}.`);
-    }
-    return { format: "pe", arch };
-  }
+      const magic = header.subarray(0, 4).toString("hex");
+      if (magic === "cafebabe" || magic === "bebafeca") {
+        fail(
+          `Universal Mach-O binaries are not accepted for a single-architecture release: ${executable}.`,
+        );
+      }
+      if (magic === "cffaedfe" || magic === "feedfacf") {
+        const cpuType =
+          magic === "cffaedfe"
+            ? header.readUInt32LE(4)
+            : header.readUInt32BE(4);
+        const arch =
+          cpuType === 0x01000007
+            ? "x64"
+            : cpuType === 0x0100000c
+              ? "arm64"
+              : undefined;
+        if (!arch) {
+          fail(
+            `Unsupported Mach-O CPU type 0x${cpuType.toString(16)}: ${executable}.`,
+          );
+        }
+        return { format: "mach-o", arch };
+      }
 
-  const magic = header.subarray(0, 4).toString("hex");
-  if (magic === "cafebabe" || magic === "bebafeca") {
-    fail(
-      `Universal Mach-O binaries are not accepted for a single-architecture release: ${executable}.`,
-    );
-  }
-  if (magic === "cffaedfe" || magic === "feedfacf") {
-    const cpuType =
-      magic === "cffaedfe" ? header.readUInt32LE(4) : header.readUInt32BE(4);
-    const arch =
-      cpuType === 0x01000007
-        ? "x64"
-        : cpuType === 0x0100000c
-          ? "arm64"
-          : undefined;
-    if (!arch) {
-      fail(
-        `Unsupported Mach-O CPU type 0x${cpuType.toString(16)}: ${executable}.`,
-      );
-    }
-    return { format: "mach-o", arch };
-  }
-
-  fail(`Executable format is not ELF, PE, or Mach-O: ${executable}.`);
+      fail(`Executable format is not ELF, PE, or Mach-O: ${executable}.`);
+    },
+  );
 }
 
 export function verifyExecutableArchitecture(path, platform, arch) {
@@ -413,37 +705,39 @@ export function stageNativeAsset(bundleRoot, platform, arch, outputDirectory) {
   const entry = matrixEntry(platform, arch);
   const root = resolve(bundleRoot);
 
-  if (!lstatSync(root, { throwIfNoEntry: false })) {
-    fail(`Tauri bundle directory is missing: ${root}.`);
-  }
-  requireRealDirectory(root, "Tauri bundle directory");
-
-  const candidates = filesRecursively(root).filter(
-    (path) => path.endsWith(entry.sourceSuffix) && statSync(path).size > 0,
-  );
-  if (candidates.length !== 1) {
-    fail(
-      `Expected exactly one non-empty ${entry.sourceSuffix} bundle for ${platform}-${arch}; found ${candidates.length}.`,
-    );
-  }
-
   const destinationDirectory = resolve(outputDirectory);
-  mkdirSync(destinationDirectory, { recursive: true });
-  requireRealDirectory(destinationDirectory, "Release output directory");
-  const destination = join(destinationDirectory, entry.asset);
-  releaseAssetSize(candidates[0]);
-  copyFileSync(candidates[0], destination, constants.COPYFILE_EXCL);
-
-  const checksum = `${sha256(destination)}  ${entry.asset}\n`;
-  writeFileSync(`${destination}.sha256`, checksum, {
-    encoding: "utf8",
-    flag: "wx",
+  let source;
+  withRealDirectory(root, "Tauri bundle directory", () => {
+    const candidates = filesRecursively(root).filter((path) =>
+      path.endsWith(entry.sourceSuffix),
+    );
+    if (candidates.length !== 1) {
+      fail(
+        `Expected exactly one non-empty ${entry.sourceSuffix} bundle for ${platform}-${arch}; found ${candidates.length}.`,
+      );
+    }
+    source = candidates[0];
+    publishOutputDirectory(
+      destinationDirectory,
+      "Release output directory",
+      (stage, track) =>
+        withReleaseFile(source, { label: "Release asset" }, (file, size) => {
+          const destination = join(stage, entry.asset);
+          const copied = copyOpenedFile(file, size, source, destination);
+          track(copied, destination);
+          const checksumPath = `${destination}.sha256`;
+          track(
+            writeOpenedFile(checksumPath, `${copied.digest}  ${entry.asset}\n`),
+            checksumPath,
+          );
+        }),
+    );
   });
 
   return {
-    asset: destination,
-    checksum: `${destination}.sha256`,
-    source: candidates[0],
+    asset: join(destinationDirectory, entry.asset),
+    checksum: join(destinationDirectory, `${entry.asset}.sha256`),
+    source,
   };
 }
 
@@ -467,32 +761,29 @@ export function validateAssetNames(names, matrix = RELEASE_MATRIX) {
 
 export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
   const root = resolve(directory);
-  if (!lstatSync(root, { throwIfNoEntry: false })) {
-    fail(`Release asset directory is missing: ${root}.`);
-  }
-  requireRealDirectory(root, "Release asset directory");
-
-  const entries = readdirSync(root, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isFile())) {
-    fail("Release asset directory must contain files only.");
-  }
-  validateAssetNames(
-    entries.map((entry) => entry.name),
-    matrix,
-  );
-
-  for (const { asset } of matrix) {
-    const assetPath = join(root, asset);
-    releaseAssetSize(assetPath);
-
-    const expectedChecksum = `${sha256(assetPath)}  ${asset}`;
-    const actualChecksum = readChecksum(`${assetPath}.sha256`);
-    if (actualChecksum !== expectedChecksum) {
-      fail(`SHA-256 checksum does not match ${asset}.`);
+  return withRealDirectory(root, "Release asset directory", () => {
+    const entries = readdirSync(root, { withFileTypes: true });
+    if (entries.some((entry) => !entry.isFile())) {
+      fail("Release asset directory must contain files only.");
     }
-  }
+    validateAssetNames(
+      entries.map((entry) => entry.name),
+      matrix,
+    );
 
-  return true;
+    for (const { asset } of matrix) {
+      const assetPath = join(root, asset);
+      withReleaseFile(assetPath, { label: "Release asset" }, (file, size) => {
+        const expectedChecksum = `${sha256(file, size, assetPath)}  ${asset}`;
+        const actualChecksum = readChecksum(`${assetPath}.sha256`);
+        if (actualChecksum !== expectedChecksum) {
+          fail(`SHA-256 checksum does not match ${asset}.`);
+        }
+      });
+    }
+
+    return true;
+  });
 }
 
 export function aggregateNativeArtifacts(
@@ -502,85 +793,97 @@ export function aggregateNativeArtifacts(
 ) {
   assertMatrixContract(matrix);
   const root = resolve(artifactRoot);
-  if (!lstatSync(root, { throwIfNoEntry: false })) {
-    fail(`Native artifact root is missing: ${root}.`);
-  }
-  requireRealDirectory(root, "Native artifact root");
-
-  const expectedDirectories = matrix
-    .map(({ platform, arch }) => `native-${platform}-${arch}`)
-    .sort();
-  const entries = readdirSync(root, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isDirectory())) {
-    fail("Native artifact root must contain platform directories only.");
-  }
-  const actualDirectories = entries.map((entry) => entry.name).sort();
-  if (
-    JSON.stringify(actualDirectories) !== JSON.stringify(expectedDirectories)
-  ) {
-    const missing = expectedDirectories.filter(
-      (name) => !actualDirectories.includes(name),
-    );
-    const unexpected = actualDirectories.filter(
-      (name) => !expectedDirectories.includes(name),
-    );
-    fail(
-      `Native artifact directory contract failed. Missing: ${missing.join(", ") || "none"}. Unexpected: ${unexpected.join(", ") || "none"}.`,
-    );
-  }
-
   const destination = resolve(outputDirectory);
-  mkdirSync(destination, { recursive: true });
-  requireRealDirectory(destination, "Aggregate release directory");
-  if (readdirSync(destination).length !== 0) {
-    fail(`Aggregate release directory must be empty: ${destination}.`);
-  }
-
-  for (const entry of matrix) {
-    const platformDirectory = join(
-      root,
-      `native-${entry.platform}-${entry.arch}`,
-    );
-    const expected = [entry.asset, `${entry.asset}.sha256`].sort();
-    const platformEntries = readdirSync(platformDirectory, {
-      withFileTypes: true,
-    });
-    if (platformEntries.some((candidate) => !candidate.isFile())) {
-      fail(
-        `Artifact directory native-${entry.platform}-${entry.arch} must contain files only.`,
-      );
+  withRealDirectory(root, "Native artifact root", () => {
+    const expectedDirectories = matrix
+      .map(({ platform, arch }) => `native-${platform}-${arch}`)
+      .sort();
+    const entries = readdirSync(root, { withFileTypes: true });
+    if (entries.some((entry) => !entry.isDirectory())) {
+      fail("Native artifact root must contain platform directories only.");
     }
-    const actual = platformEntries.map((candidate) => candidate.name).sort();
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    const actualDirectories = entries.map((entry) => entry.name).sort();
+    if (
+      JSON.stringify(actualDirectories) !== JSON.stringify(expectedDirectories)
+    ) {
       fail(
-        `Artifact directory native-${entry.platform}-${entry.arch} must contain only ${expected.join(" and ")}.`,
+        `Native artifact directory contract failed. Missing: ${expectedDirectories.filter((name) => !actualDirectories.includes(name)).join(", ") || "none"}. Unexpected: ${actualDirectories.filter((name) => !expectedDirectories.includes(name)).join(", ") || "none"}.`,
       );
     }
 
-    const assetPath = join(platformDirectory, entry.asset);
-    releaseAssetSize(assetPath);
-    const expectedChecksum = `${sha256(assetPath)}  ${entry.asset}`;
-    const actualChecksum = readChecksum(
-      join(platformDirectory, `${entry.asset}.sha256`),
-    );
-    if (actualChecksum !== expectedChecksum) {
-      fail(
-        `SHA-256 checksum does not match ${entry.asset} in its platform artifact.`,
-      );
-    }
-    copyFileSync(
-      assetPath,
-      join(destination, entry.asset),
-      constants.COPYFILE_EXCL,
-    );
-    copyFileSync(
-      join(platformDirectory, `${entry.asset}.sha256`),
-      join(destination, `${entry.asset}.sha256`),
-      constants.COPYFILE_EXCL,
-    );
-  }
+    publishOutputDirectory(
+      destination,
+      "Aggregate release directory",
+      (stage, track) => {
+        for (const entry of matrix) {
+          const platformDirectory = join(
+            root,
+            `native-${entry.platform}-${entry.arch}`,
+          );
+          const expected = [entry.asset, `${entry.asset}.sha256`].sort();
+          const platformEntries = withRealDirectory(
+            platformDirectory,
+            "Platform artifact directory",
+            () => readdirSync(platformDirectory, { withFileTypes: true }),
+          );
+          if (platformEntries.some((candidate) => !candidate.isFile())) {
+            fail(
+              `Artifact directory native-${entry.platform}-${entry.arch} must contain files only.`,
+            );
+          }
+          const actual = platformEntries
+            .map((candidate) => candidate.name)
+            .sort();
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            fail(
+              `Artifact directory native-${entry.platform}-${entry.arch} must contain only ${expected.join(" and ")}.`,
+            );
+          }
 
-  return validateReleaseAssets(destination, matrix);
+          const assetPath = join(platformDirectory, entry.asset);
+          const checksumPath = join(platformDirectory, `${entry.asset}.sha256`);
+          withReleaseFile(assetPath, { label: "Release asset" }, (file, size) =>
+            withReleaseFile(
+              checksumPath,
+              { label: "Checksum file", maximumBytes: MAX_CHECKSUM_BYTES },
+              (checksumFile, checksumSize) => {
+                const actualChecksum = readExact(
+                  checksumFile,
+                  checksumPath,
+                  checksumSize,
+                )
+                  .toString("utf8")
+                  .trimEnd();
+                const copiedPath = join(stage, entry.asset);
+                const copied = copyOpenedFile(
+                  file,
+                  size,
+                  assetPath,
+                  copiedPath,
+                );
+                track(copied, copiedPath);
+                if (actualChecksum !== `${copied.digest}  ${entry.asset}`) {
+                  fail(
+                    `SHA-256 checksum does not match ${entry.asset} in its platform artifact.`,
+                  );
+                }
+                const stagedChecksum = `${copiedPath}.sha256`;
+                track(
+                  writeOpenedFile(
+                    stagedChecksum,
+                    `${copied.digest}  ${entry.asset}\n`,
+                  ),
+                  stagedChecksum,
+                );
+              },
+            ),
+          );
+        }
+      },
+    );
+  });
+
+  return true;
 }
 
 export function verifyRunnerArchitecture(
@@ -672,7 +975,7 @@ export function assertRemoteMain(commit, remote = "origin") {
 }
 
 export function assertReleaseTagTarget(tag, commit, remote = "origin") {
-  if (!/^\d{2}\.(0|[1-9]\d*)$/.test(tag)) {
+  if (parseReleaseTag(tag)?.tag !== tag) {
     fail(`Release tag is invalid: "${tag}".`);
   }
   if (!/^[0-9a-f]{40}$/i.test(commit)) {
@@ -695,7 +998,7 @@ export function validateReleaseMetadata(
   expectedCommit,
   expectedState,
 ) {
-  if (!/^\d{2}\.(0|[1-9]\d*)$/.test(expectedTag)) {
+  if (parseReleaseTag(expectedTag)?.tag !== expectedTag) {
     fail(`Release tag is invalid: "${expectedTag}".`);
   }
   if (!/^[0-9a-f]{40}$/i.test(expectedCommit)) {
@@ -740,9 +1043,8 @@ export function validateReleaseMetadata(
 }
 
 function existingYearTagForCommit(year, commit) {
-  const pattern = new RegExp(`^${year}\\.(0|[1-9]\\d*)$`);
   const matches = allTags().filter(
-    (tag) => pattern.test(tag) && tagCommit(tag) === commit,
+    (tag) => parseReleaseTag(tag)?.year === year && tagCommit(tag) === commit,
   );
   if (matches.length > 1) {
     fail(`Commit ${commit} already has multiple ${year}.N release tags.`);
@@ -756,7 +1058,7 @@ export function reserveReleaseTag(commit, year, remote = "origin") {
       `Release commit must be a full 40-character SHA; received "${commit}".`,
     );
   }
-  if (!/^\d{2}$/.test(year)) {
+  if (parseReleaseTag(`${year}.0`)?.year !== year) {
     fail(`Release year must contain exactly two digits; received "${year}".`);
   }
 
@@ -814,7 +1116,7 @@ export function cleanupReservedTag(commit, tag, created, remote = "origin") {
       `Release commit must be a full 40-character SHA; received "${commit}".`,
     );
   }
-  if (!/^\d{2}\.(0|[1-9]\d*)$/.test(tag)) {
+  if (parseReleaseTag(tag)?.tag !== tag) {
     fail(`Release tag is invalid: "${tag}".`);
   }
 

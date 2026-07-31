@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
+import fs, {
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -88,6 +90,18 @@ function runFailure(command, arguments_, cwd) {
   return `${result.stderr}\n${result.stdout}`;
 }
 
+function withPatchedFs(name, replacement, operation) {
+  const original = fs[name];
+  fs[name] = (...arguments_) => replacement(original, ...arguments_);
+  syncBuiltinESMExports();
+  try {
+    return operation();
+  } finally {
+    fs[name] = original;
+    syncBuiltinESMExports();
+  }
+}
+
 function writeReleaseAssets(root) {
   for (const { asset } of RELEASE_MATRIX) {
     const contents = `native-${asset}`;
@@ -135,6 +149,37 @@ function writeExecutable(path, format, arch) {
   assert.fail(`Unsupported test executable format: ${format}`);
 }
 
+function assertOutputParentSwapRejected(linkType) {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-output-swap-"));
+  try {
+    const bundle = join(root, "bundle");
+    const parent = join(root, "parent");
+    const outside = join(root, "outside");
+    const output = join(parent, "output");
+    for (const path of [bundle, parent, outside]) mkdirSync(path);
+    writeFileSync(
+      join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage"),
+      "trusted",
+    );
+    const swapParent = (original, prefix, ...arguments_) => {
+      renameSync(parent, join(root, "parked"));
+      symlinkSync(outside, parent, linkType);
+      return original(prefix, ...arguments_);
+    };
+    assert.throws(
+      () =>
+        withPatchedFs("mkdtempSync", swapParent, () =>
+          stageNativeAsset(bundle, "linux", "x64", output),
+        ),
+      /link or reparse point|path identity changed/,
+    );
+    assert.equal(fs.existsSync(output), false);
+    assert.deepEqual(readdirSync(outside), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test("release matrix contains the six required native runner/target pairs", () => {
   assert.equal(assertMatrixContract(), true);
   assert.deepEqual(
@@ -172,7 +217,7 @@ test("next release tag is strict and incremental within the requested year", () 
   assert.equal(nextReleaseTag("26", []), "26.1");
   assert.equal(
     nextReleaseTag("26", [
-      "25.99",
+      "25.9007199254740992",
       "26.1",
       "refs/tags/26.2",
       "26.4",
@@ -186,6 +231,39 @@ test("next release tag is strict and incremental within the requested year", () 
   assert.throws(
     () => nextReleaseTag("26", [`26.${Number.MAX_SAFE_INTEGER}`]),
     /cannot be incremented safely/,
+  );
+});
+
+test("release tags treat hostile CLI text as data", () => {
+  const hostileTags = (
+    "26.(a+)+$|26.[1-9]|26.４|２６.4|26.4 | 26.4|26.4\n26.99|" +
+    "26.4.1|26.+4|26.-4|26.4e1"
+  ).split("|");
+  assert.equal(nextReleaseTag("26", ["26.4", ...hostileTags]), "26.5");
+  assert.equal(
+    run(process.execPath, [
+      RELEASE_CONTRACT_SCRIPT,
+      "next-tag",
+      "26",
+      "26.4",
+      ...hostileTags,
+    ]),
+    "26.5",
+  );
+  for (const year of [".*", "2[", "\\d", "２６", "26\n", " 26"]) {
+    assert.match(
+      runFailure(process.execPath, [
+        RELEASE_CONTRACT_SCRIPT,
+        "next-tag",
+        year,
+        "26.4",
+      ]),
+      /exactly two digits/,
+    );
+  }
+  assert.equal(
+    readFileSync(RELEASE_CONTRACT_SCRIPT, "utf8").includes("new RegExp"),
+    false,
   );
 });
 
@@ -276,7 +354,7 @@ test("native staging renames one real bundle and writes its checksum", () => {
   const root = mkdtempSync(join(tmpdir(), "better-cloudflare-release-"));
   try {
     const bundleRoot = join(root, "bundle", "appimage");
-    const output = join(root, "output");
+    const output = join(root, "release-assets", "linux-x64");
     mkdirSync(bundleRoot, { recursive: true });
     const source = join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage");
     writeFileSync(source, "native-appimage");
@@ -298,33 +376,127 @@ test("native staging renames one real bundle and writes its checksum", () => {
   }
 });
 
-test("native staging refuses a junction that escapes its output directory", () => {
-  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-junction-"));
+test("native staging rejects an open-time parent junction swap", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-open-race-"));
   try {
-    const bundleRoot = join(root, "bundle", "appimage");
+    const bundle = join(root, "bundle");
     const outside = join(root, "outside");
-    const output = join(root, "output");
-    mkdirSync(bundleRoot, { recursive: true });
-    mkdirSync(outside);
-    writeFileSync(
-      join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage"),
-      "native-appimage",
-    );
-    symlinkSync(
-      outside,
-      output,
-      process.platform === "win32" ? "junction" : "dir",
-    );
-
+    const out = join(root, "output");
+    for (const path of [bundle, outside]) mkdirSync(path);
+    const source = join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage");
+    writeFileSync(source, "trusted");
+    writeFileSync(join(outside, basename(source)), "attacker");
+    let swapped = false;
+    const swapParent = (original, path, ...arguments_) => {
+      if (!swapped && resolve(String(path)) === resolve(source)) {
+        renameSync(bundle, join(root, "parked"));
+        symlinkSync(
+          outside,
+          bundle,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        swapped = true;
+      }
+      return original(path, ...arguments_);
+    };
+    const stage = () => stageNativeAsset(bundle, "linux", "x64", out);
     assert.throws(
-      () => stageNativeAsset(bundleRoot, "linux", "x64", output),
-      /must be a real directory, not a symlink/,
+      () => withPatchedFs("openSync", swapParent, stage),
+      /path (identity )?changed/,
     );
-    assert.deepEqual(readdirSync(outside), []);
+    assert.equal(fs.existsSync(out), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("staging rejects every copy and identity fault without leftovers", () => {
+  const mutations =
+    "copy checksum rename truncation growth zero-write " +
+    "asset-identity checksum-identity byte-mismatch";
+  for (const mutation of mutations.split(" ")) {
+    const root = mkdtempSync(join(tmpdir(), `better-cloudflare-${mutation}-`));
+    try {
+      const bundle = join(root, "bundle");
+      const out = join(root, "output");
+      const source = join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage");
+      mkdirSync(bundle);
+      writeFileSync(source, "trusted");
+      let calls = 0;
+      const inject = (original, ...arguments_) => {
+        calls += 1;
+        if (mutation === "rename") {
+          throw new Error("injected publish failure");
+        }
+        if (mutation === "truncation") {
+          if (calls === 1) fs.truncateSync(source, 0);
+          return original(...arguments_);
+        }
+        if (
+          (mutation === "copy" && calls === 1) ||
+          (mutation === "checksum" && calls === 2)
+        ) {
+          throw new Error(`injected ${mutation} failure`);
+        }
+        if (mutation === "zero-write" && calls === 1) return 0;
+        if (mutation === "byte-mismatch" && calls === 1) {
+          const [file, , , length, position] = arguments_;
+          return original(
+            file,
+            Buffer.alloc(length, 0x78),
+            offset,
+            length,
+            position,
+          );
+        }
+        const count = original(...arguments_);
+        if (mutation === "growth" && calls === 1)
+          fs.appendFileSync(source, "changed");
+        const identityWrite =
+          (mutation === "asset-identity" && calls === 1) ||
+          (mutation === "checksum-identity" && calls === 2);
+        if (identityWrite) {
+          const stageName = readdirSync(root).find((name) =>
+            name.startsWith(".output.staging-"),
+          );
+          const suffix = mutation === "asset-identity" ? "" : ".sha256";
+          const name = `better-cloudflare-linux-x64.AppImage${suffix}`;
+          const pathname = join(root, stageName, name);
+          renameSync(pathname, `${pathname}.replaced`);
+          writeFileSync(pathname, "attacker");
+        }
+        return count;
+      };
+      const stage = () => stageNativeAsset(bundle, "linux", "x64", out);
+      const functionName =
+        mutation === "rename"
+          ? "renameSync"
+          : mutation === "truncation"
+            ? "readSync"
+            : "writeSync";
+      assert.throws(() => withPatchedFs(functionName, inject, stage));
+      assert.equal(fs.existsSync(out), false);
+      assert.equal(
+        readdirSync(root).some((name) => name.startsWith(".output.staging-")),
+        false,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test(
+  "Windows output-parent junction swap is rejected and cleaned",
+  { skip: process.platform === "win32" ? false : "Windows junction test" },
+  () => assertOutputParentSwapRejected("junction"),
+);
+
+test(
+  "POSIX output-parent symlink swap is rejected and cleaned",
+  { skip: process.platform === "win32" ? "POSIX symlink test" : false },
+  () => assertOutputParentSwapRejected("dir"),
+);
 
 test("aggregate validation fails on missing assets and verifies all checksums", () => {
   const root = mkdtempSync(join(tmpdir(), "better-cloudflare-assets-"));
@@ -336,6 +508,36 @@ test("aggregate validation fails on missing assets and verifies all checksums", 
 
     rmSync(join(root, "better-cloudflare-windows-arm64-setup.exe.sha256"));
     assert.throws(() => validateReleaseAssets(root), /Missing:/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release validation rejects a symlinked checksum", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-symlink-"));
+  try {
+    const assets = join(root, "assets");
+    mkdirSync(assets);
+    writeReleaseAssets(assets);
+    const checksum = join(
+      assets,
+      "better-cloudflare-linux-x64.AppImage.sha256",
+    );
+    rmSync(checksum);
+    if (process.platform === "win32") {
+      const outside = join(root, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "checksum"), "outside");
+      symlinkSync(outside, checksum, "junction");
+    } else {
+      const outside = join(root, "outside.sha256");
+      writeFileSync(outside, "outside");
+      symlinkSync(outside, checksum, "file");
+    }
+    assert.throws(
+      () => validateReleaseAssets(assets),
+      /must contain files only/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
