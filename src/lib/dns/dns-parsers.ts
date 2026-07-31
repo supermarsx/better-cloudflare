@@ -252,14 +252,27 @@ const splitNaptrTokens = (input: string): string[] | null => {
       if (/^[0-9]{3}$/u.test(decimalEscape)) {
         const octet = Number.parseInt(decimalEscape, 10);
         if (octet > 255) return null;
-        if (!append(String.fromCharCode(octet))) return null;
+        const escapedValue =
+          tokens.length === NAPTR_FIELD_COUNT - 1
+            ? `\\${decimalEscape}`
+            : String.fromCharCode(octet);
+        if (!append(escapedValue)) return null;
         tokenStarted = true;
         index += 3;
         continue;
       }
 
       index++;
-      if (!append(input[index] ?? "")) return null;
+      const escapedCharacter = input[index] ?? "";
+      if (
+        !append(
+          tokens.length === NAPTR_FIELD_COUNT - 1
+            ? `\\${escapedCharacter}`
+            : escapedCharacter,
+        )
+      ) {
+        return null;
+      }
       tokenStarted = true;
       continue;
     }
@@ -282,9 +295,10 @@ export const parseNAPTR = (content?: string) => {
   if (!content) return emptyNAPTR();
   const input = String(content);
   if (input.length > MAX_NAPTR_INPUT_LENGTH) return emptyNAPTR();
-  const tokens = splitNaptrTokens(input.trim());
+  const tokens = splitNaptrTokens(input);
   if (!tokens || tokens.length !== NAPTR_FIELD_COUNT) return emptyNAPTR();
   const [order, preference, flags, service, regexp, replacement] = tokens;
+  if (serializeNaptrReplacement(replacement) === null) return emptyNAPTR();
   return {
     order: Number(order),
     preference: Number(preference),
@@ -328,21 +342,46 @@ const serializeNaptrCharacterString = (value?: string): string | null => {
   return needsQuotes ? `"${serialized}"` : serialized;
 };
 
-const serializeNaptrReplacement = (value?: string): string | null => {
+function serializeNaptrReplacement(value?: string): string | null {
   const replacement = value ?? "";
   if (replacement.length > MAX_NAPTR_TOKEN_LENGTH) return null;
-  for (const character of replacement) {
+  let serialized = "";
+  for (let index = 0; index < replacement.length; index++) {
+    const character = replacement[index] ?? "";
+    if (character === "\\") {
+      if (index + 1 >= replacement.length) return null;
+      const decimalEscape = replacement.slice(index + 1, index + 4);
+      if (/^[0-9]{3}$/u.test(decimalEscape)) {
+        if (Number.parseInt(decimalEscape, 10) > 255) return null;
+        serialized += `\\${decimalEscape}`;
+        index += 3;
+        continue;
+      }
+
+      const escapedCharacter = replacement[index + 1] ?? "";
+      if (
+        /^[0-9]$/u.test(escapedCharacter) ||
+        isUnsafeRawControl(escapedCharacter) ||
+        escapedCharacter === "\u2028" ||
+        escapedCharacter === "\u2029"
+      ) {
+        return null;
+      }
+      serialized += `\\${escapedCharacter}`;
+      index++;
+      continue;
+    }
     if (
       /\s/u.test(character) ||
       isUnsafeRawControl(character) ||
-      character === '"' ||
-      character === "\\"
+      character === '"'
     ) {
       return null;
     }
+    serialized += character;
   }
-  return replacement;
-};
+  return serialized;
+}
 
 export const composeNAPTR = (
   o?: number,
