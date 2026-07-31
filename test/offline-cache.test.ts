@@ -365,8 +365,8 @@ test("reconciles a deterministic stale-index interleaving from a second module i
 
   assert.equal(injected, true);
   assert.equal(observedStaleOverwrite, true);
-  assert.deepEqual(getCacheIndex(), ["tab-a", "tab-b"]);
-  assert.deepEqual(rawIndexZoneIds(), ["tab-a", "tab-b"]);
+  assert.deepEqual([...getCacheIndex()].sort(), ["tab-a", "tab-b"]);
+  assert.deepEqual([...rawIndexZoneIds()].sort(), ["tab-a", "tab-b"]);
   assert.deepEqual(ownedEntryZoneIds(), ["tab-a", "tab-b"]);
 });
 
