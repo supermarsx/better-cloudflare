@@ -60,15 +60,12 @@ const SUPPORT_WORKFLOWS = ["format.yml", "lint.yml", "test-package.yml"]
   .join("\n")
   .replaceAll("\r\n", "\n");
 
-function workflowStep(name) {
+function workflowStep(name, workflow = AUTOPUBLISH_WORKFLOW) {
   const marker = `      - name: ${name}\n`;
-  const start = AUTOPUBLISH_WORKFLOW.indexOf(marker);
+  const start = workflow.indexOf(marker);
   assert.notEqual(start, -1, `Missing workflow step: ${name}`);
-  const next = AUTOPUBLISH_WORKFLOW.indexOf(
-    "\n      - name: ",
-    start + marker.length,
-  );
-  return AUTOPUBLISH_WORKFLOW.slice(start, next === -1 ? undefined : next);
+  const next = workflow.indexOf("\n      - name: ", start + marker.length);
+  return workflow.slice(start, next === -1 ? undefined : next);
 }
 
 function run(command, arguments_, cwd) {
@@ -751,9 +748,57 @@ test("security workflows pin external actions to immutable commits", () => {
   }
 });
 
-test("CodeQL caps both extraction and analysis resources", () => {
+test("Rust CodeQL analysis is preflight-gated with retained diagnostics", () => {
+  const setup = workflowStep(
+    "Install stable Rust with Clippy",
+    SECURITY_WORKFLOW,
+  );
+  const preflight = workflowStep(
+    "Check Rust workspace before analysis",
+    SECURITY_WORKFLOW,
+  );
+  const proof = workflowStep(
+    "Assert Rust preflight completion",
+    SECURITY_WORKFLOW,
+  );
+  const analyze = workflowStep("Analyze", SECURITY_WORKFLOW);
+  const upload = workflowStep(
+    "Upload Rust scan diagnostics",
+    SECURITY_WORKFLOW,
+  );
+  const rustAlways = /if: \$\{\{ matrix\.language == 'rust' && always\(\) \}\}/;
+
   assert.equal(SECURITY_WORKFLOW.match(/^\s+threads: 2$/gm)?.length, 2);
   assert.equal(SECURITY_WORKFLOW.match(/^\s+ram: 4096$/gm)?.length, 2);
+  assert.match(
+    SECURITY_WORKFLOW,
+    /TAURI_CONFIG: '\{"build":\{"frontendDist":"\.\.\/app"\}\}'/,
+  );
+  assert.match(setup, /rustup toolchain install 1\.97\.1 --profile minimal/);
+  assert.match(
+    preflight,
+    /cargo check --workspace --all-targets --locked --jobs 1/,
+  );
+  assert.match(preflight, /set -euo pipefail/);
+  assert.doesNotMatch(preflight, /continue-on-error/);
+  assert.ok(
+    preflight.indexOf("cargo check") <
+      preflight.indexOf("cargo-check.completed"),
+  );
+  assert.match(proof, rustAlways);
+  assert.match(proof, /steps\.rust_preflight\.outcome \}\}" = "success"/);
+  assert.match(proof, /cargo-check\.completed"\)" = "\$GITHUB_SHA"/);
+  assert.ok(
+    SECURITY_WORKFLOW.indexOf(preflight) < SECURITY_WORKFLOW.indexOf(proof),
+  );
+  assert.ok(
+    SECURITY_WORKFLOW.indexOf(proof) < SECURITY_WORKFLOW.indexOf(analyze),
+  );
+  assert.match(analyze, /output: \$\{\{ runner\.temp \}\}\/codeql-results/);
+  assert.match(upload, rustAlways);
+  assert.match(upload, /\$\{\{ runner\.temp \}\}\/rust-codeql\//);
+  assert.match(upload, /\$\{\{ runner\.temp \}\}\/codeql-results\/rust\.sarif/);
+  assert.match(upload, /retention-days: 7/);
 });
 
 test("bounded Node watchdog retains peak accounting after fast exit", () => {

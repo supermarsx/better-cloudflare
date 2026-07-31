@@ -67,6 +67,8 @@ jobs:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
     permissions:
       actions: read
       contents: read
@@ -82,6 +84,26 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install stable Rust with Clippy
+        if: matrix.language == 'rust'
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy
+          rustup default 1.97.1
+      - name: Install Linux Tauri dependencies
+        if: matrix.language == 'rust'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            xdg-utils
       - name: Initialize CodeQL
         uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
@@ -90,9 +112,36 @@ jobs:
           queries: security-extended
           threads: 2
           ram: 4096
+      - name: Check Rust workspace before analysis
+        if: matrix.language == 'rust'
+        id: rust_preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rust-codeql"
+          cargo check --workspace --all-targets --locked --jobs 1 2>&1 |
+            tee "$RUNNER_TEMP/rust-codeql/cargo-check.log"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/rust-codeql/cargo-check.completed"
+      - name: Assert Rust preflight completion
+        if: ${{ matrix.language == 'rust' && always() }}
+        shell: bash
+        run: |
+          test "${{ steps.rust_preflight.outcome }}" = "success"
+          test "$(cat "$RUNNER_TEMP/rust-codeql/cargo-check.completed")" = "$GITHUB_SHA"
       - name: Analyze
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           category: /language:${{ matrix.language }}
+          output: ${{ runner.temp }}/codeql-results
           threads: 2
           ram: 4096
+      - name: Upload Rust scan diagnostics
+        if: ${{ matrix.language == 'rust' && always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-codeql-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/rust-codeql/
+            ${{ runner.temp }}/codeql-results/rust.sarif
+          if-no-files-found: warn
+          retention-days: 7
