@@ -20,20 +20,61 @@ function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
 }
 
-function unescapeDnsQuotedString(value: string) {
-  return value.replace(/\\\\/g, "\\").replace(/\\"/g, '"');
+function parseDnsCharacterString(value: string) {
+  if (!value.startsWith('"')) return value;
+
+  let decoded = "";
+  for (let index = 1; index < value.length; index++) {
+    const character = value[index] ?? "";
+    if (character === '"') {
+      return value.slice(index + 1).trim() ? value : decoded;
+    }
+    if (character !== "\\") {
+      decoded += character;
+      continue;
+    }
+
+    if (index + 1 >= value.length) return value;
+    const decimalEscape = value.slice(index + 1, index + 4);
+    if (/^[0-9]{3}$/u.test(decimalEscape)) {
+      const octet = Number.parseInt(decimalEscape, 10);
+      if (octet <= 255) {
+        decoded += String.fromCharCode(octet);
+        index += 3;
+        continue;
+      }
+    }
+
+    decoded += value[index + 1] ?? "";
+    index++;
+  }
+
+  return value;
 }
 
-function escapeDnsQuotedString(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+function serializeDnsCharacterString(value: string) {
+  let serialized = '"';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (character === "\\") {
+      serialized += "\\\\";
+    } else if (character === '"') {
+      serialized += '\\"';
+    } else if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      serialized += `\\${codePoint.toString(10).padStart(3, "0")}`;
+    } else {
+      serialized += character;
+    }
+  }
+  return `${serialized}"`;
 }
 
-function parseCAAContent(value: string | undefined) {
+export function parseCAAContent(value: string | undefined) {
   const raw = (value ?? "").trim();
   if (!raw) {
     return { flags: undefined as number | undefined, tag: "", value: "" };
   }
-  const m = raw.match(/^\s*(\d{1,3})\s+([A-Za-z0-9-]+)\s+(.*)\s*$/);
+  const m = raw.match(/^(\d{1,3})[\t ]+([A-Za-z0-9-]+)[\t ]+([\s\S]+)$/u);
   if (!m) {
     return { flags: undefined as number | undefined, tag: "", value: raw };
   }
@@ -41,10 +82,7 @@ function parseCAAContent(value: string | undefined) {
   const tag = (m[2] ?? "").trim().toLowerCase();
   const rest = (m[3] ?? "").trim();
   const flagsNum = Number.parseInt(flagsRaw, 10);
-  let v = rest;
-  if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
-    v = unescapeDnsQuotedString(v.slice(1, -1));
-  }
+  const v = parseDnsCharacterString(rest);
   return {
     flags: Number.isNaN(flagsNum) ? undefined : flagsNum,
     tag,
@@ -52,15 +90,15 @@ function parseCAAContent(value: string | undefined) {
   };
 }
 
-function composeCAA(fields: {
+export function composeCAA(fields: {
   flags: number | undefined;
   tag: string;
   value: string;
 }) {
   const flags = fields.flags ?? 0;
   const tag = (fields.tag ?? "").trim().toLowerCase();
-  const v = `"${escapeDnsQuotedString((fields.value ?? "").trim())}"`;
-  return `${flags} ${tag} ${v}`.replace(/\s+/g, " ").trim();
+  const v = serializeDnsCharacterString((fields.value ?? "").trim());
+  return `${flags} ${tag} ${v}`.trim();
 }
 
 export function CaaBuilder({
@@ -96,7 +134,6 @@ export function CaaBuilder({
       }
     }
     setCaaValue(parsed.value ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {
@@ -222,7 +259,6 @@ export function CaaBuilder({
         if (emailProblem) push(issues, `CAA: iodef mailto ${emailProblem}`);
       } else {
         try {
-          // eslint-disable-next-line no-new
           const u = new URL(v);
           if (u.protocol !== "http:" && u.protocol !== "https:")
             push(issues, "CAA: iodef should be mailto:, http:, or https:.");
