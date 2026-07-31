@@ -83,7 +83,7 @@ function changedSourceFiles(): string[] {
     [
       "diff",
       "--name-only",
-      "--diff-filter=ACMRTUXB",
+      "--diff-filter=ACMRTUXBD",
       changedSourceBase(),
       "HEAD",
       "--",
@@ -225,10 +225,13 @@ function requireUnconditionalCommand(
   assert.equal(step.condition, undefined, `${name} must be unconditional`);
 }
 
-function assertChangedSourceGateCoverage(fixture: SourceGateFixture): void {
+function assertChangedSourceGateCoverage(
+  fixture: SourceGateFixture,
+  changedSources: string[],
+): void {
   let hasTypeScript = false;
   let hasCss = false;
-  for (const path of fixture.sources) {
+  for (const path of changedSources) {
     assert.ok(
       path.startsWith("src/"),
       `Changed source is outside src: ${path}`,
@@ -340,28 +343,76 @@ test("package scripts expose truthful lint and reliability gates", () => {
 
 test("changed source types have unconditional CI coverage", () => {
   const fixture = sourceGateFixture();
-  assertChangedSourceGateCoverage(fixture);
+  const syntheticTsSource = ["src/example.ts"];
+  const syntheticCssSource = ["src/example.css"];
+  const syntheticDeletedTsSource = ["src/deleted/path.ts"];
+  const syntheticDeletedCssSource = ["src/deleted/path.css"];
+  const syntheticUnknownSource = ["src/unknown.mjs"];
+
+  assertChangedSourceGateCoverage(fixture, fixture.sources);
+  assertChangedSourceGateCoverage(
+    { ...fixture, sources: syntheticTsSource },
+    syntheticTsSource,
+  );
+  assertChangedSourceGateCoverage(
+    { ...fixture, sources: syntheticDeletedTsSource },
+    syntheticDeletedTsSource,
+  );
+  assertChangedSourceGateCoverage(
+    { ...fixture, sources: syntheticCssSource },
+    syntheticCssSource,
+  );
+  assertChangedSourceGateCoverage(
+    { ...fixture, sources: syntheticDeletedCssSource },
+    syntheticDeletedCssSource,
+  );
   const conditional = (command: string): ParsedRunStep => ({
     command,
     condition: "success()",
   });
-  const failures: Array<[Partial<SourceGateFixture>, RegExp]> = [
-    [{ typecheck: undefined }, /Typecheck step is missing/],
-    [{ typecheck: conditional("npm run typecheck") }, /unconditional/],
-    [{ format: undefined }, /Format step is missing/],
-    [{ format: conditional("npm run format:check") }, /unconditional/],
+  const failures: Array<
+    [readonly string[], Partial<SourceGateFixture>, RegExp]
+  > = [
+    [syntheticTsSource, { typecheck: undefined }, /Typecheck step is missing/],
     [
+      syntheticTsSource,
+      { typecheck: conditional("npm run typecheck") },
+      /must be unconditional/,
+    ],
+    [
+      syntheticTsSource,
+      { lint: conditional("npm run lint") },
+      /must be unconditional/,
+    ],
+    [syntheticCssSource, { format: undefined }, /Format step is missing/],
+    [
+      syntheticCssSource,
+      { format: conditional("npm run format:check") },
+      /must be unconditional/,
+    ],
+    [
+      syntheticDeletedCssSource,
+      { format: conditional("npm run format:check") },
+      /must be unconditional/,
+    ],
+    [
+      syntheticCssSource,
       { tests: fixture.tests.filter((path) => path !== cssContractTest) },
       /CSS contract test is missing/,
     ],
     [
-      { sources: [...fixture.sources, "src/unknown.mjs"] },
+      syntheticUnknownSource,
+      { sources: [...syntheticUnknownSource] },
       /Unsupported changed source extension/,
     ],
   ];
-  for (const [mutation, expected] of failures) {
+  for (const [changedSources, mutation, expected] of failures) {
     assert.throws(
-      () => assertChangedSourceGateCoverage({ ...fixture, ...mutation }),
+      () =>
+        assertChangedSourceGateCoverage(
+          { ...fixture, ...mutation, sources: changedSources },
+          changedSources,
+        ),
       expected,
     );
   }
