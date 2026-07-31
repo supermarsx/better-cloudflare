@@ -132,70 +132,114 @@ async function invoke<T>(
 }
 
 type PreferenceFields = Record<string, unknown>;
+const PREFERENCE_FIELD_LIMIT = 64;
+const PREFERENCE_BYTE_LIMIT = 1024 * 1024;
 
-export interface SerializedPreferenceWriter {
-  update(fields: PreferenceFields): Promise<void>;
-}
-
-/**
- * Coalesces fields queued in the same turn and serializes later batches. Each
- * batch re-reads the last committed native snapshot, so a slower older write
- * cannot overwrite a newer JS-side preference change.
- */
 export function createSerializedPreferenceWriter(
-  read: () => Promise<unknown>,
-  write: (preferences: PreferenceFields) => Promise<void>,
-): SerializedPreferenceWriter {
-  let pendingFields: PreferenceFields = {};
-  let pendingWaiters: Array<{
+  write: (fields: PreferenceFields) => Promise<void>,
+  options: { retryDelaysMs?: readonly number[] } = {},
+) {
+  type Batch = {
+    fields: PreferenceFields;
+    promise: Promise<void>;
     resolve: () => void;
     reject: (error: unknown) => void;
-  }> = [];
-  let drainPromise: Promise<void> | null = null;
+  };
+  const delays = (options.retryDelaysMs ?? [75, 250])
+    .slice(0, 2)
+    .map((delay) => Math.min(1000, Math.max(0, Math.round(delay))));
+  let pending: Batch | null = null;
+  let running = false;
+
+  const batch = (fields: PreferenceFields): Batch => {
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    return { fields, promise, resolve, reject };
+  };
 
   const drain = async () => {
-    while (pendingWaiters.length > 0) {
-      const fields = pendingFields;
-      const waiters = pendingWaiters;
-      pendingFields = {};
-      pendingWaiters = [];
-      try {
-        const current = await read();
-        const snapshot =
-          current && typeof current === "object"
-            ? (current as PreferenceFields)
-            : {};
-        await write({ ...snapshot, ...fields });
-        for (const waiter of waiters) waiter.resolve();
-      } catch (error) {
-        for (const waiter of waiters) waiter.reject(error);
+    while (pending) {
+      const current = pending;
+      pending = null;
+      let failure: unknown;
+      let succeeded = false;
+      for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        try {
+          await write(current.fields);
+          succeeded = true;
+          break;
+        } catch (error) {
+          failure = error;
+          if (attempt === delays.length) break;
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, delays[attempt]),
+          );
+        }
       }
+      if (succeeded) current.resolve();
+      else current.reject(failure);
     }
   };
 
-  const ensureDrain = () => {
-    if (drainPromise) return;
-    drainPromise = Promise.resolve()
-      .then(drain)
-      .finally(() => {
-        drainPromise = null;
-        if (pendingWaiters.length > 0) ensureDrain();
-      });
+  const start = () => {
+    if (running) return;
+    running = true;
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          await drain();
+        } finally {
+          running = false;
+          if (pending) start();
+        }
+      })();
+    });
   };
 
   return {
-    update(fields) {
-      Object.assign(pendingFields, fields);
-      const result = new Promise<void>((resolve, reject) => {
-        pendingWaiters.push({ resolve, reject });
-      });
-      ensureDrain();
-      return result;
+    update(fields: PreferenceFields) {
+      const merged = { ...(pending?.fields ?? {}), ...fields };
+      let json: string;
+      try {
+        json = JSON.stringify(merged);
+      } catch {
+        return Promise.reject(new Error("Preferences are not serializable."));
+      }
+      if (
+        Object.keys(merged).length > PREFERENCE_FIELD_LIMIT ||
+        new TextEncoder().encode(json).byteLength > PREFERENCE_BYTE_LIMIT
+      ) {
+        return Promise.reject(new Error("Preference queue limit exceeded."));
+      }
+      pending ??= batch(merged);
+      pending.fields = merged;
+      start();
+      return pending.promise;
     },
   };
 }
 
-let preferenceWriter: SerializedPreferenceWriter | undefined;
+export function createPreferenceFailureReporter(
+  report: (error: unknown) => void,
+  cooldownMs = 10_000,
+  now: () => number = Date.now,
+) {
+  let nextReport = 0;
+  return (error: unknown) => {
+    const current = now();
+    if (current < nextReport) return;
+    nextReport = current + Math.min(60_000, Math.max(0, cooldownMs));
+    report(error);
+  };
+}
+
+let preferenceWriter:
+  | ReturnType<typeof createSerializedPreferenceWriter>
+  | undefined;
 
 export interface TauriZone {
   id: string;
@@ -780,9 +824,8 @@ export class TauriClient {
   static async updatePreferenceFields(
     fields: Record<string, unknown>,
   ): Promise<void> {
-    preferenceWriter ??= createSerializedPreferenceWriter(
-      () => TauriClient.getPreferences(),
-      (preferences) => TauriClient.updatePreferences(preferences),
+    preferenceWriter ??= createSerializedPreferenceWriter((pendingFields) =>
+      TauriClient.updatePreferences(pendingFields),
     );
     return preferenceWriter.update(fields);
   }

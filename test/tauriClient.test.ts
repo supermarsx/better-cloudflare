@@ -3,6 +3,7 @@ import { test, afterEach } from "node:test";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 import {
+  createPreferenceFailureReporter,
   createSerializedPreferenceWriter,
   getTauriInvokeTimeoutMs,
   normalizeTauriInvokeError,
@@ -715,44 +716,62 @@ test("desktop invokes reject promptly on abort and suppress pre-aborted native w
   assert.equal(invocationCount, 1);
 });
 
-test("serializes reverse-ready preference writes and preserves the newest fields", async () => {
-  let stored: Record<string, unknown> = { retained: true };
+test("coalesces preference writes and preserves the newest fields", async () => {
   const firstWrite = deferred<void>();
-  const secondWrite = deferred<void>();
   const writes: Record<string, unknown>[] = [];
-  const writer = createSerializedPreferenceWriter(
-    async () => stored,
-    async (snapshot) => {
-      writes.push(snapshot);
-      const gate =
-        writes.length === 1 ? firstWrite.promise : secondWrite.promise;
-      await gate;
-      stored = snapshot;
-    },
-  );
+  const writer = createSerializedPreferenceWriter(async (fields) => {
+    writes.push(fields);
+    if (writes.length === 1) await firstWrite.promise;
+  });
 
   const older = writer.update({ selected_zone: "older" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(writes.length, 1);
 
-  const newer = writer.update({ selected_zone: "newer", page_size: 100 });
-  secondWrite.resolve(undefined);
-  await Promise.resolve();
-  assert.equal(
-    writes.length,
-    1,
-    "the newer native write cannot start before the older one settles",
-  );
-
-  firstWrite.resolve(undefined);
-  await older;
-  await newer;
-  assert.deepEqual(stored, {
-    retained: true,
+  const newer = writer.update({
     selected_zone: "newer",
     page_size: 100,
+    auto_refresh_interval: null,
   });
-  assert.equal(writes.length, 2);
+  const newest = writer.update({ page_size: 200 });
+  assert.equal(newer, newest);
+
+  firstWrite.resolve(undefined);
+  await Promise.all([older, newer, newest]);
+  assert.deepEqual(writes, [
+    { selected_zone: "older" },
+    {
+      selected_zone: "newer",
+      page_size: 200,
+      auto_refresh_interval: null,
+    },
+  ]);
+});
+
+test("bounds preference retries and diagnostic cooldown", async () => {
+  let attempts = 0;
+  const writer = createSerializedPreferenceWriter(
+    async () => {
+      attempts += 1;
+      throw new Error("locked");
+    },
+    { retryDelaysMs: [0, 0, 0] },
+  );
+  await assert.rejects(writer.update({ theme: "dark" }), /locked/);
+  assert.equal(attempts, 3);
+
+  let now = 100;
+  const reports: unknown[] = [];
+  const report = createPreferenceFailureReporter(
+    (error) => reports.push(error),
+    50,
+    () => now,
+  );
+  report("first");
+  report("duplicate");
+  now = 150;
+  report("next");
+  assert.deepEqual(reports, ["first", "next"]);
 });
 
 test("gives unknown native failures a diagnostic ID", () => {

@@ -56,7 +56,11 @@ import {
   X,
 } from "lucide-react";
 import { isDesktop } from "@/lib/environment";
-import { TauriClient, type McpServerStatus } from "@/lib/api/tauri-client";
+import {
+  createPreferenceFailureReporter,
+  TauriClient,
+  type McpServerStatus,
+} from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
@@ -112,6 +116,16 @@ import {
 
 function reportDnsManagerFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
+}
+
+const reportPreferenceFailure = createPreferenceFailureReporter((error) => {
+  reportDnsManagerFailure(error, "Persist desktop DNS preferences");
+});
+
+function persistDnsPreferenceFields(fields: Record<string, unknown>) {
+  void TauriClient.updatePreferenceFields(fields).catch(
+    reportPreferenceFailure,
+  );
 }
 
 function normalizeMcpToolIds(values: readonly unknown[]): string[] {
@@ -3288,7 +3302,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     if (isDesktop()) {
       void TauriClient.updatePreferenceFields({
         last_open_tabs: openTabIds,
-        last_active_tab: encoded || undefined,
+        last_active_tab: encoded || null,
         last_zone: activeTab?.kind === "zone" ? activeTab.zoneId : undefined,
       }).catch((error) => {
         reportDnsManagerFailure(error, "Persist desktop DNS tab state");
@@ -3332,13 +3346,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   useEffect(() => {
     if (!prefsReady) return;
     if (isDesktop()) {
-      void TauriClient.updatePreferenceFields({
-        auto_refresh_interval: autoRefreshInterval ?? undefined,
-      }).catch((error) => {
-        reportDnsManagerFailure(
-          error,
-          "Persist desktop DNS auto-refresh preference",
-        );
+      persistDnsPreferenceFields({
+        auto_refresh_interval: autoRefreshInterval ?? null,
       });
     } else {
       storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
@@ -3437,7 +3446,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
 
     if (isDesktop()) {
-      void TauriClient.updatePreferenceFields({
+      persistDnsPreferenceFields({
         default_per_page: globalPerPage,
         zone_per_page: zonePerPage,
         show_unsupported_record_types: showUnsupportedRecordTypes,
@@ -3485,8 +3494,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           ...sessionSettingsProfiles,
           [currentSessionId]: buildSessionSettingsProfile(),
         },
-      }).catch((error) => {
-        reportDnsManagerFailure(error, "Persist desktop DNS preferences");
       });
     }
   }, [

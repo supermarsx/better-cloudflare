@@ -284,7 +284,7 @@ fn default_algorithm() -> String {
 // ── Preferences ─────────────────────────────────────────────────────────────
 
 /// User preferences covering every feature area.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Preferences {
     pub vault_enabled: Option<bool>,
     pub auto_refresh_interval: Option<u32>,
@@ -304,6 +304,7 @@ pub struct Preferences {
     pub confirm_logout: Option<bool>,
     pub idle_logout_ms: Option<u64>,
     pub confirm_window_close: Option<bool>,
+    pub close_tab_on_middle_click: Option<bool>,
     pub loading_overlay_timeout_ms: Option<u32>,
     pub audit_export_default_documents: Option<bool>,
     pub confirm_clear_audit_logs: Option<bool>,
@@ -1089,17 +1090,29 @@ impl Storage {
 
     // ── Preferences ─────────────────────────────────────────────────────
 
-    pub async fn get_preferences(&self) -> Result<Preferences, StorageError> {
+    pub async fn get_legacy_preferences(&self) -> Result<Option<Preferences>, StorageError> {
         match self.get_secret("preferences").await {
-            Ok(json) => deserialize_json(&json, "invalid preferences"),
-            Err(StorageError::NotFound) => Ok(Preferences::default()),
+            Ok(json) => deserialize_json(&json, "invalid preferences").map(Some),
+            Err(StorageError::NotFound) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    pub async fn set_preferences(&self, prefs: &Preferences) -> Result<(), StorageError> {
+    pub async fn delete_legacy_preferences(&self) -> Result<(), StorageError> {
+        self.delete_secret("preferences").await
+    }
+
+    #[cfg(test)]
+    async fn set_preferences(&self, prefs: &Preferences) -> Result<(), StorageError> {
         let json = serialize_json(prefs)?;
         self.store_secret("preferences", &json).await
+    }
+
+    #[cfg(test)]
+    async fn get_preferences(&self) -> Result<Preferences, StorageError> {
+        self.get_legacy_preferences()
+            .await?
+            .ok_or(StorageError::NotFound)
     }
 }
 

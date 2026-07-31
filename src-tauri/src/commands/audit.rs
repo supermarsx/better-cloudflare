@@ -1,7 +1,9 @@
 use base64::Engine;
 use chrono::Utc;
+use serde_json::{Map, Value};
 use tauri::{AppHandle, State};
 
+use crate::app_config::AppConfigStore;
 use crate::storage::{Preferences, Storage};
 
 use super::{resolve_export_directory, serialize_audit_entries};
@@ -216,17 +218,31 @@ pub async fn clear_audit_entries(storage: State<'_, Storage>) -> Result<(), Stri
 // ─── Preferences ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn get_preferences(storage: State<'_, Storage>) -> Result<Preferences, String> {
-    storage.get_preferences().await.map_err(|e| e.to_string())
+pub async fn get_preferences(
+    config: State<'_, AppConfigStore>,
+    storage: State<'_, Storage>,
+) -> Result<Preferences, String> {
+    config
+        .get_preferences(
+            || storage.get_legacy_preferences(),
+            || storage.delete_legacy_preferences(),
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn update_preferences(
+    config: State<'_, AppConfigStore>,
     storage: State<'_, Storage>,
-    prefs: Preferences,
+    prefs: Map<String, Value>,
 ) -> Result<(), String> {
-    storage
-        .set_preferences(&prefs)
+    config
+        .update_preferences(
+            prefs,
+            || storage.get_legacy_preferences(),
+            || storage.delete_legacy_preferences(),
+        )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
 }

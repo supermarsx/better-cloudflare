@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai_commands;
+mod app_config;
 mod cloudflare_api;
 mod commands;
 mod crypto;
@@ -11,6 +12,7 @@ mod registrar_commands;
 mod session;
 mod storage;
 
+use crate::app_config::AppConfigStore;
 use crate::mcp_server::McpServerManager;
 use crate::passkey::PasskeyManager;
 use crate::session::SessionManager;
@@ -149,6 +151,10 @@ fn main() {
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            app.manage(AppConfigStore::new(app.path().app_data_dir()?));
+            Ok(())
+        })
         .manage(Storage::default())
         .manage(PasskeyManager)
         .manage(McpServerManager::default())

@@ -1036,10 +1036,7 @@ export function useLoginForm(
     setVaultEnabled: async (enabled: boolean) => {
       try {
         if (desktop) {
-          const prefs = await TauriClient.getPreferences();
-          const current = (prefs as Record<string, unknown>) ?? {};
-          await TauriClient.updatePreferences({
-            ...current,
+          await TauriClient.updatePreferenceFields({
             vault_enabled: enabled,
           });
         } else {
