@@ -194,56 +194,154 @@ export const parseSSHFP = (content?: string) => {
 export const composeSSHFP = (a?: number, f?: number, fp?: string) =>
   `${a ?? 0} ${f ?? 0} ${fp ?? ""}`;
 
-const splitNaptrTokens = (s: string) => {
+const MAX_NAPTR_INPUT_LENGTH = 16_384;
+const MAX_NAPTR_TOKEN_LENGTH = 4_096;
+const NAPTR_FIELD_COUNT = 6;
+
+const emptyNAPTR = () => ({
+  order: undefined,
+  preference: undefined,
+  flags: "",
+  service: "",
+  regexp: "",
+  replacement: "",
+});
+
+const isUnsafeRawControl = (character: string) => {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+};
+
+const splitNaptrTokens = (input: string): string[] | null => {
+  if (input.length > MAX_NAPTR_INPUT_LENGTH) return null;
+
   const tokens: string[] = [];
   let current = "";
   let inQuote = false;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === '"') {
+  let tokenStarted = false;
+
+  const append = (value: string) => {
+    current += value;
+    return current.length <= MAX_NAPTR_TOKEN_LENGTH;
+  };
+
+  const finishToken = () => {
+    if (!tokenStarted) return true;
+    if (tokens.length >= NAPTR_FIELD_COUNT) return false;
+    tokens.push(current);
+    current = "";
+    tokenStarted = false;
+    return true;
+  };
+
+  for (let index = 0; index < input.length; index++) {
+    const character = input[index] ?? "";
+    if (!inQuote && /\s/u.test(character)) {
+      if (!finishToken()) return null;
+      continue;
+    }
+    if (character === '"') {
       inQuote = !inQuote;
-      current += ch;
+      tokenStarted = true;
       continue;
     }
-    if (ch === " " && !inQuote) {
-      if (current.trim().length > 0) {
-        tokens.push(current.trim());
-        current = "";
+
+    if (character === "\\") {
+      if (index + 1 >= input.length) return null;
+      const decimalEscape = input.slice(index + 1, index + 4);
+      if (/^[0-9]{3}$/u.test(decimalEscape)) {
+        const octet = Number.parseInt(decimalEscape, 10);
+        if (octet > 255) return null;
+        if (!append(String.fromCharCode(octet))) return null;
+        tokenStarted = true;
+        index += 3;
+        continue;
       }
+
+      index++;
+      if (!append(input[index] ?? "")) return null;
+      tokenStarted = true;
       continue;
     }
-    current += ch;
+
+    if (
+      isUnsafeRawControl(character) ||
+      (inQuote && (character === "\u2028" || character === "\u2029"))
+    ) {
+      return null;
+    }
+    if (!append(character)) return null;
+    tokenStarted = true;
   }
-  if (current.trim().length > 0) tokens.push(current.trim());
+
+  if (inQuote || !finishToken()) return null;
   return tokens;
 };
 
 export const parseNAPTR = (content?: string) => {
-  if (!content)
-    return {
-      order: undefined,
-      preference: undefined,
-      flags: "",
-      service: "",
-      regexp: "",
-      replacement: "",
-    };
-  const tokens = splitNaptrTokens(String(content).trim());
+  if (!content) return emptyNAPTR();
+  const input = String(content);
+  if (input.length > MAX_NAPTR_INPUT_LENGTH) return emptyNAPTR();
+  const tokens = splitNaptrTokens(input.trim());
+  if (!tokens || tokens.length !== NAPTR_FIELD_COUNT) return emptyNAPTR();
   const [order, preference, flags, service, regexp, replacement] = tokens;
   return {
     order: Number(order),
     preference: Number(preference),
-    flags: flags?.replace(/^"|"$/g, ""),
+    flags,
     service,
-    regexp: regexp?.replace(/^"|"$/g, ""),
+    regexp,
     replacement,
   };
 };
 
-const quoteIfNeeded = (s?: string) => {
-  if (!s) return "";
-  if (/\s/.test(s) || /"/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
-  return s;
+const serializeNaptrCharacterString = (value?: string): string | null => {
+  const input = value ?? "";
+  if (input.length > MAX_NAPTR_TOKEN_LENGTH) return null;
+  if (!input) return "";
+
+  let serialized = "";
+  let needsQuotes = false;
+  for (const character of input) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (character === "\\") {
+      serialized += "\\\\";
+      needsQuotes = true;
+    } else if (character === '"') {
+      serialized += '\\"';
+      needsQuotes = true;
+    } else if (isUnsafeRawControl(character)) {
+      serialized += `\\${codePoint.toString(10).padStart(3, "0")}`;
+      needsQuotes = true;
+    } else if (/\s/u.test(character)) {
+      if (character !== " ") {
+        if (codePoint > 255) return null;
+        serialized += `\\${codePoint.toString(10).padStart(3, "0")}`;
+      } else {
+        serialized += character;
+      }
+      needsQuotes = true;
+    } else {
+      serialized += character;
+    }
+  }
+  return needsQuotes ? `"${serialized}"` : serialized;
+};
+
+const serializeNaptrReplacement = (value?: string): string | null => {
+  const replacement = value ?? "";
+  if (replacement.length > MAX_NAPTR_TOKEN_LENGTH) return null;
+  for (const character of replacement) {
+    if (
+      /\s/u.test(character) ||
+      isUnsafeRawControl(character) ||
+      character === '"' ||
+      character === "\\"
+    ) {
+      return null;
+    }
+  }
+  return replacement;
 };
 
 export const composeNAPTR = (
@@ -253,5 +351,18 @@ export const composeNAPTR = (
   s?: string,
   r?: string,
   rep?: string,
-) =>
-  `${o ?? 0} ${p ?? 0} ${f ?? ""} ${s ?? ""} ${quoteIfNeeded(r)} ${rep ?? ""}`;
+) => {
+  const flags = serializeNaptrCharacterString(f);
+  const service = serializeNaptrCharacterString(s);
+  const regexp = serializeNaptrCharacterString(r);
+  const replacement = serializeNaptrReplacement(rep);
+  if (
+    flags === null ||
+    service === null ||
+    regexp === null ||
+    replacement === null
+  ) {
+    return "";
+  }
+  return `${o ?? 0} ${p ?? 0} ${flags} ${service} ${regexp} ${replacement}`;
+};
