@@ -17,7 +17,6 @@ export const legacySourceLintDebt = [
   "src/lib/audit/audit.ts",
   "src/lib/audit/domain-audit.ts",
   "src/lib/auth/credential-store.ts",
-  "src/lib/auth/crypto.ts",
   "src/lib/dns/spf.ts",
 ];
 

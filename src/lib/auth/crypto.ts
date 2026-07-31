@@ -36,6 +36,17 @@ const GCM_IV_BYTES = 12;
 const CBC_IV_BYTES = 16;
 const AUTH_TAG_BYTES = 16;
 
+interface NodeCryptoModule {
+  webcrypto?: typeof globalThis.crypto;
+}
+
+type NodeCryptoRequire = (moduleName: "crypto") => NodeCryptoModule | undefined;
+
+interface CryptoRuntimeGlobal {
+  crypto?: typeof globalThis.crypto;
+  require?: NodeCryptoRequire;
+}
+
 function isKnownAlgorithm(value: unknown): value is EncryptionAlgorithm {
   const knownAlgorithms: readonly string[] = [
     ...ACTIVE_ENCRYPTION_ALGORITHMS,
@@ -184,19 +195,20 @@ export class CryptoManager {
   // Node.js. If neither is available, throw a helpful error when crypto is
   // actually needed.
   private getWebCrypto(): typeof globalThis.crypto | undefined {
+    const runtimeGlobal: CryptoRuntimeGlobal = globalThis;
+
     // Use the global Web Crypto API when available (browser / modern Node.js)
-    if ((globalThis as any).crypto) return (globalThis as any).crypto;
+    if (runtimeGlobal.crypto) return runtimeGlobal.crypto;
 
     // Attempt to load Node.js built-in crypto.webcrypto without eval
     try {
       const maybeRequire =
-        typeof (globalThis as any).require === "function"
-          ? (globalThis as any).require
+        typeof runtimeGlobal.require === "function"
+          ? runtimeGlobal.require
           : undefined;
       if (maybeRequire) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const nodeCrypto = maybeRequire("crypto");
-        return nodeCrypto?.webcrypto as typeof globalThis.crypto | undefined;
+        return nodeCrypto?.webcrypto;
       }
       return undefined;
     } catch {
