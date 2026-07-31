@@ -11,7 +11,7 @@ use aes_gcm::{
 };
 use base64::Engine;
 use pbkdf2::pbkdf2_hmac;
-use rand::Rng;
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
@@ -169,12 +169,22 @@ impl CryptoManager {
     /// Returns a versioned base64 envelope containing
     /// `salt (16) || nonce (12) || ciphertext || authentication tag`.
     pub fn encrypt(&self, data: &str, password: &str) -> Result<String, CryptoError> {
+        let mut rng = OsRng;
+        self.encrypt_with_rng(data, password, &mut rng)
+    }
+
+    fn encrypt_with_rng<R: CryptoRng + RngCore>(
+        &self,
+        data: &str,
+        password: &str,
+        rng: &mut R,
+    ) -> Result<String, CryptoError> {
         self.config.clone().validated_for_encryption()?;
         validate_bounded_input("plaintext", data.as_bytes(), MAX_PLAINTEXT_BYTES)?;
         validate_password(password)?;
 
         let mut salt = [0u8; SALT_BYTES];
-        OsRng.fill(&mut salt);
+        rng.fill_bytes(&mut salt);
 
         let mut key = Zeroizing::new([0u8; AES_256_KEY_LENGTH_BYTES]);
         pbkdf2_hmac::<Sha256>(
@@ -185,7 +195,7 @@ impl CryptoManager {
         );
 
         let mut nonce_bytes = [0u8; NONCE_BYTES];
-        OsRng.fill(&mut nonce_bytes);
+        rng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&key[..])
@@ -276,13 +286,19 @@ impl CryptoManager {
     /// elapsed time in **milliseconds**.
     pub fn benchmark(&self, iterations: u32) -> Result<f64, CryptoError> {
         validate_benchmark_iterations(iterations)?;
+
+        let mut password_bytes = Zeroizing::new([0u8; AES_256_KEY_LENGTH_BYTES]);
+        OsRng.fill_bytes(&mut password_bytes[..]);
+        let password =
+            Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&password_bytes[..]));
+
         let start = std::time::Instant::now();
 
         let mut config = self.config.clone();
         config.iterations = iterations;
         let temp_crypto = CryptoManager::new_for_encryption(config)?;
 
-        temp_crypto.encrypt("benchmark_test_data", "benchmark_password")?;
+        temp_crypto.encrypt("benchmark_test_data", password.as_str())?;
 
         Ok(start.elapsed().as_secs_f64() * 1000.0)
     }
@@ -314,6 +330,50 @@ fn validate_password(password: &str) -> Result<(), CryptoError> {
 mod tests {
     use super::*;
 
+    struct DeterministicCryptoRng {
+        next: u8,
+    }
+
+    impl DeterministicCryptoRng {
+        fn new(next: u8) -> Self {
+            Self { next }
+        }
+    }
+
+    impl RngCore for DeterministicCryptoRng {
+        fn next_u32(&mut self) -> u32 {
+            let mut bytes = [0u8; 4];
+            self.fill_bytes(&mut bytes);
+            u32::from_le_bytes(bytes)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut bytes = [0u8; 8];
+            self.fill_bytes(&mut bytes);
+            u64::from_le_bytes(bytes)
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            for byte in dest {
+                *byte = self.next;
+                self.next = self.next.wrapping_add(1);
+            }
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    impl CryptoRng for DeterministicCryptoRng {}
+
+    fn decode_versioned(encrypted: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(encrypted.strip_prefix(ENVELOPE_PREFIX).unwrap())
+            .unwrap()
+    }
+
     #[test]
     fn test_encrypt_decrypt() {
         let crypto = CryptoManager::default();
@@ -338,6 +398,68 @@ mod tests {
         let result = crypto.decrypt(&encrypted, wrong_password);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn encryption_consumes_fresh_nonce_material_for_every_envelope() {
+        let crypto = CryptoManager::default();
+        let mut rng = DeterministicCryptoRng::new(0);
+
+        let first = decode_versioned(
+            &crypto
+                .encrypt_with_rng("same data", "same password", &mut rng)
+                .unwrap(),
+        );
+        let second = decode_versioned(
+            &crypto
+                .encrypt_with_rng("same data", "same password", &mut rng)
+                .unwrap(),
+        );
+
+        let first_random_material = &first[..SALT_BYTES + NONCE_BYTES];
+        let second_random_material = &second[..SALT_BYTES + NONCE_BYTES];
+        assert_eq!(
+            first_random_material,
+            (0..(SALT_BYTES + NONCE_BYTES))
+                .map(|byte| byte as u8)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            second_random_material,
+            ((SALT_BYTES + NONCE_BYTES)..(2 * (SALT_BYTES + NONCE_BYTES)))
+                .map(|byte| byte as u8)
+                .collect::<Vec<_>>()
+        );
+        assert_ne!(
+            &first[SALT_BYTES..SALT_BYTES + NONCE_BYTES],
+            &second[SALT_BYTES..SALT_BYTES + NONCE_BYTES]
+        );
+    }
+
+    #[test]
+    fn tampering_with_any_envelope_component_fails_authentication() {
+        let crypto = CryptoManager::default();
+        let mut rng = DeterministicCryptoRng::new(0);
+        let encrypted = crypto
+            .encrypt_with_rng("authenticated", "password", &mut rng)
+            .unwrap();
+        let envelope = decode_versioned(&encrypted);
+
+        for index in [0, SALT_BYTES, SALT_BYTES + NONCE_BYTES, envelope.len() - 1] {
+            let mut tampered = envelope.clone();
+            tampered[index] ^= 1;
+            let encoded = format!(
+                "{ENVELOPE_PREFIX}{}",
+                base64::engine::general_purpose::STANDARD.encode(tampered)
+            );
+            assert!(
+                matches!(
+                    crypto.decrypt(&encoded, "password"),
+                    Err(CryptoError::DecryptionFailed(_))
+                ),
+                "tampering at byte {index} was not rejected"
+            );
+        }
     }
 
     #[test]
@@ -381,11 +503,16 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_boundaries_are_checked_before_work() {
+    fn benchmark_uses_an_ephemeral_password_and_checks_boundaries() {
         assert!(validate_benchmark_iterations(MIN_PBKDF2_ITERATIONS - 1).is_err());
         assert!(validate_benchmark_iterations(MIN_PBKDF2_ITERATIONS).is_ok());
         assert!(validate_benchmark_iterations(MAX_PBKDF2_ITERATIONS).is_ok());
         assert!(validate_benchmark_iterations(MAX_PBKDF2_ITERATIONS + 1).is_err());
+
+        let elapsed = CryptoManager::default()
+            .benchmark(MIN_PBKDF2_ITERATIONS)
+            .expect("benchmark must encrypt with a generated password");
+        assert!(elapsed.is_finite() && elapsed >= 0.0);
     }
 
     #[test]
@@ -448,9 +575,22 @@ mod tests {
     }
 
     #[test]
-    fn oversized_base64_is_rejected_before_decode() {
+    fn envelope_size_boundary_is_enforced_before_decrypt() {
         let crypto = CryptoManager::default();
-        let oversized = "A".repeat(MAX_BASE64_CHARS + 4);
+
+        let at_limit = format!(
+            "{ENVELOPE_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_ENVELOPE_BYTES])
+        );
+        assert!(matches!(
+            crypto.decrypt(&at_limit, "password"),
+            Err(CryptoError::DecryptionFailed(_))
+        ));
+
+        let oversized = format!(
+            "{ENVELOPE_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_ENVELOPE_BYTES + 1])
+        );
         assert!(matches!(
             crypto.decrypt(&oversized, "password"),
             Err(CryptoError::InvalidFormat)
@@ -460,10 +600,11 @@ mod tests {
     #[test]
     fn legacy_unprefixed_envelope_remains_decryptable() {
         let crypto = CryptoManager::default();
+        let mut rng = DeterministicCryptoRng::new(0);
         let mut salt = [0u8; SALT_BYTES];
-        OsRng.fill(&mut salt);
+        rng.fill_bytes(&mut salt);
         let mut nonce_bytes = [0u8; NONCE_BYTES];
-        OsRng.fill(&mut nonce_bytes);
+        rng.fill_bytes(&mut nonce_bytes);
         let mut key = Zeroizing::new([0u8; AES_256_KEY_LENGTH_BYTES]);
         pbkdf2_hmac::<Sha256>(b"password", &salt, crypto.config.iterations, &mut key[..]);
         let cipher = Aes256Gcm::new_from_slice(&key[..]).unwrap();
