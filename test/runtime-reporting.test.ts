@@ -240,7 +240,7 @@ test("checks duplicates before fingerprint eviction at the exact 100 boundary", 
   }
 });
 
-test("deduplicates the same failure across global error and rejection sources", () => {
+test("deduplicates the same failure and publishes its updated identity", () => {
   const received: string[] = [];
   const unsubscribe = subscribeRuntimeReports((diagnostic) => {
     received.push(diagnostic.id);
@@ -259,9 +259,10 @@ test("deduplicates the same failure across global error and rejection sources", 
   unsubscribe();
   assert.equal(first.duplicate, false);
   assert.equal(second.duplicate, true);
+  assert.equal(second.diagnostic, first.diagnostic);
   assert.equal(second.diagnostic.id, first.diagnostic.id);
   assert.equal(second.diagnostic.occurrences, 2);
-  assert.deepEqual(received, [first.diagnostic.id]);
+  assert.deepEqual(received, [first.diagnostic.id, first.diagnostic.id]);
   assert.equal(getRuntimeDiagnostics().length, 1);
 });
 
@@ -285,7 +286,7 @@ test("does not let silent non-deduplicating reports suppress normal reports", ()
   assert.equal(duplicate.duplicate, true);
   assert.notEqual(silent.diagnostic.id, normal.diagnostic.id);
   assert.equal(duplicate.diagnostic.id, normal.diagnostic.id);
-  assert.deepEqual(received, [normal.diagnostic.id]);
+  assert.deepEqual(received, [normal.diagnostic.id, normal.diagnostic.id]);
 });
 
 test("global handlers report errors and rejected promises once without loops", () => {

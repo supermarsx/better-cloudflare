@@ -1,7 +1,10 @@
 import * as React from "react";
 
 import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
-import type { RuntimeDiagnostic } from "@/lib/errors/runtime-reporting";
+import {
+  RUNTIME_REPORT_DEDUPLICATION_WINDOW_MS,
+  type RuntimeDiagnostic,
+} from "@/lib/errors/runtime-reporting";
 
 /**
  * Small in-memory toast manager used by the UI. It supports adding,
@@ -10,7 +13,7 @@ import type { RuntimeDiagnostic } from "@/lib/errors/runtime-reporting";
  */
 export const TOAST_LIMIT = 4;
 const TOAST_REMOVE_DELAY = 5000;
-export const TOAST_DEDUPE_WINDOW_MS = 2500;
+export const TOAST_DEDUPE_WINDOW_MS = RUNTIME_REPORT_DEDUPLICATION_WINDOW_MS;
 export const TOAST_DURATION_MIN_MS = 4000;
 export const TOAST_DURATION_MAX_MS = 15000;
 
@@ -210,6 +213,9 @@ function reactNodeText(node: React.ReactNode): string {
 }
 
 function getToastDedupeFingerprint(props: Toast): string | undefined {
+  if (props.diagnostic) {
+    return `diagnostic:${props.diagnostic.fingerprint}`;
+  }
   if (props.dedupeKey?.trim()) return `explicit:${props.dedupeKey.trim()}`;
 
   const title = reactNodeText(props.title).trim();
@@ -217,9 +223,6 @@ function getToastDedupeFingerprint(props: Toast): string | undefined {
   if (!title && !description) return undefined;
 
   const severity = props.variant === "destructive" ? "destructive" : "default";
-  if (props.diagnostic) {
-    return `diagnostic:${severity}:${title}:${props.diagnostic.fingerprint}`;
-  }
   return `message:${severity}:${title}:${description}`;
 }
 

@@ -10,7 +10,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Toaster } from "../src/components/ui/toaster";
+import { RuntimeErrorListener } from "../src/components/layout/RuntimeErrorListener";
 import {
+  getToastRuntimeSnapshot,
   reducer,
   resolveToastDuration,
   resetToastRuntimeForTests,
@@ -23,7 +25,9 @@ import {
 } from "../src/hooks/use-toast";
 import {
   createRuntimeDiagnostic,
+  reportRuntimeError,
   resetRuntimeReportingForTests,
+  type RuntimeDiagnostic,
 } from "../src/lib/errors/runtime-reporting";
 
 afterEach(() => {
@@ -31,6 +35,12 @@ afterEach(() => {
   resetToastRuntimeForTests();
   resetRuntimeReportingForTests();
 });
+
+function stableRuntimeError(message: string): Error {
+  const error = new Error(message);
+  error.stack = `Error: ${message}\n at stable (runtime-toast.test.tsx:1:1)`;
+  return error;
+}
 
 test("toast reducer retains several concurrent notifications", () => {
   let state: ToastState = { toasts: [] };
@@ -114,6 +124,206 @@ test("short duplicate diagnostic storms use latest details and show an occurrenc
     screen.getByRole("dialog", { name: "Error details" }).textContent ?? "",
     new RegExp(latestDiagnostic.id),
   );
+});
+
+test("duplicate runtime reports update one toast without disturbing focused controls or the open dialog", () => {
+  render(
+    <>
+      <RuntimeErrorListener />
+      <Toaster />
+    </>,
+  );
+
+  let firstDiagnostic: RuntimeDiagnostic | undefined;
+  act(() => {
+    firstDiagnostic = reportRuntimeError(
+      stableRuntimeError("repeat in place"),
+      {
+        source: "runtime",
+        label: "stable-toast",
+      },
+    ).diagnostic;
+  });
+  assert.ok(firstDiagnostic);
+
+  const firstToast = screen
+    .getByText("A runtime problem was contained")
+    .closest("[data-toast-duration]");
+  const firstClose =
+    firstToast?.querySelector<HTMLButtonElement>("[toast-close]");
+  assert.ok(firstToast);
+  assert.ok(firstClose);
+  firstClose.focus();
+  assert.equal(document.activeElement, firstClose);
+
+  act(() => {
+    const duplicate = reportRuntimeError(
+      stableRuntimeError("repeat in place"),
+      {
+        source: "unhandled-rejection",
+        label: "stable-toast",
+      },
+    );
+    assert.equal(duplicate.diagnostic, firstDiagnostic);
+  });
+
+  const updatedToast = screen
+    .getByText("A runtime problem was contained")
+    .closest("[data-toast-duration]");
+  const updatedClose =
+    updatedToast?.querySelector<HTMLButtonElement>("[toast-close]");
+  assert.equal(updatedToast, firstToast);
+  assert.equal(updatedClose, firstClose);
+  assert.equal(document.activeElement, firstClose);
+  assert.ok(screen.getByLabelText("Occurred 2 times"));
+
+  const moreInfo = screen.getByRole("button", { name: "More info" });
+  moreInfo.focus();
+  fireEvent.click(moreInfo);
+  const dialog = screen.getByRole("dialog", { name: "Error details" });
+  const dialogClose = screen.getByRole("button", {
+    name: "Close error details",
+  });
+  dialogClose.focus();
+
+  act(() => {
+    reportRuntimeError(stableRuntimeError("repeat in place"), {
+      source: "global-error",
+      label: "stable-toast",
+    });
+  });
+
+  assert.equal(screen.getByRole("dialog", { name: "Error details" }), dialog);
+  assert.equal(document.activeElement, dialogClose);
+  assert.ok(screen.getByLabelText("Occurred 3 times"));
+  assert.match(dialog.textContent ?? "", /Occurrences: 3/);
+});
+
+test("a duplicate restarts the bounded expiry timer without remounting the toast", (t) => {
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  toast({
+    title: "Restartable duplicate",
+    duration: TOAST_DURATION_MIN_MS,
+  });
+  render(<Toaster />);
+
+  const firstToast = screen
+    .getByText("Restartable duplicate")
+    .closest("[data-toast-duration]");
+  assert.ok(firstToast);
+  act(() => t.mock.timers.tick(TOAST_DURATION_MIN_MS - 100));
+
+  act(() => {
+    toast({
+      title: "Restartable duplicate",
+      duration: TOAST_DURATION_MIN_MS,
+    });
+  });
+  assert.equal(
+    screen.getByText("Restartable duplicate").closest("[data-toast-duration]"),
+    firstToast,
+  );
+  assert.ok(screen.getByLabelText("Occurred 2 times"));
+
+  act(() => t.mock.timers.tick(TOAST_DURATION_MIN_MS - 1));
+  assert.ok(screen.getByText("Restartable duplicate"));
+  act(() => t.mock.timers.tick(1));
+  assert.equal(getToastRuntimeSnapshot().removalTimers, 1);
+  act(() => t.mock.timers.tick(5000));
+  assert.equal(screen.queryByText("Restartable duplicate"), null);
+});
+
+test("a diagnostic dialog opened near expiry survives its toast and restores focus", async (t) => {
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  const diagnostic = createRuntimeDiagnostic(new Error("near expiry"), {
+    source: "runtime",
+    label: "expiry-dialog",
+  });
+  toast({
+    title: "Expiring diagnostic",
+    description: diagnostic.message,
+    diagnostic,
+    duration: TOAST_DURATION_MIN_MS,
+    variant: "destructive",
+  });
+  render(<Toaster />);
+
+  act(() => t.mock.timers.tick(TOAST_DURATION_MIN_MS - 100));
+  const moreInfo = screen.getByRole("button", { name: "More info" });
+  moreInfo.focus();
+  fireEvent.click(moreInfo);
+  const dialogClose = screen.getByRole("button", {
+    name: "Close error details",
+  });
+  dialogClose.focus();
+
+  act(() => t.mock.timers.tick(100));
+  const dialog = screen.getByRole("dialog", { name: "Error details" });
+  assert.match(dialog.textContent ?? "", new RegExp(diagnostic.id));
+
+  act(() => t.mock.timers.tick(5000));
+  assert.equal(screen.queryByText("Expiring diagnostic"), null);
+  assert.equal(screen.getByRole("dialog", { name: "Error details" }), dialog);
+
+  await act(async () => {
+    fireEvent.click(dialogClose);
+    await Promise.resolve();
+  });
+  assert.equal(screen.queryByTestId("toast-diagnostic-dialog"), null);
+  assert.equal(
+    document.activeElement,
+    document.querySelector("[data-toast-viewport]"),
+  );
+});
+
+test("pointer and keyboard focus pause toast expiry until each interaction resumes", (t) => {
+  t.mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.now(),
+  });
+  toast({
+    title: "Pauseable toast",
+    duration: TOAST_DURATION_MIN_MS,
+  });
+  render(
+    <>
+      <button type="button">Outside toasts</button>
+      <Toaster />
+    </>,
+  );
+
+  const viewport = document.querySelector<HTMLElement>("[data-toast-viewport]");
+  const close = document.querySelector<HTMLButtonElement>("[toast-close]");
+  const renderedToast = close?.closest<HTMLElement>("[data-toast-duration]");
+  assert.ok(viewport);
+  assert.ok(close);
+  assert.ok(renderedToast);
+
+  act(() => t.mock.timers.tick(1000));
+  fireEvent.pointerMove(renderedToast);
+  act(() => t.mock.timers.tick(TOAST_DURATION_MIN_MS));
+  assert.ok(screen.getByText("Pauseable toast"));
+
+  fireEvent.pointerLeave(renderedToast);
+  act(() => t.mock.timers.tick(500));
+  close.focus();
+  act(() => t.mock.timers.tick(TOAST_DURATION_MIN_MS));
+  assert.equal(document.activeElement, close);
+  assert.ok(screen.getByText("Pauseable toast"));
+
+  screen.getByRole("button", { name: "Outside toasts" }).focus();
+  act(() => t.mock.timers.tick(2499));
+  assert.ok(screen.getByText("Pauseable toast"));
+  act(() => t.mock.timers.tick(1));
+  assert.equal(getToastRuntimeSnapshot().removalTimers, 1);
+  act(() => t.mock.timers.tick(5000));
+  assert.equal(screen.queryByText("Pauseable toast"), null);
 });
 
 test("persistent toasts without diagnostics auto-dismiss on the bounded maximum", () => {

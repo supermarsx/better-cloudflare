@@ -50,7 +50,7 @@ export interface RuntimeReportResult {
 
 type RuntimeReportListener = (diagnostic: RuntimeDiagnostic) => void;
 
-const DEDUPLICATION_WINDOW_MS = 10_000;
+export const RUNTIME_REPORT_DEDUPLICATION_WINDOW_MS = 10_000;
 
 let diagnosticCounter = 0;
 let dispatching = false;
@@ -343,7 +343,7 @@ function nextDiagnosticId(): string {
 
 function pruneExpiredFingerprints(now: number): void {
   for (const [fingerprint, recent] of recentByFingerprint) {
-    if (now - recent.lastSeen > DEDUPLICATION_WINDOW_MS) {
+    if (now - recent.lastSeen > RUNTIME_REPORT_DEDUPLICATION_WINDOW_MS) {
       recentByFingerprint.delete(fingerprint);
     }
   }
@@ -379,6 +379,26 @@ function removeDiagnosticFingerprint(diagnostic: RuntimeDiagnostic): void {
   const recent = recentByFingerprint.get(diagnostic.fingerprint);
   if (recent?.diagnostic === diagnostic) {
     recentByFingerprint.delete(diagnostic.fingerprint);
+  }
+}
+
+function notifyRuntimeReportListeners(
+  diagnostic: RuntimeDiagnostic,
+  context: RuntimeErrorContext,
+): void {
+  if (context.notifyListeners === false || dispatching) return;
+
+  dispatching = true;
+  try {
+    for (const listener of listeners) {
+      try {
+        listener(diagnostic);
+      } catch {
+        // Reporting must never create another runtime failure loop.
+      }
+    }
+  } finally {
+    dispatching = false;
   }
 }
 
@@ -485,7 +505,7 @@ export function reportRuntimeError(
   if (
     context.deduplicate !== false &&
     recent &&
-    now - recent.lastSeen <= DEDUPLICATION_WINDOW_MS
+    now - recent.lastSeen <= RUNTIME_REPORT_DEDUPLICATION_WINDOW_MS
   ) {
     recent.lastSeen = now;
     recent.diagnostic.occurrences = Math.min(
@@ -493,6 +513,7 @@ export function reportRuntimeError(
       Number.MAX_SAFE_INTEGER,
     );
     recent.diagnostic.lastSeenAt = candidate.lastSeenAt;
+    notifyRuntimeReportListeners(recent.diagnostic, context);
     return { diagnostic: recent.diagnostic, duplicate: true };
   }
 
@@ -513,20 +534,7 @@ export function reportRuntimeError(
   }
   enforceFingerprintCapacity();
 
-  if (context.notifyListeners !== false && !dispatching) {
-    dispatching = true;
-    try {
-      for (const listener of listeners) {
-        try {
-          listener(candidate);
-        } catch {
-          // Reporting must never create another runtime failure loop.
-        }
-      }
-    } finally {
-      dispatching = false;
-    }
-  }
+  notifyRuntimeReportListeners(candidate, context);
 
   return { diagnostic: candidate, duplicate: false };
 }
