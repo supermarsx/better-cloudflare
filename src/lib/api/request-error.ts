@@ -911,18 +911,35 @@ function responseHeader(response: Response, names: readonly string[]) {
   return undefined;
 }
 
+function decodeHtmlTextEntitiesOnce(value: string): string {
+  return value.replace(/&(?:nbsp|amp|lt|gt|quot|#39);/gi, (entity) => {
+    switch (entity.toLowerCase()) {
+      case "&nbsp;":
+        return " ";
+      case "&amp;":
+        return "&";
+      case "&lt;":
+        return "<";
+      case "&gt;":
+        return ">";
+      case "&quot;":
+        return '"';
+      case "&#39;":
+        return "'";
+      default:
+        return entity;
+    }
+  });
+}
+
 function summarizeHtmlResponse(bodyText: string): string {
   const title = bodyText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  const visibleText = bodyText
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
+  const visibleText = decodeHtmlTextEntitiesOnce(
+    bodyText
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  );
   const summary = combineDetails(
     title ? `page title: ${title}` : undefined,
     visibleText,

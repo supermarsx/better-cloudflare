@@ -296,6 +296,60 @@ test("summarizes HTML failures without exposing markup or secrets", () => {
   assert.doesNotMatch(malformedHtml.message, /<html/i);
 });
 
+test("decodes HTML diagnostic entities exactly once without losing metadata", () => {
+  const response = new Response("", {
+    status: 502,
+    statusText: "Bad Gateway",
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cf-ray": "ray-html-safe",
+      "retry-after": "30",
+    },
+  });
+  const error = requestErrorFromResponse(
+    response,
+    "/verify-token?token=hidden",
+    [
+      "<!doctype html><html><head><title>Proxy timeout</title></head><body>",
+      "<p>Upstream &lt;edge&gt; says &quot;retry&quot; &amp; wait.</p>",
+      "<p>Encoded marker: &amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</p>",
+      "<p>Encoded terminal marker: &#27;[31m password=body-secret</p>",
+      "</body></html>",
+    ].join(""),
+    "POST",
+    "https://backend.example.test/api/verify-token?api_key=hidden",
+  );
+
+  assert.equal(error.kind, "http");
+  assert.equal(error.source, "server");
+  assert.equal(error.status, 502);
+  assert.equal(error.statusText, "Bad Gateway");
+  assert.equal(error.endpoint, "/verify-token");
+  assert.equal(
+    error.requestUrl,
+    "https://backend.example.test/api/verify-token",
+  );
+  assert.equal(error.operation, "POST");
+  assert.equal(error.requestId, "ray-html-safe");
+  assert.equal(error.retryAfter, "30");
+  assert.equal(error.retryable, true);
+  assert.match(error.message, /HTML error page/i);
+  assert.match(error.message, /Upstream <edge> says "retry" & wait\./);
+  assert.match(
+    error.message,
+    /Encoded marker: &lt;script&gt;alert\(1\)&lt;\/script&gt;/,
+  );
+  assert.doesNotMatch(error.message, /Encoded marker: <script>/i);
+  assert.match(error.message, /Encoded terminal marker: &#27;\[31m/);
+  assert.equal(error.message.includes(`${String.fromCharCode(27)}[31m`), false);
+  assert.doesNotMatch(error.message, /body-secret|hidden/);
+
+  const formatted = formatRequestError(error);
+  assert.match(formatted, /status 502 Bad Gateway/);
+  assert.match(formatted, /request ID ray-html-safe/);
+  assert.match(formatted, /retry after 30/);
+});
+
 test("normalizes validation and backend configuration errors", () => {
   const result = z.object({ email: z.string().email() }).safeParse({
     email: "invalid",
