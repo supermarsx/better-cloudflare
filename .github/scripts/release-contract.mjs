@@ -115,6 +115,86 @@ function fail(message) {
   throw new Error(message);
 }
 
+const DARWIN_VM_STAT_HEADER =
+  /^Mach Virtual Memory Statistics:\s*\(page size of (\d+) bytes\)\.?\s*$/;
+const DARWIN_VM_STAT_COUNTER_PATTERN =
+  /^(Pages (?:free|inactive|speculative)):\s*(-?\d+)\s*\.?\s*$/;
+const DARWIN_VM_STAT_REQUIRED_COUNTERS = Object.freeze([
+  "Pages free",
+  "Pages inactive",
+  "Pages speculative",
+]);
+const DARWIN_VM_STAT_SAFE_PAGE_SIZES = Object.freeze([4096n, 16384n]);
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+let runVmStatCommand = (command, args, options) =>
+  spawnSync(command, args, options);
+
+export function __setVmStatCommandRunner(invocation) {
+  const previous = runVmStatCommand;
+  if (typeof invocation !== "function") {
+    fail("vm_stat command runner must be a function.");
+  }
+  runVmStatCommand = invocation;
+  return previous;
+}
+
+function parseDarwinVmStatOutput(output) {
+  const lines = String(output).replace(/\r/g, "").split("\n");
+  let headerSeen = false;
+  let pageSize;
+  const counters = Object.create(null);
+
+  for (const line of lines) {
+    const header = DARWIN_VM_STAT_HEADER.exec(line.trim());
+    if (header) {
+      if (headerSeen) {
+        fail("vm_stat output contains duplicate header lines.");
+      }
+      headerSeen = true;
+      const size = BigInt(header[1]);
+      if (!DARWIN_VM_STAT_SAFE_PAGE_SIZES.includes(size)) {
+        fail(`vm_stat output has an unreasonable page size: ${size} bytes.`);
+      }
+      pageSize = size;
+      continue;
+    }
+
+    const counter = DARWIN_VM_STAT_COUNTER_PATTERN.exec(line.trim());
+    if (!counter) continue;
+    const [, name, value] = counter;
+    if (Object.prototype.hasOwnProperty.call(counters, name)) {
+      fail(`vm_stat output contains duplicate ${name} line.`);
+    }
+    if (!/^\d+$/.test(value)) {
+      fail(`vm_stat output ${name} must be a non-negative integer.`);
+    }
+    counters[name] = BigInt(value);
+  }
+
+  if (!headerSeen) {
+    fail("vm_stat output is missing the page size header.");
+  }
+  for (const counter of DARWIN_VM_STAT_REQUIRED_COUNTERS) {
+    if (!Object.prototype.hasOwnProperty.call(counters, counter)) {
+      fail(`vm_stat output is missing required counter ${counter}.`);
+    }
+  }
+
+  const totalPages =
+    counters["Pages free"] +
+    counters["Pages inactive"] +
+    counters["Pages speculative"];
+  if (totalPages > MAX_SAFE_INTEGER_BIGINT) {
+    fail("vm_stat counter arithmetic overflow.");
+  }
+  const availableBytes = totalPages * pageSize;
+  if (availableBytes > MAX_SAFE_INTEGER_BIGINT) {
+    fail("vm_stat arithmetic overflow.");
+  }
+  return availableBytes;
+}
+
 function pathsFromRoot(path) {
   const paths = [];
   for (let current = resolve(path); ; current = dirname(current)) {
@@ -1165,6 +1245,7 @@ export function assertResourceHeadroom(
     const disk = statfsSync(process.cwd());
     return disk.bavail * disk.bsize;
   })(),
+  platform = process.platform,
 ) {
   for (const [label, value] of [
     ["minimum free memory", minimumFreeMemoryMiB],
@@ -1174,7 +1255,27 @@ export function assertResourceHeadroom(
       fail(`${label} must be a non-negative integer MiB value.`);
     }
   }
-  const freeMemoryMiB = Math.floor(currentFreeMemoryBytes / 1024 / 1024);
+  let freeMemoryBytes = currentFreeMemoryBytes;
+  if (platform === "darwin") {
+    const vmStatResult = runVmStatCommand("vm_stat", [], {
+      encoding: "utf8",
+      shell: false,
+    });
+    if (vmStatResult.error) {
+      fail(
+        `vm_stat command execution failed: ${vmStatResult.error.message || vmStatResult.error}.`,
+      );
+    }
+    if (typeof vmStatResult.status !== "number" || vmStatResult.status !== 0) {
+      fail(
+        `vm_stat command failed: ${(vmStatResult.stderr || vmStatResult.stdout || "").trim() || "unknown error"}.`,
+      );
+    }
+    freeMemoryBytes = Number(
+      parseDarwinVmStatOutput(vmStatResult.stdout || vmStatResult.output),
+    );
+  }
+  const freeMemoryMiB = Math.floor(freeMemoryBytes / 1024 / 1024);
   const totalMemoryMiB = Math.floor(currentTotalMemoryBytes / 1024 / 1024);
   const freeDiskMiB = Math.floor(currentFreeDiskBytes / 1024 / 1024);
   if (freeMemoryMiB < minimumFreeMemoryMiB) {

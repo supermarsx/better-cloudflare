@@ -23,6 +23,7 @@ import {
   assertReleaseCommitIsCurrentMain,
   assertMatrixContract,
   assertResourceHeadroom,
+  __setVmStatCommandRunner,
   expectedAssetNames,
   nextReleaseTag,
   stageNativeAsset,
@@ -62,12 +63,41 @@ const SUPPORT_WORKFLOWS = ["format.yml", "lint.yml", "test-package.yml"]
   .join("\n")
   .replaceAll("\r\n", "\n");
 
+const DARWIN_VMSTAT_FIXTURES = {
+  fourK: `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free:                                256.
+Pages inactive:                            128.
+Pages speculative:                          64.
+Pages purgeable:                            8.
+Pages wired down:                           4.
+`,
+  sixteenK: `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                256.
+Pages inactive:                             128.
+Pages speculative:                          224.
+`,
+  tricky: `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free:                                10
+Pages inactive:                             9.
+Pages speculative:                          8.
+`,
+};
+
 function workflowStep(name, workflow = AUTOPUBLISH_WORKFLOW) {
   const marker = `      - name: ${name}\n`;
   const start = workflow.indexOf(marker);
   assert.notEqual(start, -1, `Missing workflow step: ${name}`);
   const next = workflow.indexOf("\n      - name: ", start + marker.length);
   return workflow.slice(start, next === -1 ? undefined : next);
+}
+
+function withVmStatRunner(runner, operation) {
+  const previous = __setVmStatCommandRunner(runner);
+  try {
+    return operation();
+  } finally {
+    __setVmStatCommandRunner(previous);
+  }
 }
 
 function run(command, arguments_, cwd) {
@@ -662,6 +692,124 @@ test("runner diagnostics reject insufficient memory or disk deterministically", 
     () => assertResourceHeadroom(1, 2049, 1024 * mib, 2048 * mib, 2048 * mib),
     /free disk/,
   );
+});
+
+test("darwin diagnostics parse representative vm_stat formats", () => {
+  for (const { expectedMiB, fixture } of [
+    { expectedMiB: 1, fixture: DARWIN_VMSTAT_FIXTURES.fourK },
+    { expectedMiB: 9, fixture: DARWIN_VMSTAT_FIXTURES.sixteenK },
+    { expectedMiB: 0, fixture: DARWIN_VMSTAT_FIXTURES.tricky },
+  ]) {
+    assert.equal(
+      withVmStatRunner(
+        () => ({ status: 0, stdout: fixture }),
+        () =>
+          assertResourceHeadroom(
+            expectedMiB,
+            0,
+            0,
+            2048 * 1024 * 1024,
+            2048 * 1024 * 1024,
+            "darwin",
+          ).freeMemoryMiB,
+      ),
+      expectedMiB,
+    );
+  }
+});
+
+test("darwin diagnostics invokes vm_stat without shell or positional arguments", () => {
+  const invocations = [];
+  withVmStatRunner(
+    (command, args, options) => {
+      invocations.push({ command, args, options });
+      return { status: 0, stdout: DARWIN_VMSTAT_FIXTURES.fourK };
+    },
+    () => {
+      assert.equal(
+        assertResourceHeadroom(
+          1,
+          0,
+          0,
+          1024 * 1024 * 1024,
+          1024 * 1024 * 1024,
+          "darwin",
+        ).freeMemoryMiB,
+        1,
+      );
+      assert.equal(invocations.length, 1);
+      assert.equal(invocations[0].command, "vm_stat");
+      assert.deepEqual(invocations[0].args, []);
+      assert.equal(invocations[0].options.shell, false);
+      assert.equal(invocations[0].options.encoding, "utf8");
+    },
+  );
+});
+
+test("darwin diagnostics reject malformed, duplicate, missing, and overflowing vm_stat payloads", () => {
+  const cases = [
+    [
+      /free memory/,
+      `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free:                                1.
+Pages inactive:                             1.
+Pages speculative:                          1.`,
+    ],
+    [
+      /missing the page size header/,
+      `Pages free: 1.
+Pages inactive: 1.
+Pages speculative: 1.`,
+    ],
+    [
+      /duplicate header lines/,
+      `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free: 1.
+Pages inactive: 1.
+Pages speculative: 1.`,
+    ],
+    [
+      /duplicate Pages free line/,
+      `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free: 1.
+Pages free: 2.
+Pages inactive: 1.
+Pages speculative: 1.`,
+    ],
+    [
+      /non-negative integer/,
+      `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free: -1.
+Pages inactive: 1.
+Pages speculative: 1.`,
+    ],
+    [
+      /arithmetic overflow/,
+      `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free: 9007199254740992.
+Pages inactive: 0.
+Pages speculative: 0.`,
+    ],
+  ];
+  for (const [error, fixture] of cases) {
+    assert.throws(
+      () =>
+        withVmStatRunner(
+          () => ({ status: 0, stdout: fixture }),
+          () =>
+            assertResourceHeadroom(
+              2,
+              0,
+              0,
+              1024 * 1024 * 1024,
+              1024 * 1024 * 1024,
+              "darwin",
+            ),
+        ),
+      error,
+    );
+  }
 });
 
 test("tag reservation fetches history, increments, and is idempotent", () => {
