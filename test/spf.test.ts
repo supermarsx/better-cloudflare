@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import React from "react";
+import { afterEach, test } from "node:test";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { SpfBuilder } from "../src/components/dns/builders/SpfBuilder";
+import type { RecordDraft } from "../src/components/dns/builders/types";
 import {
   parseSPF,
   composeSPF,
@@ -15,6 +19,62 @@ import {
   simulateSPF,
   expandSPFMacro,
 } from "../src/lib/dns/spf";
+
+function normalizeHostToken(token: string): string | null {
+  const candidate = token.trim();
+  if (!candidate) return null;
+  for (const character of candidate) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      codePoint <= 0x20 ||
+      codePoint === 0x7f ||
+      "/\\?#@:[]".indexOf(character) >= 0
+    ) {
+      return null;
+    }
+  }
+
+  try {
+    const parsed = new URL(`https://${candidate}/`);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
+function hasExactHttpHost(url: string, expectedHostToken: string): boolean {
+  const expectedHost = normalizeHostToken(expectedHostToken);
+  if (!expectedHost) return false;
+
+  try {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return false;
+    }
+    return parsed.hostname === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+afterEach(() => {
+  cleanup();
+});
 
 test("parseSPF should parse mechanisms", () => {
   const input = "v=spf1 ip4:1.2.3.0/24 include:example.com -all";
@@ -289,11 +349,92 @@ test("expandSPFMacro basic tokens", () => {
     ip: "1.2.3.4",
     sender: "user@example.com",
   });
-  assert.ok(out.includes("user@example.com"));
-  assert.ok(out.includes("user"));
-  assert.ok(out.includes("example.com"));
-  assert.ok(out.includes("1.2.3.4"));
-  assert.ok(out.includes("%"));
+  const tokens = out.trim().split(/\s+/u);
+  assert.equal(tokens[0], "user@example.com");
+  assert.equal(tokens[1], "hello");
+  assert.equal(tokens[2], "user");
+  assert.equal(normalizeHostToken(tokens[3] ?? ""), "example.com");
+  assert.equal(tokens[4], "1.2.3.4");
+  assert.equal(tokens[5], "%");
+});
+
+test("SPF URL host checks use parsed normalized exact hosts", () => {
+  assert.equal(
+    hasExactHttpHost("https://example.com/path", "example.com"),
+    true,
+  );
+  assert.equal(
+    hasExactHttpHost("http://EXAMPLE.COM:8080/path", "example.com"),
+    true,
+  );
+  assert.equal(
+    hasExactHttpHost("https://%65xample.com/path", "example.com"),
+    true,
+  );
+
+  assert.equal(
+    hasExactHttpHost("https://example.com@evil.test/", "example.com"),
+    false,
+  );
+  assert.equal(
+    hasExactHttpHost("https://example.com.evil.test/", "example.com"),
+    false,
+  );
+  assert.equal(
+    hasExactHttpHost("https://example%2Ecom.evil.test/", "example.com"),
+    false,
+  );
+  assert.equal(
+    hasExactHttpHost("https://sub.example.com/", "example.com"),
+    false,
+  );
+  assert.equal(
+    hasExactHttpHost("https://evil.test/%65xample.com", "example.com"),
+    false,
+  );
+  assert.equal(
+    hasExactHttpHost(
+      "https://example.com%40evil.test@attacker.test/",
+      "example.com",
+    ),
+    false,
+  );
+  assert.equal(hasExactHttpHost("not a URL", "example.com"), false);
+  assert.equal(
+    hasExactHttpHost("javascript:example.com", "example.com"),
+    false,
+  );
+
+  assert.equal(normalizeHostToken("EXAMPLE.COM"), "example.com");
+  assert.equal(normalizeHostToken("example.com:443"), null);
+  assert.equal(normalizeHostToken("user@example.com"), null);
+  assert.equal(normalizeHostToken("sub.example.com"), "sub.example.com");
+  assert.equal(normalizeHostToken("example.com%2Fevil.test"), null);
+});
+
+test("SPF builder UI renders the canonical record with an exact host token", async () => {
+  const content = "v=spf1 include:example.com -all";
+  const record: RecordDraft = {
+    type: "TXT",
+    name: "@",
+    content,
+  };
+
+  await act(async () => {
+    render(
+      React.createElement(SpfBuilder, {
+        record,
+        zoneName: "example.com",
+        onRecordChange: () => {},
+      }),
+    );
+  });
+
+  assert.ok(screen.getByText("SPF builder"));
+  assert.equal(
+    screen.getByText(content, { selector: "pre" }).textContent,
+    content,
+  );
 });
 
 test("simulateSPF should include exp TXT explanation on fail", async () => {
