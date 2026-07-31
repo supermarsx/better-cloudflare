@@ -779,6 +779,10 @@ test("Rust CodeQL analysis is preflight-gated with retained diagnostics", () => 
     preflight,
     /cargo check --workspace --all-targets --locked --jobs 1/,
   );
+  assert.match(
+    preflight,
+    /cargo check --workspace --all-targets --locked --jobs 1\s+2>&1\s*\|\s*tee "\$RUNNER_TEMP\/rust-codeql\/cargo-check\.log"/,
+  );
   assert.match(preflight, /set -euo pipefail/);
   assert.doesNotMatch(preflight, /continue-on-error/);
   assert.ok(
@@ -795,6 +799,10 @@ test("Rust CodeQL analysis is preflight-gated with retained diagnostics", () => 
     SECURITY_WORKFLOW.indexOf(proof) < SECURITY_WORKFLOW.indexOf(analyze),
   );
   assert.match(analyze, /output: \$\{\{ runner\.temp \}\}\/codeql-results/);
+  assert.match(
+    upload,
+    /uses:\s*actions\/upload-artifact@[0-9a-f]{40}(?:\s|#|$)/,
+  );
   assert.match(upload, rustAlways);
   assert.match(upload, /\$\{\{ runner\.temp \}\}\/rust-codeql\//);
   assert.match(upload, /\$\{\{ runner\.temp \}\}\/codeql-results\/rust\.sarif/);
