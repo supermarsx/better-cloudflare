@@ -6,9 +6,11 @@ import { test } from "node:test";
 
 import { legacySourceLintDebt } from "../eslint.config.js";
 import { createPlaywrightConfig } from "../playwright.config.ts";
+import { discoverTestFiles } from "../scripts/run-tests-seq.ts";
 
 const root = new URL("../", import.meta.url);
 const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const cssContractTest = "test/AppShellCss.contract.test.ts";
 const rustCacheRevision = "c19371144df3bb44fab255c43d04cbc2ab54d1c4";
 const osvScannerImage =
   "docker://ghcr.io/google/osv-scanner-action@sha256:48406c58197201fe55e56615ad9d414f85063da320e204d0b0ed460fb3908dba";
@@ -169,6 +171,102 @@ function stepUses(step: string): string {
     .trim();
 }
 
+interface ParsedRunStep {
+  command: string;
+  condition?: string;
+}
+
+interface SourceGateFixture {
+  sources: string[];
+  lint?: ParsedRunStep;
+  typecheck?: ParsedRunStep;
+  format?: ParsedRunStep;
+  tests: string[];
+}
+
+function parsedRunStep(
+  workflowName: string,
+  jobId: string,
+  stepName: string,
+): ParsedRunStep {
+  const workflow = read(`.github/workflows/${workflowName}`);
+  const step = workflowStep(workflowJob(workflow, jobId), stepName);
+  const conditionPrefix = "        if:";
+  const condition = step
+    .split(/\r?\n/)
+    .find((line) => line.startsWith(conditionPrefix));
+  return {
+    command: stepRun(step),
+    condition: condition?.slice(conditionPrefix.length).trim(),
+  };
+}
+
+function sourceGateFixture(): SourceGateFixture {
+  return {
+    sources: changedSourceFiles(),
+    lint: parsedRunStep("lint.yml", "eslint", "Run ESLint"),
+    typecheck: parsedRunStep(
+      "test-package.yml",
+      "test-and-package",
+      "Run TypeScript typecheck",
+    ),
+    format: parsedRunStep("format.yml", "check", "Check formatting"),
+    tests: discoverTestFiles(fileURLToPath(root)),
+  };
+}
+
+function requireUnconditionalCommand(
+  step: ParsedRunStep | undefined,
+  expectedCommand: string,
+  name: string,
+): void {
+  assert.ok(step, `${name} step is missing`);
+  assert.equal(step.command, expectedCommand, `${name} command must be exact`);
+  assert.equal(step.condition, undefined, `${name} must be unconditional`);
+}
+
+function assertChangedSourceGateCoverage(fixture: SourceGateFixture): void {
+  let hasTypeScript = false;
+  let hasCss = false;
+  for (const path of fixture.sources) {
+    assert.ok(
+      path.startsWith("src/"),
+      `Changed source is outside src: ${path}`,
+    );
+    if (path.endsWith(".ts") || path.endsWith(".tsx")) {
+      hasTypeScript = true;
+      assert.ok(
+        !legacySourceLintDebt.includes(path),
+        `Changed TypeScript source is excluded from lint: ${path}`,
+      );
+    } else if (path.endsWith(".css")) {
+      hasCss = true;
+    } else {
+      assert.fail(`Unsupported changed source extension: ${path}`);
+    }
+  }
+
+  if (hasTypeScript) {
+    requireUnconditionalCommand(fixture.lint, "npm run lint", "Lint");
+    requireUnconditionalCommand(
+      fixture.typecheck,
+      "npm run typecheck",
+      "Typecheck",
+    );
+  }
+  if (hasCss) {
+    requireUnconditionalCommand(
+      fixture.format,
+      "npm run format:check",
+      "Format",
+    );
+    assert.ok(
+      fixture.tests.includes(cssContractTest),
+      "CSS contract test is missing from official test discovery",
+    );
+  }
+}
+
 test("package scripts expose truthful lint and reliability gates", () => {
   const packageJson = JSON.parse(read("package.json")) as {
     engines: { node: string };
@@ -197,15 +295,6 @@ test("package scripts expose truthful lint and reliability gates", () => {
   assert.ok(
     !legacySourceLintDebt.includes("src/components/layout/WindowTitleBar.tsx"),
     "The titlebar reliability path must remain covered by source lint",
-  );
-  const changedSources = changedSourceFiles();
-  assert.deepEqual(
-    changedSources.filter(
-      (path) =>
-        !/\.(?:ts|tsx)$/.test(path) || legacySourceLintDebt.includes(path),
-    ),
-    [],
-    "Every source file changed from the event base must be TypeScript and covered by the source lint gate",
   );
   assert.ok(!Object.keys(scripts).some((name) => name === "lint:production"));
 
@@ -247,6 +336,35 @@ test("package scripts expose truthful lint and reliability gates", () => {
     scripts["memory:smoke:manual"],
     "node --expose-gc --import tsx scripts/memory-growth-smoke.mjs",
   );
+});
+
+test("changed source types have unconditional CI coverage", () => {
+  const fixture = sourceGateFixture();
+  assertChangedSourceGateCoverage(fixture);
+  const conditional = (command: string): ParsedRunStep => ({
+    command,
+    condition: "success()",
+  });
+  const failures: Array<[Partial<SourceGateFixture>, RegExp]> = [
+    [{ typecheck: undefined }, /Typecheck step is missing/],
+    [{ typecheck: conditional("npm run typecheck") }, /unconditional/],
+    [{ format: undefined }, /Format step is missing/],
+    [{ format: conditional("npm run format:check") }, /unconditional/],
+    [
+      { tests: fixture.tests.filter((path) => path !== cssContractTest) },
+      /CSS contract test is missing/,
+    ],
+    [
+      { sources: [...fixture.sources, "src/unknown.mjs"] },
+      /Unsupported changed source extension/,
+    ],
+  ];
+  for (const [mutation, expected] of failures) {
+    assert.throws(
+      () => assertChangedSourceGateCoverage({ ...fixture, ...mutation }),
+      expected,
+    );
+  }
 });
 
 test("CI changed-source lint uses the event base with complete history", () => {
