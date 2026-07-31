@@ -259,11 +259,12 @@ function App() {
         style={{ top: mainOffset }}
       >
         <div
+          data-auth-scroll-region={showingAuthenticatedApp ? undefined : "body"}
           className={cn(
             "min-h-0 flex-1 transition-opacity duration-300 ease-out",
             showingAuthenticatedApp
               ? "h-full overflow-hidden"
-              : "min-h-full overflow-y-auto",
+              : "min-h-full overflow-x-hidden overflow-y-auto scrollbar-themed scroll-smooth",
             isVisible ? "opacity-100" : "opacity-0",
           )}
         >

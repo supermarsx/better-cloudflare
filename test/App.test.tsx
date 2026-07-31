@@ -70,6 +70,21 @@ test("App renders one global titlebar and no embedded chrome during desktop auth
   assert.equal(titlebar.querySelectorAll(".lucide-minus").length, 1);
   assert.equal(titlebar.querySelectorAll(".lucide-square").length, 1);
   assert.equal(titlebar.querySelectorAll(".lucide-x").length, 1);
+
+  const authScrollRegion = document.querySelector(
+    '[data-auth-scroll-region="body"]',
+  );
+  assert.ok(authScrollRegion, "Missing auth scroll region");
+  assert.match(authScrollRegion.className, /\bscrollbar-themed\b/);
+  assert.match(authScrollRegion.className, /\bscroll-smooth\b/);
+  assert.match(authScrollRegion.className, /\boverflow-y-auto\b/);
+  assert.match(authScrollRegion.className, /\boverflow-x-hidden\b/);
+  assert.ok(
+    document
+      .querySelector('[data-testid="app-viewport"]')
+      ?.contains(authScrollRegion),
+    "auth scroll region is not inside app viewport",
+  );
 });
 
 test("DNS workspace render failure preserves shell recovery and can retry", async () => {
