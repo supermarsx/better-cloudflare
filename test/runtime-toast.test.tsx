@@ -12,8 +12,11 @@ import {
 import { Toaster } from "../src/components/ui/toaster";
 import {
   reducer,
+  resolveToastDuration,
   resetToastRuntimeForTests,
   toast,
+  TOAST_DURATION_MAX_MS,
+  TOAST_DURATION_MIN_MS,
   TOAST_LIMIT,
   type ToastState,
   type ToasterToast,
@@ -49,6 +52,90 @@ test("toast reducer retains several concurrent notifications", () => {
   );
 });
 
+test("toast durations stay bounded and severity aware, including persistent login errors", () => {
+  const normal = resolveToastDuration({ variant: "default" });
+  const destructive = resolveToastDuration({ variant: "destructive" });
+
+  assert.ok(normal >= TOAST_DURATION_MIN_MS);
+  assert.ok(destructive > normal);
+  assert.equal(
+    resolveToastDuration({ duration: 1, variant: "default" }),
+    TOAST_DURATION_MIN_MS,
+  );
+  assert.equal(
+    resolveToastDuration({
+      duration: Number.POSITIVE_INFINITY,
+      persistent: true,
+    }),
+    TOAST_DURATION_MAX_MS,
+  );
+  assert.equal(
+    resolveToastDuration({ duration: TOAST_DURATION_MAX_MS * 2 }),
+    TOAST_DURATION_MAX_MS,
+  );
+});
+
+test("short duplicate diagnostic storms use latest details and show an occurrence count", () => {
+  const firstDiagnostic = createRuntimeDiagnostic(new Error("same failure"), {
+    source: "runtime",
+    label: "toast-dedupe",
+  });
+  const latestDiagnostic = {
+    ...createRuntimeDiagnostic(new Error("same failure"), {
+      source: "runtime",
+      label: "toast-dedupe",
+    }),
+    fingerprint: firstDiagnostic.fingerprint,
+  };
+
+  const first = toast({
+    title: "Repeated failure",
+    description: "First report",
+    diagnostic: firstDiagnostic,
+    variant: "destructive",
+  });
+  const latest = toast({
+    title: "Repeated failure",
+    description: "Latest report",
+    diagnostic: latestDiagnostic,
+    variant: "destructive",
+  });
+
+  assert.equal(latest.id, first.id);
+  render(<Toaster />);
+
+  assert.equal(screen.queryByText("First report"), null);
+  assert.ok(screen.getByText("Latest report"));
+  assert.ok(screen.getByLabelText("Occurred 2 times"));
+  assert.equal(screen.getAllByRole("button", { name: "More info" }).length, 1);
+
+  fireEvent.click(screen.getByRole("button", { name: "More info" }));
+  assert.match(
+    screen.getByRole("dialog", { name: "Error details" }).textContent ?? "",
+    new RegExp(latestDiagnostic.id),
+  );
+});
+
+test("persistent toasts without diagnostics auto-dismiss on the bounded maximum", () => {
+  toast({
+    title: "Login failed",
+    description: "Check the account and try again.",
+    persistent: true,
+  });
+
+  render(<Toaster />);
+
+  const renderedToast = document.querySelector("[data-toast-duration]");
+  assert.equal(
+    renderedToast?.getAttribute("data-toast-duration"),
+    String(TOAST_DURATION_MAX_MS),
+  );
+  assert.equal(
+    renderedToast?.getAttribute("data-toast-duration-bounded"),
+    "true",
+  );
+});
+
 test("toasts contain long text and keep full diagnostics in an accessible modal", async () => {
   const longText = "diagnostic".repeat(120);
   toast({
@@ -69,6 +156,14 @@ test("toasts contain long text and keep full diagnostics in an accessible modal"
   assert.match(title.className, /max-w-full/);
   assert.match(description.className, /max-w-full/);
   assert.match(viewport?.className ?? "", /overflow-x-hidden/);
+  assert.match(viewport?.className ?? "", /\bgap-2\b/);
+  assert.match(viewport?.className ?? "", /\bsm:right-3\b/);
+  assert.match(title.className, /\bleading-5\b/);
+  assert.match(description.className, /\btext-xs\b/);
+  assert.match(
+    document.querySelector("[data-toast-duration]")?.className ?? "",
+    /\bp-3\.5\b/,
+  );
   assert.equal(screen.queryByRole("button", { name: "More info" }), null);
 
   const diagnostic = createRuntimeDiagnostic(

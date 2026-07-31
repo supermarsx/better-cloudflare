@@ -10,6 +10,13 @@ import type { RuntimeDiagnostic } from "@/lib/errors/runtime-reporting";
  */
 export const TOAST_LIMIT = 4;
 const TOAST_REMOVE_DELAY = 5000;
+export const TOAST_DEDUPE_WINDOW_MS = 2500;
+export const TOAST_DURATION_MIN_MS = 4000;
+export const TOAST_DURATION_MAX_MS = 15000;
+
+const DEFAULT_TOAST_DURATION_MS = 5500;
+const DESTRUCTIVE_TOAST_DURATION_MS = 9000;
+const DIAGNOSTIC_TOAST_DURATION_MS = 12000;
 
 export type ToasterToast = ToastProps & {
   id: string;
@@ -18,6 +25,10 @@ export type ToasterToast = ToastProps & {
   action?: ToastActionElement;
   diagnostic?: RuntimeDiagnostic;
   persistent?: boolean;
+  dedupeKey?: string;
+  occurrenceCount?: number;
+  dedupeFingerprint?: string;
+  lastOccurrenceAt?: number;
 };
 
 let count = 0;
@@ -103,7 +114,10 @@ const addToRemoveQueue = (toastId: string) => {
 export const reducer = (state: ToastState, action: Action): ToastState => {
   switch (action.type) {
     case "ADD_TOAST": {
-      const toasts = [action.toast, ...state.toasts].slice(0, TOAST_LIMIT);
+      const toasts = [
+        action.toast,
+        ...state.toasts.filter((toast) => toast.id !== action.toast.id),
+      ].slice(0, TOAST_LIMIT);
       const retainedIds = new Set(toasts.map((toast) => toast.id));
       for (const existing of state.toasts) {
         if (!retainedIds.has(existing.id)) {
@@ -178,6 +192,58 @@ function dispatch(action: Action) {
 
 export type Toast = Omit<ToasterToast, "id">;
 
+function reactNodeText(node: React.ReactNode): string {
+  if (
+    typeof node === "string" ||
+    typeof node === "number" ||
+    typeof node === "bigint"
+  ) {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(reactNodeText).join("");
+  }
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return reactNodeText(node.props.children);
+  }
+  return "";
+}
+
+function getToastDedupeFingerprint(props: Toast): string | undefined {
+  if (props.dedupeKey?.trim()) return `explicit:${props.dedupeKey.trim()}`;
+
+  const title = reactNodeText(props.title).trim();
+  const description = reactNodeText(props.description).trim();
+  if (!title && !description) return undefined;
+
+  const severity = props.variant === "destructive" ? "destructive" : "default";
+  if (props.diagnostic) {
+    return `diagnostic:${severity}:${title}:${props.diagnostic.fingerprint}`;
+  }
+  return `message:${severity}:${title}:${description}`;
+}
+
+export function resolveToastDuration(
+  props: Pick<
+    ToasterToast,
+    "diagnostic" | "duration" | "persistent" | "variant"
+  >,
+): number {
+  if (props.persistent) return TOAST_DURATION_MAX_MS;
+
+  const requested = props.duration;
+  if (typeof requested === "number" && Number.isFinite(requested)) {
+    return Math.min(
+      TOAST_DURATION_MAX_MS,
+      Math.max(TOAST_DURATION_MIN_MS, requested),
+    );
+  }
+
+  if (props.diagnostic) return DIAGNOSTIC_TOAST_DURATION_MS;
+  if (props.variant === "destructive") return DESTRUCTIVE_TOAST_DURATION_MS;
+  return DEFAULT_TOAST_DURATION_MS;
+}
+
 /**
  * Create and dispatch a new toast.
  *
@@ -185,7 +251,19 @@ export type Toast = Omit<ToasterToast, "id">;
  * @returns an object allowing callers to dismiss or update the toast
  */
 function toast({ ...props }: Toast) {
-  const id = genId();
+  const now = Date.now();
+  const dedupeFingerprint = getToastDedupeFingerprint(props);
+  const duplicate = dedupeFingerprint
+    ? memoryState.toasts.find(
+        (item) =>
+          item.open !== false &&
+          item.dedupeFingerprint === dedupeFingerprint &&
+          typeof item.lastOccurrenceAt === "number" &&
+          now - item.lastOccurrenceAt <= TOAST_DEDUPE_WINDOW_MS,
+      )
+    : undefined;
+  const id = duplicate?.id ?? genId();
+  const occurrenceCount = (duplicate?.occurrenceCount ?? 0) + 1;
 
   const update = (props: ToasterToast) =>
     dispatch({
@@ -194,13 +272,19 @@ function toast({ ...props }: Toast) {
     });
   const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id });
 
+  const onOpenChange = props.onOpenChange;
   dispatch({
     type: "ADD_TOAST",
     toast: {
       ...props,
       id,
+      dedupeFingerprint,
+      duration: resolveToastDuration(props),
+      lastOccurrenceAt: now,
+      occurrenceCount,
       open: true,
       onOpenChange: (open) => {
+        onOpenChange?.(open);
         if (!open) dismiss();
       },
     },
