@@ -481,21 +481,20 @@ async fn completed_unique_key_operations_do_not_leak_lock_registry_entries() {
 
 #[test]
 fn active_logical_lock_registry_has_a_hard_ceiling_and_recovers() {
-    let (_backend, storage) = fake_storage();
+    let registry = Mutex::new(HashMap::new());
     let held: Vec<_> = (0..MAX_ACTIVE_LOGICAL_LOCKS)
         .map(|index| {
-            storage
-                .logical_lock(&format!("active-lock-{index}"))
+            Storage::logical_lock_in_registry(&format!("active-lock-{index}"), &registry)
                 .expect("reserve active logical lock")
         })
         .collect();
     assert!(matches!(
-        storage.logical_lock("one-active-lock-too-many"),
+        Storage::logical_lock_in_registry("one-active-lock-too-many", &registry),
         Err(StorageError::LimitExceeded)
     ));
     drop(held);
     assert!(
-        storage.logical_lock("lock-after-release").is_ok(),
+        Storage::logical_lock_in_registry("lock-after-release", &registry).is_ok(),
         "released lock entries were not pruned"
     );
 }

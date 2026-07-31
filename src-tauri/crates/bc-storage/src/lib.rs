@@ -37,7 +37,8 @@ const MAX_CHUNK_COUNT: usize = 1000;
 const MAX_MANIFEST_BYTES: usize = 256;
 const SERVICE_NAME: &str = "better-cloudflare";
 const MAX_AUDIT_ENTRIES: usize = 1000;
-static LOGICAL_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
+type LogicalLockRegistry = Mutex<HashMap<String, Weak<Mutex<()>>>>;
+static LOGICAL_LOCKS: OnceLock<LogicalLockRegistry> = OnceLock::new();
 
 // ── Chunking helpers ────────────────────────────────────────────────────────
 
@@ -483,11 +484,18 @@ impl Storage {
     }
 
     fn logical_lock(&self, key: &str) -> Result<Arc<Mutex<()>>, StorageError> {
+        Self::logical_lock_in_registry(
+            key,
+            LOGICAL_LOCKS.get_or_init(|| Mutex::new(HashMap::new())),
+        )
+    }
+
+    fn logical_lock_in_registry(
+        key: &str,
+        registry: &LogicalLockRegistry,
+    ) -> Result<Arc<Mutex<()>>, StorageError> {
         Self::validate_logical_key(key)?;
-        let mut locks = LOGICAL_LOCKS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .map_err(|_| Self::lock_error())?;
+        let mut locks = registry.lock().map_err(|_| Self::lock_error())?;
         locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
             return Ok(lock);
