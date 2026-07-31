@@ -889,6 +889,7 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
     .sort(
       (left, right) =>
         left.value.cachedAt - right.value.cachedAt ||
+        left.mutationToken.localeCompare(right.mutationToken) ||
         left.zoneId.localeCompare(right.zoneId),
     );
   const { retained, evicted } = entriesWithinLimits(ordered);

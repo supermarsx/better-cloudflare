@@ -168,6 +168,26 @@ afterEach(async () => {
   resetRuntimeReportingForTests();
 });
 
+function getEqualTimestampEvictionIndex(
+  insertionOrder: readonly string[],
+): string[] {
+  const constantNow = 1_700_000_000_000;
+  const originalNow = Date.now;
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  try {
+    Date.now = () => constantNow;
+    clearOfflineCache();
+    for (const zoneId of insertionOrder) {
+      cacheZoneRecords(zoneId, `Zone ${zoneId}`, []);
+    }
+    cacheZoneRecords("zone-0", "Zone 0 rewritten", []);
+    cacheZoneRecords(`zone-${hardLimit}`, `Zone ${hardLimit}`, []);
+    return getCacheIndex();
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
 test("preserves normal offline cache reads and age formatting", () => {
   cacheZoneRecords("zone-a", "Example", [{ id: "record-a" }]);
 
@@ -205,6 +225,33 @@ test("evicts deterministically at count limit+1 after accepting limit-1 and exac
   assert.equal(getCachedZoneRecords("zone-0")?.zoneName, "Zone 0 updated");
   assert.equal(getCachedZoneRecords("zone-1"), null);
   assert.ok(getCachedZoneRecords("zone-0"));
+});
+
+test("evicts equal-timestamp writes by write-token order after deterministic rewrite", () => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  const index = getEqualTimestampEvictionIndex(
+    Array.from({ length: hardLimit }, (_, index) => `zone-${index}`),
+  );
+  assert.equal(index.at(-1), `zone-${hardLimit}`);
+  assert.equal(index.at(-2), "zone-0");
+  assert.equal(index.includes("zone-0"), true);
+});
+
+test("eviction order remains stable for repeated equal-timestamp insertion orders", () => {
+  const hardLimit = RESOURCE_LIMITS.offlineCache.hardEntries;
+  const ordered = Array.from(
+    { length: hardLimit },
+    (_, index) => `zone-${index}`,
+  );
+  const forwardA = getEqualTimestampEvictionIndex(ordered);
+  const forwardB = getEqualTimestampEvictionIndex(ordered);
+  const reverse = getEqualTimestampEvictionIndex([...ordered].reverse());
+
+  assert.deepEqual(forwardA, forwardB);
+  assert.equal(forwardA.at(-1), `zone-${hardLimit}`);
+  assert.equal(forwardA.at(-2), "zone-0");
+  assert.equal(reverse.at(-1), `zone-${hardLimit}`);
+  assert.equal(reverse.at(-2), "zone-0");
 });
 
 test("uses retained UTF-8 bytes to evict oldest entries deterministically", () => {
