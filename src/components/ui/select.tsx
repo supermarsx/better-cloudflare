@@ -106,8 +106,9 @@ const SelectContent = React.forwardRef<
       >
         <SelectScrollUpButton />
         <SelectPrimitive.Viewport
+          data-select-scroll-region
           className={cn(
-            "p-1",
+            "scrollbar-themed p-1",
             position === "popper" &&
               "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]",
           )}

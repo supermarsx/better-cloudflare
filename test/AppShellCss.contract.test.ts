@@ -20,6 +20,14 @@ test("themed scrollbars reserve stable space and support both axes", () => {
   assert.match(scrollbarCss, /::-webkit-scrollbar\s*\{[^}]*width:\s*8px/s);
   assert.match(scrollbarCss, /::-webkit-scrollbar\s*\{[^}]*height:\s*8px/s);
   assert.match(scrollbarCss, /::-webkit-scrollbar-corner/);
+  assert.match(
+    scrollbarCss,
+    /\.scrollbar-themed\[data-radix-select-viewport\]\s*\{[^}]*scrollbar-width:\s*thin\s*!important/s,
+  );
+  assert.match(
+    scrollbarCss,
+    /\.scrollbar-themed\[data-radix-select-viewport\]::-webkit-scrollbar\s*\{[^}]*display:\s*block\s*!important/s,
+  );
 });
 
 test("shell scrolling has no mask and respects contrast and motion preferences", () => {

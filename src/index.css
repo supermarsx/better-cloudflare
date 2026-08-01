@@ -860,6 +860,15 @@
     background: hsl(var(--muted) / 0.22);
   }
 
+  /* Radix Select injects a later rule that hides its scrollable viewport. */
+  .scrollbar-themed[data-radix-select-viewport] {
+    scrollbar-width: thin !important;
+  }
+
+  .scrollbar-themed[data-radix-select-viewport]::-webkit-scrollbar {
+    display: block !important;
+  }
+
   .app-shell-workspace-scroll {
     -webkit-mask-image: none !important;
     mask-image: none !important;

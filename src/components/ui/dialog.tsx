@@ -134,7 +134,10 @@ const DialogContent = React.forwardRef<
          */}
         <div className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-50">
           <DialogOverlay />
-          <div className="absolute inset-0 overflow-y-auto">
+          <div
+            data-dialog-scroll-region
+            className="scrollbar-themed absolute inset-0 overflow-y-auto overscroll-contain"
+          >
             <div className="flex min-h-full items-center justify-center p-4 pt-4">
               <DialogPrimitive.Content
                 {...props}

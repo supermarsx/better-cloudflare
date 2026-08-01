@@ -8,8 +8,8 @@ type RuntimeFailures = {
   responses: string[];
 };
 
-async function installDesktopMock(page: Page) {
-  await page.addInitScript(() => {
+async function installDesktopMock(page: Page, apiKeyCount = 1) {
+  await page.addInitScript((requestedKeyCount) => {
     type Callback = (...args: unknown[]) => unknown;
     type TauriInternals = {
       callbacks: Map<number, Callback>;
@@ -64,17 +64,15 @@ async function installDesktopMock(page: Page) {
       async invoke(command) {
         switch (command) {
           case "get_api_keys":
-            return [
-              {
-                id: "desktop-key",
-                label: "Desktop key",
-                encrypted_key: "ciphertext",
-                email: null,
-                iterations: 100000,
-                key_length: 256,
-                algorithm: "AES-GCM",
-              },
-            ];
+            return Array.from({ length: requestedKeyCount }, (_, index) => ({
+              id: index === 0 ? "desktop-key" : `desktop-key-${index}`,
+              label: index === 0 ? "Desktop key" : `Desktop key ${index}`,
+              encrypted_key: "ciphertext",
+              email: null,
+              iterations: 100000,
+              key_length: 256,
+              algorithm: "AES-GCM",
+            }));
           case "get_encryption_settings":
             return {
               iterations: 100000,
@@ -133,7 +131,7 @@ async function installDesktopMock(page: Page) {
       configurable: true,
       value: internals,
     });
-  });
+  }, apiKeyCount);
 }
 
 function monitorRuntime(page: Page): {
@@ -225,13 +223,81 @@ async function dismissViaBackdrop(page: Page) {
   await backdrop.click({ position: { x: 8, y: 8 } });
 }
 
-test.beforeEach(async ({ page }) => {
-  await installDesktopMock(page);
+test("auth and nested modal scroll owners use the themed scrollbar", async ({
+  page,
+}) => {
+  await installDesktopMock(page, 32);
+  await page.setViewportSize({ width: 900, height: 420 });
+  await page.goto("/");
+
+  const authScrollRegion = page.locator('[data-auth-scroll-region="body"]');
+  await expect(authScrollRegion).toHaveClass(/\bscrollbar-themed\b/);
+  const authEvidence = await authScrollRegion.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: style.overflowY,
+      scrollbarWidth: style.getPropertyValue("scrollbar-width").trim(),
+    };
+  });
+  expect(authEvidence.scrollHeight).toBeGreaterThan(authEvidence.clientHeight);
+  expect(authEvidence.overflowY).toBe("auto");
+  expect(authEvidence.scrollbarWidth).toBe("thin");
+
+  const keySelect = page.getByRole("combobox", { name: "API Key" });
+  await keySelect.click();
+  const selectScrollRegion = page.locator("[data-select-scroll-region]");
+  await expect(selectScrollRegion).toBeVisible();
+  await expect(selectScrollRegion).toHaveClass(/\bscrollbar-themed\b/);
+  const selectEvidence = await selectScrollRegion.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const webkitScrollbar = getComputedStyle(element, "::-webkit-scrollbar");
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: style.overflowY,
+      scrollbarWidth: style.getPropertyValue("scrollbar-width").trim(),
+      webkitDisplay: webkitScrollbar.display,
+    };
+  });
+  expect(selectEvidence.scrollHeight).toBeGreaterThan(
+    selectEvidence.clientHeight,
+  );
+  expect(selectEvidence.overflowY).toBe("auto");
+  expect(selectEvidence.scrollbarWidth).toBe("thin");
+  expect(selectEvidence.webkitDisplay).toBe("block");
+  await page.keyboard.press("Escape");
+  await expect(selectScrollRegion).toBeHidden();
+
+  await page.getByRole("button", { name: "Add New Key" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Add New API Key" }),
+  ).toBeVisible();
+  const dialogScrollRegion = page.locator("[data-dialog-scroll-region]");
+  await expect(dialogScrollRegion).toHaveClass(/\bscrollbar-themed\b/);
+  const dialogEvidence = await dialogScrollRegion.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: style.overflowY,
+      overscrollBehaviorY: style.overscrollBehaviorY,
+      scrollbarWidth: style.getPropertyValue("scrollbar-width").trim(),
+    };
+  });
+  expect(dialogEvidence.scrollHeight).toBeGreaterThan(
+    dialogEvidence.clientHeight,
+  );
+  expect(dialogEvidence.overflowY).toBe("auto");
+  expect(dialogEvidence.overscrollBehaviorY).toBe("contain");
+  expect(dialogEvidence.scrollbarWidth).toBe("thin");
 });
 
 test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
   page,
 }) => {
+  await installDesktopMock(page);
   const runtime = monitorRuntime(page);
   await page.goto("/");
   await selectDesktopKey(page);
@@ -293,6 +359,7 @@ test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
 test("passkey manager survives focus changes and ignores stale closed loads", async ({
   page,
 }) => {
+  await installDesktopMock(page);
   const runtime = monitorRuntime(page);
   await page.goto("/");
   await selectDesktopKey(page);
