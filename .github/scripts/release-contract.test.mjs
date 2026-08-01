@@ -406,6 +406,109 @@ test("native staging renames one real bundle and writes its checksum", () => {
   }
 });
 
+test(
+  "native staging tolerates a legitimate AppDir DirIcon symlink while selecting a real AppImage",
+  { skip: process.platform === "win32" ? "POSIX symlink test" : false },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "better-cloudflare-diricon-"));
+    try {
+      const bundleRoot = join(root, "bundle", "appimage");
+      const output = join(root, "release-assets", "linux-x64");
+      const appDir = join(bundleRoot, "AppDir");
+      const icon = join(root, "icon.png");
+      const source = join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage");
+      const iconLink = join(appDir, ".DirIcon");
+      mkdirSync(appDir, { recursive: true });
+      writeFileSync(icon, "trusted-icon");
+      symlinkSync(icon, iconLink);
+      writeFileSync(source, "trusted-appimage");
+
+      const result = stageNativeAsset(bundleRoot, "linux", "x64", output);
+      assert.equal(
+        readFileSync(result.asset, "utf8"),
+        readFileSync(source, "utf8"),
+      );
+      assert.equal(
+        readFileSync(result.checksum, "utf8"),
+        `${createHash("sha256").update(readFileSync(source)).digest("hex")}  better-cloudflare-linux-x64.AppImage\n`,
+      );
+      assert.equal(result.source, source);
+      assert.equal(fs.lstatSync(iconLink).isSymbolicLink(), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "native staging skips symlinked directories so escaped targets are not read",
+  { skip: process.platform === "win32" ? "POSIX symlink test" : false },
+  () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "better-cloudflare-escape-symlink-dir-"),
+    );
+    try {
+      const bundleRoot = join(root, "bundle", "appimage");
+      const output = join(root, "release-assets", "linux-x64");
+      const outside = join(root, "outside");
+      const escapedArtifact = join(
+        outside,
+        "Better Cloudflare_0.0.0_amd64.AppImage",
+      );
+      mkdirSync(bundleRoot, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, join(bundleRoot, "AppDir"), "dir");
+      writeFileSync(escapedArtifact, "attacker");
+
+      let openedEscapedArtifact = false;
+      const stage = () =>
+        withPatchedFs(
+          "openSync",
+          (original, path, ...arguments_) => {
+            if (path === escapedArtifact) {
+              openedEscapedArtifact = true;
+            }
+            return original(path, ...arguments_);
+          },
+          () => stageNativeAsset(bundleRoot, "linux", "x64", output),
+        );
+      assert.throws(stage, /Found: 0|found 0/);
+      assert.equal(openedEscapedArtifact, false);
+      assert.equal(fs.existsSync(output), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "native staging skips symlinked expected artifact names so they are never selected",
+  { skip: process.platform === "win32" ? "POSIX symlink test" : false },
+  () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "better-cloudflare-expected-symlink-"),
+    );
+    try {
+      const bundleRoot = join(root, "bundle", "appimage");
+      const output = join(root, "release-assets", "linux-x64");
+      const source = join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage");
+      const linked = join(root, "outside-appimage");
+      mkdirSync(bundleRoot, { recursive: true });
+      mkdirSync(linked, { recursive: true });
+      writeFileSync(join(linked, "payload"), "attacker-appimage");
+      symlinkSync(join(linked, "payload"), source, "file");
+
+      assert.throws(
+        () => stageNativeAsset(bundleRoot, "linux", "x64", output),
+        /Expected exactly one non-empty \\.AppImage bundle for linux-x64; found 0\./,
+      );
+      assert.equal(fs.existsSync(output), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("native staging rejects an open-time parent junction swap", () => {
   const root = mkdtempSync(join(tmpdir(), "better-cloudflare-open-race-"));
   try {

@@ -393,7 +393,7 @@ function filesRecursively(directory, depth = 0, budget = { files: 0 }) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
-      fail(`Bundle tree contains a symlink or junction: ${path}.`);
+      continue;
     }
     if (entry.isDirectory()) {
       files.push(...filesRecursively(path, depth + 1, budget));
