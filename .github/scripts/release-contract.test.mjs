@@ -500,7 +500,7 @@ test(
 
       assert.throws(
         () => stageNativeAsset(bundleRoot, "linux", "x64", output),
-        /Expected exactly one non-empty \\.AppImage bundle for linux-x64; found 0\./,
+        /Expected exactly one non-empty \.AppImage bundle for linux-x64; found 0\./,
       );
       assert.equal(fs.existsSync(output), false);
     } finally {
