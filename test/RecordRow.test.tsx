@@ -18,8 +18,11 @@ const sample: DNSRecord = {
   modified_on: "",
 };
 
+const originalWindowOpen = window.open;
+
 afterEach(() => {
   cleanup();
+  window.open = originalWindowOpen;
 });
 
 test("RecordRow renders display mode when not editing", () => {
@@ -60,4 +63,87 @@ test("RecordRow edit flow calls onSave with updated record", async () => {
   const saveButton = screen.getByRole("button", { name: /save/i });
   fireEvent.click(saveButton);
   assert.equal(saved?.name, "changed");
+});
+
+test("Ctrl/Meta click and Ctrl/Meta+Enter open the record owner without editing", () => {
+  const opened: string[] = [];
+  let edits = 0;
+  window.open = ((url?: string | URL) => {
+    opened.push(String(url));
+    return null;
+  }) as typeof window.open;
+
+  render(
+    <RecordRow
+      zoneId="z"
+      zoneName="example.com"
+      record={sample}
+      isEditing={false}
+      onEdit={() => {
+        edits += 1;
+      }}
+      onSave={() => {}}
+      onCancel={() => {}}
+      onDelete={() => {}}
+    />,
+  );
+
+  const name = screen.getByText("www");
+  const row = name.closest('[role="button"]');
+  assert.ok(row);
+
+  fireEvent.click(name, { button: 0, ctrlKey: true });
+  fireEvent.click(name, { button: 0, metaKey: true });
+  fireEvent.keyDown(row, { key: "Enter", ctrlKey: true });
+  fireEvent.keyDown(row, { key: "Enter", metaKey: true });
+
+  assert.deepEqual(opened, [
+    "https://www.example.com/",
+    "https://www.example.com/",
+    "https://www.example.com/",
+    "https://www.example.com/",
+  ]);
+  assert.equal(edits, 0);
+});
+
+test("ordinary edit and selection controls remain isolated from browser opening", () => {
+  const opened: string[] = [];
+  let edits = 0;
+  let selected = false;
+  window.open = ((url?: string | URL) => {
+    opened.push(String(url));
+    return null;
+  }) as typeof window.open;
+
+  render(
+    <RecordRow
+      zoneId="z"
+      zoneName="example.com"
+      record={sample}
+      isEditing={false}
+      onEdit={() => {
+        edits += 1;
+      }}
+      onSave={() => {}}
+      onCancel={() => {}}
+      onDelete={() => {}}
+      onSelectChange={(next) => {
+        selected = next;
+      }}
+    />,
+  );
+
+  const name = screen.getByText("www");
+  const row = name.closest('[role="button"]');
+  assert.ok(row);
+  fireEvent.click(name);
+  fireEvent.doubleClick(row);
+  fireEvent.click(screen.getByLabelText("Select record"), {
+    button: 0,
+    ctrlKey: true,
+  });
+
+  assert.equal(edits, 1);
+  assert.equal(selected, true);
+  assert.deepEqual(opened, []);
 });

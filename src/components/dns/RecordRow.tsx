@@ -3,7 +3,7 @@
  * editor allowing update and deletion of the record.
  */
 import { useState, useEffect, useCallback } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, MouseEvent as ReactMouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +36,8 @@ import type { RecordType, DNSRecord, TTLValue } from "@/types/dns";
 import type { SPFGraph } from "@/lib/dns/spf";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/dns/spf";
 import { storageManager } from "@/lib/storage/storage";
+import { getRecordBrowserUrl } from "@/lib/dns/record-browser-url";
+import { openExternalUrl } from "@/lib/external-url";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   parseSRV,
@@ -80,7 +82,19 @@ import {
   X,
   MoreHorizontal,
   MessageSquare,
+  ExternalLink,
 } from "lucide-react";
+
+const INTERACTIVE_RECORD_TARGET =
+  'a, button, input, select, textarea, [contenteditable="true"], [role="checkbox"], [role="menuitem"], [role="switch"]';
+
+function isInteractiveRecordTarget(
+  target: EventTarget | null,
+  currentTarget: HTMLElement,
+): boolean {
+  if (!(target instanceof Element) || target === currentTarget) return false;
+  return target.closest(INTERACTIVE_RECORD_TARGET) !== null;
+}
 
 function supportsRecordBuilder(type: RecordType | undefined): boolean {
   if (!type) return false;
@@ -207,6 +221,30 @@ export function RecordRow({
     storageManager.getZoneTags(zoneId),
   );
   const [tagDraft, setTagDraft] = useState("");
+
+  const recordBrowserUrl = getRecordBrowserUrl(record, zoneName);
+  const openRecordInBrowser = useCallback(() => {
+    if (!recordBrowserUrl) return;
+    void openExternalUrl(recordBrowserUrl);
+  }, [recordBrowserUrl]);
+
+  const handleModifiedRecordClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (
+        event.button !== 0 ||
+        (!event.ctrlKey && !event.metaKey) ||
+        !recordBrowserUrl ||
+        isInteractiveRecordTarget(event.target, event.currentTarget)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      openRecordInBrowser();
+    },
+    [openRecordInBrowser, recordBrowserUrl],
+  );
 
   const [srvPriority, setSrvPriority] = useState<number | undefined>(
     parseSRV(record.content).priority,
@@ -644,6 +682,12 @@ export function RecordRow({
           <Copy className="mr-2 h-3.5 w-3.5" />
           {t("Copy", "Copy")}
         </DropdownMenuItem>
+        {recordBrowserUrl && (
+          <DropdownMenuItem onSelect={openRecordInBrowser}>
+            <ExternalLink className="mr-2 h-3.5 w-3.5" />
+            {t("Open in browser", "Open in browser")}
+          </DropdownMenuItem>
+        )}
         {onClone && (
           <DropdownMenuItem
             onSelect={() => {
@@ -666,7 +710,15 @@ export function RecordRow({
         </DropdownMenuItem>
       </>
     );
-  }, [onClone, onCopy, onDelete, onEdit, t]);
+  }, [
+    onClone,
+    onCopy,
+    onDelete,
+    onEdit,
+    openRecordInBrowser,
+    recordBrowserUrl,
+    t,
+  ]);
 
   const renderContextMenuItems = useCallback(() => {
     return (
@@ -688,6 +740,12 @@ export function RecordRow({
           <Copy className="mr-2 h-3.5 w-3.5" />
           {t("Copy", "Copy")}
         </ContextMenuItem>
+        {recordBrowserUrl && (
+          <ContextMenuItem onSelect={openRecordInBrowser}>
+            <ExternalLink className="mr-2 h-3.5 w-3.5" />
+            {t("Open in browser", "Open in browser")}
+          </ContextMenuItem>
+        )}
         {onClone && (
           <ContextMenuItem
             onSelect={() => {
@@ -710,7 +768,15 @@ export function RecordRow({
         </ContextMenuItem>
       </>
     );
-  }, [onClone, onCopy, onDelete, onEdit, t]);
+  }, [
+    onClone,
+    onCopy,
+    onDelete,
+    onEdit,
+    openRecordInBrowser,
+    recordBrowserUrl,
+    t,
+  ]);
 
   if (isEditing) {
     return (
@@ -1470,9 +1536,20 @@ export function RecordRow({
           tabIndex={0}
           data-selected={isSelected}
           data-context-open={contextMenuOpen ? "true" : "false"}
+          onClickCapture={handleModifiedRecordClick}
           onDoubleClick={() => onEdit()}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
+              if (
+                (event.ctrlKey || event.metaKey) &&
+                recordBrowserUrl &&
+                !isInteractiveRecordTarget(event.target, event.currentTarget)
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                openRecordInBrowser();
+                return;
+              }
               onEdit();
             }
           }}
