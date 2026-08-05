@@ -40,6 +40,36 @@ test("isTauri returns false when window is missing", () => {
   assert.equal(TauriClient.isTauri(), false);
 });
 
+test("uses the exact native preferences read and update command contracts", async () => {
+  const calls: Array<{
+    command: string;
+    payload: Record<string, unknown> | undefined;
+  }> = [];
+  mockIPC((command, payload) => {
+    calls.push({
+      command,
+      payload: payload as Record<string, unknown> | undefined,
+    });
+    if (command === "get_preferences") {
+      return { theme: "void", locale: "pt-PT" };
+    }
+    if (command === "update_preferences") return undefined;
+    throw new Error(`Unexpected Tauri command: ${command}`);
+  });
+
+  const preferences = await TauriClient.getPreferences();
+  await TauriClient.updatePreferences({ theme: "void", locale: "pt-PT" });
+
+  assert.deepEqual(preferences, { theme: "void", locale: "pt-PT" });
+  assert.deepEqual(calls, [
+    { command: "get_preferences", payload: {} },
+    {
+      command: "update_preferences",
+      payload: { prefs: { theme: "void", locale: "pt-PT" } },
+    },
+  ]);
+});
+
 test("sends MCP tool arguments using Tauri's camel-cased command contract", async () => {
   const calls: Array<{
     command: string;

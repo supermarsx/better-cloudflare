@@ -39,6 +39,9 @@ bc-ai-chat = { path = "crates/bc-ai-chat" }
 bc-ai-tools = { path = "crates/bc-ai-tools" }
 bc-ai-agent = { path = "crates/bc-ai-agent" }
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

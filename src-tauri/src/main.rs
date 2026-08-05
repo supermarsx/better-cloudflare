@@ -146,20 +146,29 @@ fn install_panic_hook() {
     }));
 }
 
+fn initialize_app_config_at(app_data_dir: PathBuf) -> AppConfigStore {
+    AppConfigStore::new(app_data_dir)
+}
+
+fn initialize_app<R: tauri::Runtime>(
+    app: &mut tauri::App<R>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app_data_dir = app.path().app_data_dir()?;
+    app.manage(initialize_app_config_at(app_data_dir));
+    Ok(())
+}
+
 fn main() {
     install_panic_hook();
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            app.manage(AppConfigStore::new(app.path().app_data_dir()?));
-            Ok(())
-        })
         .manage(Storage::default())
         .manage(PasskeyManager)
         .manage(McpServerManager::default())
         .manage(SessionManager::default())
         .manage(AgentManager::default())
+        .setup(initialize_app)
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
             commands::restart_app,
@@ -304,13 +313,6 @@ fn main() {
             ai_commands::ai_get_preset,
             ai_commands::ai_export_conversation,
         ])
-        .setup(|app| {
-            // Initialize storage
-            let app_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&app_dir)?;
-
-            Ok(())
-        })
         .run(tauri::generate_context!());
 
     if run_result.is_err() {
@@ -325,9 +327,27 @@ fn main() {
 }
 
 #[cfg(test)]
-mod crash_reporting_tests {
+mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "better-cloudflare-app-init-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     struct FailingWriter;
 
@@ -339,6 +359,63 @@ mod crash_reporting_tests {
         fn flush(&mut self) -> io::Result<()> {
             Err(io::Error::other("simulated flush failure"))
         }
+    }
+
+    #[tokio::test]
+    async fn app_initialization_manages_a_usable_preferences_store() {
+        let directory = TestDirectory::new();
+        assert!(!directory.0.exists());
+        let config = initialize_app_config_at(directory.0.clone());
+        assert!(
+            !directory.0.exists(),
+            "constructing AppConfigStore must not create app-data on disk"
+        );
+        let preferences = config
+            .get_preferences(
+                || async { Ok::<_, bc_storage::StorageError>(None) },
+                || async { Ok::<_, bc_storage::StorageError>(()) },
+            )
+            .await
+            .expect("the first preference load should initialize the backing file");
+
+        assert_eq!(preferences, crate::storage::Preferences::default());
+        assert!(directory.0.is_dir());
+        assert!(directory.0.join("preferences-v1.json").is_file());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn tauri_setup_manages_preferences_state_before_commands_run() {
+        let mut app = tauri::test::mock_builder()
+            .setup(initialize_app)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock application should build");
+
+        assert!(app.try_state::<AppConfigStore>().is_none());
+        app.run_iteration(|_, _| {});
+        assert!(
+            app.try_state::<AppConfigStore>().is_some(),
+            "the production setup hook must manage AppConfigStore"
+        );
+    }
+
+    #[test]
+    fn preference_commands_keep_their_required_setup_hook() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+
+        assert!(production.contains("commands::get_preferences"));
+        assert!(production.contains("commands::update_preferences"));
+        assert_eq!(
+            production.matches(".setup(").count(),
+            1,
+            "Tauri replaces an earlier setup hook; all startup work must stay in one hook"
+        );
+        assert!(production.contains(".setup(initialize_app)"));
+        assert!(production.contains("app.manage(initialize_app_config_at(app_data_dir))"));
     }
 
     #[test]
