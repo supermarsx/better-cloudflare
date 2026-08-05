@@ -87,6 +87,11 @@ function statusVariant(status: string): "default" | "primary" {
   }
 }
 
+function shouldRenderStatusBadge(status: string): boolean {
+  const normalizedStatus = status.trim().toLowerCase();
+  return normalizedStatus.length > 0 && normalizedStatus !== "active";
+}
+
 /** Health status icon. */
 function HealthIcon({
   status,
@@ -438,12 +443,14 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
         </div>
 
         {/* Status tag */}
-        <Tag
-          variant={statusVariant(domain.status)}
-          className="text-[10px] shrink-0"
-        >
-          {domain.status}
-        </Tag>
+        {shouldRenderStatusBadge(domain.status) ? (
+          <Tag
+            variant={statusVariant(domain.status)}
+            className="text-[10px] shrink-0"
+          >
+            {domain.status}
+          </Tag>
+        ) : null}
 
         {/* Expiry */}
         <div

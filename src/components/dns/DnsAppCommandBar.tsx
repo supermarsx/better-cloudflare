@@ -55,17 +55,7 @@ export function DnsAppCommandBar({
 
   return (
     <div className="mx-auto flex w-full max-w-[1600px] min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 sm:px-4">
-      <div className="min-w-0 flex-1 basis-52">
-        <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">
-          {t("DNS Manager", "DNS Manager")}
-        </h1>
-        <p className="hidden truncate text-[11px] text-muted-foreground sm:block">
-          {t(
-            "Manage your Cloudflare DNS records",
-            "Manage your Cloudflare DNS records",
-          )}
-        </p>
-      </div>
+      <div aria-hidden="true" className="min-w-0 flex-1" />
 
       <div
         role="toolbar"

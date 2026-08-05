@@ -49,16 +49,14 @@ function isInputElement(el: EventTarget | null): boolean {
 }
 
 function matchesBinding(e: KeyboardEvent, binding: HotkeyBinding): boolean {
-  // Check modifier keys - on Mac, ctrl means Meta (Cmd)
-  const ctrlPressed = isMac ? e.metaKey : e.ctrlKey;
-  if (binding.ctrl && !ctrlPressed) return false;
-  if (!binding.ctrl && ctrlPressed) return false;
-
-  if (binding.shift && !e.shiftKey) return false;
-  if (!binding.shift && e.shiftKey && binding.ctrl) return false;
-
-  if (binding.alt && !e.altKey) return false;
-  if (!binding.alt && e.altKey) return false;
+  // A ctrl binding means exactly Cmd on Apple platforms or Ctrl elsewhere.
+  // Reject the other platform modifier so Ctrl+Meta cannot trigger a binding.
+  const expectsPrimaryModifier = binding.ctrl === true;
+  const expectsCtrl = !isMac && expectsPrimaryModifier;
+  const expectsMeta = isMac && expectsPrimaryModifier;
+  if (e.ctrlKey !== expectsCtrl || e.metaKey !== expectsMeta) return false;
+  if (e.shiftKey !== (binding.shift === true)) return false;
+  if (e.altKey !== (binding.alt === true)) return false;
 
   return e.key.toLowerCase() === binding.key.toLowerCase();
 }

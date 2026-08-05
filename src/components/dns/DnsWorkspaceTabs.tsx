@@ -28,6 +28,11 @@ function safeDomId(value: string): string {
   });
 }
 
+function shouldRenderStatusBadge(status: string | undefined): status is string {
+  const normalizedStatus = status?.trim().toLowerCase();
+  return Boolean(normalizedStatus) && normalizedStatus !== "active";
+}
+
 export function getDnsWorkspaceTabId(id: string): string {
   return `dns-workspace-tab-${safeDomId(id)}`;
 }
@@ -247,7 +252,7 @@ export function DnsWorkspaceTabs({
                 className="h-3 w-3 shrink-0 opacity-50"
               />
               <span className="max-w-36 truncate">{item.label}</span>
-              {item.kind === "zone" && item.status ? (
+              {item.kind === "zone" && shouldRenderStatusBadge(item.status) ? (
                 <span className="hidden text-[9px] uppercase tracking-wider opacity-60 sm:inline">
                   {item.status}
                 </span>

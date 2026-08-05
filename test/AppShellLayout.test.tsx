@@ -111,7 +111,8 @@ test("authenticated command-bar controls remain labelled and clickable", () => {
   assert.ok(
     screen.getByRole("toolbar", { name: "Global application controls" }),
   );
-  assert.ok(screen.getByRole("heading", { name: "DNS Manager" }));
+  assert.equal(screen.queryByRole("heading", { name: "DNS Manager" }), null);
+  assert.equal(screen.queryByText("Manage your Cloudflare DNS records"), null);
   assert.ok(screen.getByText("operator@example.com"));
   assert.ok(screen.getByText("Primary session"));
   assert.equal(screen.queryByText("Connected"), null);
@@ -134,22 +135,44 @@ test("bottom connection bar labels authenticated session and current workspace c
     <DnsConnectionBar
       zoneSelector={<button type="button">Choose domain</button>}
       activeContext="example.com"
-      activeStatus="active"
+      activeStatus="  ACTIVE  "
       recordCount={8}
       visibleCount={5}
     />,
   );
 
-  assert.ok(
-    screen.getByRole("status", { name: "Session status: Authenticated" }),
+  const sessionStatus = screen.getByRole("status", {
+    name: "Session status: Authenticated",
+  });
+  assert.equal(sessionStatus.tabIndex, 0);
+  assert.match(sessionStatus.className, /\bh-7\b/);
+  assert.match(sessionStatus.className, /\bw-7\b/);
+  assert.ok(sessionStatus.querySelector('svg[aria-hidden="true"]'));
+  assert.equal(screen.queryByText("Authenticated session"), null);
+
+  fireEvent.focus(sessionStatus);
+  assert.equal(
+    screen.getByRole("tooltip").textContent,
+    "Authenticated session",
   );
-  assert.ok(screen.getByText("Authenticated session"));
   assert.ok(screen.getByRole("button", { name: "Choose domain" }));
   assert.ok(screen.getByText("example.com"));
-  assert.ok(screen.getByText("active"));
+  assert.equal(screen.queryByText(/^active$/i), null);
   assert.ok(screen.getByText("8 records"));
   assert.ok(screen.getByText("5 visible"));
   assert.equal(screen.queryByText("Connected"), null);
+});
+
+test("bottom connection bar retains normalized non-active zone statuses", () => {
+  render(
+    <DnsConnectionBar
+      zoneSelector={<button type="button">Choose domain</button>}
+      activeContext="example.com"
+      activeStatus="  pending  "
+    />,
+  );
+
+  assert.ok(screen.getByText("pending"));
 });
 
 const INITIAL_TABS: DnsWorkspaceTabItem[] = [
