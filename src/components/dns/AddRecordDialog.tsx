@@ -74,7 +74,7 @@ export interface AddRecordDialogProps {
   /** Called when fields in the form change with the updated record */
   onRecordChange: (record: Partial<DNSRecord>) => void;
   /** Called to create the new record */
-  onAdd: () => void;
+  onAdd: () => void | Promise<void>;
   /** Optional name of the zone to display in the dialog */
   zoneName?: string;
   /** Controls whether unsupported record types appear in the Type dropdown */
@@ -735,16 +735,23 @@ export function AddRecordDialog({
     validationWarnings,
   ]);
 
-  const handleCreateRecord = () => {
-    if (submissionWarnings.length === 0) {
-      onAdd();
-      return;
-    }
-    if (!confirmInvalid) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleCreateRecord = async () => {
+    if (isSubmitting) return;
+    if (submissionWarnings.length > 0 && !confirmInvalid) {
       setConfirmInvalid(true);
       return;
     }
-    onAdd();
+
+    setIsSubmitting(true);
+    try {
+      await onAdd();
+    } catch {
+      // The parent owns error presentation and whether the dialog stays open.
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const serializeDraft = useCallback((draft: Partial<DNSRecord>) => {
@@ -809,7 +816,9 @@ export function AddRecordDialog({
           onClick={() => {
             setConfirmInvalid(false);
             setShowDiscardConfirm(false);
-            onRecordChange(createEmptyDraft());
+            if (!(record.name ?? "").trim()) {
+              onRecordChange(createEmptyDraft());
+            }
           }}
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -1330,12 +1339,22 @@ export function AddRecordDialog({
             onClick={handleCreateRecord}
             className="w-full"
             variant="default"
+            disabled={isSubmitting}
+            aria-busy={isSubmitting}
+            aria-live="polite"
+            aria-label={
+              isSubmitting
+                ? t("Creating DNS record...", "Creating DNS record...")
+                : undefined
+            }
           >
-            {submissionWarnings.length > 0
-              ? confirmInvalid
-                ? "Create Anyway"
-                : "Review Warnings"
-              : "Create Record"}
+            {isSubmitting
+              ? t("Creating DNS record...", "Creating DNS record...")
+              : submissionWarnings.length > 0
+                ? confirmInvalid
+                  ? "Create Anyway"
+                  : "Review Warnings"
+                : "Create Record"}
           </Button>
           {submissionWarnings.length > 0 && confirmInvalid && (
             <Button

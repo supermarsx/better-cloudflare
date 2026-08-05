@@ -1,5 +1,13 @@
 use tauri::State;
 
+use bc_cloudflare_api::{
+    CloudflareError, CloudflareHttpError, CloudflareProviderError, CloudflareRequestError,
+    CloudflareResourceLimitContext, CloudflareTransportCategory, CloudflareValidationError,
+    ResourceLimitError, ResourceLimitKind, VerificationErrorSource, VerificationFailureKind,
+    DNS_LIST_OPERATION,
+};
+use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind};
+
 use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput, Zone};
 use crate::storage::Storage;
 
@@ -7,6 +15,563 @@ use super::log_audit;
 
 const MAX_NATIVE_EXPORT_PAGE: u32 = 10_000;
 const MAX_NATIVE_EXPORT_PER_PAGE: u32 = 500;
+
+fn transport_category_name(category: CloudflareTransportCategory) -> &'static str {
+    match category {
+        CloudflareTransportCategory::Dns => "dns",
+        CloudflareTransportCategory::Timeout => "timeout",
+        CloudflareTransportCategory::Connect => "connect",
+        CloudflareTransportCategory::Other => "other",
+    }
+}
+
+fn request_failure_kind(kind: &VerificationFailureKind) -> RequestFailureKind {
+    match kind {
+        VerificationFailureKind::Authentication => RequestFailureKind::Authentication,
+        VerificationFailureKind::RateLimited => RequestFailureKind::RateLimited,
+        VerificationFailureKind::Provider => RequestFailureKind::Provider,
+        VerificationFailureKind::Network => RequestFailureKind::Network,
+        VerificationFailureKind::Timeout => RequestFailureKind::Timeout,
+        VerificationFailureKind::MalformedResponse => RequestFailureKind::MalformedResponse,
+    }
+}
+
+fn request_error_source(source: &VerificationErrorSource) -> RequestErrorSource {
+    match source {
+        VerificationErrorSource::Network => RequestErrorSource::Network,
+        VerificationErrorSource::Cloudflare => RequestErrorSource::Cloudflare,
+    }
+}
+
+fn provider_error_details(errors: Vec<CloudflareProviderError>) -> Vec<ProviderErrorDetail> {
+    errors
+        .into_iter()
+        .map(|error| ProviderErrorDetail {
+            code: error.code,
+            message: error.message,
+        })
+        .collect()
+}
+
+fn resource_limit_kind_name(kind: &ResourceLimitKind) -> &'static str {
+    match kind {
+        ResourceLimitKind::ContentLength => "content_length",
+        ResourceLimitKind::StreamedBody => "streamed_body",
+        ResourceLimitKind::Collection => "collection",
+        ResourceLimitKind::Allocation => "allocation",
+    }
+}
+
+fn resource_limit_details(limit: &ResourceLimitError) -> Vec<ProviderErrorDetail> {
+    let mut details = vec![
+        ProviderErrorDetail {
+            code: Some("resource".to_string()),
+            message: limit.resource.to_string(),
+        },
+        ProviderErrorDetail {
+            code: Some("limit_kind".to_string()),
+            message: resource_limit_kind_name(&limit.kind).to_string(),
+        },
+        ProviderErrorDetail {
+            code: Some("limit".to_string()),
+            message: limit.limit.to_string(),
+        },
+    ];
+    if let Some(actual) = limit.actual {
+        details.push(ProviderErrorDetail {
+            code: Some("actual".to_string()),
+            message: actual.to_string(),
+        });
+    }
+    details
+}
+
+fn validation_error_details(error: &CloudflareValidationError) -> Vec<ProviderErrorDetail> {
+    let mut details = vec![
+        ProviderErrorDetail {
+            code: Some("field".to_string()),
+            message: error.field.clone(),
+        },
+        ProviderErrorDetail {
+            code: Some("limit".to_string()),
+            message: error.limit.to_string(),
+        },
+    ];
+    if let Some(actual) = error.actual {
+        details.push(ProviderErrorDetail {
+            code: Some("actual".to_string()),
+            message: actual.to_string(),
+        });
+    }
+    details
+}
+
+fn map_structured_request_error(error: CloudflareRequestError) -> AppError {
+    let is_authentication = matches!(&error.kind, VerificationFailureKind::Authentication)
+        || matches!(error.status, Some(401 | 403));
+    let kind = request_failure_kind(&error.kind);
+    let source = request_error_source(&error.source);
+    let provider_errors = provider_error_details(error.provider_errors);
+
+    if is_authentication {
+        AppError::auth_request_failed(
+            RequestFailureKind::Authentication,
+            error.message,
+            error.status,
+            source,
+            error.operation,
+            error.retryable,
+            provider_errors,
+            error.retry_after_secs,
+            error.remediation,
+            error.request_id,
+        )
+    } else {
+        AppError::request_failed(
+            kind,
+            error.message,
+            error.status,
+            source,
+            error.operation,
+            error.retryable,
+            provider_errors,
+            error.retry_after_secs,
+            error.remediation,
+            error.request_id,
+        )
+    }
+}
+
+fn map_resource_limit_context(context: CloudflareResourceLimitContext) -> AppError {
+    AppError::request_failed(
+        RequestFailureKind::Provider,
+        context.message,
+        context.status,
+        request_error_source(&context.source),
+        context.operation,
+        context.retryable,
+        resource_limit_details(&context.limit),
+        None,
+        context.remediation,
+        context.request_id,
+    )
+}
+
+fn map_validation_error(error: CloudflareValidationError) -> AppError {
+    let details = validation_error_details(&error);
+    AppError::request_failed(
+        RequestFailureKind::Provider,
+        error.message,
+        None,
+        RequestErrorSource::Client,
+        error.operation,
+        false,
+        details,
+        None,
+        error.remediation,
+        None,
+    )
+}
+
+fn map_legacy_resource_limit(limit: ResourceLimitError) -> AppError {
+    AppError::request_failed(
+        RequestFailureKind::Provider,
+        "Cloudflare DNS records response exceeded a safe resource limit.",
+        None,
+        RequestErrorSource::Client,
+        DNS_LIST_OPERATION,
+        false,
+        resource_limit_details(&limit),
+        None,
+        "Reduce the requested DNS records page size and retry.",
+        None,
+    )
+}
+
+fn map_dns_records_error(error: CloudflareError) -> AppError {
+    match error {
+        CloudflareError::HttpError(CloudflareHttpError::Transport(context)) => {
+            let kind = match context.category {
+                CloudflareTransportCategory::Timeout => RequestFailureKind::Timeout,
+                CloudflareTransportCategory::Dns
+                | CloudflareTransportCategory::Connect
+                | CloudflareTransportCategory::Other => RequestFailureKind::Network,
+            };
+            let details = vec![
+                ProviderErrorDetail {
+                    code: Some("transport_category".to_string()),
+                    message: transport_category_name(context.category).to_string(),
+                },
+                ProviderErrorDetail {
+                    code: Some("upstream_host".to_string()),
+                    message: context.host.to_string(),
+                },
+                ProviderErrorDetail {
+                    code: Some("attempt".to_string()),
+                    message: context.attempt.to_string(),
+                },
+                ProviderErrorDetail {
+                    code: Some("max_attempts".to_string()),
+                    message: context.max_attempts.to_string(),
+                },
+            ];
+
+            AppError::request_failed(
+                kind,
+                "Cloudflare DNS records request failed before a response was received.",
+                None,
+                RequestErrorSource::Network,
+                context.operation,
+                context.retryable,
+                details,
+                None,
+                context.remediation,
+                None,
+            )
+        }
+        CloudflareError::HttpError(CloudflareHttpError::ResourceLimit(limit)) => {
+            map_legacy_resource_limit(limit)
+        }
+        CloudflareError::Request(error) | CloudflareError::Verification(error) => {
+            map_structured_request_error(*error)
+        }
+        CloudflareError::ResourceLimit(context) => map_resource_limit_context(*context),
+        CloudflareError::Validation(error) => map_validation_error(*error),
+        CloudflareError::AuthFailed => AppError::auth_request_failed(
+            RequestFailureKind::Authentication,
+            "Cloudflare rejected the saved account credentials.",
+            None,
+            RequestErrorSource::Cloudflare,
+            DNS_LIST_OPERATION,
+            false,
+            Vec::new(),
+            None,
+            "Verify the saved Cloudflare API token or key and account email.",
+            None,
+        ),
+        CloudflareError::RateLimited(retry_after_secs) => AppError::request_failed(
+            RequestFailureKind::RateLimited,
+            "Cloudflare rate-limited the DNS records request.",
+            Some(429),
+            RequestErrorSource::Cloudflare,
+            DNS_LIST_OPERATION,
+            true,
+            Vec::new(),
+            Some(u64::from(retry_after_secs)),
+            "Wait for the retry interval, then request the DNS records again.",
+            None,
+        ),
+        CloudflareError::ApiError(_) => AppError::request_failed(
+            RequestFailureKind::Provider,
+            "Cloudflare DNS records request failed.",
+            None,
+            RequestErrorSource::Cloudflare,
+            DNS_LIST_OPERATION,
+            false,
+            Vec::new(),
+            None,
+            "Retry the request. If it continues to fail, verify Cloudflare availability and the saved account credentials.",
+            None,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bc_cloudflare_api::{CloudflareTransportError, CLOUDFLARE_API_HOST};
+    use serde_json::Value;
+
+    fn serialize_mapped_error(error: CloudflareError) -> (String, Value) {
+        let serialized: String = map_dns_records_error(error).into();
+        let value = serde_json::from_str(&serialized).expect("AppError must serialize as JSON");
+        (serialized, value)
+    }
+
+    #[test]
+    fn dns_transport_error_serializes_safe_structured_context() {
+        let error =
+            CloudflareError::HttpError(CloudflareHttpError::Transport(CloudflareTransportError {
+                category: CloudflareTransportCategory::Dns,
+                host: CLOUDFLARE_API_HOST,
+                operation: DNS_LIST_OPERATION,
+                attempt: 3,
+                max_attempts: 4,
+                retryable: true,
+                remediation: "Check DNS resolution and retry the request.",
+            }));
+
+        let (serialized, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["code"], "REQUEST_FAILED");
+        assert_eq!(value["kind"], "network");
+        assert_eq!(value["source"], "network");
+        assert_eq!(value["operation"], DNS_LIST_OPERATION);
+        assert_eq!(value["retryable"], true);
+        assert_eq!(
+            value["details"]["remediation"],
+            "Check DNS resolution and retry the request."
+        );
+
+        let details = value["details"]["provider_errors"]
+            .as_array()
+            .expect("transport details must be an array");
+        for (code, message) in [
+            ("transport_category", "dns"),
+            ("upstream_host", CLOUDFLARE_API_HOST),
+            ("attempt", "3"),
+            ("max_attempts", "4"),
+        ] {
+            assert!(details
+                .iter()
+                .any(|detail| detail["code"] == code && detail["message"] == message));
+        }
+
+        assert!(!serialized.contains("https://"));
+        assert!(!serialized.contains("dns_records"));
+        assert!(!serialized.contains("api_token"));
+    }
+
+    #[test]
+    fn timeout_transport_error_uses_timeout_kind() {
+        let error =
+            CloudflareError::HttpError(CloudflareHttpError::Transport(CloudflareTransportError {
+                category: CloudflareTransportCategory::Timeout,
+                host: CLOUDFLARE_API_HOST,
+                operation: DNS_LIST_OPERATION,
+                attempt: 1,
+                max_attempts: 1,
+                retryable: false,
+                remediation: "Retry when network connectivity is stable.",
+            }));
+
+        let (_, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["kind"], "timeout");
+        assert_eq!(value["retryable"], false);
+    }
+
+    #[test]
+    fn provider_error_text_is_not_exposed_at_the_command_boundary() {
+        let sensitive =
+            "https://proxy.internal/client/v4/zones/zone-secret/dns_records?api_token=token-secret";
+        let (serialized, value) =
+            serialize_mapped_error(CloudflareError::ApiError(sensitive.to_string()));
+
+        assert_eq!(value["kind"], "provider");
+        assert_eq!(value["source"], "cloudflare");
+        assert_eq!(value["operation"], DNS_LIST_OPERATION);
+        for forbidden in [
+            "proxy.internal",
+            "zone-secret",
+            "token-secret",
+            "https://",
+            "dns_records",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+}
+
+#[cfg(test)]
+mod structured_request_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn serialize(error: CloudflareError) -> (String, Value) {
+        let serialized: String = map_dns_records_error(error).into();
+        let value = serde_json::from_str(&serialized).expect("AppError must serialize as JSON");
+        (serialized, value)
+    }
+
+    fn request_error(
+        kind: VerificationFailureKind,
+        status: Option<u16>,
+        retryable: bool,
+        retry_after_secs: Option<u64>,
+    ) -> CloudflareError {
+        CloudflareError::Request(Box::new(CloudflareRequestError {
+            kind,
+            message: "Cloudflare DNS request failed safely.".to_string(),
+            status,
+            source: VerificationErrorSource::Cloudflare,
+            operation: DNS_LIST_OPERATION.to_string(),
+            retryable,
+            provider_errors: vec![CloudflareProviderError {
+                code: Some("provider-code".to_string()),
+                message: "Safe provider detail.".to_string(),
+            }],
+            retry_after_secs,
+            remediation: "Follow the safe remediation guidance.".to_string(),
+            request_id: Some("safe-ray-id".to_string()),
+        }))
+    }
+
+    #[test]
+    fn only_authentication_and_401_403_use_auth_request_failed() {
+        for error in [
+            request_error(VerificationFailureKind::Authentication, None, false, None),
+            CloudflareError::Verification(Box::new(CloudflareRequestError {
+                kind: VerificationFailureKind::Provider,
+                message: "Cloudflare rejected the request.".to_string(),
+                status: Some(401),
+                source: VerificationErrorSource::Cloudflare,
+                operation: DNS_LIST_OPERATION.to_string(),
+                retryable: false,
+                provider_errors: Vec::new(),
+                retry_after_secs: None,
+                remediation: "Verify the saved credentials.".to_string(),
+                request_id: None,
+            })),
+            request_error(VerificationFailureKind::Provider, Some(403), false, None),
+            CloudflareError::AuthFailed,
+        ] {
+            let (_, value) = serialize(error);
+            assert_eq!(value["code"], "AUTH_REQUEST_FAILED");
+            assert_eq!(value["kind"], "authentication");
+            assert_eq!(value["retryable"], false);
+        }
+    }
+
+    #[test]
+    fn status_and_malformed_failures_preserve_generic_semantics() {
+        for (error, expected_kind, expected_status, expected_retryable) in [
+            (
+                request_error(VerificationFailureKind::Timeout, Some(408), true, None),
+                "timeout",
+                408,
+                true,
+            ),
+            (
+                request_error(
+                    VerificationFailureKind::RateLimited,
+                    Some(429),
+                    true,
+                    Some(23),
+                ),
+                "rate_limited",
+                429,
+                true,
+            ),
+            (
+                request_error(VerificationFailureKind::Provider, Some(400), false, None),
+                "provider",
+                400,
+                false,
+            ),
+            (
+                request_error(VerificationFailureKind::Provider, Some(503), true, None),
+                "provider",
+                503,
+                true,
+            ),
+            (
+                request_error(
+                    VerificationFailureKind::MalformedResponse,
+                    Some(200),
+                    false,
+                    None,
+                ),
+                "malformed_response",
+                200,
+                false,
+            ),
+        ] {
+            let (_, value) = serialize(error);
+            assert_eq!(value["code"], "REQUEST_FAILED");
+            assert_eq!(value["kind"], expected_kind);
+            assert_eq!(value["status"], expected_status);
+            assert_eq!(value["retryable"], expected_retryable);
+            assert_eq!(value["details"]["provider_codes"][0], "provider-code");
+            assert_eq!(value["request_id"], "safe-ray-id");
+            if expected_status == 429 {
+                assert_eq!(value["retry_after"], "23");
+                assert_eq!(value["details"]["retry_after_secs"], 23);
+            }
+        }
+    }
+
+    #[test]
+    fn resource_limit_and_validation_failures_are_structured() {
+        let (_, resource) = serialize(CloudflareError::ResourceLimit(Box::new(
+            CloudflareResourceLimitContext {
+                limit: ResourceLimitError {
+                    resource: "dns_records_response",
+                    limit: 100,
+                    actual: Some(101),
+                    kind: ResourceLimitKind::Collection,
+                },
+                status: Some(200),
+                source: VerificationErrorSource::Cloudflare,
+                operation: DNS_LIST_OPERATION.to_string(),
+                retryable: false,
+                message: "DNS response exceeded the safe record limit.".to_string(),
+                remediation: "Request a smaller page.".to_string(),
+                request_id: Some("safe-ray-id".to_string()),
+            },
+        )));
+        assert_eq!(resource["code"], "REQUEST_FAILED");
+        assert_eq!(resource["status"], 200);
+        assert_eq!(resource["retryable"], false);
+        assert!(resource["details"]["provider_messages"]
+            .as_array()
+            .expect("resource details")
+            .iter()
+            .any(|message| message == "dns_records_response"));
+
+        let (_, validation) = serialize(CloudflareError::Validation(Box::new(
+            CloudflareValidationError {
+                field: "per_page".to_string(),
+                limit: 500,
+                actual: Some(501),
+                operation: DNS_LIST_OPERATION.to_string(),
+                message: "DNS page size exceeds the supported limit.".to_string(),
+                remediation: "Choose a page size no greater than 500.".to_string(),
+            },
+        )));
+        assert_eq!(validation["code"], "REQUEST_FAILED");
+        assert_eq!(validation["source"], "client");
+        assert_eq!(validation["retryable"], false);
+    }
+
+    #[test]
+    fn legacy_rate_limit_and_resource_limit_remain_structured() {
+        let (_, rate_limit) = serialize(CloudflareError::RateLimited(31));
+        assert_eq!(rate_limit["code"], "REQUEST_FAILED");
+        assert_eq!(rate_limit["kind"], "rate_limited");
+        assert_eq!(rate_limit["status"], 429);
+        assert_eq!(rate_limit["retryable"], true);
+        assert_eq!(rate_limit["retry_after"], "31");
+
+        let (_, resource_limit) = serialize(CloudflareError::HttpError(
+            CloudflareHttpError::ResourceLimit(ResourceLimitError {
+                resource: "dns_records_response",
+                limit: 100,
+                actual: Some(101),
+                kind: ResourceLimitKind::Collection,
+            }),
+        ));
+        assert_eq!(resource_limit["code"], "REQUEST_FAILED");
+        assert_eq!(resource_limit["source"], "client");
+        assert_eq!(resource_limit["retryable"], false);
+    }
+
+    #[test]
+    fn raw_legacy_provider_text_remains_redacted() {
+        let raw = "https://proxy.internal/zones/zone-secret/dns_records?api_token=token-secret";
+        let (serialized, value) = serialize(CloudflareError::ApiError(raw.to_string()));
+        assert_eq!(value["code"], "REQUEST_FAILED");
+        for forbidden in [
+            "proxy.internal",
+            "zone-secret",
+            "token-secret",
+            "https://",
+            "dns_records",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+}
 
 // ─── DNS Operations ─────────────────────────────────────────────────────────
 
@@ -23,12 +588,12 @@ pub async fn get_dns_records(
     zone_id: String,
     page: Option<u32>,
     per_page: Option<u32>,
-) -> Result<Vec<DNSRecord>, String> {
+) -> Result<Vec<DNSRecord>, AppError> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client
         .get_dns_records(&zone_id, page, per_page)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(map_dns_records_error)
 }
 
 #[tauri::command]

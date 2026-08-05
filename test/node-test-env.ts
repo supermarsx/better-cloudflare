@@ -162,6 +162,14 @@ if (!globalThis.MutationObserver) {
   globalThis.MutationObserver = browserWindow.MutationObserver;
 }
 
+if (!browserWindow.Element.prototype.scrollIntoView) {
+  Object.defineProperty(browserWindow.Element.prototype, "scrollIntoView", {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  });
+}
+
 Object.entries({
   setTimeout: globalThis.setTimeout,
   clearTimeout: globalThis.clearTimeout,

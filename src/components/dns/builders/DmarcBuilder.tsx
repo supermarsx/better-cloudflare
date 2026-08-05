@@ -1,9 +1,11 @@
 import type { ChangeEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { CircleHelp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -21,6 +23,40 @@ function normalizeDnsName(value: string) {
 
 function uniquePush(list: string[], msg: string) {
   if (!list.includes(msg)) list.push(msg);
+}
+
+function DmarcFieldLabel({
+  controlId,
+  descriptionId,
+  label,
+  help,
+}: {
+  controlId: string;
+  descriptionId: string;
+  label: string;
+  help: string;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        <Label htmlFor={controlId} className="text-xs">
+          {label}
+        </Label>
+        <Tooltip tip={help}>
+          <button
+            type="button"
+            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`Help for ${label}`}
+          >
+            <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </Tooltip>
+      </div>
+      <span id={descriptionId} className="sr-only">
+        {help}
+      </span>
+    </>
+  );
 }
 
 function validateDMARC(value: string) {
@@ -310,6 +346,22 @@ export function DmarcBuilder({
   const [fo, setFo] = useState<string>("");
   const [rf, setRf] = useState<string>("");
   const [ri, setRi] = useState<number | undefined>(undefined);
+  const fieldIdPrefix = useId();
+  const fieldIds = {
+    policy: `${fieldIdPrefix}-policy`,
+    rua: `${fieldIdPrefix}-rua`,
+    ruf: `${fieldIdPrefix}-ruf`,
+    adkim: `${fieldIdPrefix}-adkim`,
+    aspf: `${fieldIdPrefix}-aspf`,
+    pct: `${fieldIdPrefix}-pct`,
+    subdomainPolicy: `${fieldIdPrefix}-subdomain-policy`,
+    fo: `${fieldIdPrefix}-fo`,
+    ri: `${fieldIdPrefix}-ri`,
+    rf: `${fieldIdPrefix}-rf`,
+  };
+  const helpIds = Object.fromEntries(
+    Object.entries(fieldIds).map(([key, value]) => [key, `${value}-help`]),
+  ) as Record<keyof typeof fieldIds, string>;
 
   useEffect(() => {
     if (record.type !== "TXT") return;
@@ -344,8 +396,15 @@ export function DmarcBuilder({
       ri,
     });
 
-    const name = (record.name ?? "").trim();
-    if (!name || name !== "_dmarc")
+    const name = normalizeDnsName(record.name ?? "").toLowerCase();
+    const normalizedZoneName = normalizeDnsName(zoneName ?? "").toLowerCase();
+    const expectedAbsoluteName = normalizedZoneName
+      ? `_dmarc.${normalizedZoneName}`
+      : "";
+    if (
+      !name ||
+      (name !== "_dmarc" && name !== expectedAbsoluteName)
+    )
       uniquePush(nameIssues, 'DMARC: name is usually "_dmarc".');
 
     const content = (record.content ?? "").trim();
@@ -389,6 +448,7 @@ export function DmarcBuilder({
     rua,
     ruf,
     subdomainPolicy,
+    zoneName,
   ]);
 
   useEffect(() => {
@@ -413,12 +473,21 @@ export function DmarcBuilder({
 
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">p= (policy)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.policy}
+            descriptionId={helpIds.policy}
+            label="p= (policy)"
+            help="Controls handling for messages that fail DMARC: monitor, quarantine, or reject."
+          />
           <Select
             value={policy}
             onValueChange={(value: string) => setPolicy(value as any)}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.policy}
+              aria-describedby={helpIds.policy}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -430,8 +499,15 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">rua= (aggregate reports)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.rua}
+            descriptionId={helpIds.rua}
+            label="rua= (aggregate reports)"
+            help="Comma-separated mailto: destinations for aggregate reports; external domains may require authorization."
+          />
           <Input
+            id={fieldIds.rua}
+            aria-describedby={helpIds.rua}
             value={rua}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setRua(e.target.value)
@@ -441,8 +517,15 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">ruf= (forensic reports)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.ruf}
+            descriptionId={helpIds.ruf}
+            label="ruf= (forensic reports)"
+            help="Optional destinations for detailed failure reports; support is limited and reports may contain sensitive data."
+          />
           <Input
+            id={fieldIds.ruf}
+            aria-describedby={helpIds.ruf}
             value={ruf}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setRuf(e.target.value)
@@ -452,12 +535,21 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">adkim=</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.adkim}
+            descriptionId={helpIds.adkim}
+            label="adkim="
+            help="Relaxed aligns organizational domains; strict requires the exact DKIM signing domain."
+          />
           <Select
             value={adkim}
             onValueChange={(value: string) => setAdkim(value as any)}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.adkim}
+              aria-describedby={helpIds.adkim}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -468,12 +560,21 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">aspf=</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.aspf}
+            descriptionId={helpIds.aspf}
+            label="aspf="
+            help="Relaxed aligns organizational domains; strict requires the exact SPF-authenticated domain."
+          />
           <Select
             value={aspf}
             onValueChange={(value: string) => setAspf(value as any)}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.aspf}
+              aria-describedby={helpIds.aspf}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -484,9 +585,20 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">pct=</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.pct}
+            descriptionId={helpIds.pct}
+            label="pct="
+            help="Percentage of failing messages subject to quarantine or reject, from 0 to 100; the default is 100."
+          />
           <Input
+            id={fieldIds.pct}
+            aria-describedby={helpIds.pct}
             type="number"
+            min={0}
+            max={100}
+            step={1}
+            inputMode="numeric"
             value={pct ?? ""}
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
               const n = Number.parseInt(e.target.value, 10);
@@ -497,14 +609,23 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">sp= (subdomain policy)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.subdomainPolicy}
+            descriptionId={helpIds.subdomainPolicy}
+            label="sp= (subdomain policy)"
+            help="Policy for subdomains. Omit it to inherit p=, or choose a separate enforcement policy."
+          />
           <Select
             value={subdomainPolicy || "__omit__"}
             onValueChange={(value: string) =>
               setSubdomainPolicy(value === "__omit__" ? "" : (value as any))
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.subdomainPolicy}
+              aria-describedby={helpIds.subdomainPolicy}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -517,8 +638,15 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">fo= (optional)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.fo}
+            descriptionId={helpIds.fo}
+            label="fo= (optional)"
+            help="Failure-report options are 0, 1, d, or s; combine them with colons and use them with ruf=."
+          />
           <Input
+            id={fieldIds.fo}
+            aria-describedby={helpIds.fo}
             value={fo}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setFo(e.target.value)
@@ -528,9 +656,19 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-1">
-          <Label className="text-xs">ri= (optional)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.ri}
+            descriptionId={helpIds.ri}
+            label="ri= (optional)"
+            help="Requested aggregate-report interval in seconds; 86400 is typical and receivers may choose another interval."
+          />
           <Input
+            id={fieldIds.ri}
+            aria-describedby={helpIds.ri}
             type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
             value={ri ?? ""}
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
               const n = Number.parseInt(e.target.value, 10);
@@ -541,14 +679,23 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-1">
-          <Label className="text-xs">rf= (optional)</Label>
+          <DmarcFieldLabel
+            controlId={fieldIds.rf}
+            descriptionId={helpIds.rf}
+            label="rf= (optional)"
+            help="Failure-report format. AFRF is the common default; IODEF support varies by receiver."
+          />
           <Select
             value={rf.trim().toLowerCase() || "__omit__"}
             onValueChange={(value: string) =>
               setRf(value === "__omit__" ? "" : value)
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.rf}
+              aria-describedby={helpIds.rf}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

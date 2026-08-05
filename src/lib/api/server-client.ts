@@ -120,12 +120,27 @@ function joinRequestUrl(baseUrl: string, endpoint: string): string {
 function normalizeTauriRecordInput(
   record: Partial<DNSRecord>,
 ): TauriDNSRecordInput {
-  const { ttl, ...rest } = record;
-  const normalizedTtl = ttl === "auto" ? 1 : ttl;
-  return {
-    ...rest,
-    ...(typeof normalizedTtl === "number" ? { ttl: normalizedTtl } : {}),
-  } as TauriDNSRecordInput;
+  if (typeof record.type !== "string" || !record.type.trim()) {
+    throw new TypeError("DNS record type is required");
+  }
+  if (typeof record.name !== "string" || !record.name.trim()) {
+    throw new TypeError("DNS record name is required");
+  }
+  if (typeof record.content !== "string") {
+    throw new TypeError("DNS record content is required");
+  }
+
+  const normalized: TauriDNSRecordInput = {
+    type: record.type,
+    name: record.name,
+    content: record.content,
+  };
+  if (typeof record.comment === "string") normalized.comment = record.comment;
+  const normalizedTtl = record.ttl === "auto" ? 1 : record.ttl;
+  if (typeof normalizedTtl === "number") normalized.ttl = normalizedTtl;
+  if (typeof record.priority === "number") normalized.priority = record.priority;
+  if (typeof record.proxied === "boolean") normalized.proxied = record.proxied;
+  return normalized;
 }
 
 /**
@@ -427,18 +442,19 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
+    const normalizedRecord = normalizeTauriRecordInput(record);
     if (isDesktop()) {
       return TauriClient.createDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
-        normalizeTauriRecordInput(record),
+        normalizedRecord,
         signal,
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records`, {
       method: "POST",
-      body: record,
+      body: normalizedRecord,
       signal,
     });
   }
@@ -454,12 +470,15 @@ export class ServerClient {
     dryrun?: boolean,
     signal?: AbortSignal,
   ): Promise<{ created: DNSRecord[]; skipped: unknown[] }> {
+    const normalizedRecords = records.map((record) =>
+      normalizeTauriRecordInput(record),
+    );
     if (isDesktop()) {
       return TauriClient.createBulkDNSRecords(
         this.apiKey,
         this.email,
         zoneId,
-        records.map((r) => normalizeTauriRecordInput(r)),
+        normalizedRecords,
         dryrun,
         signal,
       ) as Promise<{ created: DNSRecord[]; skipped: unknown[] }>;
@@ -471,7 +490,7 @@ export class ServerClient {
     const q = dryrun ? "?dryrun=1" : "";
     return this.request(`/zones/${zoneId}/dns_records/bulk${q}`, {
       method: "POST",
-      body: records,
+      body: normalizedRecords,
       signal,
     });
   }
@@ -491,19 +510,20 @@ export class ServerClient {
     record: Partial<DNSRecord>,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
+    const normalizedRecord = normalizeTauriRecordInput(record);
     if (isDesktop()) {
       return TauriClient.updateDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
         recordId,
-        normalizeTauriRecordInput(record),
+        normalizedRecord,
         signal,
       ) as Promise<DNSRecord>;
     }
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
       method: "PUT",
-      body: record,
+      body: normalizedRecord,
       signal,
     });
   }

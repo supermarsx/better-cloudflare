@@ -104,6 +104,144 @@ async fn log_auth_failure(storage: &Storage, error: &AppError) {
     .await;
 }
 
+fn request_failure_kind(kind: VerificationFailureKind) -> RequestFailureKind {
+    match kind {
+        VerificationFailureKind::Authentication => RequestFailureKind::Authentication,
+        VerificationFailureKind::RateLimited => RequestFailureKind::RateLimited,
+        VerificationFailureKind::Provider => RequestFailureKind::Provider,
+        VerificationFailureKind::Network => RequestFailureKind::Network,
+        VerificationFailureKind::Timeout => RequestFailureKind::Timeout,
+        VerificationFailureKind::MalformedResponse => RequestFailureKind::MalformedResponse,
+    }
+}
+
+fn request_error_source(source: VerificationErrorSource) -> RequestErrorSource {
+    match source {
+        VerificationErrorSource::Network => RequestErrorSource::Network,
+        VerificationErrorSource::Cloudflare => RequestErrorSource::Cloudflare,
+    }
+}
+
+fn auth_request_text(kind: VerificationFailureKind) -> (&'static str, &'static str) {
+    match kind {
+        VerificationFailureKind::Authentication => (
+            "Cloudflare rejected token verification.",
+            "Check the saved credentials and token permissions before trying again.",
+        ),
+        VerificationFailureKind::RateLimited => (
+            "Cloudflare rate-limited token verification.",
+            "Wait for the retry interval before verifying the token again.",
+        ),
+        VerificationFailureKind::Provider => (
+            "Cloudflare could not complete token verification.",
+            "Retry shortly and check Cloudflare service status if the failure continues.",
+        ),
+        VerificationFailureKind::Network => (
+            "Token verification failed because of a network error.",
+            "Check network, VPN, and proxy connectivity before trying again.",
+        ),
+        VerificationFailureKind::Timeout => (
+            "Token verification timed out.",
+            "Retry when network and Cloudflare connectivity are stable.",
+        ),
+        VerificationFailureKind::MalformedResponse => (
+            "Cloudflare returned a malformed token verification response.",
+            "Retry once and check Cloudflare service status if the response remains invalid.",
+        ),
+    }
+}
+
+fn map_structured_auth_request(context: bc_cloudflare_api::CloudflareRequestError) -> AppError {
+    let (message, remediation) = auth_request_text(context.kind);
+    AppError::auth_request_failed(
+        request_failure_kind(context.kind),
+        message,
+        context.status,
+        request_error_source(context.source),
+        "auth:verify_token",
+        context.retryable,
+        context
+            .provider_errors
+            .into_iter()
+            .map(|detail| ProviderErrorDetail {
+                code: detail.code,
+                message: detail.message,
+            })
+            .collect(),
+        context.retry_after_secs,
+        remediation,
+        context.request_id,
+    )
+}
+
+fn resource_limit_kind_name(kind: bc_cloudflare_api::ResourceLimitKind) -> &'static str {
+    match kind {
+        bc_cloudflare_api::ResourceLimitKind::ContentLength => "content_length",
+        bc_cloudflare_api::ResourceLimitKind::StreamedBody => "streamed_body",
+        bc_cloudflare_api::ResourceLimitKind::Collection => "collection",
+        bc_cloudflare_api::ResourceLimitKind::Allocation => "allocation",
+    }
+}
+
+fn resource_limit_details(
+    limit: &bc_cloudflare_api::ResourceLimitError,
+) -> Vec<ProviderErrorDetail> {
+    let mut details = vec![
+        ProviderErrorDetail {
+            code: Some("resource_limit_kind".to_string()),
+            message: resource_limit_kind_name(limit.kind).to_string(),
+        },
+        ProviderErrorDetail {
+            code: Some("resource".to_string()),
+            message: limit.resource.to_string(),
+        },
+        ProviderErrorDetail {
+            code: Some("limit".to_string()),
+            message: limit.limit.to_string(),
+        },
+    ];
+    if let Some(actual) = limit.actual {
+        details.push(ProviderErrorDetail {
+            code: Some("actual".to_string()),
+            message: actual.to_string(),
+        });
+    }
+    details
+}
+
+fn map_structured_auth_resource_limit(
+    context: bc_cloudflare_api::CloudflareResourceLimitContext,
+) -> AppError {
+    let provider_errors = resource_limit_details(&context.limit);
+    AppError::auth_request_failed(
+        RequestFailureKind::MalformedResponse,
+        "Cloudflare token verification response exceeded a local safety limit.",
+        context.status,
+        request_error_source(context.source),
+        "auth:verify_token",
+        context.retryable,
+        provider_errors,
+        None,
+        "Retry token verification once. If it persists, restart or update the application and check Cloudflare service status.",
+        context.request_id,
+    )
+}
+
+fn map_legacy_auth_resource_limit(limit: bc_cloudflare_api::ResourceLimitError) -> AppError {
+    AppError::auth_request_failed(
+        RequestFailureKind::MalformedResponse,
+        "Cloudflare token verification response exceeded a local safety limit.",
+        None,
+        RequestErrorSource::Cloudflare,
+        "auth:verify_token",
+        false,
+        resource_limit_details(&limit),
+        None,
+        "Retry token verification once. If it persists, restart or update the application and check Cloudflare service status.",
+        None,
+    )
+}
+
 fn map_verification_error(error: CloudflareError) -> AppError {
     match error {
         CloudflareError::Verification(context) => {
@@ -139,6 +277,11 @@ fn map_verification_error(error: CloudflareError) -> AppError {
                 context.request_id,
             )
         }
+        CloudflareError::Request(context) => map_structured_auth_request(*context),
+        CloudflareError::ResourceLimit(context) => map_structured_auth_resource_limit(*context),
+        CloudflareError::Validation(_) => AppError::Validation {
+            message: "Token verification request parameters failed local validation.".to_string(),
+        },
         CloudflareError::AuthFailed => AppError::auth_request_failed(
             RequestFailureKind::Authentication,
             "Cloudflare rejected the supplied credentials.",
@@ -163,20 +306,175 @@ fn map_verification_error(error: CloudflareError) -> AppError {
             "Wait before trying again.",
             None,
         ),
-        CloudflareError::HttpError(_) | CloudflareError::ApiError(_) => {
-            AppError::auth_request_failed(
-                RequestFailureKind::Provider,
-                "Cloudflare could not complete token verification.",
-                None,
-                RequestErrorSource::Cloudflare,
-                "auth:verify_token",
-                true,
-                vec![],
-                None,
-                "Retry shortly and check Cloudflare service status if the failure continues.",
-                None,
-            )
+        CloudflareError::HttpError(bc_cloudflare_api::CloudflareHttpError::ResourceLimit(
+            limit,
+        )) => map_legacy_auth_resource_limit(limit),
+        CloudflareError::HttpError(bc_cloudflare_api::CloudflareHttpError::Transport(_))
+        | CloudflareError::ApiError(_) => AppError::auth_request_failed(
+            RequestFailureKind::Provider,
+            "Cloudflare could not complete token verification.",
+            None,
+            RequestErrorSource::Cloudflare,
+            "auth:verify_token",
+            true,
+            vec![],
+            None,
+            "Retry shortly and check Cloudflare service status if the failure continues.",
+            None,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn serialize_mapped_error(error: CloudflareError) -> (String, Value) {
+        let serialized: String = map_verification_error(error).into();
+        let value = serde_json::from_str(&serialized).expect("AppError must serialize as JSON");
+        (serialized, value)
+    }
+
+    #[test]
+    fn structured_request_preserves_safe_auth_context_and_suppresses_dns_text() {
+        let error = CloudflareError::Request(Box::new(bc_cloudflare_api::CloudflareRequestError {
+            kind: VerificationFailureKind::Authentication,
+            message: "https://proxy.internal/zones/zone-secret/dns_records?api_token=token-secret"
+                .to_string(),
+            status: Some(403),
+            source: VerificationErrorSource::Cloudflare,
+            operation: "dns:list".to_string(),
+            retryable: false,
+            provider_errors: vec![bc_cloudflare_api::CloudflareProviderError {
+                code: Some("10000".to_string()),
+                message: "Cloudflare reported an authorization error.".to_string(),
+            }],
+            retry_after_secs: Some(12),
+            remediation: "Retry DNS access with token-secret.".to_string(),
+            request_id: Some("safe-ray-id".to_string()),
+        }));
+
+        let (serialized, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["kind"], "authentication");
+        assert_eq!(value["status"], 403);
+        assert_eq!(value["source"], "cloudflare");
+        assert_eq!(value["operation"], "auth:verify_token");
+        assert_eq!(value["retryable"], false);
+        assert_eq!(value["retry_after"], "12");
+        assert_eq!(value["request_id"], "safe-ray-id");
+        assert_eq!(value["details"]["provider_errors"][0]["code"], "10000");
+        for forbidden in [
+            "proxy.internal",
+            "zone-secret",
+            "token-secret",
+            "dns:list",
+            "dns_records",
+        ] {
+            assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn structured_resource_limit_preserves_only_safe_numeric_context() {
+        let error = CloudflareError::ResourceLimit(Box::new(
+            bc_cloudflare_api::CloudflareResourceLimitContext {
+                limit: bc_cloudflare_api::ResourceLimitError {
+                    resource: "Cloudflare HTTP response body",
+                    limit: 1024,
+                    actual: Some(2048),
+                    kind: bc_cloudflare_api::ResourceLimitKind::ContentLength,
+                },
+                status: Some(200),
+                source: VerificationErrorSource::Cloudflare,
+                operation: "dns:list".to_string(),
+                retryable: false,
+                message: "zone-secret token-secret".to_string(),
+                remediation: "https://proxy.internal/dns_records".to_string(),
+                request_id: Some("safe-ray-id".to_string()),
+            },
+        ));
+
+        let (serialized, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["kind"], "malformed_response");
+        assert_eq!(value["status"], 200);
+        assert_eq!(value["operation"], "auth:verify_token");
+        assert_eq!(value["request_id"], "safe-ray-id");
+        let details = value["details"]["provider_errors"]
+            .as_array()
+            .expect("resource details must be an array");
+        for (code, message) in [
+            ("resource_limit_kind", "content_length"),
+            ("resource", "Cloudflare HTTP response body"),
+            ("limit", "1024"),
+            ("actual", "2048"),
+        ] {
+            assert!(details
+                .iter()
+                .any(|detail| detail["code"] == code && detail["message"] == message));
+        }
+        for forbidden in [
+            "zone-secret",
+            "token-secret",
+            "proxy.internal",
+            "dns:list",
+            "dns_records",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn validation_uses_fixed_auth_text_without_native_dns_context() {
+        let error =
+            CloudflareError::Validation(Box::new(bc_cloudflare_api::CloudflareValidationError {
+                field: "zone-secret".to_string(),
+                limit: 100,
+                actual: Some(101),
+                operation: "dns:list".to_string(),
+                message: "token-secret".to_string(),
+                remediation: "https://proxy.internal/dns_records".to_string(),
+            }));
+
+        let (serialized, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["code"], "VALIDATION");
+        assert_eq!(
+            value["message"],
+            "Token verification request parameters failed local validation."
+        );
+        for forbidden in [
+            "zone-secret",
+            "token-secret",
+            "proxy.internal",
+            "dns:list",
+            "dns_records",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn legacy_resource_limit_maps_to_malformed_auth_response() {
+        let error =
+            CloudflareError::HttpError(bc_cloudflare_api::CloudflareHttpError::ResourceLimit(
+                bc_cloudflare_api::ResourceLimitError {
+                    resource: "Cloudflare HTTP response body",
+                    limit: 1024,
+                    actual: None,
+                    kind: bc_cloudflare_api::ResourceLimitKind::StreamedBody,
+                },
+            ));
+
+        let (_, value) = serialize_mapped_error(error);
+
+        assert_eq!(value["kind"], "malformed_response");
+        assert_eq!(value["status"], Value::Null);
+        assert_eq!(value["source"], "cloudflare");
+        assert_eq!(value["operation"], "auth:verify_token");
+        assert_eq!(value["retryable"], false);
     }
 }
 

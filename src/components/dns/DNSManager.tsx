@@ -99,7 +99,13 @@ import {
 import {
   reportRuntimeError,
   sanitizeRuntimeText,
+  type RuntimeDiagnostic,
 } from "@/lib/errors/runtime-reporting";
+import {
+  formatRequestError,
+  normalizeRequestError,
+  RequestError,
+} from "@/lib/api/request-error";
 import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
 import { DnsAppCommandBar } from "./DnsAppCommandBar";
 import { DnsConnectionBar } from "./DnsConnectionBar";
@@ -117,6 +123,210 @@ import {
 
 function reportDnsManagerFailure(error: unknown, label: string) {
   return reportRuntimeError(error, { source: "runtime", label }).diagnostic;
+}
+
+type DnsRecordLoadFailure = {
+  diagnostic: RuntimeDiagnostic;
+  message: string;
+  kind: string;
+  operation: string;
+  transport: string;
+  targetLabel?: "Native command" | "Endpoint";
+  target?: string;
+  status?: number;
+  statusText?: string;
+  requestId?: string;
+  remediation?: string;
+  retryable: boolean;
+};
+
+type DnsRecordLoadState =
+  | { status: "ready"; loadedAt: number }
+  | {
+      status: "stale";
+      source: "cache" | "last-good";
+      snapshotAt?: number;
+      failure: DnsRecordLoadFailure;
+    }
+  | { status: "error"; failure: DnsRecordLoadFailure };
+
+function createDnsRecordLoadFailure(
+  error: unknown,
+  zoneId: string,
+  zoneName: string,
+): DnsRecordLoadFailure {
+  const desktop = isDesktop();
+  const normalized = normalizeRequestError(error, {
+    operation: "List DNS records",
+    ...(desktop
+      ? { source: "tauri", command: "get_dns_records" }
+      : {
+          source: "browser",
+          endpoint: `/zones/${zoneId}/dns_records`,
+        }),
+  });
+  const publicError = new RequestError(normalized.kind, normalized.message, {
+    source: normalized.source,
+    endpoint: normalized.endpoint,
+    operation: normalized.operation,
+    command: normalized.command,
+    status: normalized.status,
+    statusText: normalized.statusText,
+    code: normalized.code,
+    requestId: normalized.requestId,
+    retryAfter: normalized.retryAfter,
+    retryable: normalized.retryable,
+    remediation: normalized.remediation,
+    diagnosticId: normalized.diagnosticId,
+  });
+  const diagnostic = reportDnsManagerFailure(
+    {
+      name: publicError.name,
+      message: formatRequestError(publicError),
+      ...(publicError.code ? { code: publicError.code } : {}),
+    },
+    `Load DNS records for ${sanitizeRuntimeText(zoneName, 120)}`,
+  );
+  const targetLabel = publicError.command
+    ? "Native command"
+    : publicError.endpoint
+      ? "Endpoint"
+      : undefined;
+  return {
+    diagnostic,
+    message: publicError.message,
+    kind: publicError.kind,
+    operation: publicError.operation ?? "List DNS records",
+    transport:
+      publicError.command || publicError.source === "tauri"
+        ? "Desktop native bridge"
+        : "Web backend",
+    ...(targetLabel ? { targetLabel } : {}),
+    ...(publicError.command || publicError.endpoint
+      ? { target: publicError.command ?? publicError.endpoint }
+      : {}),
+    ...(publicError.status !== undefined ? { status: publicError.status } : {}),
+    ...(publicError.statusText ? { statusText: publicError.statusText } : {}),
+    ...(publicError.requestId || publicError.diagnosticId
+      ? { requestId: publicError.requestId ?? publicError.diagnosticId }
+      : {}),
+    ...(publicError.remediation
+      ? { remediation: publicError.remediation }
+      : {}),
+    retryable: publicError.retryable,
+  };
+}
+
+function DnsRecordLoadNotice({
+  state,
+  onRetry,
+}: {
+  state: Extract<DnsRecordLoadState, { status: "error" | "stale" }>;
+  onRetry: () => void;
+}) {
+  const { t } = useI18n();
+  const failure = state.failure;
+  const stale = state.status === "stale";
+  const title = stale
+    ? state.source === "cache"
+      ? t(
+          "Live DNS records unavailable; showing cached records",
+          "Live DNS records unavailable; showing cached records",
+        )
+      : t(
+          "DNS refresh failed; showing last loaded records",
+          "DNS refresh failed; showing last loaded records",
+        )
+    : t("DNS records could not be loaded", "DNS records could not be loaded");
+
+  return (
+    <div
+      role={stale ? "status" : "alert"}
+      aria-live={stale ? "polite" : "assertive"}
+      data-testid={`dns-record-load-${state.status}`}
+      className={cn(
+        "mb-3 rounded-lg border px-3 py-3 text-sm",
+        stale
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-100"
+          : "border-destructive/50 bg-destructive/10 text-destructive",
+      )}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold">{title}</div>
+          <p className="mt-1 break-words text-xs">{failure.message}</p>
+          {stale && state.snapshotAt ? (
+            <p className="mt-1 text-xs">
+              {t("Snapshot time: {{time}}", {
+                time: new Date(state.snapshotAt).toLocaleString(),
+                defaultValue: `Snapshot time: ${new Date(state.snapshotAt).toLocaleString()}`,
+              })}
+            </p>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-label={t("Retry DNS records", "Retry DNS records")}
+          onClick={onRetry}
+        >
+          {t("Retry", "Retry")}
+        </Button>
+      </div>
+      <dl className="mt-3 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+        <div>
+          <dt className="font-medium">{t("Operation", "Operation")}</dt>
+          <dd className="break-words opacity-90">{failure.operation}</dd>
+        </div>
+        <div>
+          <dt className="font-medium">{t("Transport", "Transport")}</dt>
+          <dd className="break-words opacity-90">{failure.transport}</dd>
+        </div>
+        {failure.targetLabel && failure.target ? (
+          <div>
+            <dt className="font-medium">{failure.targetLabel}</dt>
+            <dd className="break-all opacity-90">{failure.target}</dd>
+          </div>
+        ) : null}
+        <div>
+          <dt className="font-medium">{t("Failure kind", "Failure kind")}</dt>
+          <dd className="break-words opacity-90">{failure.kind}</dd>
+        </div>
+        {failure.status !== undefined ? (
+          <div>
+            <dt className="font-medium">{t("Status", "Status")}</dt>
+            <dd className="break-words opacity-90">
+              {failure.status}
+              {failure.statusText ? ` ${failure.statusText}` : ""}
+            </dd>
+          </div>
+        ) : null}
+        {failure.requestId ? (
+          <div>
+            <dt className="font-medium">{t("Request ID", "Request ID")}</dt>
+            <dd className="break-all opacity-90">{failure.requestId}</dd>
+          </div>
+        ) : null}
+        <div>
+          <dt className="font-medium">{t("Diagnostic ID", "Diagnostic ID")}</dt>
+          <dd className="break-all opacity-90">{failure.diagnostic.id}</dd>
+        </div>
+        <div>
+          <dt className="font-medium">{t("Retryable", "Retryable")}</dt>
+          <dd className="opacity-90">
+            {failure.retryable ? t("Yes", "Yes") : t("No", "No")}
+          </dd>
+        </div>
+      </dl>
+      {failure.remediation ? (
+        <p className="mt-2 text-xs">
+          <span className="font-medium">{t("Next step", "Next step")}:</span>{" "}
+          {failure.remediation}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 const reportPreferenceFailure = createPreferenceFailureReporter((error) => {
@@ -257,6 +467,7 @@ const TOPOLOGY_GEO_PROVIDER_LABELS: Record<TopologyGeoProvider, string> = {
 };
 
 type ZoneTab = {
+  recordLoadState?: DnsRecordLoadState;
   kind: TabKind;
   id: string;
   zoneId: string;
@@ -389,6 +600,23 @@ const createEmptyRecord = (): Partial<DNSRecord> => ({
   ttl: 300,
   proxied: false,
 });
+
+function normalizeSuggestedRecordName(name: string, zoneName: string): string {
+  const trimmedName = name.trim().replace(/\.$/, "");
+  const trimmedZone = zoneName.trim().replace(/\.$/, "");
+  if (!trimmedZone) return trimmedName;
+  if (!trimmedName || trimmedName === "@") return trimmedZone;
+
+  const normalizedName = trimmedName.toLowerCase();
+  const normalizedZone = trimmedZone.toLowerCase();
+  if (
+    normalizedName === normalizedZone ||
+    normalizedName.endsWith(`.${normalizedZone}`)
+  ) {
+    return trimmedName;
+  }
+  return `${trimmedName}.${trimmedZone}`;
+}
 
 const DNS_RECORD_MEMORY_LIMIT = 5_000;
 const DNS_RECORD_RENDER_LIMIT = 200;
@@ -2251,6 +2479,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           records: combined,
           recordsLimited,
           sourceRecordCount,
+          recordLoadState: { status: "ready", loadedAt: Date.now() },
         }));
         // Persist to offline cache on success
         if (isCurrentRequest()) {
@@ -2264,6 +2493,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         ) {
           return;
         }
+        const failure = createDnsRecordLoadFailure(
+          error,
+          tab.zoneId,
+          tab.zoneName,
+        );
         // Try offline cache fallback
         const cached = getCachedZoneRecords(tab.zoneId);
         if (!isCurrentRequest()) return;
@@ -2277,6 +2511,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             records: bounded.records,
             recordsLimited: bounded.limited || cacheReachedUiCap,
             sourceRecordCount: bounded.sourceRecordCount,
+            recordLoadState: {
+              status: "stale",
+              source: "cache",
+              snapshotAt: cached.cachedAt,
+              failure,
+            },
           }));
           if (!isCurrentRequest()) return;
           toast({
@@ -2285,16 +2525,38 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               time: new Date(cached.cachedAt).toLocaleString(),
               defaultValue: `Showing cached records from ${new Date(cached.cachedAt).toLocaleString()}`,
             }),
+            diagnostic: failure.diagnostic,
           });
         } else {
           if (!isCurrentRequest()) return;
+          updateTab(tab.id, (prev) => {
+            const snapshotAt =
+              prev.recordLoadState?.status === "ready"
+                ? prev.recordLoadState.loadedAt
+                : prev.recordLoadState?.status === "stale"
+                  ? prev.recordLoadState.snapshotAt
+                  : undefined;
+            return {
+              ...prev,
+              recordLoadState:
+                prev.records.length > 0
+                  ? {
+                      status: "stale",
+                      source: "last-good",
+                      snapshotAt,
+                      failure,
+                    }
+                  : { status: "error", failure },
+            };
+          });
           toast({
             title: t("Error", "Error"),
             description: t("Failed to load DNS records: {{error}}", {
-              error: (error as Error).message,
-              defaultValue: `Failed to load DNS records: ${(error as Error).message}`,
+              error: failure.message,
+              defaultValue: `Failed to load DNS records: ${failure.message}`,
             }),
             variant: "destructive",
+            diagnostic: failure.diagnostic,
           });
         }
       } finally {
@@ -4392,12 +4654,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     try {
       const createdRecord = await createDNSRecord(activeTab.zoneId, draft);
+      const bounded = retainDnsRecordsForUi([
+        createdRecord,
+        ...activeTab.records.filter((record) => record.id !== createdRecord.id),
+      ]);
+      const sourceRecordCount = Math.max(
+        bounded.sourceRecordCount,
+        activeTab.sourceRecordCount + 1,
+      );
       updateTab(activeTab.id, (prev) => ({
         ...prev,
-        records: [createdRecord, ...prev.records],
+        records: bounded.records,
+        recordsLimited: prev.recordsLimited || bounded.limited,
+        sourceRecordCount,
         newRecord: createEmptyRecord(),
         showAddRecord: false,
       }));
+      cacheZoneRecords(activeTab.zoneId, activeTab.zoneName, bounded.records);
       pushUndo({
         description: `Create ${createdRecord.type} ${createdRecord.name}`,
         forward: {
@@ -4430,6 +4703,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
     }
   };
+
+  const handleAddSuggestedRecord = useCallback(
+    (suggestion: {
+      recordType: DNSRecord["type"];
+      name: string;
+      content: string;
+    }) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      const suggestedRecord: Partial<DNSRecord> = {
+        ...createEmptyRecord(),
+        type: suggestion.recordType,
+        name: normalizeSuggestedRecordName(
+          suggestion.name,
+          activeTab.zoneName,
+        ),
+        content: suggestion.content,
+        ttl: 300,
+      };
+
+      setActionTab("records");
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        showAddRecord: true,
+        newRecord: suggestedRecord,
+      }));
+    },
+    [activeTab, updateTab],
+  );
 
   const handleUpdateRecord = async (record: DNSRecord) => {
     if (!activeTab) return;
@@ -5736,13 +6037,56 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </Button>
                       )}
                     </div>
+                    {!activeTab.isLoading &&
+                    (activeTab.recordLoadState?.status === "error" ||
+                      activeTab.recordLoadState?.status === "stale") ? (
+                      <DnsRecordLoadNotice
+                        state={activeTab.recordLoadState}
+                        onRetry={() => void loadRecords(activeTab)}
+                      />
+                    ) : null}
                     {activeTab.isLoading ? (
                       <div className="text-center py-8">
                         {t("Loading...", "Loading...")}
                       </div>
-                    ) : filteredRecords.length === 0 ? (
+                    ) : activeTab.recordLoadState?.status ===
+                      "error" ? null : filteredRecords.length === 0 ? (
                       <div className="text-center py-8 text-muted-foreground">
-                        {t("No DNS records found", "No DNS records found")}
+                        <div>
+                          {activeTab.recordLoadState?.status === "stale"
+                            ? t(
+                                "No cached or previously loaded DNS records are available.",
+                                "No cached or previously loaded DNS records are available.",
+                              )
+                            : activeTab.records.length === 0
+                              ? t(
+                                  "This zone has no DNS records.",
+                                  "This zone has no DNS records.",
+                                )
+                              : t(
+                                  "No DNS records match the current filters.",
+                                  "No DNS records match the current filters.",
+                                )}
+                        </div>
+                        {activeTab.recordLoadState?.status !== "stale" &&
+                        activeTab.records.length > 0 ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="mt-3"
+                            onClick={() =>
+                              updateTab(activeTab.id, (prev) => ({
+                                ...prev,
+                                searchTerm: "",
+                                typeFilter: "",
+                                page: 1,
+                              }))
+                            }
+                          >
+                            {t("Clear filters", "Clear filters")}
+                          </Button>
+                        ) : null}
                       </div>
                     ) : (
                       <>
@@ -7035,17 +7379,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         size="sm"
                                         variant="outline"
                                         onClick={() =>
-                                          updateTab(activeTab.id, (prev) => ({
-                                            ...prev,
-                                            showAddRecord: true,
-                                            newRecord: {
-                                              ...createEmptyRecord(),
-                                              type: item.suggestion!.recordType,
-                                              name: item.suggestion!.name,
-                                              content: item.suggestion!.content,
-                                              ttl: 300,
-                                            },
-                                          }))
+                                          handleAddSuggestedRecord(
+                                            item.suggestion!,
+                                          )
                                         }
                                       >
                                         {t(

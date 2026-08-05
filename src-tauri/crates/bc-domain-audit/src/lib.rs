@@ -1560,3 +1560,194 @@ fn audit_email(
         ));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ZONE: &str = "example.com";
+
+    fn record(record_type: &str, name: &str, content: &str) -> DNSRecord {
+        DNSRecord {
+            id: None,
+            r#type: record_type.to_string(),
+            name: name.to_string(),
+            content: content.to_string(),
+            comment: None,
+            ttl: Some(300),
+            priority: None,
+            proxied: None,
+            zone_id: "zone-id".to_string(),
+            zone_name: ZONE.to_string(),
+            created_on: String::new(),
+            modified_on: String::new(),
+        }
+    }
+
+    fn mx(target: &str, priority: u16) -> DNSRecord {
+        let mut record = record("MX", ZONE, target);
+        record.priority = Some(priority);
+        record
+    }
+
+    fn options(email: bool, security: bool, hygiene: bool) -> AuditOptions {
+        AuditOptions {
+            include_categories: AuditCategories {
+                email,
+                security,
+                hygiene,
+            },
+            domain_expires_at: None,
+        }
+    }
+
+    fn finding<'a>(items: &'a [AuditItem], id: &str) -> &'a AuditItem {
+        items
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("expected audit finding {id}"))
+    }
+
+    #[test]
+    fn disabled_categories_produce_no_findings() {
+        let records = vec![record("A", ZONE, "10.0.0.1")];
+
+        let items = run_domain_audit(ZONE, &records, &options(false, false, false));
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn healthy_email_configuration_has_no_warn_or_fail_findings() {
+        let records = vec![
+            mx("mail1.example.com", 10),
+            mx("mail2.example.com", 20),
+            record("A", "mail1.example.com", "1.1.1.1"),
+            record("A", "mail2.example.com", "8.8.8.8"),
+            record("TXT", ZONE, "v=spf1 -all"),
+            record("TXT", "_dmarc.example.com", "v=DMARC1; p=reject"),
+            record(
+                "TXT",
+                "selector._domainkey.example.com",
+                "v=DKIM1; k=rsa; p=test-key",
+            ),
+        ];
+
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        assert!(!items.is_empty());
+        assert!(items
+            .iter()
+            .all(|item| item.category == AuditCategory::Email));
+        assert!(items
+            .iter()
+            .all(|item| !matches!(item.severity, AuditSeverity::Warn | AuditSeverity::Fail)));
+        assert_eq!(finding(&items, "spf-ok").severity, AuditSeverity::Pass);
+        assert_eq!(finding(&items, "dmarc-ok").severity, AuditSeverity::Pass);
+        assert_eq!(
+            finding(&items, "mx-redundancy").severity,
+            AuditSeverity::Pass
+        );
+        assert_eq!(
+            finding(&items, "dkim-missing").severity,
+            AuditSeverity::Pass
+        );
+    }
+
+    #[test]
+    fn email_misconfigurations_report_actionable_failures() {
+        let records = vec![
+            mx("mail.example.com", 10),
+            record("CNAME", "mail.example.com", "origin.example.net"),
+            record("TXT", ZONE, "v=spf1 +all"),
+        ];
+
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        assert_eq!(finding(&items, "mx-single").severity, AuditSeverity::Warn);
+        assert_eq!(
+            finding(&items, "mx-cname-target").severity,
+            AuditSeverity::Fail
+        );
+        assert_eq!(
+            finding(&items, "spf-too-permissive").severity,
+            AuditSeverity::Fail
+        );
+        assert_eq!(
+            finding(&items, "dmarc-missing").severity,
+            AuditSeverity::Fail
+        );
+        assert_eq!(
+            finding(&items, "dkim-missing").severity,
+            AuditSeverity::Warn
+        );
+
+        let suggestion = finding(&items, "dmarc-missing")
+            .suggestion
+            .as_ref()
+            .expect("missing DMARC should include a repair suggestion");
+        assert_eq!(suggestion.record_type, "TXT");
+        assert_eq!(suggestion.name, "_dmarc");
+        assert!(suggestion.content.contains("postmaster@example.com"));
+    }
+
+    #[test]
+    fn caa_policy_requires_an_incident_contact_for_a_clean_result() {
+        let issuer = record("CAA", ZONE, "0 issue \"letsencrypt.org\"");
+        let contact = record("CAA", ZONE, "0 iodef \"mailto:security@example.com\"");
+
+        let complete = run_domain_audit(
+            ZONE,
+            &[issuer.clone(), contact],
+            &options(false, true, false),
+        );
+        let incomplete = run_domain_audit(ZONE, &[issuer], &options(false, true, false));
+
+        assert_eq!(complete.len(), 1);
+        assert_eq!(complete[0].category, AuditCategory::Security);
+        assert_eq!(complete[0].severity, AuditSeverity::Pass);
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].severity, AuditSeverity::Warn);
+        assert!(incomplete[0].details.contains("iodef"));
+    }
+
+    #[test]
+    fn hygiene_detects_special_addresses_zero_ttl_and_cname_cycles() {
+        let mut private_ipv4 = record("A", "internal.example.com", "10.10.10.10");
+        private_ipv4.ttl = Some(0);
+        let records = vec![
+            private_ipv4,
+            record("AAAA", "loopback.example.com", "::1"),
+            record("CNAME", "a.example.com", "b.example.com"),
+            record("CNAME", "b.example.com", "a.example.com"),
+        ];
+
+        let items = run_domain_audit(ZONE, &records, &options(false, false, true));
+        let expected_findings = [
+            ("ttl-critical", AuditSeverity::Fail),
+            ("cname-chains-fail", AuditSeverity::Fail),
+            ("special-a", AuditSeverity::Warn),
+            ("special-aaaa", AuditSeverity::Warn),
+        ];
+
+        for (id, expected_severity) in expected_findings {
+            let audit_item = finding(&items, id);
+            assert_eq!(audit_item.id, id);
+            assert_eq!(audit_item.category, AuditCategory::Hygiene, "{id}");
+            assert_eq!(audit_item.severity, expected_severity, "{id}");
+        }
+    }
+
+    #[test]
+    fn expired_domain_is_a_failure() {
+        let mut audit_options = options(false, false, true);
+        audit_options.domain_expires_at = Some("2000-01-01T00:00:00Z".to_string());
+
+        let items = run_domain_audit(ZONE, &[], &audit_options);
+        let expiry = finding(&items, "domain-expiry");
+
+        assert_eq!(expiry.category, AuditCategory::Hygiene);
+        assert_eq!(expiry.severity, AuditSeverity::Fail);
+        assert!(expiry.details.contains("Renew immediately"));
+    }
+}

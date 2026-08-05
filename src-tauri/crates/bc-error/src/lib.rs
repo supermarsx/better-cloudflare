@@ -104,6 +104,22 @@ pub enum AppError {
         request_id: Option<String>,
     },
 
+    /// Structured non-authentication request failure returned across Tauri IPC.
+    RequestFailed {
+        kind: RequestFailureKind,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        source: RequestErrorSource,
+        operation: String,
+        retryable: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after: Option<String>,
+        details: RequestErrorDetails,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+
     // ── Storage ─────────────────────────────────────────────────────────
     Storage {
         message: String,
@@ -152,6 +168,7 @@ impl std::fmt::Display for AppError {
                 write!(formatter, "Rate limited — try again in {retry_after_secs}s")
             }
             Self::AuthRequestFailed { message, .. } => formatter.write_str(message),
+            Self::RequestFailed { message, .. } => formatter.write_str(message),
             Self::Storage { message } => write!(formatter, "Storage error: {message}"),
             Self::NotFound { resource } => write!(formatter, "Resource not found: {resource}"),
             Self::Crypto { message } => {
@@ -179,6 +196,7 @@ impl AppError {
             Self::CloudflareApi { .. } => "CLOUDFLARE_API",
             Self::RateLimited { .. } => "RATE_LIMITED",
             Self::AuthRequestFailed { .. } => "AUTH_REQUEST_FAILED",
+            Self::RequestFailed { .. } => "REQUEST_FAILED",
             Self::Storage { .. } => "STORAGE",
             Self::NotFound { .. } => "NOT_FOUND",
             Self::Crypto { .. } => "CRYPTO",
@@ -211,6 +229,57 @@ impl AppError {
     pub fn not_found(resource: impl Into<String>) -> Self {
         Self::NotFound {
             resource: resource.into(),
+        }
+    }
+
+    /// Construct a secret-safe non-authentication request error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_failed(
+        kind: RequestFailureKind,
+        message: impl AsRef<str>,
+        status: Option<u16>,
+        source: RequestErrorSource,
+        operation: impl AsRef<str>,
+        retryable: bool,
+        provider_errors: Vec<ProviderErrorDetail>,
+        retry_after_secs: Option<u64>,
+        remediation: impl AsRef<str>,
+        request_id: Option<String>,
+    ) -> Self {
+        match Self::auth_request_failed(
+            kind,
+            message,
+            status,
+            source,
+            operation,
+            retryable,
+            provider_errors,
+            retry_after_secs,
+            remediation,
+            request_id,
+        ) {
+            Self::AuthRequestFailed {
+                kind,
+                message,
+                status,
+                source,
+                operation,
+                retryable,
+                retry_after,
+                details,
+                request_id,
+            } => Self::RequestFailed {
+                kind,
+                message,
+                status,
+                source,
+                operation,
+                retryable,
+                retry_after,
+                details,
+                request_id,
+            },
+            _ => unreachable!("authentication request constructor returned an unexpected variant"),
         }
     }
 
@@ -381,5 +450,73 @@ impl From<&str> for AppError {
         Self::Other {
             message: s.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generic_request_failure_serializes_safe_structured_fields() {
+        let error = AppError::request_failed(
+            RequestFailureKind::Provider,
+            "provider request failed token=message-secret",
+            Some(503),
+            RequestErrorSource::Cloudflare,
+            "dns:list",
+            true,
+            vec![ProviderErrorDetail {
+                code: Some("provider-code".to_string()),
+                message: "password=provider-secret".to_string(),
+            }],
+            Some(7),
+            "retry without api_key=remediation-secret",
+            Some("cookie=request-secret".to_string()),
+        );
+
+        assert_eq!(error.code(), "REQUEST_FAILED");
+        let serialized = serde_json::to_string(&error).expect("serialize request failure");
+        let value: serde_json::Value =
+            serde_json::from_str(&serialized).expect("parse request failure");
+
+        assert_eq!(value["code"], "REQUEST_FAILED");
+        assert_eq!(value["kind"], "provider");
+        assert_eq!(value["status"], 503);
+        assert_eq!(value["source"], "cloudflare");
+        assert_eq!(value["operation"], "dns:list");
+        assert_eq!(value["retryable"], true);
+        assert_eq!(value["retry_after"], "7");
+        assert_eq!(value["details"]["retry_after_secs"], 7);
+        assert_eq!(value["details"]["provider_codes"][0], "provider-code");
+        assert!(value.get("request_id").is_none());
+        for secret in [
+            "message-secret",
+            "provider-secret",
+            "remediation-secret",
+            "request-secret",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+    }
+
+    #[test]
+    fn authentication_request_code_remains_distinct() {
+        let error = AppError::auth_request_failed(
+            RequestFailureKind::Authentication,
+            "Cloudflare rejected the credentials.",
+            Some(401),
+            RequestErrorSource::Cloudflare,
+            "dns:list",
+            false,
+            Vec::new(),
+            None,
+            "Verify the saved credentials.",
+            None,
+        );
+
+        assert_eq!(error.code(), "AUTH_REQUEST_FAILED");
+        let serialized = serde_json::to_value(error).expect("serialize authentication failure");
+        assert_eq!(serialized["code"], "AUTH_REQUEST_FAILED");
     }
 }

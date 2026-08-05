@@ -14,6 +14,50 @@ const originalGetIpAccessRules = TauriClient.getIpAccessRules;
 const originalCreateIpAccessRule = TauriClient.createIpAccessRule;
 const originalDeleteIpAccessRule = TauriClient.deleteIpAccessRule;
 
+test("DNS mutation input forwards only provider fields", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  let received: unknown = null;
+  TauriClient.createDNSRecord = async (_key, _email, _zone, record) => {
+    received = record;
+    return record as any;
+  };
+
+  const client = new ServerClient("token", "http://example.com");
+  await client.createDNSRecord("zone", {
+    id: "response-only-id",
+    type: "TXT",
+    name: "example.com",
+    content: "v=spf1 -all",
+    comment: "suggested",
+    ttl: "auto",
+    priority: 10,
+    proxied: false,
+    zone_id: "response-only-zone",
+    zone_name: "example.com",
+    created_on: "response-only-created",
+    modified_on: "response-only-modified",
+  });
+
+  assert.deepEqual(received, {
+    type: "TXT",
+    name: "example.com",
+    content: "v=spf1 -all",
+    comment: "suggested",
+    ttl: 1,
+    priority: 10,
+    proxied: false,
+  });
+});
+
+test("DNS mutation input rejects missing required provider fields", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  const client = new ServerClient("token", "http://example.com");
+  await assert.rejects(
+    () => client.createDNSRecord("zone", { name: "example.com" }),
+    /DNS record type is required/,
+  );
+});
+
 afterEach(() => {
   (globalThis as unknown as { window?: unknown }).window = originalWindow;
   TauriClient.verifyToken = originalVerify;

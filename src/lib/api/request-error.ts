@@ -650,7 +650,15 @@ export function normalizeRequestError(
       "malformed-response",
       withRemediation(
         joinDetail(
-          `The authentication service returned a malformed response. Retry once; if it continues, inspect the request ID and provider status.${endpointSuffix(endpoint)}`,
+          common.operation === "dns:list" ||
+            common.command === "get_dns_records"
+            ? `Cloudflare returned a malformed response while listing DNS records. Retry once; if it continues, inspect the request ID and provider status.${endpointSuffix(endpoint)}`
+            : common.status === 401 ||
+                common.status === 403 ||
+                common.operation?.toLowerCase().startsWith("auth:") === true ||
+                common.command?.toLowerCase() === "verify_token"
+              ? `The authentication service returned a malformed response. Retry once; if it continues, inspect the request ID and provider status.${endpointSuffix(endpoint)}`
+              : `Cloudflare returned a malformed response for the requested operation. Retry once; if it continues, inspect the request ID and provider status.${endpointSuffix(endpoint)}`,
           structuredDetail,
         ),
         extracted.remediation,
@@ -663,6 +671,12 @@ export function normalizeRequestError(
       { cause: error },
     );
   }
+
+  const isAuthContext =
+    common.status === 401 ||
+    common.status === 403 ||
+    common.operation?.toLowerCase().startsWith("auth:") === true ||
+    common.command?.toLowerCase() === "verify_token";
 
   if (extracted.kind === "network") {
     return new RequestError(
@@ -707,6 +721,25 @@ export function normalizeRequestError(
     );
   }
 
+  if (extracted.kind === "http" && !isAuthContext) {
+    return new RequestError(
+      "http",
+      withRemediation(
+        joinDetail(
+          "Cloudflare could not complete the requested operation",
+          detail,
+        ),
+        extracted.remediation,
+      ),
+      {
+        ...common,
+        source: extracted.source ?? source ?? "cloudflare",
+        retryable: extracted.retryable ?? true,
+      },
+      { cause: error },
+    );
+  }
+
   if (extracted.kind === "http") {
     const rawKind = firstField(records, ["kind", "failure_kind"]);
     const normalizedKind =
@@ -733,6 +766,7 @@ export function normalizeRequestError(
   }
 
   const normalizedDetail = detail?.toLowerCase() ?? "";
+  const nativeOperation = source === "tauri" || command !== undefined;
   const browserReportsOffline =
     typeof navigator !== "undefined" && navigator.onLine === false;
   if (
@@ -754,10 +788,22 @@ export function normalizeRequestError(
       normalizedDetail,
     )
   ) {
+    const remediation = nativeOperation
+      ? "Check internet connectivity, system DNS, proxy or VPN settings, firewall policy, and required service availability, then retry."
+      : "Confirm NEXT_PUBLIC_SERVER_API_BASE points to a running, reachable backend and check local network and firewall access.";
+
     return new RequestError(
       "network",
-      `The backend refused the connection. Confirm the configured server is running and reachable.${endpointSuffix(endpoint)}`,
-      { ...common, source: source ?? "browser", retryable: true },
+      withRemediation(
+        `${nativeOperation ? "The desktop operation could not connect to a required service or Cloudflare upstream." : "The configured web backend refused the connection."}${endpointSuffix(endpoint)}`,
+        remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "browser",
+        retryable: true,
+        remediation,
+      },
       { cause: error },
     );
   }
@@ -766,10 +812,22 @@ export function normalizeRequestError(
     code === "EAI_AGAIN" ||
     /(?:dns|name resolution|getaddrinfo|host not found)/.test(normalizedDetail)
   ) {
+    const remediation = nativeOperation
+      ? "Check system DNS, internet connectivity, proxy or VPN settings, and firewall policy, then retry."
+      : "Check NEXT_PUBLIC_SERVER_API_BASE, the backend hostname, and system DNS connectivity.";
+
     return new RequestError(
       "network",
-      `The backend hostname could not be resolved. Check the configured server address and DNS connectivity.${endpointSuffix(endpoint)}`,
-      { ...common, source: source ?? "browser", retryable: true },
+      withRemediation(
+        `${nativeOperation ? "The desktop operation could not resolve a required service or Cloudflare upstream hostname." : "The configured web backend hostname could not be resolved."}${endpointSuffix(endpoint)}`,
+        remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "browser",
+        retryable: true,
+        remediation,
+      },
       { cause: error },
     );
   }
@@ -778,10 +836,22 @@ export function normalizeRequestError(
       normalizedDetail,
     )
   ) {
+    const remediation = nativeOperation
+      ? "Check the system clock, trust store, TLS interception, proxy or VPN settings, and firewall policy, then retry."
+      : "Check NEXT_PUBLIC_SERVER_API_BASE, the backend certificate chain, TLS interception, and the system clock.";
+
     return new RequestError(
       "network",
-      `A TLS or certificate error prevented a secure connection. Check the backend URL, certificate chain, and system clock.${endpointSuffix(endpoint)}`,
-      { ...common, source: source ?? "browser", retryable: true },
+      withRemediation(
+        `${nativeOperation ? "A TLS or certificate error prevented the desktop operation from reaching a required service or Cloudflare upstream." : "A TLS or certificate error prevented a secure connection to the configured web backend."}${endpointSuffix(endpoint)}`,
+        remediation,
+      ),
+      {
+        ...common,
+        source: source ?? "browser",
+        retryable: true,
+        remediation,
+      },
       { cause: error },
     );
   }
@@ -813,6 +883,7 @@ export function normalizeRequestError(
   }
 
   if (
+    isAuthContext &&
     /invalid (?:api )?(?:key|token)|authentication failed|unauthori[sz]ed|forbidden/.test(
       normalizedDetail,
     )

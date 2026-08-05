@@ -11,7 +11,7 @@ use reqwest::{header::CONTENT_LENGTH, Client, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -20,6 +20,9 @@ const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const CLOUDFLARE_API_HOST: &str = "api.cloudflare.com";
+pub const DNS_LIST_OPERATION: &str = "dns:list";
+const CLOUDFLARE_REQUEST_OPERATION: &str = "cloudflare:request";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const AUTH_OPERATION: &str = "auth:verify_token";
 const MAX_PROVIDER_ERRORS: usize = 5;
@@ -28,6 +31,157 @@ const MAX_RESPONSE_BODY_BYTES: usize = 10 * 1024 * 1024;
 const MAX_DNS_PAGE: u32 = 1_000_000;
 const MAX_DNS_RECORDS_PER_PAGE: u32 = 5_000;
 const MAX_BULK_DNS_RECORDS: usize = 200;
+const ZONE_ANALYTICS_OPERATION: &str = "analytics:zone_graphql";
+const ZONE_ANALYTICS_GRAPHQL_QUERY: &str = r#"
+query ZoneAnalytics($zoneTag: string, $start: Time, $end: Time) {
+  viewer {
+    zones(filter: { zoneTag: $zoneTag }) {
+      totals: httpRequests1mGroups(
+        limit: 1
+        filter: { datetime_geq: $start, datetime_lt: $end }
+      ) {
+        sum {
+          requests
+          bytes
+          threats
+          pageViews
+        }
+        uniq {
+          uniques
+        }
+      }
+      timeseries: httpRequests1mGroups(
+        limit: 10000
+        orderBy: [datetimeFiveMinutes_ASC]
+        filter: { datetime_geq: $start, datetime_lt: $end }
+      ) {
+        dimensions {
+          datetimeFiveMinutes
+        }
+        sum {
+          requests
+          bytes
+          threats
+          pageViews
+        }
+        uniq {
+          uniques
+        }
+      }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Deserialize)]
+struct ZoneAnalyticsGraphQlEnvelope {
+    data: Option<ZoneAnalyticsGraphQlData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZoneAnalyticsGraphQlData {
+    viewer: ZoneAnalyticsGraphQlViewer,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZoneAnalyticsGraphQlViewer {
+    zones: Vec<ZoneAnalyticsGraphQlZone>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZoneAnalyticsGraphQlZone {
+    totals: Vec<ZoneAnalyticsGraphQlGroup>,
+    timeseries: Vec<ZoneAnalyticsGraphQlGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZoneAnalyticsGraphQlGroup {
+    dimensions: Option<ZoneAnalyticsGraphQlDimensions>,
+    sum: ZoneAnalyticsGraphQlSum,
+    uniq: ZoneAnalyticsGraphQlUniq,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ZoneAnalyticsGraphQlDimensions {
+    datetime_five_minutes: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ZoneAnalyticsGraphQlSum {
+    requests: u64,
+    bytes: u64,
+    threats: u64,
+    page_views: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ZoneAnalyticsGraphQlUniq {
+    uniques: u64,
+}
+
+struct ZoneAnalyticsErrorContext {
+    kind: VerificationFailureKind,
+    status: Option<u16>,
+    request_id: Option<String>,
+    retry_after_secs: Option<u64>,
+    provider_errors: Vec<CloudflareProviderError>,
+    retryable: bool,
+}
+
+fn utc_rfc3339_from_unix_seconds(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400);
+    let shifted_days = days + 719_468;
+    let era = if shifted_days >= 0 {
+        shifted_days
+    } else {
+        shifted_days - 146_096
+    } / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    let hour = second_of_day / 3_600;
+    let minute = (second_of_day % 3_600) / 60;
+    let second = second_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn resolve_zone_analytics_bound(value: &str, now: i64) -> String {
+    let offset_seconds = match value.trim() {
+        "now" => Some(0),
+        "-6h" => Some(6 * 60 * 60),
+        "-24h" => Some(24 * 60 * 60),
+        "-7d" => Some(7 * 24 * 60 * 60),
+        "-30d" => Some(30 * 24 * 60 * 60),
+        _ => None,
+    };
+    offset_seconds.map_or_else(
+        || value.trim().to_string(),
+        |offset| utc_rfc3339_from_unix_seconds(now.saturating_sub(offset)),
+    )
+}
+
+fn resolve_zone_analytics_bounds(since: &str, until: &str) -> (String, String) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or(0);
+    (
+        resolve_zone_analytics_bound(since, now),
+        resolve_zone_analytics_bound(until, now),
+    )
+}
 
 // ── Error ───────────────────────────────────────────────────────────────────
 
@@ -93,6 +247,12 @@ pub enum CloudflareError {
     RateLimited(u32),
     #[error("{0}")]
     Verification(Box<CloudflareRequestError>),
+    #[error("{0}")]
+    Request(Box<CloudflareRequestError>),
+    #[error("{0}")]
+    ResourceLimit(Box<CloudflareResourceLimitContext>),
+    #[error("{0}")]
+    Validation(Box<CloudflareValidationError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +271,322 @@ pub struct ResourceLimitError {
     pub kind: ResourceLimitKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareResourceLimitContext {
+    pub limit: ResourceLimitError,
+    pub status: Option<u16>,
+    pub source: VerificationErrorSource,
+    pub operation: String,
+    pub retryable: bool,
+    pub message: String,
+    pub remediation: String,
+    pub request_id: Option<String>,
+}
+
+impl std::fmt::Display for CloudflareResourceLimitContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareValidationError {
+    pub field: String,
+    pub limit: u64,
+    pub actual: Option<u64>,
+    pub operation: String,
+    pub message: String,
+    pub remediation: String,
+}
+
+impl std::fmt::Display for CloudflareValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudflareTransportCategory {
+    Dns,
+    Timeout,
+    Connect,
+    Other,
+}
+
+impl std::fmt::Display for CloudflareTransportCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Dns => "dns",
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Other => "transport",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareTransportError {
+    pub category: CloudflareTransportCategory,
+    pub host: &'static str,
+    pub operation: &'static str,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub retryable: bool,
+    pub remediation: &'static str,
+}
+
+impl CloudflareTransportError {
+    fn from_reqwest(
+        error: &reqwest::Error,
+        operation: &'static str,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> Self {
+        let (category, retryable, remediation) =
+            if let Some(dns_error) = find_dns_resolution_error(error) {
+                (
+                    CloudflareTransportCategory::Dns,
+                    dns_error.retryable,
+                    if dns_error.retryable {
+                        "Check Windows DNS, VPN, and proxy connectivity, then retry."
+                    } else {
+                        "Check Windows DNS, VPN, and proxy configuration for the Cloudflare API."
+                    },
+                )
+            } else if error.is_timeout() {
+                (
+                    CloudflareTransportCategory::Timeout,
+                    true,
+                    "Check network, VPN, and proxy connectivity, then retry.",
+                )
+            } else if error.is_connect() {
+                (
+                    CloudflareTransportCategory::Connect,
+                    find_io_error(error).is_some_and(is_retryable_connect_io_error),
+                    "Check network, VPN, and proxy connectivity, then retry.",
+                )
+            } else {
+                (
+                    CloudflareTransportCategory::Other,
+                    false,
+                    "Retry the operation; if it persists, review the local diagnostic log.",
+                )
+            };
+
+        Self {
+            category,
+            host: CLOUDFLARE_API_HOST,
+            operation,
+            attempt,
+            max_attempts,
+            retryable,
+            remediation,
+        }
+    }
+
+    const fn generic(operation: &'static str) -> Self {
+        Self {
+            category: CloudflareTransportCategory::Other,
+            host: CLOUDFLARE_API_HOST,
+            operation,
+            attempt: 1,
+            max_attempts: 1,
+            retryable: false,
+            remediation: "Retry the operation; if it persists, review the local diagnostic log.",
+        }
+    }
+}
+
+impl std::fmt::Display for CloudflareTransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} failure contacting {} for {} (attempt {}/{}): {}",
+            self.category,
+            self.host,
+            self.operation,
+            self.attempt,
+            self.max_attempts,
+            self.remediation
+        )
+    }
+}
+
+impl std::error::Error for CloudflareTransportError {}
+
+#[derive(Debug)]
+struct DnsResolutionError {
+    retryable: bool,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for DnsResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("system DNS resolution failed")
+    }
+}
+
+impl std::error::Error for DnsResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+struct SanitizingResolver {
+    inner: std::sync::Arc<dyn reqwest::dns::Resolve>,
+}
+
+impl SanitizingResolver {
+    fn new(inner: std::sync::Arc<dyn reqwest::dns::Resolve>) -> Self {
+        Self { inner }
+    }
+}
+
+impl std::fmt::Debug for SanitizingResolver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("SanitizingResolver").finish()
+    }
+}
+
+impl reqwest::dns::Resolve for SanitizingResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let resolving = self.inner.resolve(name);
+        Box::pin(async move {
+            match resolving.await {
+                Ok(addresses) => Ok(addresses),
+                Err(source) => {
+                    let retryable = is_retryable_resolver_error(source.as_ref());
+                    Err(Box::new(DnsResolutionError { retryable, source })
+                        as Box<dyn std::error::Error + Send + Sync>)
+                }
+            }
+        })
+    }
+}
+
+fn find_dns_resolution_error(error: &reqwest::Error) -> Option<&DnsResolutionError> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(source) = current {
+        if let Some(dns_error) = source.downcast_ref::<DnsResolutionError>() {
+            return Some(dns_error);
+        }
+        current = source.source();
+    }
+    None
+}
+
+fn find_io_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if let Some(io_error) = source.downcast_ref::<std::io::Error>() {
+            return Some(io_error);
+        }
+        current = source.source();
+    }
+    None
+}
+
+fn is_retryable_resolver_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let Some(io_error) = find_io_error(error) else {
+        return false;
+    };
+
+    #[cfg(windows)]
+    if let Some(code) = io_error.raw_os_error() {
+        const WSA_TRY_AGAIN: i32 = 11_002;
+        const WSA_HOST_NOT_FOUND: i32 = 11_001;
+        const WSA_NO_RECOVERY: i32 = 11_003;
+        const WSA_NO_DATA: i32 = 11_004;
+        match code {
+            WSA_TRY_AGAIN => return true,
+            WSA_HOST_NOT_FOUND | WSA_NO_RECOVERY | WSA_NO_DATA => return false,
+            _ => {}
+        }
+    }
+
+    matches!(
+        io_error.kind(),
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+    )
+}
+
+fn is_retryable_connect_io_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::AddrNotAvailable
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+    )
+}
+
+#[derive(Debug)]
+struct SystemResolver;
+
+impl reqwest::dns::Resolve for SystemResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?
+                .collect::<Vec<_>>();
+            Ok(Box::new(addresses.into_iter())
+                as Box<dyn Iterator<Item = std::net::SocketAddr> + Send>)
+        })
+    }
+}
+
+fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .dns_resolver(std::sync::Arc::new(SanitizingResolver::new(
+            std::sync::Arc::new(SystemResolver),
+        )))
+        .build()
+        .expect("the default Cloudflare HTTP client configuration must be valid")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SafeRequestContext {
+    operation: &'static str,
+    is_idempotent_read: bool,
+}
+
+impl SafeRequestContext {
+    fn from_builder(builder: &reqwest::RequestBuilder) -> Self {
+        let Some(cloned) = builder.try_clone() else {
+            return Self::generic();
+        };
+        let Ok(request) = cloned.build() else {
+            return Self::generic();
+        };
+        let is_idempotent_read =
+            request.method() == reqwest::Method::GET || request.method() == reqwest::Method::HEAD;
+        let operation = if is_idempotent_read && request.url().path().ends_with("/dns_records") {
+            DNS_LIST_OPERATION
+        } else {
+            CLOUDFLARE_REQUEST_OPERATION
+        };
+        Self {
+            operation,
+            is_idempotent_read,
+        }
+    }
+
+    const fn generic() -> Self {
+        Self {
+            operation: CLOUDFLARE_REQUEST_OPERATION,
+            is_idempotent_read: false,
+        }
+    }
+}
+
 impl std::fmt::Display for ResourceLimitError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -125,30 +601,261 @@ impl std::fmt::Display for ResourceLimitError {
     }
 }
 
+#[cfg(test)]
+mod transport_retry_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct ScriptedResolver {
+        address: SocketAddr,
+        transient_failures: usize,
+        permanent_failure: bool,
+        calls: AtomicUsize,
+    }
+
+    impl ScriptedResolver {
+        fn transient(address: SocketAddr, failures: usize) -> Self {
+            Self {
+                address,
+                transient_failures: failures,
+                permanent_failure: false,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn permanent() -> Self {
+            Self {
+                address: SocketAddr::from(([127, 0, 0, 1], 9)),
+                transient_failures: 0,
+                permanent_failure: true,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl reqwest::dns::Resolve for ScriptedResolver {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let permanent_failure = self.permanent_failure;
+            let transient_failure = call < self.transient_failures;
+            let address = self.address;
+            Box::pin(async move {
+                if permanent_failure || transient_failure {
+                    let kind = if permanent_failure {
+                        std::io::ErrorKind::NotFound
+                    } else {
+                        std::io::ErrorKind::TimedOut
+                    };
+                    return Err(
+                        Box::new(std::io::Error::new(kind, "scripted resolver failure"))
+                            as Box<dyn std::error::Error + Send + Sync>,
+                    );
+                }
+                Ok(Box::new(std::iter::once(address))
+                    as Box<dyn Iterator<Item = SocketAddr> + Send>)
+            })
+        }
+    }
+
+    fn test_client(
+        api_base: String,
+        resolver: Arc<dyn reqwest::dns::Resolve>,
+        max_retries: u32,
+    ) -> CloudflareClient {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .dns_resolver(Arc::new(SanitizingResolver::new(resolver)))
+            .build()
+            .expect("test HTTP client should build");
+        CloudflareClient::with_client(client, "super-secret-token", None)
+            .with_max_retries(max_retries)
+            .with_api_base(api_base)
+    }
+
+    fn spawn_dns_list_server() -> (SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test server should bind");
+        let address = listener
+            .local_addr()
+            .expect("test server should have address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test server should accept");
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream
+                .read(&mut request)
+                .expect("request should be readable");
+            assert!(bytes_read > 0);
+
+            let body = r#"{"success":true,"result":[]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be writable");
+        });
+        (address, handle)
+    }
+
+    fn transport_context(error: &CloudflareError) -> &CloudflareTransportError {
+        match error {
+            CloudflareError::HttpError(CloudflareHttpError::Transport(context)) => context,
+            other => panic!("expected transport error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dns_list_recovers_after_transient_resolver_failures() {
+        let (address, server) = spawn_dns_list_server();
+        let resolver = Arc::new(ScriptedResolver::transient(address, 2));
+        let client = test_client(
+            format!("http://{CLOUDFLARE_API_HOST}:{}/client/v4", address.port()),
+            resolver.clone(),
+            3,
+        );
+
+        let records = client
+            .get_dns_records("zone-sensitive-id", Some(1), Some(100))
+            .await
+            .expect("the third DNS attempt should reach the local server");
+
+        assert!(records.is_empty());
+        assert_eq!(resolver.calls(), 3);
+        server.join().expect("test server should stop cleanly");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_dns_failure_stops_at_the_configured_bound() {
+        let resolver = Arc::new(ScriptedResolver::transient(
+            SocketAddr::from(([127, 0, 0, 1], 9)),
+            usize::MAX,
+        ));
+        let client = test_client(
+            format!("http://{CLOUDFLARE_API_HOST}:9/client/v4"),
+            resolver.clone(),
+            2,
+        );
+
+        let error = client
+            .get_dns_records("zone-sensitive-id", None, None)
+            .await
+            .expect_err("transient DNS failures should eventually be exhausted");
+        let rendered = error.to_string();
+        let context = transport_context(&error);
+
+        assert_eq!(resolver.calls(), 3);
+        assert_eq!(context.category, CloudflareTransportCategory::Dns);
+        assert_eq!(context.host, CLOUDFLARE_API_HOST);
+        assert_eq!(context.operation, DNS_LIST_OPERATION);
+        assert_eq!(context.attempt, 3);
+        assert_eq!(context.max_attempts, 3);
+        assert!(context.retryable);
+        assert!(!rendered.contains("zone-sensitive-id"));
+        assert!(!rendered.contains("super-secret-token"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn permanent_dns_failure_is_not_retried_or_leaked() {
+        let resolver = Arc::new(ScriptedResolver::permanent());
+        let client = test_client(
+            format!("http://{CLOUDFLARE_API_HOST}:9/client/v4"),
+            resolver.clone(),
+            3,
+        );
+
+        let error = client
+            .get_dns_records("zone-sensitive-id", None, None)
+            .await
+            .expect_err("permanent DNS failure should be returned");
+        let rendered = error.to_string();
+        let context = transport_context(&error);
+
+        assert_eq!(resolver.calls(), 1);
+        assert_eq!(context.category, CloudflareTransportCategory::Dns);
+        assert_eq!(context.operation, DNS_LIST_OPERATION);
+        assert_eq!(context.attempt, 1);
+        assert_eq!(context.max_attempts, 4);
+        assert!(!context.retryable);
+        assert!(!rendered.contains("zone-sensitive-id"));
+        assert!(!rendered.contains("super-secret-token"));
+        assert!(!rendered.contains("http://"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mutation_transport_failure_is_not_retried() {
+        let resolver = Arc::new(ScriptedResolver::transient(
+            SocketAddr::from(([127, 0, 0, 1], 9)),
+            usize::MAX,
+        ));
+        let client = test_client(
+            format!("http://{CLOUDFLARE_API_HOST}:9/client/v4"),
+            resolver.clone(),
+            3,
+        );
+        let url = format!("{}/zones/zone-sensitive-id/dns_records", client.api_base);
+
+        let error = client
+            .request_with_retry(move |state| state.apply_auth(state.client.post(&url)))
+            .await
+            .expect_err("mutation transport failure should be returned immediately");
+        let context = transport_context(&error);
+
+        assert_eq!(resolver.calls(), 1);
+        assert_eq!(context.category, CloudflareTransportCategory::Dns);
+        assert_eq!(context.operation, CLOUDFLARE_REQUEST_OPERATION);
+        assert_eq!(context.attempt, 1);
+        assert_eq!(context.max_attempts, 4);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudflareHttpError {
-    Transport(String),
+    Transport(CloudflareTransportError),
     ResourceLimit(ResourceLimitError),
 }
 
 impl From<String> for CloudflareHttpError {
-    fn from(message: String) -> Self {
-        Self::Transport(message)
+    fn from(_message: String) -> Self {
+        Self::Transport(CloudflareTransportError::generic(
+            CLOUDFLARE_REQUEST_OPERATION,
+        ))
     }
 }
 
 impl std::fmt::Display for CloudflareHttpError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Transport(message) => formatter.write_str(message),
+            Self::Transport(context) => context.fmt(formatter),
             Self::ResourceLimit(context) => context.fmt(formatter),
         }
     }
 }
 
 impl CloudflareError {
-    fn http(error: impl std::fmt::Display) -> Self {
-        Self::HttpError(CloudflareHttpError::Transport(error.to_string()))
+    fn http(_error: impl std::fmt::Display) -> Self {
+        Self::HttpError(CloudflareHttpError::Transport(
+            CloudflareTransportError::generic(CLOUDFLARE_REQUEST_OPERATION),
+        ))
+    }
+
+    fn transport(
+        error: reqwest::Error,
+        operation: &'static str,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> Self {
+        Self::HttpError(CloudflareHttpError::Transport(
+            CloudflareTransportError::from_reqwest(&error, operation, attempt, max_attempts),
+        ))
     }
 
     fn resource_limit(context: ResourceLimitError) -> Self {
@@ -158,7 +865,420 @@ impl CloudflareError {
     pub fn resource_limit_context(&self) -> Option<&ResourceLimitError> {
         match self {
             Self::HttpError(CloudflareHttpError::ResourceLimit(context)) => Some(context),
+            Self::ResourceLimit(context) => Some(&context.limit),
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DnsResponseMetadata {
+    status: u16,
+    request_id: Option<String>,
+}
+
+fn dns_request_error(context: CloudflareRequestError) -> CloudflareError {
+    CloudflareError::Request(Box::new(context))
+}
+
+fn dns_http_request_error(
+    status: u16,
+    retry_after_secs: Option<u64>,
+    request_id: Option<String>,
+    provider_errors: Vec<CloudflareProviderError>,
+) -> CloudflareError {
+    let (kind, message, retryable, remediation) = match status {
+        401 => (
+            VerificationFailureKind::Authentication,
+            "Cloudflare rejected the saved credentials for the DNS records request.",
+            false,
+            "Verify the saved Cloudflare credentials and try again.",
+        ),
+        403 => (
+            VerificationFailureKind::Authentication,
+            "Cloudflare denied access to the requested DNS records.",
+            false,
+            "Grant the saved credentials DNS read access for this zone and try again.",
+        ),
+        408 => (
+            VerificationFailureKind::Timeout,
+            "Cloudflare timed out while processing the DNS records request.",
+            true,
+            "Retry the request when Cloudflare connectivity is stable.",
+        ),
+        429 => (
+            VerificationFailureKind::RateLimited,
+            "Cloudflare rate limited the DNS records request.",
+            true,
+            "Wait for the retry interval before requesting DNS records again.",
+        ),
+        400..=499 => (
+            VerificationFailureKind::Provider,
+            "Cloudflare rejected the DNS records request.",
+            false,
+            "Review the Cloudflare account and zone configuration before retrying.",
+        ),
+        500..=599 => (
+            VerificationFailureKind::Provider,
+            "Cloudflare could not complete the DNS records request.",
+            true,
+            "Retry the request after Cloudflare service recovers.",
+        ),
+        _ => (
+            VerificationFailureKind::Provider,
+            "Cloudflare returned an unexpected DNS records response status.",
+            false,
+            "Retry the request and review Cloudflare service status if it persists.",
+        ),
+    };
+
+    dns_request_error(CloudflareRequestError {
+        kind,
+        message: message.to_string(),
+        status: Some(status),
+        source: VerificationErrorSource::Cloudflare,
+        operation: DNS_LIST_OPERATION.to_string(),
+        retryable,
+        provider_errors,
+        retry_after_secs: retry_after_secs.map(|seconds| seconds.min(MAX_RETRY_DELAY.as_secs())),
+        remediation: remediation.to_string(),
+        request_id: request_id.as_deref().and_then(sanitize_request_id),
+    })
+}
+
+fn dns_provider_code(value: &Value) -> Option<String> {
+    if let Some(code) = value.as_u64() {
+        return Some(code.to_string());
+    }
+    value.as_str().and_then(|code| {
+        let code = code.trim();
+        if code.is_empty()
+            || code.len() > 16
+            || !code.chars().all(|character| character.is_ascii_digit())
+        {
+            None
+        } else {
+            Some(code.to_string())
+        }
+    })
+}
+
+fn dns_provider_errors(body: &[u8], status: u16) -> Vec<CloudflareProviderError> {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(errors) = value.get("errors").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let message = match status {
+        401 => "Cloudflare reported an authentication error.",
+        403 => "Cloudflare reported an authorization error.",
+        408 => "Cloudflare reported a request timeout.",
+        429 => "Cloudflare reported a rate limit.",
+        400..=499 => "Cloudflare rejected the request.",
+        500..=599 => "Cloudflare reported a server error.",
+        _ => "Cloudflare reported a provider error.",
+    };
+
+    errors
+        .iter()
+        .take(MAX_PROVIDER_ERRORS)
+        .filter_map(|error| {
+            let code = error.get("code").and_then(dns_provider_code)?;
+            Some(CloudflareProviderError {
+                code: Some(code),
+                message: message.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn dns_response_request_id(response: &Response) -> Option<String> {
+    response
+        .headers()
+        .get("cf-ray")
+        .and_then(|value| value.to_str().ok())
+        .and_then(sanitize_request_id)
+}
+
+async fn dns_status_error(response: Response) -> CloudflareError {
+    let status = response.status().as_u16();
+    let retry_after_secs = parse_retry_after_secs(response.headers());
+    let request_id = dns_response_request_id(&response);
+    let provider_errors = match read_bounded_response_body(response, MAX_RESPONSE_BODY_BYTES).await
+    {
+        Ok(body) => dns_provider_errors(&body, status),
+        Err(_) => Vec::new(),
+    };
+    dns_http_request_error(status, retry_after_secs, request_id, provider_errors)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsMutationResponseKind {
+    Success,
+    HttpFailure,
+    ProviderFailure,
+    Malformed,
+}
+
+fn classify_dns_mutation_response(status: u16, json: Option<&Value>) -> DnsMutationResponseKind {
+    if !(200..300).contains(&status) {
+        return DnsMutationResponseKind::HttpFailure;
+    }
+
+    match json.and_then(|value| value.get("success")) {
+        Some(Value::Bool(true)) => DnsMutationResponseKind::Success,
+        Some(Value::Bool(false)) => DnsMutationResponseKind::ProviderFailure,
+        _ => DnsMutationResponseKind::Malformed,
+    }
+}
+
+async fn read_dns_mutation_response(
+    response: Response,
+) -> Result<(Value, DnsResponseMetadata), CloudflareError> {
+    let status = response.status().as_u16();
+    if classify_dns_mutation_response(status, None) == DnsMutationResponseKind::HttpFailure {
+        return Err(dns_status_error(response).await);
+    }
+
+    let retry_after_secs = parse_retry_after_secs(response.headers());
+    let request_id = dns_response_request_id(&response);
+    let (json, metadata) = read_dns_success_response(response).await?;
+
+    match classify_dns_mutation_response(status, Some(&json)) {
+        DnsMutationResponseKind::Success => Ok((json, metadata)),
+        DnsMutationResponseKind::ProviderFailure => {
+            let provider_errors = serde_json::to_vec(&json)
+                .map(|body| dns_provider_errors(&body, status))
+                .unwrap_or_default();
+            Err(dns_http_request_error(
+                status,
+                retry_after_secs,
+                request_id,
+                provider_errors,
+            ))
+        }
+        DnsMutationResponseKind::Malformed => Err(dns_malformed_response(&metadata)),
+        DnsMutationResponseKind::HttpFailure => unreachable!("HTTP status checked before body"),
+    }
+}
+
+fn dns_malformed_response(metadata: &DnsResponseMetadata) -> CloudflareError {
+    dns_request_error(CloudflareRequestError {
+        kind: VerificationFailureKind::MalformedResponse,
+        message: "Cloudflare returned a malformed DNS records response.".to_string(),
+        status: Some(metadata.status),
+        source: VerificationErrorSource::Cloudflare,
+        operation: DNS_LIST_OPERATION.to_string(),
+        retryable: false,
+        provider_errors: vec![CloudflareProviderError {
+            code: Some("malformed_response".to_string()),
+            message: "The DNS records response did not match the expected format.".to_string(),
+        }],
+        retry_after_secs: None,
+        remediation:
+            "Retry the request and review Cloudflare service status if the response remains malformed."
+                .to_string(),
+        request_id: metadata.request_id.clone(),
+    })
+}
+
+fn dns_response_stream_error(
+    error: reqwest::Error,
+    metadata: &DnsResponseMetadata,
+) -> CloudflareError {
+    let transport = CloudflareTransportError::from_reqwest(&error, DNS_LIST_OPERATION, 1, 1);
+    let kind = if transport.category == CloudflareTransportCategory::Timeout {
+        VerificationFailureKind::Timeout
+    } else {
+        VerificationFailureKind::Network
+    };
+    dns_request_error(CloudflareRequestError {
+        kind,
+        message: "The Cloudflare DNS records response was interrupted.".to_string(),
+        status: Some(metadata.status),
+        source: VerificationErrorSource::Network,
+        operation: DNS_LIST_OPERATION.to_string(),
+        retryable: transport.retryable,
+        provider_errors: vec![CloudflareProviderError {
+            code: Some("transport_category".to_string()),
+            message: transport.category.to_string(),
+        }],
+        retry_after_secs: None,
+        remediation: transport.remediation.to_string(),
+        request_id: metadata.request_id.clone(),
+    })
+}
+
+fn dns_resource_limit_error(
+    limit: ResourceLimitError,
+    metadata: &DnsResponseMetadata,
+) -> CloudflareError {
+    CloudflareError::ResourceLimit(Box::new(CloudflareResourceLimitContext {
+        limit,
+        status: Some(metadata.status),
+        source: VerificationErrorSource::Cloudflare,
+        operation: DNS_LIST_OPERATION.to_string(),
+        retryable: false,
+        message: "The Cloudflare DNS records response exceeded a local safety limit.".to_string(),
+        remediation: "Request a smaller DNS records page and try again.".to_string(),
+        request_id: metadata.request_id.clone(),
+    }))
+}
+
+fn dns_validation_error(error: CloudflareError) -> CloudflareError {
+    match error {
+        CloudflareError::HttpError(CloudflareHttpError::ResourceLimit(limit)) => {
+            CloudflareError::Validation(Box::new(CloudflareValidationError {
+                field: limit.resource.to_string(),
+                limit: limit.limit,
+                actual: limit.actual,
+                operation: DNS_LIST_OPERATION.to_string(),
+                message: "The DNS records pagination value is outside the supported range."
+                    .to_string(),
+                remediation: "Use a page number and page size within the supported limits."
+                    .to_string(),
+            }))
+        }
+        other => other,
+    }
+}
+
+fn dns_response_error(error: CloudflareError, metadata: &DnsResponseMetadata) -> CloudflareError {
+    match error {
+        CloudflareError::HttpError(CloudflareHttpError::ResourceLimit(limit)) => {
+            dns_resource_limit_error(limit, metadata)
+        }
+        _ => dns_malformed_response(metadata),
+    }
+}
+
+async fn read_dns_success_response(
+    response: Response,
+) -> Result<(Value, DnsResponseMetadata), CloudflareError> {
+    let metadata = DnsResponseMetadata {
+        status: response.status().as_u16(),
+        request_id: dns_response_request_id(&response),
+    };
+    let body = match read_bounded_response_body(response, MAX_RESPONSE_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(ResponseBodyReadError::ResourceLimit(limit)) => {
+            return Err(dns_resource_limit_error(limit, &metadata));
+        }
+        Err(ResponseBodyReadError::Stream(error)) => {
+            return Err(dns_response_stream_error(error, &metadata));
+        }
+    };
+    let json = serde_json::from_slice(&body).map_err(|_| dns_malformed_response(&metadata))?;
+    Ok((json, metadata))
+}
+
+#[cfg(test)]
+mod dns_provider_semantics_tests {
+    use super::*;
+
+    fn request_context(error: CloudflareError) -> CloudflareRequestError {
+        match error {
+            CloudflareError::Request(context) => *context,
+            other => panic!("expected structured request error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dns_http_status_matrix_preserves_safe_semantics() {
+        for (status, expected_kind, retryable) in [
+            (401, VerificationFailureKind::Authentication, false),
+            (403, VerificationFailureKind::Authentication, false),
+            (408, VerificationFailureKind::Timeout, true),
+            (429, VerificationFailureKind::RateLimited, true),
+            (400, VerificationFailureKind::Provider, false),
+            (404, VerificationFailureKind::Provider, false),
+            (500, VerificationFailureKind::Provider, true),
+            (503, VerificationFailureKind::Provider, true),
+        ] {
+            let context = request_context(dns_http_request_error(
+                status,
+                Some(45),
+                Some("safe-ray-id".to_string()),
+                Vec::new(),
+            ));
+            assert_eq!(context.kind, expected_kind);
+            assert_eq!(context.status, Some(status));
+            assert_eq!(context.source, VerificationErrorSource::Cloudflare);
+            assert_eq!(context.operation, DNS_LIST_OPERATION);
+            assert_eq!(context.retryable, retryable);
+            assert_eq!(context.retry_after_secs, Some(30));
+            assert_eq!(context.request_id.as_deref(), Some("safe-ray-id"));
+        }
+    }
+
+    #[test]
+    fn dns_provider_details_keep_codes_but_redact_messages() {
+        let body = br#"{"errors":[{"code":10000,"message":"https://proxy.internal/zones/zone-secret?api_token=token-secret"},{"code":"not-a-number","message":"token-secret"}]}"#;
+        let provider_errors = dns_provider_errors(body, 401);
+        assert_eq!(provider_errors.len(), 1);
+        assert_eq!(provider_errors[0].code.as_deref(), Some("10000"));
+        assert_eq!(
+            provider_errors[0].message,
+            "Cloudflare reported an authentication error."
+        );
+
+        let rendered = format!(
+            "{:?}",
+            dns_http_request_error(401, None, None, provider_errors)
+        );
+        for forbidden in ["proxy.internal", "zone-secret", "token-secret", "https://"] {
+            assert!(!rendered.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn malformed_response_and_resource_limit_are_not_transport_errors() {
+        let metadata = DnsResponseMetadata {
+            status: 200,
+            request_id: Some("safe-ray-id".to_string()),
+        };
+        let malformed = request_context(dns_malformed_response(&metadata));
+        assert_eq!(malformed.kind, VerificationFailureKind::MalformedResponse);
+        assert_eq!(malformed.status, Some(200));
+        assert!(!malformed.retryable);
+
+        let error = dns_resource_limit_error(
+            ResourceLimitError {
+                resource: "Cloudflare HTTP response body",
+                limit: 1024,
+                actual: Some(2048),
+                kind: ResourceLimitKind::ContentLength,
+            },
+            &metadata,
+        );
+        match error {
+            CloudflareError::ResourceLimit(context) => {
+                assert_eq!(context.status, Some(200));
+                assert_eq!(context.limit.limit, 1024);
+                assert_eq!(context.limit.actual, Some(2048));
+                assert_eq!(context.request_id.as_deref(), Some("safe-ray-id"));
+            }
+            other => panic!("expected structured resource limit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dns_pagination_limit_becomes_client_validation() {
+        let error = dns_validation_error(CloudflareError::resource_limit(ResourceLimitError {
+            resource: "DNS records per page",
+            limit: 5000,
+            actual: Some(5001),
+            kind: ResourceLimitKind::Collection,
+        }));
+        match error {
+            CloudflareError::Validation(context) => {
+                assert_eq!(context.field, "DNS records per page");
+                assert_eq!(context.limit, 5000);
+                assert_eq!(context.actual, Some(5001));
+                assert_eq!(context.operation, DNS_LIST_OPERATION);
+            }
+            other => panic!("expected structured validation error, got {other:?}"),
         }
     }
 }
@@ -323,7 +1443,7 @@ pub struct CloudflareClient {
 impl CloudflareClient {
     pub fn new(api_key: &str, email: Option<&str>) -> Self {
         Self {
-            client: Client::new(),
+            client: default_http_client(),
             api_key: api_key.to_string(),
             email: email.map(|s| s.to_string()),
             max_retries: MAX_RETRIES,
@@ -344,7 +1464,8 @@ impl CloudflareClient {
         }
     }
 
-    /// Set the maximum number of retries for rate-limited or server-error responses.
+    /// Set the maximum number of retries for retryable read transport failures,
+    /// rate-limited responses, or server-error responses.
     pub fn with_max_retries(mut self, retries: u32) -> Self {
         self.max_retries = retries;
         self
@@ -385,33 +1506,55 @@ impl CloudflareClient {
     {
         let mut attempt = 0u32;
         loop {
-            let req = build_request(self);
-            let response = req
-                .send()
-                .await
-                .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
+            let request = build_request(self);
+            let context = SafeRequestContext::from_builder(&request);
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    let transport = CloudflareTransportError::from_reqwest(
+                        &error,
+                        context.operation,
+                        attempt + 1,
+                        self.max_retries + 1,
+                    );
+                    if context.is_idempotent_read
+                        && transport.retryable
+                        && attempt < self.max_retries
+                    {
+                        attempt += 1;
+                        tokio::time::sleep(retry_delay(attempt, None)).await;
+                        continue;
+                    }
+                    return Err(CloudflareError::transport(
+                        error,
+                        context.operation,
+                        attempt + 1,
+                        self.max_retries + 1,
+                    ));
+                }
+            };
 
             let status = response.status();
 
-            // Success or client error (not 429) → return immediately
-            if status.is_success() || (status.is_client_error() && status.as_u16() != 429) {
+            // Retry only rate limits and server failures.
+            if status.is_success() || (status.as_u16() != 429 && !status.is_server_error()) {
                 return Ok(response);
             }
 
             // Retryable: 429 (rate limit) or 5xx (server error)
             attempt += 1;
             if attempt > self.max_retries {
+                if context.operation == DNS_LIST_OPERATION {
+                    return Err(dns_status_error(response).await);
+                }
                 if status.as_u16() == 429 {
                     return Err(CloudflareError::RateLimited(self.max_retries));
                 }
-                return Err(CloudflareError::HttpError(
-                    format!(
-                        "Server error {} after {} retries",
-                        status.as_u16(),
-                        self.max_retries
-                    )
-                    .into(),
-                ));
+                return Err(CloudflareError::ApiError(format!(
+                    "Server error {} after {} retries",
+                    status.as_u16(),
+                    self.max_retries
+                )));
             }
 
             // Calculate backoff: prefer Retry-After header, else exponential
@@ -728,9 +1871,10 @@ impl CloudflareClient {
         page: Option<u32>,
         per_page: Option<u32>,
     ) -> Result<Vec<DNSRecord>, CloudflareError> {
-        check_dns_pagination_bounds(page, per_page)?;
+        check_dns_pagination_bounds(page, per_page).map_err(dns_validation_error)?;
         let mut url = format!(
-            "https://api.cloudflare.com/client/v4/zones/{}/dns_records",
+            "{}/zones/{}/dns_records",
+            self.api_base.trim_end_matches('/'),
             zone_id
         );
         let mut params = Vec::new();
@@ -750,24 +1894,32 @@ impl CloudflareClient {
             .request_with_retry(move |s| s.apply_auth(s.client.get(&url_owned)))
             .await?;
 
-        let json: Value = read_json_response(response).await?;
+        if !response.status().is_success() {
+            return Err(dns_status_error(response).await);
+        }
+        let (json, metadata) = read_dns_success_response(response).await?;
 
-        let source = json["result"].as_array().ok_or(CloudflareError::ApiError(
-            "Invalid response format".to_string(),
-        ))?;
+        validate_dns_records_envelope_success(&json)
+            .map_err(|_| dns_malformed_response(&metadata))?;
+        let source = json["result"]
+            .as_array()
+            .ok_or_else(|| dns_malformed_response(&metadata))?;
         check_collection_limit(
             "DNS records per page",
             source.len(),
             usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
-        )?;
+        )
+        .map_err(|error| dns_response_error(error, &metadata))?;
         let mut records = Vec::new();
         try_reserve_exact(
             &mut records,
             source.len(),
             "parsed DNS records",
             usize::try_from(MAX_DNS_RECORDS_PER_PAGE).unwrap_or(usize::MAX),
-        )?;
-        extend_dns_records_fail_closed(&mut records, source)?;
+        )
+        .map_err(|error| dns_response_error(error, &metadata))?;
+        extend_dns_records_fail_closed_for_zone(&mut records, source, zone_id)
+            .map_err(|error| dns_record_parse_response(&metadata, &error))?;
 
         Ok(records)
     }
@@ -786,9 +1938,13 @@ impl CloudflareClient {
             .request_with_retry(|s| s.apply_auth(s.client.post(&url).json(&record)))
             .await?;
 
-        let json: Value = read_json_response(response).await?;
+        let (json, metadata) = read_dns_mutation_response(response).await?;
+        let result = json
+            .get("result")
+            .ok_or_else(|| dns_malformed_response(&metadata))?;
 
-        parse_dns_record(&json["result"])
+        parse_dns_record_for_zone(result, zone_id)
+            .map_err(|error| dns_record_mutation_parse_response(&metadata, error, "dns:create"))
     }
 
     pub async fn update_dns_record(
@@ -806,9 +1962,13 @@ impl CloudflareClient {
             .request_with_retry(|s| s.apply_auth(s.client.put(&url).json(&record)))
             .await?;
 
-        let json: Value = read_json_response(response).await?;
+        let (json, metadata) = read_dns_mutation_response(response).await?;
+        let result = json
+            .get("result")
+            .ok_or_else(|| dns_malformed_response(&metadata))?;
 
-        parse_dns_record(&json["result"])
+        parse_dns_record_for_zone(result, zone_id)
+            .map_err(|error| dns_record_mutation_parse_response(&metadata, error, "dns:update"))
     }
 
     pub async fn delete_dns_record(
@@ -821,8 +1981,10 @@ impl CloudflareClient {
             zone_id, record_id
         );
 
-        self.request_with_retry(|s| s.apply_auth(s.client.delete(&url)))
+        let response = self
+            .request_with_retry(|s| s.apply_auth(s.client.delete(&url)))
             .await?;
+        let _ = read_dns_mutation_response(response).await?;
         Ok(())
     }
 
@@ -1083,36 +2245,292 @@ impl CloudflareClient {
 
     // ── Analytics ───────────────────────────────────────────────────────
 
+    fn safe_zone_analytics_text(&self, value: &str, limit: usize) -> String {
+        let mut safe: String = value
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .take(limit)
+            .collect();
+        if !self.api_key.is_empty() {
+            safe = safe.replace(&self.api_key, "[REDACTED]");
+        }
+        if let Some(email) = self.email.as_deref().filter(|email| !email.is_empty()) {
+            safe = safe.replace(email, "[REDACTED]");
+        }
+        safe.trim().to_string()
+    }
+
+    fn zone_analytics_provider_errors(&self, response: &Value) -> Vec<CloudflareProviderError> {
+        response
+            .get("errors")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(MAX_PROVIDER_ERRORS)
+            .map(|error| {
+                let message = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Cloudflare GraphQL analytics error");
+                let code_value = error
+                    .get("extensions")
+                    .and_then(|extensions| extensions.get("code"))
+                    .or_else(|| error.get("code"));
+                let code = code_value
+                    .and_then(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .or_else(|| value.as_i64().map(|number| number.to_string()))
+                            .or_else(|| value.as_u64().map(|number| number.to_string()))
+                    })
+                    .map(|value| self.safe_zone_analytics_text(&value, 80));
+                CloudflareProviderError {
+                    code,
+                    message: self.safe_zone_analytics_text(message, MAX_PROVIDER_MESSAGE_LENGTH),
+                }
+            })
+            .collect()
+    }
+
+    fn zone_analytics_error(
+        &self,
+        message: &str,
+        context: ZoneAnalyticsErrorContext,
+        remediation: &str,
+    ) -> CloudflareError {
+        CloudflareError::Request(Box::new(CloudflareRequestError {
+            kind: context.kind,
+            message: self.safe_zone_analytics_text(message, MAX_PROVIDER_MESSAGE_LENGTH),
+            status: context.status,
+            source: VerificationErrorSource::Cloudflare,
+            operation: ZONE_ANALYTICS_OPERATION.to_string(),
+            retryable: context.retryable,
+            provider_errors: context.provider_errors,
+            retry_after_secs: context.retry_after_secs,
+            remediation: remediation.to_string(),
+            request_id: context.request_id,
+        }))
+    }
+
     /// Zone analytics dashboard (requests, bandwidth, threats, etc.).
     pub async fn get_zone_analytics(
         &self,
         zone_id: &str,
         since: &str,
         until: &str,
-        continuous: Option<bool>,
+        _continuous: Option<bool>,
     ) -> Result<Value, CloudflareError> {
-        let mut url = format!(
-            "https://api.cloudflare.com/client/v4/zones/{}/analytics/dashboard?since={}&until={}",
-            zone_id, since, until
-        );
-        if let Some(true) = continuous {
-            url.push_str("&continuous=true");
+        let (start, end) = resolve_zone_analytics_bounds(since, until);
+        let url = format!("{}/graphql", self.api_base.trim_end_matches('/'));
+        let payload = json!({
+            "query": ZONE_ANALYTICS_GRAPHQL_QUERY,
+            "variables": {
+                "zoneTag": zone_id,
+                "start": &start,
+                "end": &end,
+            }
+        });
+        let response = self
+            .request_with_retry(|state| state.apply_auth(state.client.post(&url).json(&payload)))
+            .await?;
+        let status = response.status().as_u16();
+        let retry_after_secs = parse_retry_after_secs(response.headers());
+        let request_id = response
+            .headers()
+            .get("cf-ray")
+            .or_else(|| response.headers().get("x-request-id"))
+            .and_then(|value| value.to_str().ok())
+            .map(|value| self.safe_zone_analytics_text(value, 128));
+        let response_value: Value = match read_json_response(response).await {
+            Ok(value) => value,
+            Err(error @ CloudflareError::ResourceLimit(_)) => return Err(error),
+            Err(_) => {
+                let (kind, retryable, remediation) = match status {
+                    401 | 403 => (
+                        VerificationFailureKind::Authentication,
+                        false,
+                        "Check the Cloudflare token or global-key permissions for zone analytics.",
+                    ),
+                    408 => (
+                        VerificationFailureKind::Timeout,
+                        true,
+                        "Retry the analytics request after checking Cloudflare service health.",
+                    ),
+                    429 => (
+                        VerificationFailureKind::RateLimited,
+                        true,
+                        "Wait for the Cloudflare rate-limit window before retrying.",
+                    ),
+                    500..=599 => (
+                        VerificationFailureKind::Provider,
+                        true,
+                        "Retry after checking Cloudflare service health.",
+                    ),
+                    _ => (
+                        VerificationFailureKind::MalformedResponse,
+                        false,
+                        "Retry once; if the response remains malformed, check Cloudflare GraphQL availability.",
+                    ),
+                };
+                return Err(self.zone_analytics_error(
+                    "Cloudflare returned a malformed GraphQL analytics response.",
+                    ZoneAnalyticsErrorContext {
+                        kind,
+                        status: Some(status),
+                        request_id,
+                        retry_after_secs,
+                        provider_errors: Vec::new(),
+                        retryable,
+                    },
+                    remediation,
+                ));
+            }
+        };
+
+        let provider_errors = self.zone_analytics_provider_errors(&response_value);
+        let has_graphql_errors = response_value.get("errors").is_some_and(|errors| {
+            !errors.is_null() && errors.as_array().is_none_or(|items| !items.is_empty())
+        });
+        if !(200..300).contains(&status) || has_graphql_errors {
+            let (kind, retryable, remediation) = match status {
+                401 | 403 => (
+                    VerificationFailureKind::Authentication,
+                    false,
+                    "Check the Cloudflare token or global-key permissions for zone analytics.",
+                ),
+                408 => (
+                    VerificationFailureKind::Timeout,
+                    true,
+                    "Retry the analytics request after checking Cloudflare service health.",
+                ),
+                429 => (
+                    VerificationFailureKind::RateLimited,
+                    true,
+                    "Wait for the Cloudflare rate-limit window before retrying.",
+                ),
+                500..=599 => (
+                    VerificationFailureKind::Provider,
+                    true,
+                    "Retry after checking Cloudflare service health.",
+                ),
+                _ => (
+                    VerificationFailureKind::Provider,
+                    false,
+                    "Check the zone ID and Cloudflare Analytics Read permissions.",
+                ),
+            };
+            let message = provider_errors
+                .first()
+                .map(|error| error.message.clone())
+                .unwrap_or_else(|| "Cloudflare GraphQL analytics request failed.".to_string());
+            return Err(self.zone_analytics_error(
+                &message,
+                ZoneAnalyticsErrorContext {
+                    kind,
+                    status: Some(status),
+                    request_id,
+                    retry_after_secs,
+                    provider_errors,
+                    retryable,
+                },
+                remediation,
+            ));
         }
-        let req = self.apply_auth(self.client.get(&url));
-        let response = req
-            .send()
-            .await
-            .map_err(|e| CloudflareError::HttpError(e.to_string().into()))?;
-        let json: Value = read_json_response(response).await?;
-        if json["success"].as_bool() != Some(true) {
-            let err = json["errors"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|e| e["message"].as_str())
-                .unwrap_or("Analytics error");
-            return Err(CloudflareError::ApiError(err.to_string()));
+
+        let envelope: ZoneAnalyticsGraphQlEnvelope =
+            serde_json::from_value(response_value).map_err(|_| {
+                self.zone_analytics_error(
+                    "Cloudflare returned malformed GraphQL analytics fields.",
+                    ZoneAnalyticsErrorContext {
+                        kind: VerificationFailureKind::MalformedResponse,
+                        status: Some(status),
+                        request_id: request_id.clone(),
+                        retry_after_secs,
+                        provider_errors: Vec::new(),
+                        retryable: false,
+                    },
+                    "Retry once; if the response remains malformed, check Cloudflare GraphQL availability.",
+                )
+            })?;
+        let zone = envelope
+            .data
+            .map(|data| data.viewer.zones)
+            .and_then(|zones| zones.into_iter().next())
+            .ok_or_else(|| {
+                self.zone_analytics_error(
+                    "Cloudflare GraphQL returned no zone analytics data.",
+                    ZoneAnalyticsErrorContext {
+                        kind: VerificationFailureKind::MalformedResponse,
+                        status: Some(status),
+                        request_id: request_id.clone(),
+                        retry_after_secs,
+                        provider_errors: Vec::new(),
+                        retryable: false,
+                    },
+                    "Check the zone ID and Cloudflare Analytics Read permissions.",
+                )
+            })?;
+
+        let total_group = zone.totals.into_iter().next();
+        let (total_sum, total_uniq) = total_group
+            .map(|group| (group.sum, group.uniq))
+            .unwrap_or_default();
+        let totals = json!({
+            "requests": total_sum.requests,
+            "bandwidth": total_sum.bytes,
+            "threats": total_sum.threats,
+            "pageviews": total_sum.page_views,
+            "uniques": total_uniq.uniques,
+        });
+
+        let mut starts = Vec::with_capacity(zone.timeseries.len());
+        for group in &zone.timeseries {
+            let start = group
+                .dimensions
+                .as_ref()
+                .map(|dimensions| dimensions.datetime_five_minutes.trim())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    self.zone_analytics_error(
+                        "Cloudflare returned an analytics bucket without a timestamp.",
+                        ZoneAnalyticsErrorContext {
+                            kind: VerificationFailureKind::MalformedResponse,
+                            status: Some(status),
+                            request_id: request_id.clone(),
+                            retry_after_secs,
+                            provider_errors: Vec::new(),
+                            retryable: false,
+                        },
+                        "Retry once; if the response remains malformed, check Cloudflare GraphQL availability.",
+                    )
+                })?;
+            starts.push(start.to_string());
         }
-        Ok(json["result"].clone())
+        let timeseries: Vec<Value> = zone
+            .timeseries
+            .into_iter()
+            .enumerate()
+            .map(|(index, group)| {
+                json!({
+                    "since": starts[index],
+                    "until": starts.get(index + 1).unwrap_or(&end),
+                    "requests": group.sum.requests,
+                    "bandwidth": group.sum.bytes,
+                    "threats": group.sum.threats,
+                    "pageviews": group.sum.page_views,
+                    "uniques": group.uniq.uniques,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "totals": totals, "timeseries": timeseries }))
     }
 
     /// DNS analytics report.
@@ -1608,24 +3026,679 @@ fn sanitize_error_text(value: &str) -> String {
 
 // ── Parsing helper ──────────────────────────────────────────────────────────
 
-fn parse_dns_record(value: &Value) -> Result<DNSRecord, CloudflareError> {
-    serde_json::from_value(value.clone())
-        .map_err(|_| CloudflareError::ApiError("Invalid DNS record response format".to_string()))
+#[derive(Debug, serde::Deserialize)]
+struct CloudflareDnsRecordWire {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "type")]
+    record_type: String,
+    name: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    data: Option<Value>,
+    #[serde(default)]
+    comment: Option<String>,
+    #[serde(default)]
+    ttl: Option<u32>,
+    #[serde(default)]
+    priority: Option<u16>,
+    #[serde(default)]
+    proxied: Option<bool>,
+    #[serde(default, rename = "zone_id")]
+    _provider_zone_id: Option<String>,
+    #[serde(default)]
+    zone_name: Option<String>,
+    created_on: String,
+    modified_on: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DNSRecordParseFailure {
+    InvalidShape,
+    InvalidIdentity,
+    InvalidScalar,
+    MissingContent,
+    InvalidStructuredData,
+    UnsupportedStructuredType,
+}
+
+impl DNSRecordParseFailure {
+    fn category(self) -> &'static str {
+        match self {
+            Self::InvalidShape => "invalid_shape",
+            Self::InvalidIdentity => "invalid_identity",
+            Self::InvalidScalar => "invalid_scalar",
+            Self::MissingContent => "missing_content",
+            Self::InvalidStructuredData => "invalid_structured_data",
+            Self::UnsupportedStructuredType => "unsupported_structured_type",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DNSRecordParseError {
+    record_type: &'static str,
+    failure: DNSRecordParseFailure,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DNSRecordPageParseError {
+    index: usize,
+    error: DNSRecordParseError,
+}
+
+impl std::fmt::Display for DNSRecordPageParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Invalid DNS record response at result index {} (type {}, category {})",
+            self.index,
+            self.error.record_type,
+            self.error.failure.category()
+        )
+    }
+}
+
+fn redacted_dns_record_type(value: &Value) -> &'static str {
+    match value.get("type").and_then(Value::as_str) {
+        Some("A") => "A",
+        Some("AAAA") => "AAAA",
+        Some("CAA") => "CAA",
+        Some("CERT") => "CERT",
+        Some("CNAME") => "CNAME",
+        Some("DNSKEY") => "DNSKEY",
+        Some("DS") => "DS",
+        Some("HTTPS") => "HTTPS",
+        Some("LOC") => "LOC",
+        Some("MX") => "MX",
+        Some("NAPTR") => "NAPTR",
+        Some("NS") => "NS",
+        Some("OPENPGPKEY") => "OPENPGPKEY",
+        Some("PTR") => "PTR",
+        Some("SMIMEA") => "SMIMEA",
+        Some("SRV") => "SRV",
+        Some("SSHFP") => "SSHFP",
+        Some("SVCB") => "SVCB",
+        Some("TLSA") => "TLSA",
+        Some("TXT") => "TXT",
+        Some("URI") => "URI",
+        _ => "OTHER",
+    }
+}
+
+fn structured_string<'a>(
+    data: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, DNSRecordParseFailure> {
+    data.get(key)
+        .and_then(Value::as_str)
+        .ok_or(DNSRecordParseFailure::InvalidStructuredData)
+}
+
+fn optional_structured_string<'a>(
+    data: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, DNSRecordParseFailure> {
+    match data.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value)),
+        _ => Err(DNSRecordParseFailure::InvalidStructuredData),
+    }
+}
+
+fn structured_integer(
+    data: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<u64, DNSRecordParseFailure> {
+    data.get(key)
+        .and_then(Value::as_u64)
+        .ok_or(DNSRecordParseFailure::InvalidStructuredData)
+}
+
+fn structured_number_text(
+    data: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, DNSRecordParseFailure> {
+    match data.get(key) {
+        Some(Value::Number(value)) => Ok(value.to_string()),
+        _ => Err(DNSRecordParseFailure::InvalidStructuredData),
+    }
+}
+
+fn quote_dns_character_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+}
+
+fn format_structured_dns_content(
+    record_type: &str,
+    data: Option<&Value>,
+    top_level_priority: Option<u16>,
+) -> Result<String, DNSRecordParseFailure> {
+    let data = data.ok_or(DNSRecordParseFailure::MissingContent)?;
+    let object = data
+        .as_object()
+        .ok_or(DNSRecordParseFailure::InvalidStructuredData)?;
+
+    match record_type {
+        "CAA" => Ok(format!(
+            "{} {} {}",
+            structured_integer(object, "flags")?,
+            structured_string(object, "tag")?,
+            quote_dns_character_string(structured_string(object, "value")?)
+        )),
+        "CERT" => Ok(format!(
+            "{} {} {} {}",
+            structured_integer(object, "type")?,
+            structured_integer(object, "key_tag")?,
+            structured_integer(object, "algorithm")?,
+            structured_string(object, "certificate")?
+        )),
+        "DNSKEY" => Ok(format!(
+            "{} {} {} {}",
+            structured_integer(object, "flags")?,
+            structured_integer(object, "protocol")?,
+            structured_integer(object, "algorithm")?,
+            structured_string(object, "public_key")?
+        )),
+        "DS" => Ok(format!(
+            "{} {} {} {}",
+            structured_integer(object, "key_tag")?,
+            structured_integer(object, "algorithm")?,
+            structured_integer(object, "digest_type")?,
+            structured_string(object, "digest")?
+        )),
+        "HTTPS" | "SVCB" => {
+            let priority = structured_integer(object, "priority")?;
+            let target = structured_string(object, "target")?;
+            match optional_structured_string(object, "value")? {
+                Some(value) if !value.is_empty() => Ok(format!("{priority} {target} {value}")),
+                _ => Ok(format!("{priority} {target}")),
+            }
+        }
+        "LOC" => {
+            let latitude_direction = structured_string(object, "lat_direction")?;
+            if !matches!(latitude_direction, "N" | "S") {
+                return Err(DNSRecordParseFailure::InvalidStructuredData);
+            }
+            let longitude_direction = structured_string(object, "long_direction")?;
+            if !matches!(longitude_direction, "E" | "W") {
+                return Err(DNSRecordParseFailure::InvalidStructuredData);
+            }
+            Ok(format!(
+                "{} {} {} {} {} {} {} {} {}m {}m {}m {}m",
+                structured_number_text(object, "lat_degrees")?,
+                structured_number_text(object, "lat_minutes")?,
+                structured_number_text(object, "lat_seconds")?,
+                latitude_direction,
+                structured_number_text(object, "long_degrees")?,
+                structured_number_text(object, "long_minutes")?,
+                structured_number_text(object, "long_seconds")?,
+                longitude_direction,
+                structured_number_text(object, "altitude")?,
+                structured_number_text(object, "size")?,
+                structured_number_text(object, "precision_horz")?,
+                structured_number_text(object, "precision_vert")?
+            ))
+        }
+        "NAPTR" => Ok(format!(
+            "{} {} {} {} {} {}",
+            structured_integer(object, "order")?,
+            structured_integer(object, "preference")?,
+            quote_dns_character_string(structured_string(object, "flags")?),
+            quote_dns_character_string(structured_string(object, "service")?),
+            quote_dns_character_string(structured_string(object, "regex")?),
+            structured_string(object, "replacement")?
+        )),
+        "SMIMEA" | "TLSA" => Ok(format!(
+            "{} {} {} {}",
+            structured_integer(object, "usage")?,
+            structured_integer(object, "selector")?,
+            structured_integer(object, "matching_type")?,
+            structured_string(object, "certificate")?
+        )),
+        "SRV" => Ok(format!(
+            "{} {} {} {}",
+            structured_integer(object, "priority")?,
+            structured_integer(object, "weight")?,
+            structured_integer(object, "port")?,
+            structured_string(object, "target")?
+        )),
+        "SSHFP" => Ok(format!(
+            "{} {} {}",
+            structured_integer(object, "algorithm")?,
+            structured_integer(object, "type")?,
+            structured_string(object, "fingerprint")?
+        )),
+        "URI" => {
+            let priority = match object.get("priority") {
+                None | Some(Value::Null) => top_level_priority
+                    .map(u64::from)
+                    .ok_or(DNSRecordParseFailure::InvalidStructuredData)?,
+                Some(value) => value
+                    .as_u64()
+                    .ok_or(DNSRecordParseFailure::InvalidStructuredData)?,
+            };
+            Ok(format!(
+                "{} {} {}",
+                priority,
+                structured_integer(object, "weight")?,
+                quote_dns_character_string(structured_string(object, "target")?)
+            ))
+        }
+        _ => Err(DNSRecordParseFailure::UnsupportedStructuredType),
+    }
+}
+
+fn parse_dns_record_for_zone(
+    value: &Value,
+    requested_zone_id: &str,
+) -> Result<DNSRecord, DNSRecordParseError> {
+    let record_type = redacted_dns_record_type(value);
+    let object = value.as_object().ok_or(DNSRecordParseError {
+        record_type,
+        failure: DNSRecordParseFailure::InvalidShape,
+    })?;
+    if !matches!(object.get("type"), Some(Value::String(value)) if !value.trim().is_empty())
+        || !matches!(object.get("name"), Some(Value::String(value)) if !value.trim().is_empty())
+    {
+        return Err(DNSRecordParseError {
+            record_type,
+            failure: DNSRecordParseFailure::InvalidIdentity,
+        });
+    }
+
+    let wire: CloudflareDnsRecordWire =
+        serde_json::from_value(value.clone()).map_err(|_| DNSRecordParseError {
+            record_type,
+            failure: DNSRecordParseFailure::InvalidScalar,
+        })?;
+    let content = match wire.content.as_ref() {
+        Some(content) => content.clone(),
+        None => format_structured_dns_content(&wire.record_type, wire.data.as_ref(), wire.priority)
+            .map_err(|failure| DNSRecordParseError {
+                record_type,
+                failure,
+            })?,
+    };
+
+    Ok(DNSRecord {
+        id: wire.id,
+        r#type: wire.record_type,
+        name: wire.name,
+        content,
+        comment: wire.comment,
+        ttl: wire.ttl,
+        priority: wire.priority,
+        proxied: wire.proxied,
+        zone_id: requested_zone_id.to_string(),
+        zone_name: wire.zone_name.unwrap_or_default(),
+        created_on: wire.created_on,
+        modified_on: wire.modified_on,
+    })
+}
+
+fn extend_dns_records_fail_closed_for_zone(
+    output: &mut Vec<DNSRecord>,
+    source: &[Value],
+    requested_zone_id: &str,
+) -> Result<(), DNSRecordPageParseError> {
+    let mut parsed = Vec::with_capacity(source.len());
+    for (index, value) in source.iter().enumerate() {
+        let record = parse_dns_record_for_zone(value, requested_zone_id)
+            .map_err(|error| DNSRecordPageParseError { index, error })?;
+        parsed.push(record);
+    }
+    output.extend(parsed);
+    Ok(())
+}
+
+fn dns_record_parse_response(
+    metadata: &DnsResponseMetadata,
+    error: &DNSRecordPageParseError,
+) -> CloudflareError {
+    dns_record_parse_response_for_operation(metadata, error, DNS_LIST_OPERATION)
+}
+
+fn dns_record_mutation_parse_response(
+    metadata: &DnsResponseMetadata,
+    error: DNSRecordParseError,
+    operation: &str,
+) -> CloudflareError {
+    dns_record_parse_response_for_operation(
+        metadata,
+        &DNSRecordPageParseError { index: 0, error },
+        operation,
+    )
+}
+
+fn dns_record_parse_response_for_operation(
+    metadata: &DnsResponseMetadata,
+    error: &DNSRecordPageParseError,
+    operation: &str,
+) -> CloudflareError {
+    dns_request_error(CloudflareRequestError {
+        kind: VerificationFailureKind::MalformedResponse,
+        message: "Cloudflare returned a malformed DNS records response.".to_string(),
+        status: Some(metadata.status),
+        source: VerificationErrorSource::Cloudflare,
+        operation: operation.to_string(),
+        retryable: false,
+        provider_errors: vec![CloudflareProviderError {
+            code: Some("record_parse".to_string()),
+            message: format!(
+                "result_index={}; record_type={}; failure_category={}",
+                error.index,
+                error.error.record_type,
+                error.error.failure.category()
+            ),
+        }],
+        retry_after_secs: None,
+        remediation:
+            "Retry the request and update the application if Cloudflare continues returning this record shape."
+                .to_string(),
+        request_id: metadata.request_id.clone(),
+    })
+}
+
+fn validate_dns_records_envelope_success(value: &Value) -> Result<(), CloudflareError> {
+    if value.get("success").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(CloudflareError::ApiError(
+            "Invalid DNS record response envelope".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
 fn extend_dns_records_fail_closed(
     output: &mut Vec<DNSRecord>,
     source: &[Value],
 ) -> Result<(), CloudflareError> {
-    for (index, value) in source.iter().enumerate() {
-        let record = parse_dns_record(value).map_err(|_| {
-            CloudflareError::ApiError(format!(
-                "Invalid DNS record response at result index {index}"
-            ))
-        })?;
-        output.push(record);
+    let requested_zone_id = source
+        .first()
+        .and_then(|value| value.get("zone_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    extend_dns_records_fail_closed_for_zone(output, source, requested_zone_id)
+        .map_err(|error| CloudflareError::ApiError(error.to_string()))
+}
+
+#[cfg(test)]
+mod dns_record_wire_regression_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn provider_record(record_type: &str, data: Value) -> Value {
+        json!({
+            "id": format!("record-{record_type}"),
+            "type": record_type,
+            "name": "structured.example.com",
+            "data": data,
+            "comment": null,
+            "ttl": 1,
+            "proxied": false,
+            "proxiable": false,
+            "settings": {},
+            "meta": {"auto_added": false},
+            "tags": [],
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        })
     }
-    Ok(())
+
+    fn spawn_json_response(body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind DNS fixture server");
+        let address = listener.local_addr().expect("read DNS fixture address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept DNS fixture request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write DNS fixture response");
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn cloudflare_list_response_normalizes_all_structured_record_variants() {
+        let fixtures = vec![
+            (
+                "CAA",
+                json!({"flags": 0, "tag": "issue", "value": "letsencrypt.org", "future": true}),
+                "0 issue \"letsencrypt.org\"",
+            ),
+            (
+                "CERT",
+                json!({"type": 1, "key_tag": 2, "algorithm": 8, "certificate": "CERTDATA"}),
+                "1 2 8 CERTDATA",
+            ),
+            (
+                "DNSKEY",
+                json!({"flags": 257, "protocol": 3, "algorithm": 8, "public_key": "AwEA"}),
+                "257 3 8 AwEA",
+            ),
+            (
+                "DS",
+                json!({"key_tag": 12345, "algorithm": 8, "digest_type": 2, "digest": "aabb"}),
+                "12345 8 2 aabb",
+            ),
+            (
+                "HTTPS",
+                json!({"priority": 1, "target": ".", "value": "alpn=h3,h2 ipv4hint=192.0.2.1"}),
+                "1 . alpn=h3,h2 ipv4hint=192.0.2.1",
+            ),
+            (
+                "LOC",
+                json!({"lat_degrees": 51, "lat_minutes": 30, "lat_seconds": 12.5, "lat_direction": "N", "long_degrees": 0, "long_minutes": 7, "long_seconds": 1.25, "long_direction": "W", "altitude": 15.5, "size": 1, "precision_horz": 10, "precision_vert": 2}),
+                "51 30 12.5 N 0 7 1.25 W 15.5m 1m 10m 2m",
+            ),
+            (
+                "NAPTR",
+                json!({"order": 100, "preference": 10, "flags": "s", "service": "SIP+D2U", "regex": "", "replacement": "_sip._udp.example.com."}),
+                "100 10 \"s\" \"SIP+D2U\" \"\" _sip._udp.example.com.",
+            ),
+            (
+                "SMIMEA",
+                json!({"usage": 3, "selector": 1, "matching_type": 1, "certificate": "aabb"}),
+                "3 1 1 aabb",
+            ),
+            (
+                "SRV",
+                json!({"priority": 10, "weight": 20, "port": 443, "target": "service.example.com."}),
+                "10 20 443 service.example.com.",
+            ),
+            (
+                "SSHFP",
+                json!({"algorithm": 1, "type": 2, "fingerprint": "aabb"}),
+                "1 2 aabb",
+            ),
+            (
+                "SVCB",
+                json!({"priority": 1, "target": "target.example.com.", "value": "alpn=h2"}),
+                "1 target.example.com. alpn=h2",
+            ),
+            (
+                "TLSA",
+                json!({"usage": 3, "selector": 1, "matching_type": 1, "certificate": "ccdd"}),
+                "3 1 1 ccdd",
+            ),
+            (
+                "URI",
+                json!({"priority": 10, "weight": 20, "target": "https://example.com/a\\\"b"}),
+                r#"10 20 "https://example.com/a\\\"b""#,
+            ),
+        ];
+        let expected = fixtures
+            .iter()
+            .map(|(_, _, content)| (*content).to_string())
+            .collect::<Vec<_>>();
+        let result = fixtures
+            .into_iter()
+            .map(|(record_type, data, _)| provider_record(record_type, data))
+            .collect::<Vec<_>>();
+        let body = json!({
+            "success": true,
+            "errors": [],
+            "messages": [],
+            "result": result,
+            "result_info": {"page": 1, "per_page": 100, "count": 13, "total_count": 13}
+        })
+        .to_string();
+        let client = CloudflareClient::new("fixture-token", None)
+            .with_api_base(spawn_json_response(body))
+            .with_max_retries(0);
+
+        let records = client
+            .get_dns_records("requested-zone-id", Some(1), Some(100))
+            .await
+            .expect("current Cloudflare record union must parse");
+
+        assert_eq!(records.len(), 13);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.content.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(records
+            .iter()
+            .all(|record| record.zone_id == "requested-zone-id" && record.zone_name.is_empty()));
+    }
+
+    #[test]
+    fn string_content_wins_but_unknown_data_only_records_fail_safely() {
+        let with_content = json!({
+            "id": "record-id",
+            "type": "FUTURE",
+            "name": "future.example.com",
+            "content": "opaque provider content",
+            "data": {"unrecognized": [true]},
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        });
+        assert_eq!(
+            parse_dns_record_for_zone(&with_content, "requested-zone")
+                .expect("provider content remains authoritative")
+                .content,
+            "opaque provider content"
+        );
+
+        let data_only = json!({
+            "id": "secret-record-id",
+            "type": "FUTURE-secret-type",
+            "name": "secret-name.example.com",
+            "data": {"secret": "secret-content"},
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        });
+        let mut output = vec![parse_dns_record_for_zone(
+            &json!({
+                "id": "existing",
+                "type": "A",
+                "name": "existing.example.com",
+                "content": "192.0.2.1",
+                "created_on": "2026-07-28T00:00:00Z",
+                "modified_on": "2026-07-28T00:00:01Z"
+            }),
+            "existing-zone",
+        )
+        .expect("existing fixture parses")];
+        let error =
+            extend_dns_records_fail_closed_for_zone(&mut output, &[data_only], "secret-zone-id")
+                .expect_err("unknown data-only type must fail closed");
+        assert_eq!(output.len(), 1, "page parsing must be transactional");
+        assert_eq!(error.index, 0);
+        assert_eq!(error.error.record_type, "OTHER");
+        assert_eq!(
+            error.error.failure,
+            DNSRecordParseFailure::UnsupportedStructuredType
+        );
+
+        let rendered = format!(
+            "{:?}",
+            dns_record_parse_response(
+                &DnsResponseMetadata {
+                    status: 200,
+                    request_id: Some("safe-ray-id".to_string()),
+                },
+                &error,
+            )
+        );
+        for forbidden in [
+            "secret-record-id",
+            "secret-type",
+            "secret-name",
+            "secret-content",
+            "secret-zone-id",
+        ] {
+            assert!(!rendered.contains(forbidden));
+        }
+        assert!(rendered.contains("result_index=0"));
+        assert!(rendered.contains("record_type=OTHER"));
+        assert!(rendered.contains("failure_category=unsupported_structured_type"));
+    }
+
+    #[test]
+    fn list_envelope_identities_scalars_and_structured_fields_fail_closed() {
+        assert!(validate_dns_records_envelope_success(&json!({"success": true})).is_ok());
+        for envelope in [
+            json!({"success": false, "result": []}),
+            json!({"result": []}),
+            json!({"success": "true", "result": []}),
+        ] {
+            assert!(validate_dns_records_envelope_success(&envelope).is_err());
+        }
+
+        let invalid_identity = json!({
+            "type": 1,
+            "name": "example.com",
+            "content": "192.0.2.1",
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        });
+        assert_eq!(
+            parse_dns_record_for_zone(&invalid_identity, "zone")
+                .expect_err("non-string type must fail")
+                .failure,
+            DNSRecordParseFailure::InvalidIdentity
+        );
+
+        let invalid_scalar = json!({
+            "type": "A",
+            "name": "example.com",
+            "content": 123,
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        });
+        assert_eq!(
+            parse_dns_record_for_zone(&invalid_scalar, "zone")
+                .expect_err("non-string content must fail")
+                .failure,
+            DNSRecordParseFailure::InvalidScalar
+        );
+
+        let invalid_structured = provider_record(
+            "HTTPS",
+            json!({"priority": 1.5, "target": "target.example.com."}),
+        );
+        assert_eq!(
+            parse_dns_record_for_zone(&invalid_structured, "zone")
+                .expect_err("fractional structured integer must fail")
+                .failure,
+            DNSRecordParseFailure::InvalidStructuredData
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2188,5 +4261,246 @@ mod auth_verification_tests {
             assert!(!output.contains(secret), "secret leaked in {output}");
         }
         assert!(context.provider_errors[0].message.contains("[redacted]"));
+    }
+}
+
+#[cfg(test)]
+mod zone_analytics_graphql_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc::{self, Receiver};
+    use std::thread;
+
+    fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).expect("read request");
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let mut content_length = 0_usize;
+            for line in headers.lines() {
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    content_length = value.trim().parse().expect("content length");
+                }
+            }
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        request
+    }
+
+    fn spawn_graphql_response(body: &str) -> (String, Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind analytics server");
+        let address = listener.local_addr().expect("analytics server address");
+        let response_body = body.to_string();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept analytics request");
+            let request = read_http_request(&mut stream);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncf-ray: analytics-LHR\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write analytics response");
+            sender
+                .send(String::from_utf8_lossy(&request).into_owned())
+                .expect("capture analytics request");
+        });
+        (format!("http://{address}"), receiver)
+    }
+
+    fn test_client(base: String) -> CloudflareClient {
+        CloudflareClient::new("analytics-token", None)
+            .with_max_retries(0)
+            .with_api_base(base)
+            .with_request_timeout(Duration::from_secs(2))
+    }
+
+    fn request_context(error: &CloudflareError) -> &CloudflareRequestError {
+        match error {
+            CloudflareError::Request(context) => context,
+            other => panic!("expected structured analytics request error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_analytics_posts_query_and_maps_flat_ui_contract() {
+        let (base, request) = spawn_graphql_response(
+            r#"{"data":{"viewer":{"zones":[{"totals":[{"sum":{"requests":19,"bytes":596139,"threats":6,"pageViews":2},"uniq":{"uniques":15}}],"timeseries":[{"dimensions":{"datetimeFiveMinutes":"2026-08-05T10:00:00Z"},"sum":{"requests":15,"bytes":312740,"threats":6,"pageViews":1},"uniq":{"uniques":11}},{"dimensions":{"datetimeFiveMinutes":"2026-08-05T10:05:00Z"},"sum":{"requests":4,"bytes":283399,"threats":0,"pageViews":1},"uniq":{"uniques":4}}]}]}},"errors":null}"#,
+        );
+        let result = test_client(base)
+            .get_zone_analytics("zone-id", "-6h", "now", Some(true))
+            .await
+            .expect("GraphQL analytics result");
+        let raw_request = request
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured GraphQL request");
+        let lower_request = raw_request.to_ascii_lowercase();
+        assert!(lower_request.starts_with("post /graphql http/1.1"));
+        assert!(lower_request.contains("authorization: bearer analytics-token"));
+        let request_body: Value = serde_json::from_str(
+            raw_request
+                .split_once("\r\n\r\n")
+                .expect("HTTP request body")
+                .1,
+        )
+        .expect("GraphQL JSON payload");
+        let query = request_body["query"].as_str().expect("GraphQL query");
+        assert!(query.contains("totals: httpRequests1mGroups"));
+        assert!(query.contains("timeseries: httpRequests1mGroups"));
+        assert!(query.contains("datetimeFiveMinutes"));
+        assert!(query.contains("pageViews"));
+        assert!(query.contains("uniques"));
+        assert_eq!(request_body["variables"]["zoneTag"], "zone-id");
+        let start = request_body["variables"]["start"]
+            .as_str()
+            .expect("start variable");
+        let end = request_body["variables"]["end"]
+            .as_str()
+            .expect("end variable");
+        assert_ne!(start, "-6h");
+        assert_ne!(end, "now");
+        assert!(start.ends_with('Z'));
+        assert!(end.ends_with('Z'));
+
+        assert_eq!(result["totals"]["requests"], 19);
+        assert_eq!(result["totals"]["bandwidth"], 596139);
+        assert_eq!(result["totals"]["threats"], 6);
+        assert_eq!(result["totals"]["pageviews"], 2);
+        assert_eq!(result["totals"]["uniques"], 15);
+        assert_eq!(result["timeseries"][0]["bandwidth"], 312740);
+        assert_eq!(result["timeseries"][0]["until"], "2026-08-05T10:05:00Z");
+        assert_eq!(result["timeseries"][1]["until"], end);
+    }
+
+    #[tokio::test]
+    async fn graphql_analytics_rejects_errors_even_with_http_200() {
+        let (base, _request) = spawn_graphql_response(
+            r#"{"data":null,"errors":[{"message":"Analytics dataset unavailable","extensions":{"code":"DATASET_UNAVAILABLE"}}]}"#,
+        );
+        let error = test_client(base)
+            .get_zone_analytics(
+                "zone-id",
+                "2026-08-05T10:00:00Z",
+                "2026-08-05T11:00:00Z",
+                None,
+            )
+            .await
+            .expect_err("GraphQL errors must fail the request");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::Provider);
+        assert_eq!(context.status, Some(200));
+        assert_eq!(context.request_id.as_deref(), Some("analytics-LHR"));
+        assert_eq!(context.provider_errors.len(), 1);
+        assert_eq!(
+            context.provider_errors[0].code.as_deref(),
+            Some("DATASET_UNAVAILABLE")
+        );
+    }
+
+    #[tokio::test]
+    async fn graphql_analytics_rejects_missing_zone_data() {
+        let (base, _request) =
+            spawn_graphql_response(r#"{"data":{"viewer":{"zones":[]}},"errors":null}"#);
+        let error = test_client(base)
+            .get_zone_analytics(
+                "missing-zone",
+                "2026-08-05T10:00:00Z",
+                "2026-08-05T11:00:00Z",
+                None,
+            )
+            .await
+            .expect_err("empty zones must not become zero analytics");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::MalformedResponse);
+        assert_eq!(context.status, Some(200));
+        assert_eq!(context.request_id.as_deref(), Some("analytics-LHR"));
+    }
+
+    #[tokio::test]
+    async fn graphql_analytics_rejects_malformed_metric_scalars() {
+        let (base, _request) = spawn_graphql_response(
+            r#"{"data":{"viewer":{"zones":[{"totals":[{"sum":{"requests":"nineteen","bytes":1,"threats":0,"pageViews":1},"uniq":{"uniques":1}}],"timeseries":[]}]}},"errors":null}"#,
+        );
+        let error = test_client(base)
+            .get_zone_analytics(
+                "zone-id",
+                "2026-08-05T10:00:00Z",
+                "2026-08-05T11:00:00Z",
+                None,
+            )
+            .await
+            .expect_err("malformed metrics must not become zero analytics");
+        let context = request_context(&error);
+        assert_eq!(context.kind, VerificationFailureKind::MalformedResponse);
+        assert_eq!(context.status, Some(200));
+    }
+}
+
+#[cfg(test)]
+mod dns_mutation_contract_tests {
+    use super::*;
+
+    #[test]
+    fn dns_record_input_omits_absent_optional_fields() {
+        let value = serde_json::to_value(DNSRecordInput {
+            r#type: "TXT".to_string(),
+            name: "example.com".to_string(),
+            content: "v=spf1 -all".to_string(),
+            comment: None,
+            ttl: Some(300),
+            priority: None,
+            proxied: None,
+        })
+        .expect("DNS mutation input should serialize");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "TXT",
+                "name": "example.com",
+                "content": "v=spf1 -all",
+                "ttl": 300
+            })
+        );
+    }
+
+    #[test]
+    fn dns_mutation_response_classifies_status_and_envelope() {
+        assert_eq!(
+            classify_dns_mutation_response(403, None),
+            DnsMutationResponseKind::HttpFailure
+        );
+        assert_eq!(
+            classify_dns_mutation_response(200, Some(&serde_json::json!({"success": true}))),
+            DnsMutationResponseKind::Success
+        );
+        assert_eq!(
+            classify_dns_mutation_response(
+                200,
+                Some(&serde_json::json!({
+                    "success": false,
+                    "errors": [{"code": 1004, "message": "DNS validation failed"}]
+                }))
+            ),
+            DnsMutationResponseKind::ProviderFailure
+        );
+        assert_eq!(
+            classify_dns_mutation_response(200, Some(&serde_json::json!({"result": {}}))),
+            DnsMutationResponseKind::Malformed
+        );
     }
 }

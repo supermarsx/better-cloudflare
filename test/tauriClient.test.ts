@@ -567,9 +567,89 @@ test("normalizes Tauri string failures without discarding native detail", () => 
   assert.equal(error.command, "verify_token");
   assert.equal(error.operation, "Tauri invoke");
   assert.equal(error.retryable, true);
-  assert.match(error.message, /backend refused the connection/i);
+  assert.match(
+    error.message,
+    /desktop operation could not connect to a required service or Cloudflare upstream/i,
+  );
+  assert.match(error.remediation ?? "", /system DNS/i);
+  assert.doesNotMatch(
+    error.message,
+    /configured (?:server|web backend)|NEXT_PUBLIC_SERVER_API_BASE/i,
+  );
   assert.doesNotMatch(error.message, /secret-value/);
   assert.match(formatRequestError(error), /command verify_token/);
+});
+
+test("normalizes native DNS string and structured lookup failures without web-backend guidance", () => {
+  const failures = [
+    {
+      cause: "getaddrinfo ENOTFOUND api.cloudflare.com token=string-secret",
+      requestId: undefined,
+    },
+    {
+      cause: {
+        code: "ENOTFOUND",
+        message:
+          "DNS lookup failed for api.cloudflare.com token=structured-secret",
+        request_id: "dns-ray-1",
+      },
+      requestId: "dns-ray-1",
+    },
+  ];
+
+  for (const failure of failures) {
+    const error = normalizeTauriInvokeError(failure.cause, "get_dns_records");
+    const formatted = formatRequestError(error);
+
+    assert.ok(error instanceof RequestError);
+    assert.equal(error.kind, "network");
+    assert.equal(error.source, "tauri");
+    assert.equal(error.operation, "Tauri invoke");
+    assert.equal(error.command, "get_dns_records");
+    assert.equal(error.retryable, true);
+    assert.equal(error.requestId, failure.requestId);
+    assert.match(
+      error.message,
+      /desktop operation could not resolve a required service or Cloudflare upstream hostname/i,
+    );
+    assert.match(error.remediation ?? "", /system DNS/i);
+    assert.match(error.remediation ?? "", /proxy or VPN/i);
+    assert.match(error.remediation ?? "", /firewall/i);
+    assert.doesNotMatch(
+      error.message,
+      /configured (?:server|web backend)|NEXT_PUBLIC_SERVER_API_BASE|string-secret|structured-secret/i,
+    );
+    assert.match(formatted, /source tauri/i);
+    assert.match(formatted, /command get_dns_records/i);
+    assert.doesNotMatch(formatted, /string-secret|structured-secret/i);
+  }
+
+  const legacyProvider = normalizeTauriInvokeError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "provider",
+      source: "cloudflare",
+      operation: "dns:list",
+      retryable: false,
+      message: "authentication failed token=legacy-tauri-secret",
+    },
+    "get_dns_records",
+  );
+  const formattedLegacyProvider = formatRequestError(legacyProvider);
+
+  assert.equal(legacyProvider.kind, "http");
+  assert.equal(legacyProvider.operation, "dns:list");
+  assert.equal(legacyProvider.command, "get_dns_records");
+  assert.equal(legacyProvider.retryable, false);
+  assert.match(
+    legacyProvider.message,
+    /Cloudflare could not complete the requested operation/i,
+  );
+  assert.doesNotMatch(
+    legacyProvider.message,
+    /credential verification|supplied credentials|legacy-tauri-secret/i,
+  );
+  assert.doesNotMatch(formattedLegacyProvider, /legacy-tauri-secret/i);
 });
 
 test("normalizes structured Tauri failures with safe diagnostics", () => {

@@ -34,20 +34,33 @@ test("classifies browser network, refused, DNS, TLS, and CORS failures", () => {
     { endpoint: "/verify-token" },
   );
   assert.equal(refused.kind, "network");
-  assert.match(refused.message, /backend refused the connection/i);
+  assert.match(
+    refused.message,
+    /configured web backend refused the connection/i,
+  );
+  assert.match(refused.message, /NEXT_PUBLIC_SERVER_API_BASE/);
+  assert.doesNotMatch(refused.message, /desktop operation/i);
 
   const dns = normalizeRequestError({
     code: "ENOTFOUND",
     message: "getaddrinfo ENOTFOUND api.invalid",
   });
   assert.equal(dns.kind, "network");
-  assert.match(dns.message, /hostname could not be resolved/i);
+  assert.match(
+    dns.message,
+    /configured web backend hostname could not be resolved/i,
+  );
+  assert.match(dns.message, /NEXT_PUBLIC_SERVER_API_BASE/);
+  assert.doesNotMatch(dns.message, /desktop operation/i);
 
   const tls = normalizeRequestError(
     new Error("self-signed certificate in certificate chain"),
   );
   assert.equal(tls.kind, "network");
   assert.match(tls.message, /TLS or certificate error/i);
+  assert.match(tls.message, /configured web backend/i);
+  assert.match(tls.message, /NEXT_PUBLIC_SERVER_API_BASE/);
+  assert.doesNotMatch(tls.message, /desktop operation/i);
 
   const cors = normalizeRequestError(
     "Blocked by CORS: Access-Control-Allow-Origin missing",
@@ -55,6 +68,237 @@ test("classifies browser network, refused, DNS, TLS, and CORS failures", () => {
   assert.equal(cors.kind, "network");
   assert.equal(cors.retryable, false);
   assert.match(cors.message, /CORS policy/);
+});
+
+test("uses native service guidance for Tauri connection, DNS, and TLS heuristics", () => {
+  const cases = [
+    {
+      error: {
+        code: "ECONNREFUSED",
+        message: "connect ECONNREFUSED token=refused-secret",
+      },
+      message:
+        /desktop operation could not connect to a required service or Cloudflare upstream/i,
+    },
+    {
+      error: {
+        code: "ENOTFOUND",
+        message: "getaddrinfo ENOTFOUND api.cloudflare.com token=dns-secret",
+      },
+      message:
+        /desktop operation could not resolve a required service or Cloudflare upstream hostname/i,
+    },
+    {
+      error: new Error(
+        "self-signed certificate blocked the secure connection token=tls-secret",
+      ),
+      message:
+        /TLS or certificate error prevented the desktop operation from reaching a required service or Cloudflare upstream/i,
+    },
+  ];
+
+  for (const fixture of cases) {
+    const normalized = normalizeRequestError(fixture.error, {
+      source: "tauri",
+      operation: "Tauri invoke",
+      command: "get_dns_records",
+    });
+    const formatted = formatRequestError(normalized);
+
+    assert.equal(normalized.kind, "network");
+    assert.equal(normalized.source, "tauri");
+    assert.equal(normalized.operation, "Tauri invoke");
+    assert.equal(normalized.command, "get_dns_records");
+    assert.equal(normalized.retryable, true);
+    assert.match(normalized.message, fixture.message);
+    assert.match(normalized.remediation ?? "", /system DNS|system clock/i);
+    assert.match(normalized.remediation ?? "", /proxy or VPN/i);
+    assert.match(normalized.remediation ?? "", /firewall/i);
+    assert.match(normalized.message, /Next step:/i);
+    assert.doesNotMatch(
+      normalized.message,
+      /configured (?:server|web backend)|NEXT_PUBLIC_SERVER_API_BASE|secret/i,
+    );
+    assert.match(formatted, /source tauri/i);
+    assert.match(formatted, /command get_dns_records/i);
+    assert.doesNotMatch(formatted, /secret/i);
+  }
+
+  const intactDns = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "network",
+      source: "network",
+      operation: "dns:list",
+      retryable: true,
+      message: "DNS lookup failed token=intact-dns-secret",
+    },
+    { source: "tauri", command: "get_dns_records" },
+  );
+  assert.equal(intactDns.kind, "network");
+  assert.equal(intactDns.operation, "dns:list");
+  assert.equal(intactDns.retryable, true);
+  assert.doesNotMatch(
+    intactDns.message,
+    /credential verification|supplied credentials|intact-dns-secret/i,
+  );
+
+  const legacyDnsProvider = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "provider",
+      source: "cloudflare",
+      operation: "dns:list",
+      retryable: false,
+      message: "authentication failed token=legacy-provider-secret",
+    },
+    { source: "tauri", command: "get_dns_records" },
+  );
+  assert.equal(legacyDnsProvider.kind, "http");
+  assert.equal(legacyDnsProvider.operation, "dns:list");
+  assert.equal(legacyDnsProvider.retryable, false);
+  assert.match(
+    legacyDnsProvider.message,
+    /Cloudflare could not complete the requested operation/i,
+  );
+  assert.doesNotMatch(
+    legacyDnsProvider.message,
+    /credential verification|supplied credentials|legacy-provider-secret/i,
+  );
+
+  const incompleteDns = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      operation: "dns:list",
+      message: "authentication failed token=incomplete-dns-secret",
+    },
+    { source: "tauri", command: "get_dns_records" },
+  );
+  assert.equal(incompleteDns.operation, "dns:list");
+  assert.doesNotMatch(
+    incompleteDns.message,
+    /credential verification|supplied credentials|incomplete-dns-secret/i,
+  );
+
+  const authOperation = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "authentication",
+      source: "cloudflare",
+      operation: "auth:verify_token",
+      message: "authentication failed token=auth-operation-secret",
+    },
+    { source: "tauri", command: "verify_token" },
+  );
+  assert.equal(authOperation.kind, "http");
+  assert.equal(authOperation.retryable, false);
+  assert.match(authOperation.message, /rejected the supplied credentials/i);
+  assert.doesNotMatch(authOperation.message, /auth-operation-secret/i);
+
+  const forbiddenStatus = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "provider",
+      status: 403,
+      source: "cloudflare",
+      operation: "dns:list",
+      message: "forbidden token=status-secret",
+    },
+    { source: "tauri", command: "get_dns_records" },
+  );
+  assert.equal(forbiddenStatus.status, 403);
+  assert.equal(forbiddenStatus.retryable, false);
+  assert.match(forbiddenStatus.message, /credentials|permission/i);
+  assert.doesNotMatch(forbiddenStatus.message, /status-secret/i);
+
+  const malformedDns = normalizeRequestError(
+    {
+      code: "REQUEST_FAILED",
+      kind: "malformed_response",
+      status: 200,
+      source: "cloudflare",
+      operation: "dns:list",
+      retryable: false,
+      request_id: "dns-ray-safe-123",
+      message: "Malformed DNS payload token=malformed-dns-secret",
+      remediation: "Retry the DNS list token=malformed-remediation-secret",
+    },
+    { source: "tauri", command: "get_dns_records" },
+  );
+  const formattedMalformedDns = formatRequestError(malformedDns);
+  assert.equal(malformedDns.kind, "malformed-response");
+  assert.equal(malformedDns.status, 200);
+  assert.equal(malformedDns.operation, "dns:list");
+  assert.equal(malformedDns.command, "get_dns_records");
+  assert.equal(malformedDns.requestId, "dns-ray-safe-123");
+  assert.equal(malformedDns.retryable, false);
+  assert.match(
+    malformedDns.message,
+    /Cloudflare returned a malformed response while listing DNS records/i,
+  );
+  assert.doesNotMatch(
+    malformedDns.message,
+    /authentication service|malformed-dns-secret|malformed-remediation-secret/i,
+  );
+  assert.match(formattedMalformedDns, /request ID dns-ray-safe-123/i);
+  assert.doesNotMatch(
+    formattedMalformedDns,
+    /malformed-dns-secret|malformed-remediation-secret/i,
+  );
+
+  const malformedAuthentication = normalizeRequestError(
+    {
+      code: "AUTH_REQUEST_FAILED",
+      kind: "malformed_response",
+      status: 200,
+      source: "cloudflare",
+      operation: "auth:verify_token",
+      retryable: false,
+      request_id: "auth-ray-safe-456",
+      message: "Malformed verification payload token=malformed-auth-secret",
+    },
+    { source: "tauri", command: "verify_token" },
+  );
+  assert.equal(malformedAuthentication.kind, "malformed-response");
+  assert.equal(malformedAuthentication.status, 200);
+  assert.equal(malformedAuthentication.operation, "auth:verify_token");
+  assert.equal(malformedAuthentication.requestId, "auth-ray-safe-456");
+  assert.equal(malformedAuthentication.retryable, false);
+  assert.match(
+    malformedAuthentication.message,
+    /authentication service returned a malformed response/i,
+  );
+  assert.doesNotMatch(
+    malformedAuthentication.message,
+    /listing DNS records|malformed-auth-secret/i,
+  );
+
+  const malformedCloudflareOperation = normalizeRequestError(
+    {
+      code: "REQUEST_FAILED",
+      kind: "malformed_response",
+      status: 200,
+      source: "cloudflare",
+      operation: "zones:list",
+      retryable: false,
+      request_id: "zones-ray-safe-789",
+      message: "Malformed zones payload token=malformed-zones-secret",
+    },
+    { source: "tauri", command: "get_zones" },
+  );
+  assert.equal(malformedCloudflareOperation.kind, "malformed-response");
+  assert.equal(malformedCloudflareOperation.status, 200);
+  assert.equal(malformedCloudflareOperation.operation, "zones:list");
+  assert.equal(malformedCloudflareOperation.requestId, "zones-ray-safe-789");
+  assert.equal(malformedCloudflareOperation.retryable, false);
+  assert.match(
+    malformedCloudflareOperation.message,
+    /Cloudflare returned a malformed response for the requested operation/i,
+  );
+  assert.doesNotMatch(
+    malformedCloudflareOperation.message,
+    /authentication service|listing DNS records|malformed-zones-secret/i,
+  );
 });
 
 test("normalizes timeout and explicit cancellation", () => {

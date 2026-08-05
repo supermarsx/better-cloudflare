@@ -24,6 +24,11 @@ import {
   resetRuntimeReportingForTests,
 } from "../src/lib/errors/runtime-reporting";
 import { storageManager } from "../src/lib/storage/storage";
+import {
+  cacheZoneRecords,
+  clearOfflineCache,
+} from "../src/lib/storage/offline-cache";
+import { RequestError } from "../src/lib/api/request-error";
 import { MCP_PERMISSION_POLICY_VERSION } from "../src/lib/mcp/tool-permissions";
 import { RuntimeErrorListener } from "../src/components/layout/RuntimeErrorListener";
 import { Toaster } from "../src/components/ui/toaster";
@@ -131,6 +136,12 @@ function mockDnsRuntime(
       page?: number,
       perPage?: number,
     ) => Promise<TauriDNSRecord[]>;
+    createDNSRecord?: (
+      apiKey: string,
+      email: string | undefined,
+      zoneId: string,
+      record: Parameters<typeof TauriClient.createDNSRecord>[3],
+    ) => Promise<TauriDNSRecord>;
     getMcpServerStatus?: () => Promise<McpServerStatus>;
     startMcpServer?: (
       host: string,
@@ -147,6 +158,20 @@ function mockDnsRuntime(
     TauriClient,
     "getDNSRecords",
     overrides.getDNSRecords ?? (async () => []),
+  );
+  mock.method(
+    TauriClient,
+    "createDNSRecord",
+    overrides.createDNSRecord ??
+      (async (_apiKey, _email, zoneId, record) =>
+        ({
+          id: "created-record",
+          zone_id: zoneId,
+          zone_name: "",
+          ...record,
+          created_on: "",
+          modified_on: "",
+        }) as TauriDNSRecord),
   );
   mock.method(TauriClient, "getAuditEntries", async () => []);
   mock.method(TauriClient, "setMcpEnabledTools", setTools);
@@ -206,6 +231,7 @@ async function openMcpServerSettings(): Promise<{
 }
 
 afterEach(() => {
+  clearOfflineCache();
   cleanup();
   mock.restoreAll();
   resetRuntimeReportingForTests();
@@ -264,6 +290,139 @@ function zoneTab(
     importFormat: "json",
   };
 }
+
+test("opens and creates a normalized domain-audit suggestion", async () => {
+  setDesktopWindow();
+  const zoneId = "suggestion-zone";
+  const zoneName = "example.com";
+  const expectedContent =
+    "v=DMARC1; p=none; rua=mailto:postmaster@example.com; fo=1";
+  const createCalls: Array<{
+    zoneId: string;
+    record: Parameters<typeof TauriClient.createDNSRecord>[3];
+  }> = [];
+  const mxRecord = {
+    ...dnsRecord(1),
+    id: "mx-record",
+    type: "MX",
+    name: zoneName,
+    content: "mail.example.com",
+    priority: 10,
+    zone_id: zoneId,
+    zone_name: zoneName,
+  } as TauriDNSRecord;
+
+  mockDnsRuntime(async () => ({}), undefined, {
+    zones: [
+      {
+        id: zoneId,
+        name: zoneName,
+        status: "active",
+        name_servers: [],
+      } as TauriZone,
+    ],
+    getDNSRecords: async () => [mxRecord],
+    createDNSRecord: async (_apiKey, _email, receivedZoneId, record) => {
+      createCalls.push({ zoneId: receivedZoneId, record });
+      return {
+        id: "created-dmarc",
+        zone_id: receivedZoneId,
+        zone_name: zoneName,
+        type: "TXT",
+        name: `_dmarc.${zoneName}`,
+        content: expectedContent,
+        ttl: 300,
+        proxied: false,
+        created_on: new Date(0).toISOString(),
+        modified_on: new Date(0).toISOString(),
+      } as TauriDNSRecord;
+    },
+  });
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+
+  const zoneSelector = await screen.findByRole("combobox", {
+    name: "Domain/Zone",
+  });
+  fireEvent.click(zoneSelector);
+  fireEvent.click(
+    await screen.findByRole("option", { name: `${zoneName} (active)` }),
+  );
+
+  let auditButton: HTMLButtonElement | undefined;
+  await waitFor(() => {
+    auditButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button.ui-segment"),
+    ).find((button) => /audit/i.test(button.textContent ?? ""));
+    assert.ok(auditButton);
+  });
+  fireEvent.click(auditButton!);
+
+  const dmarcFinding = await screen.findByText("DMARC record missing");
+  const dmarcActions =
+    dmarcFinding.parentElement?.parentElement?.nextElementSibling;
+  assert.ok(dmarcActions instanceof HTMLElement);
+  const dmarcSuggestionButton = within(dmarcActions).getByRole("button", {
+    name: /Add suggested record/i,
+  });
+  fireEvent.click(dmarcSuggestionButton);
+
+  const dialog = await screen.findByRole("dialog", {
+    name: "Add DNS Record",
+  });
+  assert.equal(createCalls.length, 0, "opening a suggestion must not mutate");
+  assert.equal(
+    (within(dialog).getByRole("textbox", { name: "Name" }) as HTMLInputElement)
+      .value,
+    `_dmarc.${zoneName}`,
+  );
+  assert.equal(
+    (
+      within(dialog).getByRole("textbox", {
+        name: "TXT content",
+      }) as HTMLTextAreaElement
+    ).value,
+    expectedContent,
+  );
+
+  const initialCreate = within(dialog).getByRole("button", {
+    name: /Create Record|Review Warnings/,
+  });
+  fireEvent.click(initialCreate);
+
+  await waitFor(() => {
+    assert.ok(
+      createCalls.length > 0 ||
+        within(dialog).queryByRole("button", { name: "Review Warnings" }) ||
+        within(dialog).queryByRole("button", { name: "Create Anyway" }),
+    );
+  });
+  if (createCalls.length === 0) {
+    const reviewWarnings = within(dialog).queryByRole("button", {
+      name: "Review Warnings",
+    });
+    if (reviewWarnings) {
+      fireEvent.click(reviewWarnings);
+    }
+    fireEvent.click(
+      await within(dialog).findByRole("button", { name: "Create Anyway" }),
+    );
+  }
+
+  await waitFor(() => assert.equal(createCalls.length, 1));
+  assert.equal(createCalls[0]?.zoneId, zoneId);
+  assert.deepEqual(createCalls[0]?.record, {
+    type: "TXT",
+    name: `_dmarc.${zoneName}`,
+    content: expectedContent,
+    ttl: 300,
+    proxied: false,
+  });
+  await waitFor(() =>
+    assert.equal(screen.queryByRole("dialog", { name: "Add DNS Record" }), null),
+  );
+  assert.ok(await screen.findByText(`_dmarc.${zoneName}`));
+});
 
 test("bounds DNS retention and page sizes at exact deterministic limits", () => {
   const records = Array.from(
@@ -745,6 +904,134 @@ test("rejected desktop DNS preferences are reported without destroying the manag
       .map((diagnostic) => diagnostic.message)
       .join("\n"),
     /desktop-secret/,
+  );
+});
+
+const DIAGNOSTIC_TEST_ZONE: TauriZone = {
+  id: "diagnostic-zone",
+  name: "diagnostic.example",
+  status: "active",
+  paused: false,
+  type: "full",
+  development_mode: 0,
+};
+
+function renderDnsRecordLoadScenario(
+  getDNSRecords: NonNullable<
+    Parameters<typeof mockDnsRuntime>[2]
+  >["getDNSRecords"],
+) {
+  setDesktopWindow();
+  mockDnsRuntime(
+    async () => ({
+      last_zone: DIAGNOSTIC_TEST_ZONE.id,
+      reopen_last_tabs: false,
+    }),
+    undefined,
+    {
+      zones: [DIAGNOSTIC_TEST_ZONE],
+      getDNSRecords,
+    },
+  );
+  return render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+}
+
+function dnsListFailure(
+  message = "Native DNS list failed token=records-secret",
+) {
+  return new RequestError("network", message, {
+    source: "tauri",
+    operation: "Tauri invoke",
+    command: "get_dns_records",
+    requestId: "dns-request-123",
+    retryable: true,
+    remediation: "Check connectivity and retry the DNS record list.",
+  });
+}
+
+test("a rejected DNS list renders a persistent sanitized diagnostic instead of an empty zone", async () => {
+  clearOfflineCache();
+  renderDnsRecordLoadScenario(async () => {
+    throw dnsListFailure();
+  });
+
+  const alert = await screen.findByTestId("dns-record-load-error");
+  assert.match(alert.textContent ?? "", /DNS records could not be loaded/i);
+  assert.match(alert.textContent ?? "", /Desktop native bridge/i);
+  assert.match(alert.textContent ?? "", /get_dns_records/i);
+  assert.match(alert.textContent ?? "", /network/i);
+  assert.match(alert.textContent ?? "", /dns-request-123/i);
+  assert.match(alert.textContent ?? "", /Diagnostic ID/i);
+  assert.match(alert.textContent ?? "", /Check connectivity and retry/i);
+  assert.ok(screen.getByRole("button", { name: "Retry DNS records" }));
+  assert.equal(screen.queryByText("This zone has no DNS records."), null);
+  assert.doesNotMatch(alert.textContent ?? "", /records-secret|https?:\/\//i);
+  assert.doesNotMatch(alert.textContent ?? "", /\bStack\b/i);
+});
+
+test("a rejected DNS list preserves and labels cached records", async () => {
+  clearOfflineCache();
+  cacheZoneRecords("diagnostic-zone", "diagnostic.example", [dnsRecord(41)]);
+  const view = renderDnsRecordLoadScenario(async () => {
+    throw dnsListFailure("Cached DNS refresh failed");
+  });
+
+  const stale = await screen.findByTestId("dns-record-load-stale");
+  assert.match(stale.textContent ?? "", /showing cached records/i);
+  assert.match(stale.textContent ?? "", /Snapshot time/i);
+  assert.equal(view.container.querySelectorAll(".ui-table-row").length, 1);
+  assert.equal(screen.queryByText("This zone has no DNS records."), null);
+});
+
+test("a failed refresh preserves last-good rows when no cache remains", async () => {
+  clearOfflineCache();
+  let calls = 0;
+  const view = renderDnsRecordLoadScenario(async () => {
+    calls += 1;
+    if (calls === 1) return [dnsRecord(42) as TauriDNSRecord];
+    throw dnsListFailure("Live refresh failed");
+  });
+  await waitFor(() =>
+    assert.equal(view.container.querySelectorAll(".ui-table-row").length, 1),
+  );
+  clearOfflineCache();
+
+  fireEvent.click(screen.getByTitle("Force refresh from Cloudflare"));
+
+  const stale = await screen.findByTestId("dns-record-load-stale");
+  assert.match(stale.textContent ?? "", /showing last loaded records/i);
+  assert.equal(view.container.querySelectorAll(".ui-table-row").length, 1);
+});
+
+test("Retry recovers a hard DNS list failure and clears the persistent diagnostic", async () => {
+  clearOfflineCache();
+  let calls = 0;
+  const view = renderDnsRecordLoadScenario(async () => {
+    calls += 1;
+    if (calls === 1) throw dnsListFailure("First DNS list failed");
+    return [dnsRecord(43) as TauriDNSRecord];
+  });
+  await screen.findByTestId("dns-record-load-error");
+
+  fireEvent.click(screen.getByRole("button", { name: "Retry DNS records" }));
+
+  await waitFor(() => {
+    assert.equal(screen.queryByTestId("dns-record-load-error"), null);
+    assert.equal(view.container.querySelectorAll(".ui-table-row").length, 1);
+  });
+  assert.equal(screen.queryByText("This zone has no DNS records."), null);
+});
+
+test("an authoritative successful empty DNS list renders a genuine empty-zone state", async () => {
+  clearOfflineCache();
+  renderDnsRecordLoadScenario(async () => []);
+
+  assert.ok(await screen.findByText("This zone has no DNS records."));
+  assert.equal(screen.queryByTestId("dns-record-load-error"), null);
+  assert.equal(screen.queryByTestId("dns-record-load-stale"), null);
+  assert.equal(
+    screen.queryByText("No DNS records match the current filters."),
+    null,
   );
 });
 
