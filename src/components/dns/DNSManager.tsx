@@ -4714,10 +4714,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const suggestedRecord: Partial<DNSRecord> = {
         ...createEmptyRecord(),
         type: suggestion.recordType,
-        name: normalizeSuggestedRecordName(
-          suggestion.name,
-          activeTab.zoneName,
-        ),
+        name: normalizeSuggestedRecordName(suggestion.name, activeTab.zoneName),
         content: suggestion.content,
         ttl: 300,
       };

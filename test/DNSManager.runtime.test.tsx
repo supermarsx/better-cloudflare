@@ -419,7 +419,10 @@ test("opens and creates a normalized domain-audit suggestion", async () => {
     proxied: false,
   });
   await waitFor(() =>
-    assert.equal(screen.queryByRole("dialog", { name: "Add DNS Record" }), null),
+    assert.equal(
+      screen.queryByRole("dialog", { name: "Add DNS Record" }),
+      null,
+    ),
   );
   assert.ok(await screen.findByText(`_dmarc.${zoneName}`));
 });

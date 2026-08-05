@@ -50,7 +50,10 @@ function canonicalDnsHostname(value: string): string | null {
   }
 }
 
-function resolveOwnerHostname(name: string, zone: string | null): string | null {
+function resolveOwnerHostname(
+  name: string,
+  zone: string | null,
+): string | null {
   const owner = trimDnsName(name);
   if (!owner || owner === "@") return zone;
 

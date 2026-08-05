@@ -576,9 +576,6 @@ export function AddRecordDialog({
       }
     };
 
-    const isHex = (value: string) =>
-      value.length > 0 && /^[0-9a-fA-F]+$/.test(value);
-
     switch (type) {
       case "A":
         if (content && !isValidIPv4(content))

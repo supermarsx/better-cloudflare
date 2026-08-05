@@ -138,7 +138,8 @@ function normalizeTauriRecordInput(
   if (typeof record.comment === "string") normalized.comment = record.comment;
   const normalizedTtl = record.ttl === "auto" ? 1 : record.ttl;
   if (typeof normalizedTtl === "number") normalized.ttl = normalizedTtl;
-  if (typeof record.priority === "number") normalized.priority = record.priority;
+  if (typeof record.priority === "number")
+    normalized.priority = record.priority;
   if (typeof record.proxied === "boolean") normalized.proxied = record.proxied;
   return normalized;
 }

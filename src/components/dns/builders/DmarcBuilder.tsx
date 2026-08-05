@@ -21,6 +21,17 @@ function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
 }
 
+type DmarcPolicy = "none" | "quarantine" | "reject";
+type DmarcAlignment = "r" | "s";
+
+function isDmarcPolicy(value: string): value is DmarcPolicy {
+  return value === "none" || value === "quarantine" || value === "reject";
+}
+
+function isDmarcAlignment(value: string): value is DmarcAlignment {
+  return value === "r" || value === "s";
+}
+
 function uniquePush(list: string[], msg: string) {
   if (!list.includes(msg)) list.push(msg);
 }
@@ -332,14 +343,12 @@ export function DmarcBuilder({
   zoneName?: string;
   onWarningsChange?: BuilderWarningsChange;
 }) {
-  const [policy, setPolicy] = useState<"none" | "quarantine" | "reject">(
-    "none",
-  );
+  const [policy, setPolicy] = useState<DmarcPolicy>("none");
   const [rua, setRua] = useState<string>("");
   const [ruf, setRuf] = useState<string>("");
   const [pct, setPct] = useState<number | undefined>(undefined);
-  const [adkim, setAdkim] = useState<"r" | "s">("r");
-  const [aspf, setAspf] = useState<"r" | "s">("r");
+  const [adkim, setAdkim] = useState<DmarcAlignment>("r");
+  const [aspf, setAspf] = useState<DmarcAlignment>("r");
   const [subdomainPolicy, setSubdomainPolicy] = useState<
     "" | "none" | "quarantine" | "reject"
   >("");
@@ -401,10 +410,7 @@ export function DmarcBuilder({
     const expectedAbsoluteName = normalizedZoneName
       ? `_dmarc.${normalizedZoneName}`
       : "";
-    if (
-      !name ||
-      (name !== "_dmarc" && name !== expectedAbsoluteName)
-    )
+    if (!name || (name !== "_dmarc" && name !== expectedAbsoluteName))
       uniquePush(nameIssues, 'DMARC: name is usually "_dmarc".');
 
     const content = (record.content ?? "").trim();
@@ -481,7 +487,9 @@ export function DmarcBuilder({
           />
           <Select
             value={policy}
-            onValueChange={(value: string) => setPolicy(value as any)}
+            onValueChange={(value: string) => {
+              if (isDmarcPolicy(value)) setPolicy(value);
+            }}
           >
             <SelectTrigger
               id={fieldIds.policy}
@@ -543,7 +551,9 @@ export function DmarcBuilder({
           />
           <Select
             value={adkim}
-            onValueChange={(value: string) => setAdkim(value as any)}
+            onValueChange={(value: string) => {
+              if (isDmarcAlignment(value)) setAdkim(value);
+            }}
           >
             <SelectTrigger
               id={fieldIds.adkim}
@@ -568,7 +578,9 @@ export function DmarcBuilder({
           />
           <Select
             value={aspf}
-            onValueChange={(value: string) => setAspf(value as any)}
+            onValueChange={(value: string) => {
+              if (isDmarcAlignment(value)) setAspf(value);
+            }}
           >
             <SelectTrigger
               id={fieldIds.aspf}
@@ -617,9 +629,10 @@ export function DmarcBuilder({
           />
           <Select
             value={subdomainPolicy || "__omit__"}
-            onValueChange={(value: string) =>
-              setSubdomainPolicy(value === "__omit__" ? "" : (value as any))
-            }
+            onValueChange={(value: string) => {
+              if (value === "__omit__") setSubdomainPolicy("");
+              else if (isDmarcPolicy(value)) setSubdomainPolicy(value);
+            }}
           >
             <SelectTrigger
               id={fieldIds.subdomainPolicy}

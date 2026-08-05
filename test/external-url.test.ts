@@ -13,7 +13,10 @@ test("external URL normalization only accepts credential-free HTTP(S)", () => {
     "https://example.com/path?q=1",
   );
   assert.equal(normalizeExternalHttpUrl("ftp://example.com/file"), null);
-  assert.equal(normalizeExternalHttpUrl("https://user:pass@example.com/"), null);
+  assert.equal(
+    normalizeExternalHttpUrl("https://user:pass@example.com/"),
+    null,
+  );
   assert.equal(normalizeExternalHttpUrl("https://example.com/\nnext"), null);
 });
 

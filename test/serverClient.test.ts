@@ -272,7 +272,7 @@ test("getDNSRecords success and error", async () => {
 
 test("createDNSRecord success and error", async () => {
   const client = new ServerClient("key", "http://example.com");
-  const record = { id: "1", name: "a" };
+  const record = { id: "1", name: "a", type: "A", content: "192.0.2.1" };
 
   let restore = mockFetch({
     ok: true,
@@ -303,7 +303,7 @@ test("createDNSRecord success and error", async () => {
 
 test("updateDNSRecord success and error", async () => {
   const client = new ServerClient("key", "http://example.com");
-  const record = { id: "1", name: "a" };
+  const record = { id: "1", name: "a", type: "A", content: "192.0.2.1" };
 
   let restore = mockFetch({
     ok: true,
