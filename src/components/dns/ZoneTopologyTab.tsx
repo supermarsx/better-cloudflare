@@ -212,6 +212,7 @@ function detectDarkThemeMode(): boolean {
   const root = document.documentElement;
   const dataTheme = String(root.getAttribute("data-theme") ?? "").toLowerCase();
   if (dataTheme.includes("light") || dataTheme.includes("midday")) return false;
+  if (dataTheme.includes("void")) return true;
   if (
     dataTheme.includes("dark") ||
     dataTheme.includes("oled") ||

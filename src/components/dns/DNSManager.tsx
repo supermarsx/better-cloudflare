@@ -982,7 +982,8 @@ function SectionLoadingOverlay({ label }: { label: string }) {
     typeof document !== "undefined"
       ? (document.documentElement.dataset.theme ?? "sunset")
       : "sunset";
-  const isDarkOverlayTheme = theme === "sunset" || theme === "oled";
+  const isDarkOverlayTheme =
+    theme === "sunset" || theme === "oled" || theme === "void";
   const spinnerGradient =
     "conic-gradient(from 0deg, hsl(var(--primary)) 0deg, hsl(var(--primary) / 0.2) 90deg, hsl(var(--primary)) 220deg, hsl(var(--primary)) 360deg)";
   const spinnerGlowGradient =

@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Moon, Sun, Flame } from "lucide-react";
+import { Circle, Moon, Sun, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { isDesktop } from "@/lib/environment";
@@ -13,13 +14,21 @@ import { TauriClient } from "@/lib/api/tauri-client";
 import { useI18n } from "@/hooks/use-i18n";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
-export type ThemeId = "sunset" | "oled" | "light";
+export type ThemeId = "sunset" | "oled" | "light" | "void";
 
 const themeLabels: Record<ThemeId, string> = {
   sunset: "Sunset",
   oled: "Night",
   light: "Midday",
+  void: "Void",
 };
+
+function isThemeId(value: unknown): value is ThemeId {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(themeLabels, value)
+  );
+}
 
 export interface StoredThemeResult {
   theme: ThemeId | null;
@@ -33,8 +42,8 @@ function readStoredTheme(
   try {
     const saved = storage.getItem("theme");
     if (saved === null) return { theme: null, storageAvailable: true };
-    if (saved in themeLabels) {
-      return { theme: saved as ThemeId, storageAvailable: true };
+    if (isThemeId(saved)) {
+      return { theme: saved, storageAvailable: true };
     }
     reportRuntimeError(new SyntaxError("Unsupported saved theme value"), {
       source: "runtime",
@@ -92,6 +101,7 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     sunset: <Flame className={iconClass} />,
     oled: <Moon className={iconClass} />,
     light: <Sun className={iconClass} />,
+    void: <Circle className={`${iconClass} fill-current`} />,
   };
 
   useEffect(() => {
@@ -112,8 +122,8 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     } else if (isDesktop()) {
       void TauriClient.getPreferences()
         .then((prefs) => {
-          const pref = prefs as { theme?: ThemeId };
-          if (pref.theme && themeLabels[pref.theme]) {
+          const pref = prefs as { theme?: unknown };
+          if (isThemeId(pref.theme)) {
             apply(pref.theme, stored.storageAvailable);
           } else {
             apply("sunset", stored.storageAvailable);
@@ -177,16 +187,23 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
         align="end"
         className="bg-popover/70 text-foreground"
       >
-        {(Object.keys(themeLabels) as ThemeId[]).map((id) => (
-          <DropdownMenuItem
-            key={id}
-            onClick={() => applyTheme(id)}
-            className="cursor-pointer"
-          >
-            <span className="mr-2 text-primary">{icons[id]}</span>
-            {t(themeLabels[id], themeLabels[id])}
-          </DropdownMenuItem>
-        ))}
+        <DropdownMenuRadioGroup
+          value={theme}
+          onValueChange={(next) => {
+            if (isThemeId(next)) applyTheme(next);
+          }}
+        >
+          {(Object.keys(themeLabels) as ThemeId[]).map((id) => (
+            <DropdownMenuRadioItem
+              key={id}
+              value={id}
+              className="cursor-pointer"
+            >
+              <span className="mr-2 text-primary">{icons[id]}</span>
+              {t(themeLabels[id], themeLabels[id])}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

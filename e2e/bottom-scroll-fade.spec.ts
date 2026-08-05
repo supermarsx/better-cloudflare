@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const FADE_HEIGHT = "clamp(16px, 4%, 32px)";
+const normalizeCssValue = (value: string) => value.replace(/\s+/g, "");
 
 test("bottom scroll fade stays short, readable, and interactive", async ({
   page,
@@ -74,8 +75,12 @@ test("bottom scroll fade stays short, readable, and interactive", async ({
       };
     });
 
-    expect(evidence.fadeHeight).toBe(FADE_HEIGHT);
-    expect(evidence.maskImage).toContain(FADE_HEIGHT);
+    expect(normalizeCssValue(evidence.fadeHeight)).toBe(
+      normalizeCssValue(FADE_HEIGHT),
+    );
+    expect(normalizeCssValue(evidence.maskImage)).toContain(
+      normalizeCssValue(FADE_HEIGHT),
+    );
     expect(evidence.maskImage).toContain("rgba(0, 0, 0, 0.9)");
     expect(evidence.maskImage).toContain("rgba(0, 0, 0, 0.78)");
     expect(evidence.maskImage).not.toContain("rgba(0, 0, 0, 0) 100%");
