@@ -460,7 +460,6 @@ export function WindowTitleBar() {
 
       <div
         className="titlebar-title flex h-full flex-1 items-center px-4 text-[11px] font-semibold uppercase text-muted-foreground/90 select-none cursor-default"
-        data-tauri-drag-region
         {...dragRegion}
         onContextMenu={handleWindowContextMenu}
       >
