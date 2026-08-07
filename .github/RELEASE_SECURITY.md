@@ -100,9 +100,14 @@ secrets.
 
 Repository administrators must still protect `main`, require the CI and
 security checks, restrict bypasses, protect the `production-release`
-environment, enable Dependabot alerts, and configure GitHub Pages to deploy
-from Actions. These are external repository settings and are intentionally not
-changed by workflow code.
+environment, and enable Dependabot alerts. These are external repository
+settings and are intentionally not changed by workflow code.
+
+GitHub Pages must stay on the built-in Jekyll build, sourced from `main` at
+`/docs`. It publishes the documentation site, not the application. Switching
+the source to Actions would break it: there is no longer a workflow that
+publishes a Pages artifact, and the previous one deployed the web application
+export over the documentation on every push.
 
 The former `PAGES_ADMIN_TOKEN` bootstrap path is no longer used. Remove that
 repository secret if it still exists.
