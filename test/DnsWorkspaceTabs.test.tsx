@@ -236,6 +236,68 @@ test("the drop indicator renders between tabs while dragging over one", () => {
   assert.equal(screen.getAllByTestId("dns-tab-drop-indicator").length, 1);
 });
 
+test("the tab renders no drag-handle icon but stays draggable by its body", () => {
+  renderTabs();
+  const alphaTab = screen.getByRole("tab", { name: /alpha\.test/ });
+
+  // The whole tab is the drag affordance now; no grip glyph inside it.
+  assert.equal(alphaTab.querySelectorAll("svg").length, 0);
+  assert.equal(
+    document.querySelectorAll('[class*="lucide-grip"]').length,
+    0,
+    "no lucide grip icon should render anywhere in the strip",
+  );
+
+  const wrapper = alphaTab.closest("[data-tab-id]") as HTMLElement;
+  assert.equal(wrapper.getAttribute("draggable"), "true");
+
+  fireEvent.dragStart(wrapper, {
+    dataTransfer: { setData: () => {}, effectAllowed: "" },
+  });
+  assert.equal(wrapper.getAttribute("data-dragging"), "true");
+});
+
+test("the grabbing cursor follows real drag state, not :active", () => {
+  renderTabs();
+  const alphaTab = screen.getByRole("tab", { name: /alpha\.test/ });
+  const wrapper = alphaTab.closest("[data-tab-id]") as HTMLElement;
+  const tablist = screen.getByRole("tablist");
+
+  // Idle: plain cursor, and no `:active`-driven grabbing variant at all.
+  assert.ok(alphaTab.classList.contains("cursor-default"));
+  assert.ok(!alphaTab.classList.contains("cursor-grab"));
+  assert.ok(!alphaTab.classList.contains("cursor-grabbing"));
+  assert.ok(!alphaTab.className.includes("active:cursor-grabbing"));
+  assert.equal(tablist.getAttribute("data-dragging"), "false");
+
+  // A plain mousedown (a click to switch tabs) must not arm the grab cursor.
+  fireEvent.mouseDown(alphaTab, { button: 0 });
+  assert.ok(alphaTab.classList.contains("cursor-default"));
+  assert.equal(document.body.style.cursor, "");
+
+  fireEvent.dragStart(wrapper, {
+    dataTransfer: { setData: () => {}, effectAllowed: "" },
+  });
+  const draggingTab = screen.getByRole("tab", { name: /alpha\.test/ });
+  assert.ok(draggingTab.classList.contains("cursor-grabbing"));
+  assert.ok(!draggingTab.classList.contains("cursor-default"));
+  assert.equal(
+    screen.getByRole("tablist").getAttribute("data-dragging"),
+    "true",
+  );
+  // Kept on <body> so the cursor holds as the pointer leaves the tab mid-drag.
+  assert.equal(document.body.style.cursor, "grabbing");
+
+  fireEvent.dragEnd(wrapper);
+  const idleTab = screen.getByRole("tab", { name: /alpha\.test/ });
+  assert.ok(idleTab.classList.contains("cursor-default"));
+  assert.equal(document.body.style.cursor, "");
+  assert.equal(
+    screen.getByRole("tablist").getAttribute("data-dragging"),
+    "false",
+  );
+});
+
 test("an empty tab strip renders the placeholder instead of a tablist", () => {
   render(
     <DnsWorkspaceTabs

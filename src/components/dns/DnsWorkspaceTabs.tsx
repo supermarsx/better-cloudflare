@@ -6,7 +6,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { GripVertical, X } from "lucide-react";
+import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
@@ -109,6 +109,7 @@ export function DnsWorkspaceTabs({
     position: DropPosition;
   } | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const isDragging = draggedId !== null;
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const offsetsRef = useRef(new Map<string, number>());
@@ -170,6 +171,19 @@ export function DnsWorkspaceTabs({
     const targetId = activeItem?.id ?? nearestItem?.id;
     if (targetId) tabRefs.current.get(targetId)?.focus();
   }, [activeId, items]);
+
+  // The grabbing cursor belongs to a real drag session, not to `:active` (which
+  // also fires on a plain click to switch tabs). Painting it on <body> keeps it
+  // consistent once the pointer leaves the tab mid-drag.
+  useEffect(() => {
+    if (!isDragging || typeof document === "undefined") return;
+    const { body } = document;
+    const previousCursor = body.style.cursor;
+    body.style.cursor = "grabbing";
+    return () => {
+      body.style.cursor = previousCursor;
+    };
+  }, [isDragging]);
 
   // Keyboard reordering moves the DOM node; keep focus on the tab that moved.
   useEffect(() => {
@@ -333,7 +347,11 @@ export function DnsWorkspaceTabs({
         aria-label={t("DNS workspaces", "DNS workspaces")}
         aria-orientation="horizontal"
         data-responsive-overflow="horizontal"
-        className="scrollbar-themed mx-auto flex w-full max-w-[1600px] items-center gap-1 overflow-x-auto whitespace-nowrap px-3 py-1.5 sm:px-4"
+        data-dragging={isDragging ? "true" : "false"}
+        className={cn(
+          "scrollbar-themed mx-auto flex w-full max-w-[1600px] items-center gap-1 overflow-x-auto whitespace-nowrap px-3 py-1.5 sm:px-4",
+          isDragging && "cursor-grabbing",
+        )}
         onDragOver={(event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
@@ -367,7 +385,7 @@ export function DnsWorkspaceTabs({
               data-tab-id={item.id}
               data-dragging={isDragged ? "true" : "false"}
               className={cn(
-                "group flex h-8 shrink-0 items-center rounded-md border transition",
+                "flex h-8 shrink-0 items-center rounded-md border transition",
                 !prefersReducedMotion && "duration-150",
                 isActive
                   ? "border-primary/35 bg-primary/10 text-foreground shadow-sm"
@@ -440,7 +458,10 @@ export function DnsWorkspaceTabs({
                 aria-selected={isActive}
                 aria-keyshortcuts="Control+Shift+ArrowLeft Control+Shift+ArrowRight"
                 tabIndex={isActive ? 0 : -1}
-                className="flex h-full min-w-0 cursor-grab items-center gap-1.5 rounded-l-md px-2 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-primary/60 active:cursor-grabbing"
+                className={cn(
+                  "flex h-full min-w-0 items-center gap-1.5 rounded-l-md px-2 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+                  isDragging ? "cursor-grabbing" : "cursor-default",
+                )}
                 onClick={() => {
                   if (suppressNextActivateRef.current) return;
                   onActivate(item.id);
@@ -456,10 +477,6 @@ export function DnsWorkspaceTabs({
                 }}
                 onKeyDown={(event) => handleKeyDown(event, index, item.id)}
               >
-                <GripVertical
-                  aria-hidden="true"
-                  className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover:opacity-90"
-                />
                 <span className="max-w-36 truncate">{item.label}</span>
                 {item.kind === "zone" &&
                 shouldRenderStatusBadge(item.status) ? (
