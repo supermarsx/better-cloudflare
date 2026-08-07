@@ -1,40 +1,59 @@
 import { unquoteCharacterString } from "./character-string";
 
+type RuntimeRequire = (name: string) => unknown;
+
+/** Shape of `dns.promises` that this module actually calls. */
+type DnsPromisesLike = Partial<DNSResolver>;
+
+/** `node:dns` itself exposes the same callable surface plus `.promises`. */
+type DnsModuleLike = DnsPromisesLike & { promises?: DnsPromisesLike };
+
+/** Shape of `node:net` that this module actually calls. */
+type NetModuleLike = { isIP?: (addr: string) => number };
+
+/**
+ * Module-level caches are stashed on `globalThis` so repeated calls reuse a
+ * single resolved module; these fields are not part of the standard globals.
+ */
+const runtimeGlobals = globalThis as typeof globalThis & {
+  require?: unknown;
+  __dnsPromises?: DnsPromisesLike;
+  __netModule?: NetModuleLike;
+};
+
 // runtime access to Node DNS and net modules without static imports to avoid Vite externalization
-function getRuntimeRequire(): ((name: string) => any) | undefined {
+function getRuntimeRequire(): RuntimeRequire | undefined {
   try {
-    if (typeof (globalThis as any).require === "function")
-      return (globalThis as any).require;
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    if (typeof runtimeGlobals.require === "function")
+      return runtimeGlobals.require as RuntimeRequire;
     const r = eval("typeof require === 'function' ? require : undefined");
-    return typeof r === "function" ? r : undefined;
+    return typeof r === "function" ? (r as RuntimeRequire) : undefined;
   } catch {
     return undefined;
   }
 }
 
-function getDnsPromisesModule(): any | undefined {
-  if ((globalThis as any).__dnsPromises)
-    return (globalThis as any).__dnsPromises;
+function getDnsPromisesModule(): DnsPromisesLike | undefined {
+  if (runtimeGlobals.__dnsPromises) return runtimeGlobals.__dnsPromises;
   const req = getRuntimeRequire();
   if (!req) return undefined;
   try {
-    const mod = req("node:dns") || req("dns");
+    const mod = (req("node:dns") || req("dns")) as DnsModuleLike | undefined;
     const p = mod && mod.promises ? mod.promises : mod;
-    (globalThis as any).__dnsPromises = p;
+    runtimeGlobals.__dnsPromises = p;
     return p;
   } catch {
     return undefined;
   }
 }
 
-function getNetModule(): any | undefined {
-  if ((globalThis as any).__netModule) return (globalThis as any).__netModule;
+function getNetModule(): NetModuleLike | undefined {
+  if (runtimeGlobals.__netModule) return runtimeGlobals.__netModule;
   const req = getRuntimeRequire();
   if (!req) return undefined;
   try {
-    const m = req("node:net") || req("net");
-    (globalThis as any).__netModule = m;
+    const m = (req("node:net") || req("net")) as NetModuleLike | undefined;
+    runtimeGlobals.__netModule = m;
     return m;
   } catch {
     return undefined;

@@ -225,7 +225,6 @@ export function DkimBuilder({
     setHashAlgs(parsed.hashAlgs);
     setGranularity(parsed.granularity);
     setNotes(parsed.notes);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   useEffect(() => {
@@ -349,7 +348,9 @@ export function DkimBuilder({
           <Label className="text-xs">Key type</Label>
           <Select
             value={keyType}
-            onValueChange={(value: string) => setKeyType(value as any)}
+            onValueChange={(value: string) =>
+              setKeyType(value as "rsa" | "ed25519")
+            }
           >
             <SelectTrigger className="h-9">
               <SelectValue />

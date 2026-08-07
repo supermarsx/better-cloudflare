@@ -6,15 +6,10 @@ import tseslint from "typescript-eslint";
 import { globalIgnores } from "eslint/config";
 
 export const legacySourceLintDebt = [
-  "src/components/dns/builders/DkimBuilder.tsx",
-  "src/components/dns/builders/HinfoBuilder.tsx",
-  "src/components/dns/builders/SpfBuilder.tsx",
   "src/components/dns/builders/SvcbBuilder.tsx",
-  "src/components/layout/WindowControls.tsx",
   "src/lib/audit/audit.ts",
   "src/lib/audit/domain-audit.ts",
   "src/lib/auth/credential-store.ts",
-  "src/lib/dns/spf.ts",
 ];
 
 const generatedArtifacts = [

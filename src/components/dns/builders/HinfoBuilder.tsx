@@ -125,7 +125,6 @@ export function HinfoBuilder({
     const parsed = parseHinfoContent(record.content);
     setCpu(parsed.cpu);
     setOs(parsed.os);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {
@@ -154,7 +153,15 @@ export function HinfoBuilder({
     if (!cpuTrim) push(issues, "HINFO: CPU is required (character-string).");
     if (!osTrim) push(issues, "HINFO: OS is required (character-string).");
 
-    const isPrintable = (s: string) => !/[\u0000-\u001F\u007F]/.test(s);
+    // Equivalent to /[\u0000-\u001F\u007F]/ but written without a regex literal so this
+    // deliberate control-character check does not trip `no-control-regex`.
+    const isPrintable = (s: string) => {
+      for (let i = 0; i < s.length; i++) {
+        const code = s.charCodeAt(i);
+        if (code <= 0x1f || code === 0x7f) return false;
+      }
+      return true;
+    };
     if (cpuTrim && !isPrintable(cpuTrim))
       push(issues, "HINFO: CPU contains control characters (unusual).");
     if (osTrim && !isPrintable(osTrim))

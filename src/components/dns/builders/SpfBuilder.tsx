@@ -12,11 +12,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { normalizeCharacterString } from "@/lib/dns/character-string";
-import type { SPFGraph, SPFMechanism } from "@/lib/dns/spf";
+import type { SPFGraph, SPFMechanism, SPFRecord } from "@/lib/dns/spf";
 import { composeSPF, parseSPF, validateSPF } from "@/lib/dns/spf";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
+
+/** Fallback used when the draft content is not parseable as SPF. */
+function emptySpfRecord(): SPFRecord {
+  return { version: "v=spf1", mechanisms: [] };
+}
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -284,9 +289,7 @@ export function SpfBuilder({
       mechanism: newMechanism,
       value: mechVal || undefined,
     };
-    const current =
-      parseSPF(record.content) ??
-      ({ version: "v=spf1", mechanisms: [] } as any);
+    const current = parseSPF(record.content) ?? emptySpfRecord();
     const mechs = [...(current.mechanisms ?? [])];
     if (
       editingIndex !== null &&
@@ -312,9 +315,7 @@ export function SpfBuilder({
   };
 
   const removeMechanism = (index: number) => {
-    const current =
-      parseSPF(record.content) ??
-      ({ version: "v=spf1", mechanisms: [] } as any);
+    const current = parseSPF(record.content) ?? emptySpfRecord();
     const mechs = [...(current.mechanisms ?? [])];
     mechs.splice(index, 1);
     onRecordChange({
@@ -339,12 +340,8 @@ export function SpfBuilder({
 
   const applyRedirect = (next: string) => {
     setRedirect(next);
-    const current =
-      parseSPF(record.content) ??
-      ({ version: "v=spf1", mechanisms: [] } as any);
-    const mods = (current.modifiers ?? []).filter(
-      (m: any) => m.key !== "redirect",
-    );
+    const current = parseSPF(record.content) ?? emptySpfRecord();
+    const mods = (current.modifiers ?? []).filter((m) => m.key !== "redirect");
     if (next) mods.push({ key: "redirect", value: next });
     onRecordChange({
       ...record,
@@ -507,20 +504,18 @@ export function SpfBuilder({
               size="sm"
               variant="outline"
               onClick={() => {
-                const current =
-                  parseSPF(record.content) ??
-                  ({ version: "v=spf1", mechanisms: [] } as any);
+                const current = parseSPF(record.content) ?? emptySpfRecord();
                 const all = (current.mechanisms ?? []).filter(
-                  (m: any) => m.mechanism === "all",
+                  (m) => m.mechanism === "all",
                 );
                 const rest = (current.mechanisms ?? []).filter(
-                  (m: any) => m.mechanism !== "all",
+                  (m) => m.mechanism !== "all",
                 );
                 onRecordChange({
                   ...record,
                   content: composeSPF({
                     version: current.version,
-                    mechanisms: [...rest, ...all] as SPFMechanism[],
+                    mechanisms: [...rest, ...all],
                     modifiers: current.modifiers,
                   }),
                 });
@@ -532,11 +527,9 @@ export function SpfBuilder({
               size="sm"
               variant="outline"
               onClick={() => {
-                const current =
-                  parseSPF(record.content) ??
-                  ({ version: "v=spf1", mechanisms: [] } as any);
+                const current = parseSPF(record.content) ?? emptySpfRecord();
                 const mechs = (current.mechanisms ?? []).filter(
-                  (m: any) => m.mechanism !== "ptr",
+                  (m) => m.mechanism !== "ptr",
                 );
                 onRecordChange({
                   ...record,
