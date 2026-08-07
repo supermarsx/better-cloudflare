@@ -312,7 +312,9 @@ export const parseNAPTR = (content?: string) => {
 const serializeNaptrCharacterString = (value?: string): string | null => {
   const input = value ?? "";
   if (input.length > MAX_NAPTR_TOKEN_LENGTH) return null;
-  if (!input) return "";
+  // An empty <character-string> must still occupy its field as `""`, otherwise
+  // the record collapses to five tokens and stops parsing.
+  if (!input) return '""';
 
   let serialized = "";
   let needsQuotes = false;

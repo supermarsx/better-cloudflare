@@ -11,6 +11,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  CHARACTER_STRING_MAX_BYTES,
+  characterStringByteLength,
+  hasUnbalancedQuotes,
+  parseCharacterStringTokens,
+  quoteCharacterString,
+} from "@/lib/dns/character-string";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
@@ -42,45 +49,22 @@ const HINFO_OS_PRESETS: Array<{ value: string; label: string; desc: string }> =
     },
   ];
 
+/**
+ * Split HINFO content into its two `<character-string>` fields. Quoted, bare
+ * and half-quoted tokens are all accepted; unmatched quotes are reported so the
+ * builder can warn while still recovering the fields.
+ */
 function parseHinfoContent(value?: string) {
   const raw = (value ?? "").trim();
   if (!raw) return { cpu: "", os: "", extra: "", hasUnbalancedQuotes: false };
 
-  const tokens: string[] = [];
-  const re = /"((?:\\.|[^"\\])*)"|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(raw)) !== null) {
-    const quoted = match[1];
-    const bare = match[2];
-    if (quoted !== undefined) {
-      tokens.push(quoted.replace(/\\"/g, '"').replace(/\\\\/g, "\\"));
-    } else if (bare !== undefined) {
-      tokens.push(bare);
-    }
-  }
-
-  const unescapedQuotes = (() => {
-    let count = 0;
-    for (let i = 0; i < raw.length; i++) {
-      if (raw[i] === '"' && raw[i - 1] !== "\\") count++;
-    }
-    return count;
-  })();
-
+  const tokens = parseCharacterStringTokens(raw);
   return {
     cpu: tokens[0] ?? "",
     os: tokens[1] ?? "",
     extra: tokens.slice(2).join(" "),
-    hasUnbalancedQuotes: unescapedQuotes % 2 === 1,
+    hasUnbalancedQuotes: hasUnbalancedQuotes(raw),
   };
-}
-
-function quoteIfNeeded(value: string) {
-  const v = value ?? "";
-  if (!v) return '""';
-  if (/\s/.test(v) || /"/.test(v))
-    return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  return v;
 }
 
 export function HinfoBuilder({
@@ -177,21 +161,21 @@ export function HinfoBuilder({
       push(issues, "HINFO: OS contains control characters (unusual).");
 
     // DNS <character-string> is up to 255 octets; warn if clearly beyond.
-    if (cpuTrim && cpuTrim.length > 255)
+    if (characterStringByteLength(cpuTrim) > CHARACTER_STRING_MAX_BYTES)
       push(
         issues,
-        "HINFO: CPU is longer than 255 characters (may exceed DNS character-string limit).",
+        "HINFO: CPU is longer than 255 bytes (exceeds the DNS character-string limit).",
       );
-    if (osTrim && osTrim.length > 255)
+    if (characterStringByteLength(osTrim) > CHARACTER_STRING_MAX_BYTES)
       push(
         issues,
-        "HINFO: OS is longer than 255 characters (may exceed DNS character-string limit).",
+        "HINFO: OS is longer than 255 bytes (exceeds the DNS character-string limit).",
       );
 
     if (parsed.extra)
       push(issues, "HINFO: extra trailing tokens found in content.");
 
-    const canonical = `${quoteIfNeeded(cpuTrim)} ${quoteIfNeeded(osTrim)}`;
+    const canonical = `${quoteCharacterString(cpuTrim)} ${quoteCharacterString(osTrim)}`;
     const content = (record.content ?? "").trim();
     if (content && canonical && content !== canonical) {
       push(
@@ -253,7 +237,7 @@ export function HinfoBuilder({
                 setCpu(value);
                 onRecordChange({
                   ...record,
-                  content: `${quoteIfNeeded(value.trim())} ${quoteIfNeeded(os.trim())}`,
+                  content: `${quoteCharacterString(value.trim())} ${quoteCharacterString(os.trim())}`,
                 });
               }}
             >
@@ -277,7 +261,7 @@ export function HinfoBuilder({
                 setCpu(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: `${quoteIfNeeded(e.target.value.trim())} ${quoteIfNeeded(os.trim())}`,
+                  content: `${quoteCharacterString(e.target.value.trim())} ${quoteCharacterString(os.trim())}`,
                 });
               }}
             />
@@ -296,7 +280,7 @@ export function HinfoBuilder({
                 setOs(value);
                 onRecordChange({
                   ...record,
-                  content: `${quoteIfNeeded(cpu.trim())} ${quoteIfNeeded(value.trim())}`,
+                  content: `${quoteCharacterString(cpu.trim())} ${quoteCharacterString(value.trim())}`,
                 });
               }}
             >
@@ -320,7 +304,7 @@ export function HinfoBuilder({
                 setOs(e.target.value);
                 onRecordChange({
                   ...record,
-                  content: `${quoteIfNeeded(cpu.trim())} ${quoteIfNeeded(e.target.value.trim())}`,
+                  content: `${quoteCharacterString(cpu.trim())} ${quoteCharacterString(e.target.value.trim())}`,
                 });
               }}
             />

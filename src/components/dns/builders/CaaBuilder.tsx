@@ -12,6 +12,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  parseCharacterStrings,
+  quoteCharacterString,
+} from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
@@ -20,53 +24,14 @@ function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
 }
 
+/**
+ * Decode the CAA value field, which is a single `<character-string>`. Quoted,
+ * bare and half-quoted input all decode; anything that parses as more than one
+ * character-string is kept verbatim so nothing is silently merged.
+ */
 function parseDnsCharacterString(value: string) {
-  if (!value.startsWith('"')) return value;
-
-  let decoded = "";
-  for (let index = 1; index < value.length; index++) {
-    const character = value[index] ?? "";
-    if (character === '"') {
-      return value.slice(index + 1).trim() ? value : decoded;
-    }
-    if (character !== "\\") {
-      decoded += character;
-      continue;
-    }
-
-    if (index + 1 >= value.length) return value;
-    const decimalEscape = value.slice(index + 1, index + 4);
-    if (/^[0-9]{3}$/u.test(decimalEscape)) {
-      const octet = Number.parseInt(decimalEscape, 10);
-      if (octet <= 255) {
-        decoded += String.fromCharCode(octet);
-        index += 3;
-        continue;
-      }
-    }
-
-    decoded += value[index + 1] ?? "";
-    index++;
-  }
-
-  return value;
-}
-
-function serializeDnsCharacterString(value: string) {
-  let serialized = '"';
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (character === "\\") {
-      serialized += "\\\\";
-    } else if (character === '"') {
-      serialized += '\\"';
-    } else if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
-      serialized += `\\${codePoint.toString(10).padStart(3, "0")}`;
-    } else {
-      serialized += character;
-    }
-  }
-  return `${serialized}"`;
+  const parts = parseCharacterStrings(value);
+  return parts.length === 1 ? parts[0] : value;
 }
 
 export function parseCAAContent(value: string | undefined) {
@@ -97,7 +62,7 @@ export function composeCAA(fields: {
 }) {
   const flags = fields.flags ?? 0;
   const tag = (fields.tag ?? "").trim().toLowerCase();
-  const v = serializeDnsCharacterString((fields.value ?? "").trim());
+  const v = quoteCharacterString((fields.value ?? "").trim());
   return `${flags} ${tag} ${v}`.trim();
 }
 

@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { unquoteCharacterString } from "@/lib/dns/character-string";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
 
@@ -18,9 +19,13 @@ function uniquePush(list: string[], msg: string) {
   if (!list.includes(msg)) list.push(msg);
 }
 
-function validateDKIM(value: string) {
+/**
+ * Validate DKIM TXT content. Quoted and multi-string content is accepted and
+ * validated as its concatenated logical value.
+ */
+export function validateDKIM(value: string) {
   const problems: string[] = [];
-  const content = value.trim();
+  const content = unquoteCharacterString(value).trim();
   if (!content) return { ok: true, problems };
   if (!/^v=DKIM1\b/i.test(content)) {
     problems.push("Missing v=DKIM1.");
@@ -109,8 +114,12 @@ function validateDKIM(value: string) {
   return { ok: problems.length === 0, problems };
 }
 
-function parseDKIM(value: string | undefined) {
-  const content = (value ?? "").trim();
+/**
+ * Parse DKIM TXT content into builder fields. Quoted and multi-string content
+ * is unwrapped before the tags are read.
+ */
+export function parseDKIM(value: string | undefined) {
+  const content = unquoteCharacterString(value).trim();
   if (!content.toLowerCase().startsWith("v=dkim1")) {
     return {
       keyType: "rsa" as const,
@@ -242,7 +251,7 @@ export function DkimBuilder({
     const issues: string[] = [];
     const nameIssues: string[] = [];
 
-    const content = (record.content ?? "").trim();
+    const content = unquoteCharacterString(record.content).trim();
     if (!content) {
       uniquePush(issues, "DKIM: content is empty.");
     } else {
