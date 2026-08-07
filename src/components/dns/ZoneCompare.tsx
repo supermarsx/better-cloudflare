@@ -140,7 +140,7 @@ function ZoneCompareInner({
     } finally {
       setLoading(false);
     }
-  }, [currentZoneId, compareZoneId, getDNSRecords]);
+  }, [currentZoneId, compareZoneId, getDNSRecords, t]);
 
   const filteredDiff = diff?.filter((e) => showSame || e.kind !== "same") ?? [];
   const stats = diff

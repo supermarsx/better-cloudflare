@@ -179,7 +179,7 @@ function FirewallPanelInner({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [zoneId, getFirewallRules, getIpAccessRules, getWafRulesets],
+    [zoneId, getFirewallRules, getIpAccessRules, getWafRulesets, t],
   );
 
   useEffect(() => {

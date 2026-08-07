@@ -165,7 +165,6 @@ export function LocBuilder({
     setSizeM(parsed.sizeM);
     setHorizPrecM(parsed.horizPrecM);
     setVertPrecM(parsed.vertPrecM);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {

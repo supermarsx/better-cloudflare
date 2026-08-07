@@ -52,10 +52,6 @@ function looksLikeHostname(value: string) {
   return labels.every(isValidDnsLabel);
 }
 
-function isHex(value: string) {
-  return /^[0-9a-fA-F]+$/.test(value);
-}
-
 function isBase64Like(value: string) {
   if (!value) return false;
   if (!/^[A-Za-z0-9+/=]+$/.test(value)) return false;
@@ -276,7 +272,6 @@ export function SvcbBuilder({
     setPriority(parsed.priority);
     setTarget(parsed.target);
     setParams(parsed.params);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {

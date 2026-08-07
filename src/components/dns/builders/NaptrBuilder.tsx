@@ -168,7 +168,6 @@ function validateNaptrRegexp(value: string): string[] {
     try {
       // Note: NAPTR uses a substitution expression; regex dialect may differ by implementation.
       // Still validate the pattern for common mistakes.
-      // eslint-disable-next-line no-new
       new RegExp(pattern);
     } catch {
       push(
@@ -244,7 +243,6 @@ export function NaptrBuilder({
     setService(parsed.service ?? "");
     setRegexp(parsed.regexp ?? "");
     setReplacement(parsed.replacement ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {

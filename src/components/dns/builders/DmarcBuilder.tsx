@@ -394,7 +394,6 @@ export function DmarcBuilder({
     setFo(parsed.fo);
     setRf(parsed.rf);
     setRi(parsed.ri);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {

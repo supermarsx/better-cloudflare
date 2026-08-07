@@ -95,7 +95,6 @@ export function UriBuilder({
     setWeight(parsed.weight);
     setTarget(parsed.target);
     setSpaceConvertedWarning(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   useEffect(() => {
@@ -149,7 +148,6 @@ export function UriBuilder({
           "URI should include a scheme (e.g., https:, sip:, mailto:).",
         );
       try {
-        // eslint-disable-next-line no-new
         new URL(t);
       } catch {
         pushUnique(fieldIssues.target, "target does not parse as a valid URI.");

@@ -55,7 +55,13 @@ export async function getAuditEntries(): Promise<AuditEntry[]> {
       // convert DB rows into AuditEntry[]
       const rows = await store.getAuditEntries();
       return rows.map((r) => {
-        const row = r as any;
+        const row = r as {
+          actor?: string;
+          operation: string;
+          resource?: string;
+          details?: string;
+          timestamp?: string;
+        };
         return {
           actor: row.actor,
           operation: row.operation,

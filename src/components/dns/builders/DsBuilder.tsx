@@ -107,7 +107,6 @@ export function DsBuilder({
       setDsDigestTypeMode("custom");
       setDsDigestTypeCustomValue(parsed.digestType);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const dsAlgorithmSelectValue = useMemo(() => {

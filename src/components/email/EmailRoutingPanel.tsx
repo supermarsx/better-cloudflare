@@ -109,7 +109,7 @@ function EmailRoutingPanelInner({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [zoneId, getEmailRoutingSettings, getEmailRoutingRules],
+    [zoneId, getEmailRoutingSettings, getEmailRoutingRules, t],
   );
 
   useEffect(() => {

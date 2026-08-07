@@ -2347,7 +2347,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       return { tabId: zoneId };
     },
-    [t],
+    [],
   );
 
   const updateTab = useCallback(
@@ -2499,7 +2499,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         });
       }
     },
-    [getZones, toast],
+    [getZones, t, toast],
   );
 
   /**
@@ -2540,7 +2540,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     } finally {
       setAuditLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const loadRecords = useCallback(
     async (tab: ZoneTab, signal?: AbortSignal) => {
@@ -2701,7 +2701,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         }
       }
     },
-    [getDNSRecords, toast, updateTab],
+    [getDNSRecords, t, toast, updateTab],
   );
 
   const loadTopologyRecords = useCallback(
@@ -3011,6 +3011,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       loadRecords(activeTab, controller.signal);
       return () => controller.abort();
     }
+    // Only the identity fields below may retrigger a fetch. `loadRecords`
+    // writes `records`/`isLoading` back onto the same tab, so depending on the
+    // whole `activeTab` object would make every fetch invalidate its own
+    // effect and refetch forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab?.zoneId,
     activeTab?.page,
@@ -3138,13 +3143,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 
   useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
+    if (activeTab?.kind !== "zone") return;
     if (actionTab !== "cache") return;
     void refreshCacheSettings(activeTab.zoneId);
   }, [actionTab, activeTab?.kind, activeTab?.zoneId, refreshCacheSettings]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
+    if (activeTab?.kind !== "zone") return;
     if (actionTab !== "ssl-tls") return;
     void refreshSslSettings(activeTab.zoneId);
   }, [actionTab, activeTab?.kind, activeTab?.zoneId, refreshSslSettings]);
@@ -3747,7 +3752,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     } else {
       storageManager.setLastZone(activeTab.zoneId);
     }
-  }, [activeTab?.zoneId]);
+  }, [activeTab?.kind, activeTab?.zoneId]);
 
   useEffect(() => {
     if (!prefsReady) return;
@@ -3805,6 +3810,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       inFlightController?.abort();
       inFlightController = null;
     };
+    // As above: the poller calls `loadRecords`, which mutates the active tab.
+    // Depending on the whole `activeTab` object would tear down and rebuild the
+    // poller on every completed refresh. Only the fields that should restart
+    // it (identity, paging, and the dialogs that pause polling) are listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab?.editingRecord,
     activeTab?.id,
@@ -4207,14 +4217,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [activeTab]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") return;
+    if (activeTab?.kind !== "zone") return;
     setRegistryLookupDomain(activeTab.zoneName);
     setRegistryChecksError(null);
     setRdapResult(null);
     setShowRawRdap(false);
     setRegistrarDomainResult(null);
     setRegistrarHealthResult(null);
-  }, [activeTab?.id]);
+  }, [activeTab?.id, activeTab?.kind, activeTab?.zoneName]);
 
   const runDomainRegistryChecks = useCallback(async () => {
     const domain = registryLookupDomain.trim().toLowerCase();
@@ -4350,6 +4360,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
 
     return sorted;
+    // `tagsVersion` is a manual invalidation counter, not a value this memo
+    // reads: tag matching above goes through `storageManager.getRecordTags`,
+    // an imperative store ESLint cannot see. Dropping it would leave the
+    // filtered list stale after a tag edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, tagsVersion]);
 
   const visibleRecords = useMemo(
@@ -4367,11 +4382,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const tagCounts = useMemo(() => {
     if (!tagsZoneId) return {};
     return storageManager.getTagUsageCounts(tagsZoneId);
+    // `tagsVersion` is a manual invalidation counter for the imperative
+    // `storageManager` tag store, which ESLint cannot track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagsZoneId, tagsVersion]);
 
   const zoneTags = useMemo(() => {
     if (!tagsZoneId) return [];
     return storageManager.getZoneTags(tagsZoneId);
+    // `tagsVersion` is a manual invalidation counter for the imperative
+    // `storageManager` tag store, which ESLint cannot track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagsZoneId, tagsVersion]);
 
   const tagManagerRecordsByTag = useMemo(() => {
@@ -4385,6 +4406,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
     }
     return byTag;
+    // `tagsVersion` is a manual invalidation counter: the grouping above reads
+    // `storageManager.getRecordTags`, an imperative store ESLint cannot track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagManagerRecords, tagsVersion, tagsZoneId]);
 
   const filteredTagManagerRecords = useMemo(() => {
@@ -4402,6 +4426,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const tags = storageManager.getRecordTags(tagsZoneId, record.id);
       return tags.some((tag) => tag.toLowerCase().includes(search));
     });
+    // `tagsVersion` is a manual invalidation counter: the search above reads
+    // `storageManager.getRecordTags`, an imperative store ESLint cannot track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagAssociationSearch, tagManagerRecords, tagsVersion, tagsZoneId]);
 
   const visibleTagManagerRecords = useMemo(
@@ -4709,7 +4736,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         "Session settings exported.",
       ),
     });
-  }, [buildSessionSettingsProfile, currentSessionId, toast]);
+  }, [buildSessionSettingsProfile, currentSessionId, t, toast]);
 
   const importSessionSettings = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -4760,6 +4787,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       applySessionSettingsProfile,
       currentSessionId,
       sessionSettingsProfiles,
+      t,
       toast,
     ],
   );
@@ -4807,6 +4835,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       applySessionSettingsProfile,
       currentSessionId,
       sessionSettingsProfiles,
+      t,
       toast,
     ],
   );
@@ -5695,7 +5724,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setCacheSettingsLoading(false);
       }
     },
-    [activeTab, toast, updateZoneSetting],
+    [activeTab, t, toast, updateZoneSetting],
   );
 
   const handleSetCacheLevel = useCallback(
@@ -5730,7 +5759,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setCacheSettingsLoading(false);
       }
     },
-    [activeTab, toast, updateZoneSetting],
+    [activeTab, t, toast, updateZoneSetting],
   );
 
   const preparePurgeUrls = useCallback(() => {
@@ -5779,7 +5808,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         variant: "destructive",
       });
     }
-  }, [activeTab, purgeCache, toast]);
+  }, [activeTab, purgeCache, t, toast]);
 
   const confirmPurgeUrls = useCallback(async () => {
     if (!activeTab || activeTab.kind !== "zone") return;
@@ -5807,7 +5836,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         variant: "destructive",
       });
     }
-  }, [activeTab, pendingPurgeUrls, purgeCache, toast]);
+  }, [activeTab, pendingPurgeUrls, purgeCache, t, toast]);
 
   const handleSetSslTlsSetting = useCallback(
     async (
@@ -5869,7 +5898,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setSslSettingsLoading(false);
       }
     },
-    [activeTab, toast, updateZoneSetting],
+    [activeTab, t, toast, updateZoneSetting],
   );
 
   const handleLogout = () => {

@@ -67,7 +67,7 @@ function WorkersPanelInner({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [zoneId, getWorkerRoutes],
+    [zoneId, getWorkerRoutes, t],
   );
 
   useEffect(() => {

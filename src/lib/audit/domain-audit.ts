@@ -162,7 +162,7 @@ function isDkimRecord(txt: string): boolean {
 
 function getSpfAllQualifier(spf: string): string | null {
   const s = spf.toLowerCase();
-  const m = s.match(/\s([~\-\+\?])all(\s|$)/);
+  const m = s.match(/\s([~\-+?])all(\s|$)/);
   return m ? m[1] : null;
 }
 

@@ -80,7 +80,6 @@ export function SshfpBuilder({
         ? "preset"
         : "custom",
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {

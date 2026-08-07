@@ -5,12 +5,11 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 import { globalIgnores } from "eslint/config";
 
-export const legacySourceLintDebt = [
-  "src/components/dns/builders/SvcbBuilder.tsx",
-  "src/lib/audit/audit.ts",
-  "src/lib/audit/domain-audit.ts",
-  "src/lib/auth/credential-store.ts",
-];
+// Files still exempted from `lint:src:baseline`. The ratchet only requires
+// clearing entries for files a change touches; the list is empty because every
+// former entry has been fixed and retired.
+/** @type {string[]} */
+export const legacySourceLintDebt = [];
 
 const generatedArtifacts = [
   ".next/**",

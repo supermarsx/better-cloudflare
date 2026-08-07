@@ -108,7 +108,6 @@ export function DnskeyBuilder({
       setDnskeyAlgorithmMode("custom");
       setDnskeyAlgorithmCustomValue(parsed.algorithm);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const dnskeyFlagsSelectValue = useMemo(() => {

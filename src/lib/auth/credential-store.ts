@@ -221,7 +221,7 @@ export const createCredentialStore = () => {
       // higher-level code). This keeps APIs (db.run/get/all) available.
       console.warn(
         "Sqlite not available; attempting in-memory sqlite fallback:",
-        (err as any)?.message ?? err,
+        (err as { message?: unknown } | null | undefined)?.message ?? err,
       );
       try {
         const inMem = openSqlite(undefined);

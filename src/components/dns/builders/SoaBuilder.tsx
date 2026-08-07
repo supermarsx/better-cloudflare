@@ -129,7 +129,6 @@ export function SoaBuilder({
     setExpire(parsed.expire);
     setMinimum(parsed.minimum);
     didAutoDefaults.current = false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   useEffect(() => {
@@ -374,7 +373,6 @@ export function SoaBuilder({
     mname,
     record.content,
     record.name,
-    record.type,
     refresh,
     retry,
     serial,

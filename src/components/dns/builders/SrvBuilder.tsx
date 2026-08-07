@@ -93,7 +93,6 @@ export function SrvBuilder({
     setSrvWeight(parsed.weight);
     setSrvPort(parsed.port);
     setSrvTarget(parsed.target ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   useEffect(() => {
@@ -103,7 +102,6 @@ export function SrvBuilder({
     setSrvProto(parsed.proto);
     setSrvProtoOther(parsed.protoOther);
     setSrvHost(parsed.host);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.name]);
 
   const diagnostics = useMemo(() => {

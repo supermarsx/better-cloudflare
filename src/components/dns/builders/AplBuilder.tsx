@@ -167,7 +167,6 @@ export function AplBuilder({
   useEffect(() => {
     if (record.type !== "APL") return;
     setEntries(parseAplContent(record.content));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.type, record.content]);
 
   const diagnostics = useMemo(() => {
