@@ -37,6 +37,7 @@ import type { SPFGraph } from "@/lib/dns/spf";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/dns/spf";
 import { storageManager } from "@/lib/storage/storage";
 import { getRecordBrowserUrl } from "@/lib/dns/record-browser-url";
+import { normalizeRecordCharacterStrings } from "@/lib/dns/record-normalize";
 import { openExternalUrl } from "@/lib/external-url";
 import { useI18n } from "@/hooks/use-i18n";
 import {
@@ -776,7 +777,12 @@ export function RecordRow({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => onSave(editedRecord)}>
+            <Button
+              size="sm"
+              onClick={() =>
+                onSave(normalizeRecordCharacterStrings(editedRecord))
+              }
+            >
               <Save className="h-3.5 w-3.5 mr-1" />
               {t("Save", "Save")}
             </Button>

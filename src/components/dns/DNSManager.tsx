@@ -96,7 +96,12 @@ import {
   cacheZoneRecords,
   getCachedZoneRecords,
 } from "@/lib/storage/offline-cache";
-import { prepareCopiedDnsRecord } from "@/lib/dns/record-copy";
+import {
+  prepareCopiedDnsRecord,
+  type PreparedCopiedDnsRecord,
+} from "@/lib/dns/record-copy";
+import { normalizeRecordCharacterStrings } from "@/lib/dns/record-normalize";
+import { ImportPreviewDialog } from "./ImportPreviewDialog";
 import {
   TABLE_COLUMN_GROUPS,
   buildGridTemplateColumns,
@@ -509,6 +514,29 @@ type ZoneTab = {
   importData: string;
   importFormat: "json" | "csv" | "bind";
 };
+
+/**
+ * A paste that has been rewritten, normalized and deduplicated, waiting for
+ * the user to confirm it in the preview dialog.
+ */
+type PastePreviewState = {
+  tabId: string;
+  zoneId: string;
+  zoneName: string;
+  sourceZoneName: string;
+  /** Records that survived validation and dedupe, ready to create. */
+  items: PreparedCopiedDnsRecord[];
+  /** Records dropped before the preview (invalid or already present). */
+  skipped: number;
+  /** Size of the copy buffer the preview was built from. */
+  sourceCount: number;
+};
+
+/**
+ * Paste sizes above this show the preview even when the rewrite was a no-op:
+ * a one-or-two record paste stays a single click, a bulk paste gets a look.
+ */
+const PASTE_PREVIEW_RECORD_THRESHOLD = 2;
 
 /**
  * Props for the `DNSManager` top-level component.
@@ -1386,6 +1414,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     sourceZoneId: string;
     sourceZoneName: string;
   } | null>(null);
+  const [showCopyBuffer, setShowCopyBuffer] = useState(false);
+  const [confirmPastePreview, setConfirmPastePreview] = useState(() =>
+    storageManager.getConfirmPastePreview(),
+  );
+  const [pastePreview, setPastePreview] = useState<PastePreviewState | null>(
+    null,
+  );
 
   const { toast } = useToast();
   const notifySaved = useCallback(
@@ -1669,93 +1704,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     checkDnsPropagation,
   } = useCloudflareAPI(apiKey, email);
 
-  /* ── Undo / Redo ────────────────────────────────────── */
-  type DNSOp =
-    | { kind: "create"; zoneId: string; record: DNSRecord }
-    | { kind: "update"; zoneId: string; record: DNSRecord }
-    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord };
-
-  const {
-    push: pushUndo,
-    undo,
-    redo,
-  } = useUndoRedo<DNSOp>({
-    onUndo: async (reverse) => {
-      switch (reverse.kind) {
-        case "create": {
-          // Undo a create → delete the record
-          await deleteDNSRecord(reverse.zoneId, reverse.record.id);
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.filter((r) => r.id !== reverse.record.id),
-          }));
-          break;
-        }
-        case "delete": {
-          // Undo a delete → re-create the record
-          const restored = await createDNSRecord(
-            reverse.zoneId,
-            reverse.record,
-          );
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: [restored, ...prev.records],
-          }));
-          break;
-        }
-        case "update": {
-          // Undo an update → restore old version
-          const reverted = await updateDNSRecord(
-            reverse.zoneId,
-            reverse.record.id,
-            reverse.record,
-          );
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.map((r) =>
-              r.id === reverse.record.id ? reverted : r,
-            ),
-          }));
-          break;
-        }
-      }
-    },
-    onRedo: async (forward) => {
-      switch (forward.kind) {
-        case "create": {
-          const created = await createDNSRecord(forward.zoneId, forward.record);
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: [created, ...prev.records],
-          }));
-          break;
-        }
-        case "delete": {
-          await deleteDNSRecord(forward.zoneId, forward.recordId);
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.filter((r) => r.id !== forward.recordId),
-          }));
-          break;
-        }
-        case "update": {
-          const updated = await updateDNSRecord(
-            forward.zoneId,
-            forward.record.id,
-            forward.record,
-          );
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.map((r) =>
-              r.id === forward.record.id ? updated : r,
-            ),
-          }));
-          break;
-        }
-      }
-    },
-  });
-
   /* Helper: update any tab whose zoneId matches */
   const updateTabByZone = useCallback(
     (zoneId: string, fn: (prev: ZoneTab) => ZoneTab) => {
@@ -1764,6 +1712,112 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       );
     },
     [],
+  );
+
+  /* ── Undo / Redo ────────────────────────────────────── */
+  /**
+   * A history entry stores the operation it performed (`forward`) and the one
+   * that reverses it (`reverse`); both are *executed* verbatim, so a single
+   * applier serves undo and redo. Bulk creates (paste, import) push one entry
+   * covering every record instead of one entry per record.
+   */
+  type DNSOp =
+    | { kind: "create"; zoneId: string; record: DNSRecord }
+    | { kind: "update"; zoneId: string; record: DNSRecord }
+    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
+    | { kind: "bulk-create"; zoneId: string; records: DNSRecord[] }
+    | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] };
+
+  const applyDnsOp = useCallback(
+    async (op: DNSOp) => {
+      switch (op.kind) {
+        case "create": {
+          const created = await createDNSRecord(op.zoneId, op.record);
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: [created, ...prev.records],
+          }));
+          break;
+        }
+        case "delete": {
+          await deleteDNSRecord(op.zoneId, op.recordId);
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => r.id !== op.recordId),
+          }));
+          break;
+        }
+        case "update": {
+          const updated = await updateDNSRecord(
+            op.zoneId,
+            op.record.id,
+            op.record,
+          );
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.map((r) =>
+              r.id === op.record.id ? updated : r,
+            ),
+          }));
+          break;
+        }
+        case "bulk-create": {
+          const created: DNSRecord[] = [];
+          for (const record of op.records) {
+            created.push(await createDNSRecord(op.zoneId, record));
+          }
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: [...created, ...prev.records],
+          }));
+          break;
+        }
+        case "bulk-delete": {
+          const removed = new Set<string>();
+          for (const record of op.records) {
+            await deleteDNSRecord(op.zoneId, record.id);
+            removed.add(record.id);
+          }
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => !removed.has(r.id)),
+            selectedIds: prev.selectedIds.filter((id) => !removed.has(id)),
+          }));
+          break;
+        }
+      }
+    },
+    [createDNSRecord, deleteDNSRecord, updateDNSRecord, updateTabByZone],
+  );
+
+  const {
+    push: pushUndo,
+    undo,
+    redo,
+  } = useUndoRedo<DNSOp>({
+    onUndo: (reverse) => applyDnsOp(reverse),
+    onRedo: (forward) => applyDnsOp(forward),
+  });
+
+  /**
+   * Record a bulk creation (paste or import) as one undoable step, so a single
+   * Ctrl/⌘+Z removes every record the batch added.
+   */
+  const pushBulkCreateUndo = useCallback(
+    (
+      zoneId: string,
+      records: readonly DNSRecord[],
+      description: string,
+    ): void => {
+      const withIds = records.filter((record) => record?.id);
+      if (!withIds.length) return;
+      pushUndo({
+        description,
+        forward: { kind: "bulk-create", zoneId, records: [...withIds] },
+        reverse: { kind: "bulk-delete", zoneId, records: [...withIds] },
+      });
+    },
+    [pushUndo],
   );
 
   /* Global keyboard shortcuts: Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z redo */
@@ -3205,6 +3259,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(limitRestoredTabIds(prefObj.last_open_tabs));
           }
+          // The paste preview opt-out is browser-owned on every platform: the
+          // desktop preference file has no field for it.
+          setConfirmPastePreview(storageManager.getConfirmPastePreview());
           // The desktop store owns the DNS table columns; every other table
           // rides on browser preferences. Preferences written before this
           // feature simply have no entry and fall through to the defaults.
@@ -3460,6 +3517,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setRewriteCopiedRecordDomains(
       storageManager.getRewriteCopiedRecordDomains(),
     );
+    setConfirmPastePreview(storageManager.getConfirmPastePreview());
     setTableColumns(normalizeTableColumnMap(storageManager.getTableColumns()));
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
@@ -3809,6 +3867,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     );
     storageManager.setDomainAuditCategories(domainAuditCategories);
     storageManager.setRewriteCopiedRecordDomains(rewriteCopiedRecordDomains);
+    storageManager.setConfirmPastePreview(confirmPastePreview);
     storageManager.setTableColumns(tableColumns);
     storageManager.setSessionSettingsProfile(
       currentSessionId,
@@ -3873,6 +3932,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   }, [
     rewriteCopiedRecordDomains,
+    confirmPastePreview,
     tableColumns,
     globalPerPage,
     zonePerPage,
@@ -4752,7 +4812,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
   const handleAddRecord = async () => {
     if (!activeTab) return;
-    const draft = activeTab.newRecord;
+    // Normalize here rather than in the dialog: `onAdd` reads the draft back
+    // out of tab state, so a normalizing `onRecordChange` in the same tick
+    // would still submit the stale value.
+    const draft = normalizeRecordCharacterStrings(activeTab.newRecord);
     if (!draft.type || !draft.name || !draft.content) {
       toast({
         title: t("Error", "Error"),
@@ -5189,7 +5252,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const valid: DNSRecord[] = [];
       let skipped = 0;
 
-      for (const item of items) {
+      for (const rawItem of items) {
+        // Normalize before the duplicate check so an unquoted TXT import does
+        // not create a second copy of an already normalized record.
+        const item = rawItem
+          ? normalizeRecordCharacterStrings(rawItem as Partial<DNSRecord>)
+          : rawItem;
         if (item && item.type && item.name && item.content) {
           const exists = tab.records.some(
             (r) =>
@@ -5223,6 +5291,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 ...prev,
                 records: [...created, ...prev.records],
               }));
+              pushBulkCreateUndo(
+                tab.zoneId,
+                created,
+                `Import ${created.length} record(s) into ${tab.zoneName}`,
+              );
             }
           } catch (err) {
             toast({
@@ -5250,6 +5323,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               ...prev,
               records: [...createdRecords, ...prev.records],
             }));
+            pushBulkCreateUndo(
+              tab.zoneId,
+              createdRecords,
+              `Import ${createdRecords.length} record(s) into ${tab.zoneName}`,
+            );
           }
         }
         if (!dryRun) {
@@ -5303,6 +5381,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  /** Queue records for pasting, from wherever they were read. */
+  const copyRecordsToBuffer = (
+    records: readonly DNSRecord[],
+    source: { zoneId: string; zoneName: string },
+    description: string,
+  ) => {
+    setCopyBuffer({
+      records: [...records],
+      sourceZoneId: source.zoneId,
+      sourceZoneName: source.zoneName,
+    });
+    toast({ title: t("Copied", "Copied"), description });
+  };
+
   const handleCopySelected = () => {
     if (!activeTab) return;
     const selectedRecords = activeTab.records.filter((record) =>
@@ -5318,88 +5410,191 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
       return;
     }
-    setCopyBuffer({
-      records: selectedRecords,
-      sourceZoneId: activeTab.zoneId,
-      sourceZoneName: activeTab.zoneName,
-    });
-    toast({
-      title: t("Copied", "Copied"),
-      description: t("Copied {{count}} record(s) from {{zone}}", {
+    copyRecordsToBuffer(
+      selectedRecords,
+      { zoneId: activeTab.zoneId, zoneName: activeTab.zoneName },
+      t("Copied {{count}} record(s) from {{zone}}", {
         count: selectedRecords.length,
         zone: activeTab.zoneName,
         defaultValue: `Copied ${selectedRecords.length} record(s) from ${activeTab.zoneName}`,
       }),
-    });
+    );
   };
 
   const handleCopySingle = (record: DNSRecord) => {
     if (!activeTab) return;
-    setCopyBuffer({
-      records: [record],
-      sourceZoneId: activeTab.zoneId,
-      sourceZoneName: activeTab.zoneName,
-    });
-    toast({
-      title: t("Copied", "Copied"),
-      description: t("Copied {{record}} from {{zone}}", {
+    copyRecordsToBuffer(
+      [record],
+      { zoneId: activeTab.zoneId, zoneName: activeTab.zoneName },
+      t("Copied {{record}} from {{zone}}", {
         record: record.name,
         zone: activeTab.zoneName,
         defaultValue: `Copied ${record.name} from ${activeTab.zoneName}`,
       }),
+    );
+  };
+
+  /** Zone Compare hands over the records the current zone is missing. */
+  const handleCopyComparedRecords = (
+    records: DNSRecord[],
+    source: { zoneId: string; zoneName: string },
+  ) => {
+    if (!records.length) return;
+    copyRecordsToBuffer(
+      records,
+      source,
+      t("Copied {{count}} record(s) from {{zone}}", {
+        count: records.length,
+        zone: source.zoneName,
+        defaultValue: `Copied ${records.length} record(s) from ${source.zoneName}`,
+      }),
+    );
+  };
+
+  const clearCopyBuffer = () => {
+    setCopyBuffer(null);
+    setShowCopyBuffer(false);
+    setPastePreview(null);
+    toast({
+      title: t("Copy buffer cleared", "Copy buffer cleared"),
+      description: t(
+        "No records are queued for pasting.",
+        "No records are queued for pasting.",
+      ),
     });
   };
 
-  const handlePasteRecords = async () => {
-    if (!activeTab || !copyBuffer) return;
-    const toCreate = copyBuffer.records.map((record) =>
-      prepareCopiedDnsRecord(
-        record,
-        copyBuffer.sourceZoneName,
-        activeTab.zoneName,
-        rewriteCopiedRecordDomains,
-      ),
-    );
+  /**
+   * Rewrite, normalize and deduplicate the buffer against the destination
+   * zone. `changed` reports whether the rewrite altered any name or content,
+   * which is what decides if the paste is worth previewing.
+   */
+  const buildPastePlan = (
+    tab: ZoneTab,
+    buffer: { records: DNSRecord[]; sourceZoneName: string },
+  ): {
+    items: PreparedCopiedDnsRecord[];
+    skipped: number;
+    changed: boolean;
+  } => {
+    const recordKey = (record: {
+      type?: string;
+      name?: string;
+      content?: string;
+    }) => `${record.type ?? ""} ${record.name ?? ""} ${record.content ?? ""}`;
+
+    const seen = new Set(tab.records.map(recordKey));
+    const items: PreparedCopiedDnsRecord[] = [];
+    let skipped = 0;
+    let changed = false;
+
+    for (const record of buffer.records) {
+      const prepared = normalizeRecordCharacterStrings(
+        prepareCopiedDnsRecord(
+          record,
+          buffer.sourceZoneName,
+          tab.zoneName,
+          rewriteCopiedRecordDomains,
+        ),
+      );
+      changed ||=
+        prepared.name !== record.name || prepared.content !== record.content;
+
+      if (!prepared.type || !prepared.name || !prepared.content) {
+        skipped++;
+        continue;
+      }
+      const key = recordKey(prepared);
+      if (seen.has(key)) {
+        skipped++;
+        continue;
+      }
+      seen.add(key);
+      items.push(prepared);
+    }
+
+    return { items, skipped, changed };
+  };
+
+  const performPaste = async (
+    target: { tabId: string; zoneId: string; zoneName: string },
+    items: PreparedCopiedDnsRecord[],
+    skipped: number,
+    dryRun: boolean,
+  ) => {
+    const describe = (count: number, totalSkipped: number) => {
+      const suffix = totalSkipped ? `, skipped ${totalSkipped}` : "";
+      return dryRun
+        ? t("Would create {{count}} record(s) in {{zone}}{{suffix}}", {
+            count,
+            zone: target.zoneName,
+            suffix,
+            defaultValue: `Would create ${count} record(s) in ${target.zoneName}${suffix}`,
+          })
+        : t("Created {{count}} record(s) in {{zone}}{{suffix}}", {
+            count,
+            zone: target.zoneName,
+            suffix,
+            defaultValue: `Created ${count} record(s) in ${target.zoneName}${suffix}`,
+          });
+    };
+
     try {
       if (bulkCreateDNSRecords) {
-        const result = await bulkCreateDNSRecords(
-          activeTab.zoneId,
-          toCreate,
-          false,
-        );
+        const result = await bulkCreateDNSRecords(target.zoneId, items, dryRun);
         const created = Array.isArray(result?.created)
           ? (result.created as DNSRecord[])
           : [];
-        updateTab(activeTab.id, (prev) => ({
-          ...prev,
-          records: [...created, ...prev.records],
-        }));
+        // The backend reports what it refused; folding it into the same count
+        // keeps "Created N" from over-reporting.
+        const rejected = Array.isArray(result?.skipped)
+          ? result.skipped.length
+          : 0;
+        if (!dryRun) {
+          updateTab(target.tabId, (prev) => ({
+            ...prev,
+            records: [...created, ...prev.records],
+          }));
+          pushBulkCreateUndo(
+            target.zoneId,
+            created,
+            `Paste ${created.length} record(s) into ${target.zoneName}`,
+          );
+        }
         toast({
-          title: t("Pasted", "Pasted"),
-          description: t("Created {{count}} record(s) in {{zone}}", {
-            count: created.length,
-            zone: activeTab.zoneName,
-            defaultValue: `Created ${created.length} record(s) in ${activeTab.zoneName}`,
-          }),
+          title: dryRun ? t("Dry Run", "Dry Run") : t("Pasted", "Pasted"),
+          description: describe(
+            dryRun ? items.length : created.length,
+            skipped + rejected,
+          ),
         });
         return;
       }
-      const createdRecords: DNSRecord[] = [];
-      for (const record of toCreate) {
-        const created = await createDNSRecord(activeTab.zoneId, record);
-        createdRecords.push(created);
+
+      if (dryRun) {
+        toast({
+          title: t("Dry Run", "Dry Run"),
+          description: describe(items.length, skipped),
+        });
+        return;
       }
-      updateTab(activeTab.id, (prev) => ({
+
+      const createdRecords: DNSRecord[] = [];
+      for (const record of items) {
+        createdRecords.push(await createDNSRecord(target.zoneId, record));
+      }
+      updateTab(target.tabId, (prev) => ({
         ...prev,
         records: [...createdRecords, ...prev.records],
       }));
+      pushBulkCreateUndo(
+        target.zoneId,
+        createdRecords,
+        `Paste ${createdRecords.length} record(s) into ${target.zoneName}`,
+      );
       toast({
         title: t("Pasted", "Pasted"),
-        description: t("Created {{count}} record(s) in {{zone}}", {
-          count: createdRecords.length,
-          zone: activeTab.zoneName,
-          defaultValue: `Created ${createdRecords.length} record(s) in ${activeTab.zoneName}`,
-        }),
+        description: describe(createdRecords.length, skipped),
       });
     } catch (error) {
       toast({
@@ -5411,6 +5606,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         variant: "destructive",
       });
     }
+  };
+
+  const handlePasteRecords = async () => {
+    if (!activeTab || !copyBuffer) return;
+    const plan = buildPastePlan(activeTab, copyBuffer);
+
+    if (!plan.items.length) {
+      toast({
+        title: t("Nothing to paste", "Nothing to paste"),
+        description: plan.skipped
+          ? t(
+              "No new records pasted. Skipped {{count}} duplicate or invalid record(s).",
+              {
+                count: plan.skipped,
+                defaultValue: `No new records pasted. Skipped ${plan.skipped} duplicate or invalid record(s).`,
+              },
+            )
+          : t("The copy buffer is empty.", "The copy buffer is empty."),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // A quick paste stays quick: the preview only interrupts when the rewrite
+    // actually altered a record, or when enough records are in flight that a
+    // look before the write is worth it.
+    const needsPreview =
+      confirmPastePreview &&
+      (plan.changed || plan.items.length > PASTE_PREVIEW_RECORD_THRESHOLD);
+
+    if (needsPreview) {
+      setPastePreview({
+        tabId: activeTab.id,
+        zoneId: activeTab.zoneId,
+        zoneName: activeTab.zoneName,
+        sourceZoneName: copyBuffer.sourceZoneName,
+        items: plan.items,
+        skipped: plan.skipped,
+        sourceCount: copyBuffer.records.length,
+      });
+      return;
+    }
+
+    await performPaste(
+      {
+        tabId: activeTab.id,
+        zoneId: activeTab.zoneId,
+        zoneName: activeTab.zoneName,
+      },
+      plan.items,
+      plan.skipped,
+      false,
+    );
   };
 
   const handleSetDevelopmentMode = useCallback(
@@ -6118,7 +6366,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={handlePasteRecords}
+                        onClick={() => void handlePasteRecords()}
                         disabled={!copyBuffer}
                       >
                         <ClipboardPaste className="h-4 w-4 mr-2" />
@@ -6126,12 +6374,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {copyBuffer ? `${copyBuffer.records.length}` : ""}
                       </Button>
                       {copyBuffer && (
-                        <div className="text-xs text-muted-foreground">
-                          {t("Buffer: {{count}} from {{zone}}", {
-                            count: copyBuffer.records.length,
-                            zone: copyBuffer.sourceZoneName,
-                            defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
-                          })}
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className="text-xs text-muted-foreground underline underline-offset-2"
+                            onClick={() => setShowCopyBuffer(true)}
+                          >
+                            {t("Buffer: {{count}} from {{zone}}", {
+                              count: copyBuffer.records.length,
+                              zone: copyBuffer.sourceZoneName,
+                              defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
+                            })}
+                          </button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-xs"
+                            onClick={clearCopyBuffer}
+                          >
+                            <X className="mr-1 h-3 w-3" />
+                            {t("Clear buffer", "Clear buffer")}
+                          </Button>
                         </div>
                       )}
                       {activeTab.selectedIds.length > 0 && (
@@ -8134,6 +8397,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   zones={zones}
                   currentZoneId={activeTab.zoneId}
                   getDNSRecords={getDNSRecords}
+                  onCopyRecords={handleCopyComparedRecords}
                   columns={zoneCompareColumns}
                 />
               )}
@@ -9305,6 +9569,43 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               {t(
                                 "Replace source-zone domain suffixes with the destination zone when pasting records.",
                                 "Replace source-zone domain suffixes with the destination zone when pasting records.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t(
+                              "Preview pasted records",
+                              "Preview pasted records",
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={confirmPastePreview}
+                              onCheckedChange={(checked) => {
+                                setConfirmPastePreview(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Paste preview enabled.",
+                                        "Paste preview enabled.",
+                                      )
+                                    : t(
+                                        "Paste preview disabled.",
+                                        "Paste preview disabled.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Preview pasted records",
+                                "Preview pasted records",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Confirm rewritten names and content before a paste that changed a record, or that creates more than two.",
+                                "Confirm rewritten names and content before a paste that changed a record, or that creates more than two.",
                               )}
                             </div>
                           </div>
@@ -11398,6 +11699,105 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </div>
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={showCopyBuffer && !!copyBuffer}
+        onOpenChange={setShowCopyBuffer}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("Copy buffer", "Copy buffer")}</DialogTitle>
+            <DialogDescription>
+              {copyBuffer
+                ? t(
+                    "{{count}} record(s) queued from {{zone}}. Pasting creates them in the active zone.",
+                    {
+                      count: copyBuffer.records.length,
+                      zone: copyBuffer.sourceZoneName,
+                      defaultValue: `${copyBuffer.records.length} record(s) queued from ${copyBuffer.sourceZoneName}. Pasting creates them in the active zone.`,
+                    },
+                  )
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className="max-h-64 space-y-1 overflow-y-auto rounded border p-2"
+            data-testid="copy-buffer-list"
+          >
+            {copyBuffer?.records.map((record) => (
+              <div
+                key={record.id}
+                data-testid="copy-buffer-row"
+                className="border-b p-1 last:border-b-0"
+              >
+                <div className="font-mono text-sm">
+                  {record.type} {record.name}
+                </div>
+                <div className="break-all text-xs text-muted-foreground">
+                  {record.content}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={clearCopyBuffer}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              {t("Clear buffer", "Clear buffer")}
+            </Button>
+            <Button className="flex-1" onClick={() => setShowCopyBuffer(false)}>
+              {t("Close", "Close")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {pastePreview && (
+        <ImportPreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPastePreview(null);
+          }}
+          items={pastePreview.items}
+          sourceItemCount={pastePreview.sourceCount}
+          title={t("Paste Preview", "Paste Preview")}
+          description={t(
+            "Review the rewritten names and content before creating these records in {{zone}}.",
+            {
+              zone: pastePreview.zoneName,
+              defaultValue: `Review the rewritten names and content before creating these records in ${pastePreview.zoneName}.`,
+            },
+          )}
+          confirmLabel={t("Paste Selected", "Paste Selected")}
+          askAgain={{
+            label: t(
+              "Ask before pasting rewritten records",
+              "Ask before pasting rewritten records",
+            ),
+            checked: confirmPastePreview,
+            onChange: setConfirmPastePreview,
+          }}
+          onConfirm={(items, dryRun) => {
+            const target = {
+              tabId: pastePreview.tabId,
+              zoneId: pastePreview.zoneId,
+              zoneName: pastePreview.zoneName,
+            };
+            // Deselected rows count as skipped so the toast still adds up.
+            const skipped =
+              pastePreview.skipped + (pastePreview.items.length - items.length);
+            setPastePreview(null);
+            void performPaste(
+              target,
+              items as PreparedCopiedDnsRecord[],
+              skipped,
+              dryRun === true,
+            );
+          }}
+          onCancel={() => setPastePreview(null)}
+        />
+      )}
       <HotkeyHelpDialog />
     </AuthenticatedAppShell>
   );

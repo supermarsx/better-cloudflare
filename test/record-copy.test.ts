@@ -482,3 +482,35 @@ test("rewrites RP mbox and txt domain fields, leaving '.' unspecified", () => {
     `admin.${SOURCE}. txt.${SOURCE}.`,
   );
 });
+
+test("copying inside one zone rewrites nothing", () => {
+  const records = [
+    dnsRecord({
+      type: "CNAME",
+      name: `www.${SOURCE}`,
+      content: `edge.${SOURCE}`,
+    }),
+    dnsRecord({ type: "TXT", content: `v=spf1 include:_spf.${SOURCE} ~all` }),
+    dnsRecord({
+      type: "SRV",
+      name: `_sip._tcp.${SOURCE}`,
+      content: `10 5 443 service.${SOURCE}`,
+    }),
+  ];
+
+  for (const source of records) {
+    const prepared = prepareCopiedDnsRecord(source, SOURCE, SOURCE, true);
+    assert.equal(prepared.name, source.name, source.type);
+    assert.equal(prepared.content, source.content, source.type);
+
+    // A trailing root dot and a case difference still mean "the same zone".
+    const sameZone = prepareCopiedDnsRecord(
+      source,
+      SOURCE,
+      `${SOURCE.toUpperCase()}.`,
+      true,
+    );
+    assert.equal(sameZone.name, source.name, source.type);
+    assert.equal(sameZone.content, source.content, source.type);
+  }
+});

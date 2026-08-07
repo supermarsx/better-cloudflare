@@ -411,10 +411,12 @@ test("opens and creates a normalized domain-audit suggestion", async () => {
 
   await waitFor(() => assert.equal(createCalls.length, 1));
   assert.equal(createCalls[0]?.zoneId, zoneId);
+  // TXT content is normalized into quoted presentation form on save, so what
+  // reaches Cloudflare is always a valid <character-string>.
   assert.deepEqual(createCalls[0]?.record, {
     type: "TXT",
     name: `_dmarc.${zoneName}`,
-    content: expectedContent,
+    content: `"${expectedContent}"`,
     ttl: 300,
     proxied: false,
   });

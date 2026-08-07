@@ -24,6 +24,13 @@ export {
   splitCharacterString,
   unquoteCharacterString,
 } from "./character-string";
+export {
+  CHARACTER_STRING_RECORD_TYPES,
+  isCharacterStringRecordType,
+  normalizeRecordCharacterStrings,
+  normalizeRecordContent,
+  normalizeRecordListCharacterStrings,
+} from "./record-normalize";
 export { filterRecords } from "./dns-utils";
 export { recordsToCSV, recordsToBIND, recordsToJSON } from "./export-api";
 export {

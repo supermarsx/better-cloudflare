@@ -1781,6 +1781,23 @@ export class StorageManager {
     return { ...stored };
   }
 
+  /**
+   * Persist whether pasting copied records shows the rewrite preview. Stored
+   * alongside the other browser-owned preferences (never mirrored to the
+   * desktop preference file) so the "don't ask again" checkbox survives a
+   * reload.
+   */
+  setConfirmPastePreview(enabled: boolean): void {
+    this.data.confirmPastePreview = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ confirmPastePreview: enabled });
+  }
+
+  /** Defaults to `true`: the preview is opt-out, never opt-in. */
+  getConfirmPastePreview(): boolean {
+    return this.data.confirmPastePreview !== false;
+  }
+
   clearSettings(): void {
     delete this.data.lastZone;
     delete this.data.autoRefreshInterval;
@@ -1797,6 +1814,7 @@ export class StorageManager {
     delete this.data.dnsTableColumns;
     delete this.data.zoneDnsTableColumns;
     delete this.data.tableColumns;
+    delete this.data.confirmPastePreview;
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;

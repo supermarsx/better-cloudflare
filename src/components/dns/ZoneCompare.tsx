@@ -90,7 +90,15 @@ interface ZoneCompareProps {
     perPage?: number,
     signal?: AbortSignal,
   ) => Promise<DNSRecord[]>;
-  onCopyRecords?: (records: DNSRecord[]) => void;
+  /**
+   * Queue records for pasting into the current zone. `source` identifies the
+   * zone the records were read from, which the paste path needs to rewrite
+   * domain suffixes correctly.
+   */
+  onCopyRecords?: (
+    records: DNSRecord[],
+    source: { zoneId: string; zoneName: string },
+  ) => void;
   /** Visible column ids, in order. Defaults to the registry defaults. */
   columns?: readonly string[];
 }
@@ -274,7 +282,7 @@ function ZoneCompareInner({
               ? t("Hide identical", "Hide identical")
               : t("Show identical", "Show identical")}
           </button>
-          {onCopyRecords && stats.onlyRight > 0 && (
+          {onCopyRecords && compareZoneId && stats.onlyRight > 0 && (
             <button
               type="button"
               className="text-xs text-primary underline"
@@ -283,7 +291,10 @@ function ZoneCompareInner({
                   diff
                     ?.filter((e) => e.kind === "only-right" && e.right)
                     .map((e) => e.right!) ?? [];
-                onCopyRecords(missing);
+                onCopyRecords(missing, {
+                  zoneId: compareZoneId,
+                  zoneName: compareZone?.name ?? compareZoneId,
+                });
               }}
             >
               {t("Copy {{count}} missing → current", {
