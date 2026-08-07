@@ -1,28 +1,35 @@
 # Architecture
 
-Better Cloudflare is one codebase that produces two products with genuinely different capabilities. Understanding which one you are running explains almost every behavioural difference.
+Better Cloudflare is a Tauri v2 desktop application: a React 19 / Next.js frontend rendered in the system webview, over a 17-crate Rust workspace reached through Tauri IPC.
 
-## Two builds
+## The desktop build
 
-|                    | Web preview                                     | Desktop app                     |
-| ------------------ | ----------------------------------------------- | ------------------------------- |
-| Shell              | Static Next.js 16 export (`output: "export"`)   | Tauri v2                        |
-| Backend            | None — the browser talks to Cloudflare directly | 17 Rust crates behind Tauri IPC |
-| Build              | `npm run build` → `out/`                        | `npm run tauri:build`           |
-| Credential storage | None. Ever.                                     | OS keyring                      |
+|                    | Better Cloudflare                                           |
+| ------------------ | ----------------------------------------------------------- |
+| Shell              | Tauri v2, system webview                                    |
+| Frontend           | Next.js 16 static export (`output: "export"`)               |
+| Backend            | 17 Rust crates behind Tauri IPC                             |
+| Build              | `npm run tauri:build`                                       |
+| Credential storage | OS keyring (Keychain / Credential Manager / Secret Service) |
 
-The frontend is identical. `src/lib/environment.ts` exposes `isDesktop()` / `isWeb()` by probing for the Tauri window bridge, and `src/lib/api/tauri-client.ts` wraps IPC. Features that need the Rust backend check `TauriClient.isTauri()` and degrade rather than break.
+### The static export is an implementation detail
 
-### What only the desktop build can do
+`next.config.mjs` sets `output: "export"` and `npm run build` writes the result to `out/`. `src-tauri/tauri.conf.json` then points `frontendDist` at `../out` and runs that build from `beforeBuildCommand`, so the export is the UI the desktop bundle ships. It is the desktop app's asset pipeline, not a separate hostable product — there is no supported web deployment of Better Cloudflare, and the browser is not a target the security model covers.
 
-- Persist credentials at all (see [Security](security.md))
+`npm run dev` serves the same frontend for development; `tauri:dev` points the desktop window at it through `devUrl`.
+
+### The environment probe
+
+`src/lib/environment.ts` exposes `isDesktop()` / `isWeb()` by probing for the Tauri window bridge, and `src/lib/api/tauri-client.ts` wraps IPC. Features that need the Rust backend check `TauriClient.isTauri()` and degrade rather than break, which is what keeps the frontend renderable under the dev server and the jsdom test suite. In a shipped bundle the bridge is always present, so these are development and test affordances rather than a second product.
+
+Everything that needs the Rust backend therefore needs the desktop shell:
+
+- Credential persistence of any kind (see [Security](security.md))
 - Registrar expiry monitoring — every registrar client lives in `bc-registrar`
 - The local MCP server
 - Topology PTR lookups, geolocation, service probing, and export-to-file
 - Audit log persistence and export
 - Biometric unlock (macOS Touch ID only)
-
-The web build renders the topology graph from zone records, and every DNS editing feature — builders, quote normalization, cross-zone copy, import/export, bulk edit, zone compare — works in both.
 
 ## Frontend layout
 
@@ -39,7 +46,7 @@ src/
     dns/                   character-string.ts, record-normalize.ts, record-copy.ts
     tables/table-columns.ts
     tabs/tab-order.ts
-    storage/               Preference persistence and browser sanitization
+    storage/               Preference persistence, plus browser-context sanitization
     api/                   tauri-client.ts, server-client.ts
     audit/domain-audit.ts
   hooks/

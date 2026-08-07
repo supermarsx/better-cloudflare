@@ -191,9 +191,9 @@ When the other zone has records yours lacks, a **Copy N missing → current** li
 
 Renders the zone as a graph, following CNAME chains all the way to their terminal addresses. Shown here in the light theme, which suits the Mermaid rendering particularly well.
 
-Pan and zoom the viewport, normalise back to 100%, or open **Full window** for a lightbox view. The refresh button re-resolves; **Discover services** probes TCP services on the resolved addresses. On desktop, resolution enriches nodes with PTR results and geolocation.
+Pan and zoom the viewport, normalise back to 100%, or open **Full window** for a lightbox view. The refresh button re-resolves; **Discover services** probes TCP services on the resolved addresses. Resolution enriches nodes with PTR results and geolocation from the `bc-topology` crate.
 
-**Copy** and **Export** menus offer the Mermaid source, SVG, PNG and PDF — each individually enabled in settings, and file export is desktop-only. A search and filter panel finds nodes by name or record type with a live match count and a clickable result list that reveals the node in the graph. Annotations can be attached to the diagram unless disabled.
+**Copy** and **Export** menus offer the Mermaid source, SVG, PNG and PDF — each individually enabled in settings, with file export handled by the Rust backend. A search and filter panel finds nodes by name or record type with a live match count and a clickable result list that reveals the node in the graph. Annotations can be attached to the diagram unless disabled.
 
 The Mermaid output is sanitized before rendering (`sanitizeTopologySvg` in `ZoneTopologyTab.tsx`), since node labels are built from zone data.
 
@@ -317,7 +317,7 @@ Domain expiry across every registrar you use, in one list — Cloudflare, Porkbu
 
 **Add Registrar** stores a credential; configured registrars appear as chips you can remove. Domains sort critical → warning → healthy, then by expiry date, so whatever is about to lapse is at the top. Each row shows a health icon, the domain, its registrar, a status tag such as `PENDING_TRANSFER`, colour-coded days-to-expiry, and transfer-lock and auto-renew indicators.
 
-Expanding a row reveals registration dates, DNSSEC and privacy state, nameservers, per-check health results, and a **Copy** button for the summary. Registrar data is served by the Rust backend, so this view is desktop-only.
+Expanding a row reveals registration dates, DNSSEC and privacy state, nameservers, per-check health results, and a **Copy** button for the summary. Every registrar client lives in the `bc-registrar` crate, so this view is served entirely by the Rust backend.
 
 ### Tag manager
 
@@ -337,7 +337,7 @@ Search across entries, cap the row **limit**, and use the one-click presets: Err
 
 **JSON** and **CSV** export the current view; the confirmation toast offers to open the containing folder. **Clear** empties the log and can be confirm-gated in settings.
 
-This is a desktop feature. In the web build the panel reads "Audit log is only available in the desktop app."
+The log is persisted by the Rust backend. When the frontend is rendered outside the desktop shell — under the dev server, or in the jsdom tests — the panel simply reads "Audit log is only available in the desktop app."
 
 <details>
 <summary>Light theme</summary>
@@ -420,6 +420,6 @@ See [the design system notes](design-system.md) for the token model behind them.
 
 ## See also
 
-- [Architecture](architecture.md) — how the web and desktop builds differ
+- [Architecture](architecture.md) — the desktop shell, the crate map, how data flows
 - [Security model](security.md) — encryption, storage, and what does not work
 - [Documentation hub](index.md)

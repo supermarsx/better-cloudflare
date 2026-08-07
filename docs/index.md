@@ -1,16 +1,16 @@
 # Better Cloudflare documentation
 
-Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a static web preview and a Tauri desktop app. Start at the [README](../README.md) for an overview and installation.
+Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a Tauri v2 desktop application. Start at the [readme](../readme.md) for an overview and installation.
 
 Generated API reference is written separately to `docs/api/`, so `npm run docs` never overwrites these guides.
 
 ## Start here
 
-| Guide                                  | What it covers                                               |
-| -------------------------------------- | ------------------------------------------------------------ |
-| **[Screens and features](screens.md)** | All 26 screens with screenshots and what you do on each      |
-| [Architecture](architecture.md)        | The two builds, the 17 Rust crates, key frontend modules, CI |
-| [Security model](security.md)          | Encryption, keyring storage, and the current limits          |
+| Guide                                  | What it covers                                                  |
+| -------------------------------------- | --------------------------------------------------------------- |
+| **[Screens and features](screens.md)** | All 26 screens with screenshots and what you do on each         |
+| [Architecture](architecture.md)        | The desktop shell, the 17 Rust crates, key frontend modules, CI |
+| [Security model](security.md)          | Encryption, keyring storage, and the current limits             |
 
 ## Reference
 
@@ -42,6 +42,6 @@ These are the things most likely to be assumed incorrectly:
 - **There is no AI assistant in the UI.** Four Rust crates and a React hook exist as groundwork, but nothing in the interface imports the hook.
 - **Biometrics are macOS Touch ID only.** Windows Hello and Linux are not implemented.
 - **The updater is disabled**, and there is no code signing or macOS notarization. Package-manager channels do not exist.
-- **The web build never persists credentials**, so it does not offer the desktop security model. It is a preview.
+- **The desktop app is the only shipped target.** A browser-context storage path still exists in the source — it backs the frontend dev server and the jsdom tests — and it never persists credentials.
 - **Secure storage has no in-memory fallback.** If the OS keyring is unavailable, operations fail rather than degrading silently.
 - **The test runner is Node's built-in `node:test`** via `scripts/run-tests-seq.ts` — not Vitest or Jest.

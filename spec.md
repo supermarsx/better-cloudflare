@@ -2688,10 +2688,10 @@ See `CONTRIBUTING.md` for guidelines.
 
 **Documentation:**
 
-- Main README: `README.md`
+- Main readme: `readme.md`
 - Documentation hub: `docs/index.md`
 - Migration guide: `docs/tauri-migration.md`
-- TODO list: `TODO-TAURI-MIGRATION.md`
+- Screens and features: `docs/screens.md`
 - Spec: `spec.md`
 
 ## Examples — Tauri IPC & UI Flows

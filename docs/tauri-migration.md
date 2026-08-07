@@ -2,7 +2,7 @@
 
 This guide explains the conversion of Better Cloudflare from a web application to a Tauri-based desktop application with Rust backend.
 
-> **Current-status note:** This is a migration and target-architecture guide, not a release-support statement. Touch ID on macOS is the only implemented biometric runtime; Windows Hello is not implemented. The updater is disabled, and code signing and macOS notarization are not configured.
+> **Current-status note:** This is a migration and target-architecture guide, not a release-support statement. The migration is the direction of travel: the desktop app is the product, and the Next.js static export exists to be bundled into it rather than hosted anywhere. Touch ID on macOS is the only implemented biometric runtime; Windows Hello is not implemented. The updater is disabled, and code signing and macOS notarization are not configured.
 
 ## Architecture Overview
 
@@ -171,6 +171,8 @@ const nextConfig = {
   },
 };
 ```
+
+The export is required precisely because Tauri needs a directory of static assets to bundle as `frontendDist`. `npm run build` cannot be removed for that reason — but its output is the desktop window's UI, not a deployable site.
 
 ## API Conversion Reference
 

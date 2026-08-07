@@ -2,6 +2,8 @@
 
 What protects your Cloudflare credentials, and — just as important — what does not.
 
+Better Cloudflare is a desktop application, and this page describes the desktop security model. That is the only model on offer: there is no supported hosted or browser deployment, and nothing here should be read as a guarantee about running the frontend anywhere other than the Tauri shell.
+
 This page states limits plainly. If a security feature is absent or broken, it is listed here rather than omitted.
 
 ## Encryption
@@ -24,7 +26,7 @@ Iterations are tunable in the encryption settings dialog, which also benchmarks 
 
 ## Storage
 
-### Desktop
+### The OS keyring
 
 Secrets go to the OS keyring — Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 
@@ -40,11 +42,13 @@ When the OS keyring is unavailable, secure-storage reads and writes **fail with 
 
 On Linux this means a Secret Service provider (GNOME Keyring, KWallet, or equivalent) must be running and unlocked. Headless sessions frequently have none.
 
-### Web
+### Browser-context code paths
 
-**The web build never persists credentials.** Browser preference writes are validated against an allowlist schema (`BROWSER_PREFERENCE_SCHEMA` in `src/lib/storage/storage-util.ts`) that contains no `apiKeys` or `currentSession` keys, so credentials are dropped structurally — not by a filter that could be forgotten on a new code path, but because the serializer has nowhere to put them. `serializeForPersistence()` applies it on every persist.
+Worth knowing, because anyone reading `src/lib/storage` will find them: the frontend still contains a browser storage path. It is not a shipped product surface — it backs the `npm run dev` frontend server and the jsdom unit tests — but it is real code and it behaves safely.
 
-The practical consequence: **the web and desktop builds do not offer the same security guarantee.** In the browser, a key exists only in memory for the session and is gone when you close the tab. Use the web build to try the interface, not to manage credentials.
+**It never persists credentials.** Browser preference writes are validated against an allowlist schema (`BROWSER_PREFERENCE_SCHEMA` in `src/lib/storage/storage-util.ts`) that contains no `apiKeys` or `currentSession` keys, so credentials are dropped structurally — not by a filter that could be forgotten on a new code path, but because the serializer has nowhere to put them. `serializeForPersistence()` applies it on every persist.
+
+The practical consequence: in a browser context a key exists only in memory for the session and is gone when the page closes. None of the guarantees above — keyring storage, chunked manifests, the encryption envelope at rest — apply there, because nothing is written at rest at all.
 
 ## Passkeys are disabled
 
