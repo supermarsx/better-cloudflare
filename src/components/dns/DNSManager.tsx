@@ -96,6 +96,18 @@ import {
   cacheZoneRecords,
   getCachedZoneRecords,
 } from "@/lib/storage/offline-cache";
+import { prepareCopiedDnsRecord } from "@/lib/dns/record-copy";
+import {
+  TABLE_COLUMN_GROUPS,
+  buildGridTemplateColumns,
+  canHideTableColumn,
+  getDefaultTableColumns,
+  normalizeTableColumnMap,
+  resolveTableColumns,
+  toggleTableColumn,
+  type DnsRecordColumnId,
+} from "@/lib/tables/table-columns";
+import { reconcileTabOrder } from "@/lib/tabs/tab-order";
 import {
   reportRuntimeError,
   sanitizeRuntimeText,
@@ -373,7 +385,13 @@ type ActionTab =
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-type SettingsSubtab = "general" | "topology" | "audit" | "mcp" | "profiles";
+type SettingsSubtab =
+  | "general"
+  | "columns"
+  | "topology"
+  | "audit"
+  | "mcp"
+  | "profiles";
 type ExportFolderPreset =
   | "system"
   | "documents"
@@ -1310,6 +1328,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     clampAutoRefreshInterval(storageManager.getAutoRefreshInterval()),
   );
+  const [rewriteCopiedRecordDomains, setRewriteCopiedRecordDomains] = useState(
+    storageManager.getRewriteCopiedRecordDomains(),
+  );
+  const [tableColumns, setTableColumns] = useState<Record<string, string[]>>(
+    () => normalizeTableColumnMap(storageManager.getTableColumns()),
+  );
   const registrarMonitor = useRegistrarMonitor(apiKey, email);
   const [auditEntries, setAuditEntries] = useState<
     Array<Record<string, unknown>>
@@ -1370,6 +1394,52 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [t, toast],
   );
+  const dnsRecordColumns = useMemo(
+    () =>
+      resolveTableColumns(
+        "dnsRecords",
+        tableColumns.dnsRecords,
+      ) as DnsRecordColumnId[],
+    [tableColumns.dnsRecords],
+  );
+  const dnsRecordGridTemplate = useMemo(
+    () => buildGridTemplateColumns("dnsRecords", dnsRecordColumns),
+    [dnsRecordColumns],
+  );
+  const auditLogColumns = useMemo(
+    () => resolveTableColumns("auditLog", tableColumns.auditLog),
+    [tableColumns.auditLog],
+  );
+  const auditLogGridTemplate = useMemo(
+    () => buildGridTemplateColumns("auditLog", auditLogColumns),
+    [auditLogColumns],
+  );
+  const zoneCompareColumns = useMemo(
+    () => resolveTableColumns("zoneCompare", tableColumns.zoneCompare),
+    [tableColumns.zoneCompare],
+  );
+  const setTableColumnVisible = useCallback(
+    (tableId: string, columnId: string, visible: boolean) => {
+      setTableColumns((previous) => {
+        const current = resolveTableColumns(tableId, previous[tableId]);
+        const next = toggleTableColumn(tableId, current, columnId, visible);
+        if (
+          next.length === current.length &&
+          next.every((id, index) => id === current[index])
+        ) {
+          return previous;
+        }
+        return { ...previous, [tableId]: next };
+      });
+    },
+    [],
+  );
+  const resetTableColumns = useCallback((tableId: string) => {
+    setTableColumns((previous) => ({
+      ...previous,
+      [tableId]: getDefaultTableColumns(tableId),
+    }));
+  }, []);
   const [tagsZoneId, setTagsZoneId] = useState<string>("");
   const [newTag, setNewTag] = useState("");
   const [renameTagFrom, setRenameTagFrom] = useState<string | null>(null);
@@ -1761,6 +1831,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useCallback((): SessionSettingsProfile => {
       return {
         autoRefreshInterval,
+        rewriteCopiedRecordDomains,
         defaultPerPage: globalPerPage,
         zonePerPage,
         showUnsupportedRecordTypes,
@@ -1805,6 +1876,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       };
     }, [
       autoRefreshInterval,
+      rewriteCopiedRecordDomains,
       globalPerPage,
       zonePerPage,
       showUnsupportedRecordTypes,
@@ -1857,6 +1929,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setAutoRefreshInterval(
           clampAutoRefreshInterval(profile.autoRefreshInterval),
         );
+      }
+      if (typeof profile.rewriteCopiedRecordDomains === "boolean") {
+        setRewriteCopiedRecordDomains(profile.rewriteCopiedRecordDomains);
       }
       if (typeof profile.defaultPerPage === "number") {
         setGlobalPerPage(clampDnsPageSize(profile.defaultPerPage));
@@ -2272,7 +2347,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (bounded.evictedTabId) {
         recordRequestGenerationsRef.current.invalidate(bounded.evictedTabId);
       }
-      setTabs(bounded.tabs);
+      // Restoring a session calls this once per persisted tab in a single tick.
+      // A non-functional update would compute every append from the same stale
+      // `tabs` snapshot, so all but the last tab would be dropped and the
+      // persisted order lost. Recompute against the queued state instead.
+      setTabs((prev) => {
+        if (prev === tabs) return bounded.tabs;
+        if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
+        const next = appendBoundedZoneTab(
+          prev,
+          createZoneTab(zone, perPage),
+          activeTabId,
+        );
+        if (next.evictedTabId) {
+          recordRequestGenerationsRef.current.invalidate(next.evictedTabId);
+        }
+        return next.opened ? next.tabs : prev;
+      });
       setActiveTabId(zoneId);
     },
     [activeTabId, availableZones, globalPerPage, tabs, t, toast, zonePerPage],
@@ -2357,27 +2448,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [getZones, toast],
   );
 
-  const reorderTabs = useCallback((sourceId: string, targetId: string) => {
-    if (sourceId === targetId) return;
+  /**
+   * Apply a tab order produced by the tab strip. The persisted `last_open_tabs`
+   * list is driven off `tabs`, so reordering here is what makes the new order
+   * survive a reload.
+   */
+  const applyTabOrder = useCallback((orderedIds: string[]) => {
     setTabs((prev) => {
-      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
-      const targetIndex = prev.findIndex((tab) => tab.id === targetId);
-      if (sourceIndex < 0 || targetIndex < 0) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(sourceIndex, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
-  }, []);
-
-  const moveTabToEnd = useCallback((sourceId: string) => {
-    setTabs((prev) => {
-      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
-      if (sourceIndex < 0) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(sourceIndex, 1);
-      next.push(moved);
-      return next;
+      const next = reconcileTabOrder(prev, orderedIds);
+      const unchanged =
+        next.length === prev.length &&
+        next.every((tab, index) => tab.id === prev[index]?.id);
+      return unchanged ? prev : next;
     });
   }, []);
 
@@ -3029,6 +3111,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_zone?: string;
             last_active_tab?: string;
             auto_refresh_interval?: number;
+            rewrite_copied_record_domains?: boolean;
             default_per_page?: number;
             zone_per_page?: Record<string, number>;
             show_unsupported_record_types?: boolean;
@@ -3036,6 +3119,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
+            dns_table_columns?: string[];
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
@@ -3082,6 +3166,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               clampAutoRefreshInterval(prefObj.auto_refresh_interval),
             );
           }
+          if (typeof prefObj.rewrite_copied_record_domains === "boolean") {
+            setRewriteCopiedRecordDomains(
+              prefObj.rewrite_copied_record_domains,
+            );
+          }
           if (typeof prefObj.default_per_page === "number") {
             setGlobalPerPage(clampDnsPageSize(prefObj.default_per_page));
           }
@@ -3116,6 +3205,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(limitRestoredTabIds(prefObj.last_open_tabs));
           }
+          // The desktop store owns the DNS table columns; every other table
+          // rides on browser preferences. Preferences written before this
+          // feature simply have no entry and fall through to the defaults.
+          setTableColumns(
+            normalizeTableColumnMap({
+              ...storageManager.getTableColumns(),
+              ...(Array.isArray(prefObj.dns_table_columns)
+                ? { dnsRecords: prefObj.dns_table_columns }
+                : {}),
+            }),
+          );
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
           }
@@ -3357,6 +3457,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         active = false;
       };
     }
+    setRewriteCopiedRecordDomains(
+      storageManager.getRewriteCopiedRecordDomains(),
+    );
+    setTableColumns(normalizeTableColumnMap(storageManager.getTableColumns()));
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
     setGlobalPerPage(clampDnsPageSize(storageManager.getDefaultPerPage()));
@@ -3704,6 +3808,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       auditExportSkipDestinationConfirm,
     );
     storageManager.setDomainAuditCategories(domainAuditCategories);
+    storageManager.setRewriteCopiedRecordDomains(rewriteCopiedRecordDomains);
+    storageManager.setTableColumns(tableColumns);
     storageManager.setSessionSettingsProfile(
       currentSessionId,
       buildSessionSettingsProfile(),
@@ -3711,6 +3817,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     if (isDesktop()) {
       persistDnsPreferenceFields({
+        rewrite_copied_record_domains: rewriteCopiedRecordDomains,
+        dns_table_columns: resolveTableColumns(
+          "dnsRecords",
+          tableColumns.dnsRecords,
+        ),
         default_per_page: globalPerPage,
         zone_per_page: zonePerPage,
         show_unsupported_record_types: showUnsupportedRecordTypes,
@@ -3761,6 +3872,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
     }
   }, [
+    rewriteCopiedRecordDomains,
+    tableColumns,
     globalPerPage,
     zonePerPage,
     showUnsupportedRecordTypes,
@@ -5239,14 +5352,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   const handlePasteRecords = async () => {
     if (!activeTab || !copyBuffer) return;
-    const toCreate = copyBuffer.records.map((record) => ({
-      type: record.type,
-      name: record.name,
-      content: record.content,
-      ttl: record.ttl,
-      priority: record.priority,
-      proxied: record.proxied,
-    }));
+    const toCreate = copyBuffer.records.map((record) =>
+      prepareCopiedDnsRecord(
+        record,
+        copyBuffer.sourceZoneName,
+        activeTab.zoneName,
+        rewriteCopiedRecordDomains,
+      ),
+    );
     try {
       if (bulkCreateDNSRecords) {
         const result = await bulkCreateDNSRecords(
@@ -5674,8 +5787,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           closeOnMiddleClick={closeTabOnMiddleClick}
           onActivate={activateTab}
           onClose={closeTab}
-          onReorder={reorderTabs}
-          onMoveToEnd={moveTabToEnd}
+          onOrderChange={applyTabOrder}
         />
       }
       connectionBar={
@@ -5686,7 +5798,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 {t("Domain/Zone", "Domain/Zone")}
               </Label>
               <Select
-                value={selectedZoneId || undefined}
+                // "" is Radix's placeholder sentinel, same as undefined, but it
+                // keeps the underlying native select controlled from the first
+                // render instead of flipping once a zone hydrates.
+                value={selectedZoneId}
                 onValueChange={(value) => {
                   setSelectedZoneId(value);
                   openZoneTab(value);
@@ -6123,61 +6238,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           data-testid="dns-records-table"
                           className="glass-surface glass-sheen ui-table rounded-xl"
                         >
-                          <div className="ui-table-head">
-                            <span />
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("type")}
-                            >
-                              {t("Type", "Type")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("type")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("name")}
-                            >
-                              {t("Name", "Name")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("name")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("content")}
-                            >
-                              {t("Content", "Content")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("content")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("ttl")}
-                            >
-                              {t("TTL", "TTL")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("ttl")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("proxied")}
-                            >
-                              {t("Proxy", "Proxy")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("proxied")}
-                              </span>
-                            </button>
-                            <span className="text-right">
-                              {t("Actions", "Actions")}
-                            </span>
+                          <div
+                            className="ui-table-head"
+                            style={{
+                              gridTemplateColumns: dnsRecordGridTemplate,
+                            }}
+                          >
+                            {dnsRecordColumns.map((column) => {
+                              switch (column) {
+                                case "select":
+                                  return <span key={column} />;
+                                case "type":
+                                case "name":
+                                case "content":
+                                case "ttl":
+                                case "proxied": {
+                                  const labels = {
+                                    type: t("Type", "Type"),
+                                    name: t("Name", "Name"),
+                                    content: t("Content", "Content"),
+                                    ttl: t("TTL", "TTL"),
+                                    proxied: t("Proxy", "Proxy"),
+                                  } as const;
+                                  return (
+                                    <button
+                                      key={column}
+                                      type="button"
+                                      className="text-left hover:text-foreground"
+                                      onClick={() => toggleSort(column)}
+                                    >
+                                      {labels[column]}{" "}
+                                      <span className="opacity-70">
+                                        {sortIndicator(column)}
+                                      </span>
+                                    </button>
+                                  );
+                                }
+                                case "comment":
+                                  return (
+                                    <span key={column}>
+                                      {t("Comment", "Comment")}
+                                    </span>
+                                  );
+                                case "tags":
+                                  return (
+                                    <span key={column}>
+                                      {t("Tags", "Tags")}
+                                    </span>
+                                  );
+                                case "actions":
+                                  return (
+                                    <span key={column} className="text-right">
+                                      {t("Actions", "Actions")}
+                                    </span>
+                                  );
+                                default:
+                                  return null;
+                              }
+                            })}
                           </div>
                           {visibleRecords.map((record) => {
                             const isSelected = selectedRecordIds.has(record.id);
@@ -6187,6 +6305,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 zoneId={activeTab.zoneId}
                                 zoneName={activeTab.zoneName}
                                 record={record}
+                                columns={dnsRecordColumns}
+                                gridTemplateColumns={dnsRecordGridTemplate}
                                 isEditing={
                                   activeTab.editingRecord === record.id
                                 }
@@ -8014,6 +8134,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   zones={zones}
                   currentZoneId={activeTab.zoneId}
                   getDNSRecords={getDNSRecords}
+                  columns={zoneCompareColumns}
                 />
               )}
 
@@ -8470,53 +8591,48 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       !auditError &&
                       limitedAuditEntries.length > 0 && (
                         <div className="overflow-auto rounded-lg border border-border/60">
-                          <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("timestamp")}
-                            >
-                              {t("Timestamp", "Timestamp")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "timestamp"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("operation")}
-                            >
-                              {t("Operation", "Operation")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "operation"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("resource")}
-                            >
-                              {t("Resource", "Resource")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "resource"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <div>{t("Details", "Details")}</div>
+                          <div
+                            className="grid gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground"
+                            style={{
+                              gridTemplateColumns: auditLogGridTemplate,
+                            }}
+                          >
+                            {auditLogColumns.map((column) => {
+                              if (column === "details") {
+                                return (
+                                  <div key={column}>
+                                    {t("Details", "Details")}
+                                  </div>
+                                );
+                              }
+                              const field = column as
+                                | "timestamp"
+                                | "operation"
+                                | "resource";
+                              const labels = {
+                                timestamp: t("Timestamp", "Timestamp"),
+                                operation: t("Operation", "Operation"),
+                                resource: t("Resource", "Resource"),
+                              } as const;
+                              return (
+                                <button
+                                  key={column}
+                                  type="button"
+                                  className="flex items-center gap-1 text-left hover:text-foreground"
+                                  onClick={() => toggleAuditSort(field)}
+                                >
+                                  {labels[field]}
+                                  <ArrowUpDown className="h-3 w-3" />
+                                  <span className="text-[10px]">
+                                    {auditSort.field === field
+                                      ? auditSort.dir === "asc"
+                                        ? t("ASC", "ASC")
+                                        : t("DESC", "DESC")
+                                      : ""}
+                                  </span>
+                                </button>
+                              );
+                            })}
                           </div>
                           <div className="divide-y divide-white/10">
                             {limitedAuditEntries.map((entry, index) => {
@@ -8543,22 +8659,55 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   key={`${timestamp}-${index}`}
                                   className="px-4 py-3 text-sm"
                                 >
-                                  <summary className="grid grid-cols-[220px_160px_1fr_80px] gap-3 cursor-pointer list-none">
-                                    <div
-                                      className="text-xs text-muted-foreground"
-                                      title={timestampFull}
-                                    >
-                                      {timestampShort}
-                                    </div>
-                                    <div className="font-medium">
-                                      {operation}
-                                    </div>
-                                    <div className="truncate text-muted-foreground">
-                                      {resource}
-                                    </div>
-                                    <div className="text-xs text-muted-foreground hover:text-foreground">
-                                      {t("View", "View")}
-                                    </div>
+                                  <summary
+                                    className="grid gap-3 cursor-pointer list-none"
+                                    style={{
+                                      gridTemplateColumns: auditLogGridTemplate,
+                                    }}
+                                  >
+                                    {auditLogColumns.map((column) => {
+                                      switch (column) {
+                                        case "timestamp":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="text-xs text-muted-foreground"
+                                              title={timestampFull}
+                                            >
+                                              {timestampShort}
+                                            </div>
+                                          );
+                                        case "operation":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="font-medium"
+                                            >
+                                              {operation}
+                                            </div>
+                                          );
+                                        case "resource":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="truncate text-muted-foreground"
+                                            >
+                                              {resource}
+                                            </div>
+                                          );
+                                        case "details":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="text-xs text-muted-foreground hover:text-foreground"
+                                            >
+                                              {t("View", "View")}
+                                            </div>
+                                          );
+                                        default:
+                                          return null;
+                                      }
+                                    })}
                                   </summary>
                                   <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
                                     <div className="mb-2">
@@ -9086,6 +9235,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {t("General", "General")}
                       </button>
                       <button
+                        onClick={() => setSettingsSubtab("columns")}
+                        data-active={settingsSubtab === "columns"}
+                        className="ui-segment"
+                      >
+                        {t("Columns", "Columns")}
+                      </button>
+                      <button
                         onClick={() => setSettingsSubtab("topology")}
                         data-active={settingsSubtab === "topology"}
                         className="ui-segment"
@@ -9116,6 +9272,43 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {settingsSubtab === "general" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t(
+                              "Rewrite copied record domains",
+                              "Rewrite copied record domains",
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={rewriteCopiedRecordDomains}
+                              onCheckedChange={(checked) => {
+                                setRewriteCopiedRecordDomains(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Copied record domain rewriting enabled.",
+                                        "Copied record domain rewriting enabled.",
+                                      )
+                                    : t(
+                                        "Copied record domain rewriting disabled.",
+                                        "Copied record domain rewriting disabled.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Rewrite copied record domains",
+                                "Rewrite copied record domains",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Replace source-zone domain suffixes with the destination zone when pasting records.",
+                                "Replace source-zone domain suffixes with the destination zone when pasting records.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
                             {t("Auto refresh", "Auto refresh")}
@@ -9506,6 +9699,145 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
+                      </div>
+                    )}
+                    {settingsSubtab === "columns" && (
+                      <div
+                        className="space-y-3"
+                        data-testid="settings-columns-panel"
+                      >
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "Choose which columns each table shows. Locked columns identify the row and stay visible; at least one column always remains.",
+                            "Choose which columns each table shows. Locked columns identify the row and stay visible; at least one column always remains.",
+                          )}
+                        </p>
+                        {TABLE_COLUMN_GROUPS.map((group) => {
+                          const visible = resolveTableColumns(
+                            group.id,
+                            tableColumns[group.id],
+                          );
+                          const isDefault =
+                            visible.join(",") ===
+                            getDefaultTableColumns(group.id).join(",");
+                          return (
+                            <fieldset
+                              key={group.id}
+                              data-testid={`column-group-${group.id}`}
+                              className="rounded-xl border border-border/60 bg-card/60 px-4 py-3"
+                            >
+                              <legend className="flex items-center gap-2 px-1 text-sm font-medium">
+                                {t(group.label, group.label)}
+                                <span className="text-[10px] font-normal uppercase tracking-widest text-muted-foreground">
+                                  {t("{{shown}} of {{total}} shown", {
+                                    shown: visible.length,
+                                    total: group.columns.length,
+                                    defaultValue: `${visible.length} of ${group.columns.length} shown`,
+                                  })}
+                                </span>
+                              </legend>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-xs text-muted-foreground">
+                                  {t(group.description, group.description)}
+                                </p>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7"
+                                  disabled={isDefault}
+                                  onClick={() => {
+                                    resetTableColumns(group.id);
+                                    notifySaved(
+                                      t(
+                                        "{{table}} columns reset to defaults.",
+                                        {
+                                          table: t(group.label, group.label),
+                                          defaultValue: `${group.label} columns reset to defaults.`,
+                                        },
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  {t("Reset", "Reset")}
+                                </Button>
+                              </div>
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                {group.columns.map((column) => {
+                                  const checked = visible.includes(column.id);
+                                  const lockedOn = Boolean(column.required);
+                                  const lastOne =
+                                    checked &&
+                                    !lockedOn &&
+                                    !canHideTableColumn(
+                                      group.id,
+                                      visible,
+                                      column.id,
+                                    );
+                                  const label = t(column.label, column.label);
+                                  return (
+                                    <label
+                                      key={column.id}
+                                      data-column-id={column.id}
+                                      data-locked={
+                                        lockedOn || lastOne ? "true" : "false"
+                                      }
+                                      className="flex items-start gap-2 rounded-lg border border-border/50 bg-background/20 px-3 py-2 text-xs"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="checkbox-themed mt-0.5"
+                                        checked={checked}
+                                        disabled={lockedOn || lastOne}
+                                        aria-label={`${t(group.label, group.label)}: ${label}`}
+                                        onChange={(event) => {
+                                          setTableColumnVisible(
+                                            group.id,
+                                            column.id,
+                                            event.target.checked,
+                                          );
+                                          notifySaved(
+                                            event.target.checked
+                                              ? t("{{column}} column shown.", {
+                                                  column: label,
+                                                  defaultValue: `${label} column shown.`,
+                                                })
+                                              : t("{{column}} column hidden.", {
+                                                  column: label,
+                                                  defaultValue: `${label} column hidden.`,
+                                                }),
+                                          );
+                                        }}
+                                      />
+                                      <span className="min-w-0">
+                                        <span className="flex flex-wrap items-center gap-1 font-medium text-foreground/90">
+                                          {label}
+                                          {lockedOn && (
+                                            <Tag className="text-[8px] px-1.5 py-0.5">
+                                              {t("Always on", "Always on")}
+                                            </Tag>
+                                          )}
+                                          {!lockedOn && lastOne && (
+                                            <Tag className="text-[8px] px-1.5 py-0.5">
+                                              {t("Last column", "Last column")}
+                                            </Tag>
+                                          )}
+                                        </span>
+                                        {column.description && (
+                                          <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                                            {t(
+                                              column.description,
+                                              column.description,
+                                            )}
+                                          </span>
+                                        )}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </fieldset>
+                          );
+                        })}
                       </div>
                     )}
                     {settingsSubtab === "topology" && (

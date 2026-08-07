@@ -1063,6 +1063,16 @@ export class StorageManager {
     return this.data.closeTabOnMiddleClick !== false;
   }
 
+  setRewriteCopiedRecordDomains(enabled: boolean): void {
+    this.data.rewriteCopiedRecordDomains = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ rewriteCopiedRecordDomains: enabled });
+  }
+
+  getRewriteCopiedRecordDomains(): boolean {
+    return this.data.rewriteCopiedRecordDomains !== false;
+  }
+
   setMcpServerEnabled(enabled: boolean): void {
     this.data.mcpServerEnabled = enabled;
     this.save();
@@ -1748,6 +1758,29 @@ export class StorageManager {
     return { ...(this.data.zoneDnsTableColumns ?? {}) };
   }
 
+  /**
+   * Persist visible-column ids per table id. Callers own normalization; this
+   * only sanitizes and stores. Absent entries are legal and mean "defaults".
+   */
+  setTableColumns(map: Record<string, string[]>): void {
+    this.data.tableColumns =
+      sanitizeBrowserPreferencesValue({ tableColumns: map }).tableColumns ??
+      Object.create(null);
+    this.save();
+    this.dispatchPreferencesChanged({ tableColumns: map });
+  }
+
+  /**
+   * Read the per-table visible-column map. Returns `undefined` when the user
+   * has never configured columns, letting callers apply defaults rather than
+   * rendering an empty table.
+   */
+  getTableColumns(): Record<string, string[]> | undefined {
+    const stored = this.data.tableColumns;
+    if (!stored) return undefined;
+    return { ...stored };
+  }
+
   clearSettings(): void {
     delete this.data.lastZone;
     delete this.data.autoRefreshInterval;
@@ -1763,10 +1796,12 @@ export class StorageManager {
     delete this.data.lastActiveTabId;
     delete this.data.dnsTableColumns;
     delete this.data.zoneDnsTableColumns;
+    delete this.data.tableColumns;
     delete this.data.confirmLogout;
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
     delete this.data.closeTabOnMiddleClick;
+    delete this.data.rewriteCopiedRecordDomains;
     delete this.data.mcpServerEnabled;
     delete this.data.mcpServerHost;
     delete this.data.mcpServerPort;

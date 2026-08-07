@@ -211,8 +211,13 @@ function StatefulTabs({
         closeOnMiddleClick
         onActivate={setActiveId}
         onClose={closeTab}
-        onReorder={() => {}}
-        onMoveToEnd={() => {}}
+        onOrderChange={(orderedIds) =>
+          setItems((currentItems) =>
+            orderedIds
+              .map((id) => currentItems.find((item) => item.id === id))
+              .filter((item): item is DnsWorkspaceTabItem => Boolean(item)),
+          )
+        }
       />
       {activeId ? (
         <div
@@ -367,8 +372,7 @@ function createDataTransfer(): DataTransfer {
 }
 
 test("workspace tabs keep horizontal overflow and drag reorder actions", () => {
-  const reorders: Array<[string, string]> = [];
-  const movedToEnd: string[] = [];
+  const orders: string[][] = [];
 
   render(
     <DnsWorkspaceTabs
@@ -377,8 +381,7 @@ test("workspace tabs keep horizontal overflow and drag reorder actions", () => {
       closeOnMiddleClick
       onActivate={() => {}}
       onClose={() => {}}
-      onReorder={(sourceId, targetId) => reorders.push([sourceId, targetId])}
-      onMoveToEnd={(sourceId) => movedToEnd.push(sourceId)}
+      onOrderChange={(orderedIds) => orders.push(orderedIds)}
     />,
   );
 
@@ -397,13 +400,19 @@ test("workspace tabs keep horizontal overflow and drag reorder actions", () => {
   assert.ok(betaContainer);
   assert.match(alphaContainer.className, /\bshrink-0\b/);
 
+  // jsdom reports zero-sized rects, so the drop resolves to "after Beta".
   const reorderTransfer = createDataTransfer();
   fireEvent.dragStart(alphaContainer, { dataTransfer: reorderTransfer });
+  fireEvent.dragOver(betaContainer, {
+    clientX: 0,
+    dataTransfer: reorderTransfer,
+  });
   fireEvent.drop(betaContainer, { dataTransfer: reorderTransfer });
-  assert.deepEqual(reorders, [["alpha", "beta"]]);
+  assert.deepEqual(orders, [["beta", "alpha", "settings"]]);
 
+  // Dropping on the strip background sends the tab to the end.
   const moveTransfer = createDataTransfer();
   fireEvent.dragStart(alphaContainer, { dataTransfer: moveTransfer });
   fireEvent.drop(tablist, { dataTransfer: moveTransfer });
-  assert.deepEqual(movedToEnd, ["alpha"]);
+  assert.deepEqual(orders.at(-1), ["beta", "settings", "alpha"]);
 });

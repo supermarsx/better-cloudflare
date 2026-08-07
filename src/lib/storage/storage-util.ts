@@ -32,6 +32,7 @@ export interface BrowserSessionSettingsProfile {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   closeTabOnMiddleClick?: boolean;
+  rewriteCopiedRecordDomains?: boolean;
   mcpServerEnabled?: boolean;
   mcpServerHost?: string;
   mcpServerPort?: number;
@@ -75,6 +76,8 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   lastActiveTabId?: string;
   dnsTableColumns?: string[];
   zoneDnsTableColumns?: Record<string, string[]>;
+  /** Visible column ids keyed by table id; absent means "use defaults". */
+  tableColumns?: Record<string, string[]>;
   vaultEnabled?: boolean;
   autoRefreshInterval?: number;
   confirmDeleteRecord?: boolean;
@@ -218,6 +221,7 @@ const SESSION_PROFILE_SCHEMA = {
   idleLogoutMs: "nullable-number",
   confirmWindowClose: "boolean",
   closeTabOnMiddleClick: "boolean",
+  rewriteCopiedRecordDomains: "boolean",
   mcpServerEnabled: "boolean",
   mcpServerHost: "string",
   mcpServerPort: "number",
@@ -261,6 +265,7 @@ const BROWSER_PREFERENCE_SCHEMA = {
   lastActiveTabId: "string",
   dnsTableColumns: "strings",
   zoneDnsTableColumns: "string-array-map",
+  tableColumns: "string-array-map",
   vaultEnabled: "boolean",
   autoRefreshInterval: "number",
   confirmDeleteRecord: "boolean",

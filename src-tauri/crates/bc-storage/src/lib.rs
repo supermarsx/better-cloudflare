@@ -16,7 +16,7 @@ use keyring::Entry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use thiserror::Error;
 
 pub use bc_crypto::EncryptionConfig;
@@ -39,6 +39,18 @@ const SERVICE_NAME: &str = "better-cloudflare";
 const MAX_AUDIT_ENTRIES: usize = 1000;
 type LogicalLockRegistry = Mutex<HashMap<String, Weak<Mutex<()>>>>;
 static LOGICAL_LOCKS: OnceLock<LogicalLockRegistry> = OnceLock::new();
+
+/// Acquire a synchronization lock that a panic cannot invalidate.
+///
+/// The logical-lock registry only ever holds `Weak` handles and each logical
+/// lock guards the unit value, so unwinding cannot leave either in a state a
+/// later caller could observe as inconsistent. Propagating poisoning instead
+/// lets one panic anywhere in the process permanently fail every subsequent
+/// secure storage operation, because the process-wide registry is on the path
+/// of every read, write, and delete.
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // ── Chunking helpers ────────────────────────────────────────────────────────
 
@@ -305,6 +317,7 @@ pub struct Preferences {
     pub idle_logout_ms: Option<u64>,
     pub confirm_window_close: Option<bool>,
     pub close_tab_on_middle_click: Option<bool>,
+    pub rewrite_copied_record_domains: Option<bool>,
     pub loading_overlay_timeout_ms: Option<u32>,
     pub audit_export_default_documents: Option<bool>,
     pub confirm_clear_audit_logs: Option<bool>,
@@ -465,10 +478,6 @@ impl Storage {
         StorageError::KeyringError(format!("secure storage {operation} failed"))
     }
 
-    fn lock_error() -> StorageError {
-        StorageError::Error("storage synchronization failed".to_string())
-    }
-
     fn validate_logical_key(key: &str) -> Result<(), StorageError> {
         if key.is_empty() || key.len() > MAX_LOGICAL_KEY_BYTES {
             return Err(StorageError::InvalidKey);
@@ -496,7 +505,7 @@ impl Storage {
         registry: &LogicalLockRegistry,
     ) -> Result<Arc<Mutex<()>>, StorageError> {
         Self::validate_logical_key(key)?;
-        let mut locks = registry.lock().map_err(|_| Self::lock_error())?;
+        let mut locks = lock_ignoring_poison(registry);
         locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
             return Ok(lock);
@@ -721,19 +730,19 @@ impl Storage {
 
     pub async fn store_secret(&self, key: &str, value: &str) -> Result<(), StorageError> {
         let lock = self.logical_lock(key)?;
-        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        let _guard = lock_ignoring_poison(&lock);
         self.write_secret_unlocked(key, value)
     }
 
     pub async fn get_secret(&self, key: &str) -> Result<String, StorageError> {
         let lock = self.logical_lock(key)?;
-        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        let _guard = lock_ignoring_poison(&lock);
         self.read_secret_unlocked(key)
     }
 
     pub async fn delete_secret(&self, key: &str) -> Result<(), StorageError> {
         let lock = self.logical_lock(key)?;
-        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        let _guard = lock_ignoring_poison(&lock);
         self.delete_secret_unlocked(key)
     }
 
@@ -771,7 +780,7 @@ impl Storage {
     {
         Self::validate_mutating_logical_key(key)?;
         let lock = self.logical_lock(key)?;
-        let _guard = lock.lock().map_err(|_| Self::lock_error())?;
+        let _guard = lock_ignoring_poison(&lock);
         let mut list = self.read_json_list_unlocked(key)?;
         let result = mutate(&mut list)?;
         if delete_when_empty && list.is_empty() {
