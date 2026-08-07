@@ -592,7 +592,7 @@ test("every external workflow action and image is immutably pinned", () => {
   assert.equal(observedOsvImages, 2);
 });
 
-test("main pushes keep a globally serialized non-cancelling release opportunity", () => {
+test("releasing is manual only and stays globally serialized and non-cancelling", () => {
   const workflow = read(".github/workflows/ci.yml");
   const releaseJob = workflowJob(workflow, "release");
   const autopublish = read(".github/workflows/autopublish.yml");
@@ -602,7 +602,14 @@ test("main pushes keep a globally serialized non-cancelling release opportunity"
     workflow,
     /concurrency:\r?\n  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.sha \}\}\r?\n  cancel-in-progress: false/,
   );
-  assert.match(releaseJob, /github\.event_name == 'push'/);
+  // Production-release deployment is disabled on push: merging to main must
+  // never publish. The only way in is an explicit workflow_dispatch asking
+  // for it, which still has to clear every gate listed in `needs`.
+  assert.doesNotMatch(releaseJob, /github\.event_name == 'push'/);
+  assert.match(
+    releaseJob,
+    /github\.event_name == 'workflow_dispatch' && inputs\.release/,
+  );
   assert.match(releaseJob, /commit_sha: \$\{\{ github\.sha \}\}/);
   assert.match(
     publishJob,

@@ -256,8 +256,7 @@ jobs:
       needs.release_contract.result == 'success' &&
       github.ref == 'refs/heads/main' &&
       github.repository == 'supermarsx/better-cloudflare' &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.release))
+      github.event_name == 'workflow_dispatch' && inputs.release
     uses: ./.github/workflows/autopublish.yml
     with:
       commit_sha: ${{ github.sha }}
