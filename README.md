@@ -57,10 +57,15 @@ npm ci
 **Web preview** — static Next.js export, runs anywhere:
 
 ```bash
-npm run dev            # dev server on :3000
+npm run dev            # dev server, first free port from :3000 upwards
 npm run build          # static export into out/
-npm run preview        # serve the export
+npm run preview        # serve the export, same free-port search
 ```
+
+Every part of the dev stack — the desktop window, Playwright and the screenshot
+harness — resolves the port through `scripts/dev-port.mjs` and follows whatever
+`next dev` actually bound, so a busy `:3000` no longer strands them. Set `PORT`
+to pin an exact port (`CI=true` pins as well, which is what keeps CI fixed).
 
 **Desktop app** — additionally needs a Rust toolchain and your platform's [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/):
 

@@ -23,11 +23,13 @@
  */
 
 import { chromium, type Browser, type Page } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+
+import { readRunningDevServer } from "./dev-port.mjs";
+import { startNextDev } from "./dev-server.mjs";
 
 import { DEMO_IMPORT_JSON } from "../e2e/fixtures/demo-panels.js";
 import {
@@ -46,7 +48,6 @@ const REPO_ROOT = path.resolve(
   "..",
 );
 const OUTPUT_ROOT = path.join(REPO_ROOT, "docs", "screenshots");
-const BASE_URL = process.env.SCREENSHOT_BASE_URL ?? "http://localhost:3000";
 
 /** Wide enough that the 1152px (`max-w-6xl`) workspace never feels cramped. */
 const VIEWPORT = { width: 1440, height: 960 };
@@ -1099,6 +1100,7 @@ async function captureScreen(
   browser: Browser,
   theme: ThemeSpec,
   screen: Screen,
+  baseUrl: string,
 ): Promise<CaptureResult> {
   const context = await browser.newContext({
     viewport: VIEWPORT,
@@ -1117,7 +1119,7 @@ async function captureScreen(
 
   try {
     await installDesktopStub(page, createDemoSeed(theme.id));
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await applyCaptureStyles(page);
     await settle(page, 300);
 
@@ -1217,6 +1219,61 @@ async function waitForServer(url: string, timeoutMs: number) {
   return false;
 }
 
+/**
+ * Points the run at a dev server, starting one only when it has to.
+ *
+ * Nothing here guesses a port. An explicit `SCREENSHOT_BASE_URL` wins; a dev
+ * server that is already running is joined at the port it published; otherwise
+ * one is started and the harness adopts the port Next.js *actually* bound (see
+ * `scripts/dev-server.mjs`), so there is no reserve-then-hope handoff to race.
+ *
+ * It stays as loud as it was: a server that never answers fails the run.
+ */
+async function resolveBaseUrl(): Promise<{
+  baseUrl: string;
+  stop?: () => void;
+}> {
+  const configured = process.env.SCREENSHOT_BASE_URL?.trim();
+  if (configured) {
+    if (await waitForServer(configured, 1)) return { baseUrl: configured };
+
+    // An explicit address is a pin, not a hint: start Next on exactly that port
+    // and refuse to run if it lands anywhere else.
+    const requested = Number.parseInt(new URL(configured).port || "80", 10);
+    process.stdout.write(`Starting the dev server for ${configured}...\n`);
+    const pinned = await startNextDev({
+      basePort: requested,
+      pinned: true,
+    });
+    if (!(await waitForServer(configured, 180_000))) {
+      pinned.stop();
+      throw new Error(
+        `the dev server never became reachable at ${configured}. ` +
+          'Start it with "npm run dev" and re-run.',
+      );
+    }
+    return { baseUrl: configured, stop: pinned.stop };
+  }
+
+  const running = await readRunningDevServer();
+  if (running && (await waitForServer(running.url, 1))) {
+    process.stdout.write(`Reusing the dev server at ${running.url}...\n`);
+    return { baseUrl: running.url };
+  }
+
+  process.stdout.write("Starting a dev server on the first free port...\n");
+  const dev = await startNextDev();
+  if (!(await waitForServer(dev.url, 180_000))) {
+    dev.stop();
+    throw new Error(
+      `the dev server never became reachable at ${dev.url}. ` +
+        'Start it with "npm run dev" and re-run.',
+    );
+  }
+  process.stdout.write(`Dev server ready at ${dev.url}.\n`);
+  return { baseUrl: dev.url, stop: dev.stop };
+}
+
 async function main() {
   const only = process.argv
     .filter((arg) => arg.startsWith("--only="))
@@ -1227,22 +1284,6 @@ async function main() {
     .flatMap((arg) => arg.slice("--theme=".length).split(","))
     .filter(Boolean);
 
-  let devServer: ChildProcess | undefined;
-  if (!(await waitForServer(BASE_URL, 1))) {
-    process.stdout.write(`Starting the dev server for ${BASE_URL}...\n`);
-    devServer = spawn("npm", ["run", "dev"], {
-      cwd: REPO_ROOT,
-      stdio: "ignore",
-      shell: true,
-    });
-    if (!(await waitForServer(BASE_URL, 180_000))) {
-      devServer.kill();
-      throw new Error(
-        `the dev server never became reachable at ${BASE_URL}. Start it with "npm run dev" and re-run.`,
-      );
-    }
-  }
-
   const screens = only.length
     ? SCREENS.filter((screen) => only.includes(screen.name))
     : SCREENS;
@@ -1250,6 +1291,10 @@ async function main() {
     const known = SCREENS.map((screen) => screen.name).join(", ");
     throw new Error(`--only matched no screen. Known screens: ${known}`);
   }
+
+  // Started only once the run is known to be valid, so a bad `--only` cannot
+  // leave a dev server behind.
+  const { baseUrl, stop: stopDevServer } = await resolveBaseUrl();
 
   const jobs: Array<{ theme: ThemeSpec; screen: Screen }> = [];
   for (const theme of THEMES) {
@@ -1272,7 +1317,7 @@ async function main() {
     for (const { theme, screen } of jobs) {
       const label = `${theme.dir}/${screen.name}`;
       try {
-        const result = await captureScreen(browser, theme, screen);
+        const result = await captureScreen(browser, theme, screen, baseUrl);
         results.push(result);
         process.stdout.write(
           `  ok   ${label.padEnd(38)} ${(result.bytes / 1024).toFixed(0)} KB\n`,
@@ -1285,7 +1330,7 @@ async function main() {
     }
   } finally {
     await browser.close();
-    devServer?.kill();
+    stopDevServer?.();
   }
 
   process.stdout.write(

@@ -7,12 +7,12 @@
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "scripts": {
-    "dev": "next dev --turbo",
+    "dev": "node scripts/dev-server.mjs",
     "build": "next build --webpack",
     "build:pages:ci": "cross-env GITHUB_PAGES_BASE_PATH=better-cloudflare npm run build",
     "start": "next start",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node scripts/tauri-dev.mjs",
     "tauri:build": "tauri build",
     "lint": "npm run lint:app && npm run lint:src:baseline",
     "lint:app": "eslint app --rule react-refresh/only-export-components:off",
@@ -21,7 +21,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:fix": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format": "npm run format:fix",
-    "preview": "npx serve out",
+    "preview": "node test/ci-static-export-server.mjs",
     "serve:e2e:ci": "node test/ci-static-export-server.mjs",
     "test": "cross-env NODE_OPTIONS=--max-old-space-size=1536 tsx scripts/run-tests-seq.ts",
     "test:runner-contract": "tsx --test scripts/run-tests-seq.contract.test.ts",
