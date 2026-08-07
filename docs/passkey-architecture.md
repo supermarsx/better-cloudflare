@@ -1,6 +1,13 @@
+---
+title: Passkey architecture
+parent: Retired
+nav_order: 1
+description: Retired — an Express/SQLite server design that was never the desktop implementation.
+---
+
 # Passkey & Credential Management Architecture
 
-> **Status — legacy architecture, not a current implementation guide:** This document describes the retired server-mode design. The desktop application uses Tauri IPC rather than these HTTP endpoints, and its passkey behavior must not be inferred from this document. See the implementation-status note in [the specification](../spec.md) for the target-versus-current distinction.
+> **Status — legacy architecture, not a current implementation guide:** This document describes the retired server-mode design. The desktop application uses Tauri IPC rather than these HTTP endpoints, and its passkey behavior must not be inferred from this document. See the implementation-status note in [the specification](https://github.com/supermarsx/better-cloudflare/blob/main/spec.md) for the target-versus-current distinction.
 
 This document outlines the design and implementation details for passkey support, credential storage, RBAC, audit logging, attestation policy enforcement, migration approach, and testing for the Better Cloudflare project.
 

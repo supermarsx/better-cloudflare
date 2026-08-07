@@ -1,6 +1,13 @@
+---
+title: Home
+nav_order: 1
+permalink: /
+description: Curated documentation for Better Cloudflare, a Cloudflare DNS console shipped as a Tauri v2 desktop application.
+---
+
 # Better Cloudflare documentation
 
-Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a Tauri v2 desktop application. Start at the [readme](../readme.md) for an overview and installation.
+Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a Tauri v2 desktop application. Start at the [readme](https://github.com/supermarsx/better-cloudflare/blob/main/readme.md) for an overview and installation.
 
 Generated API reference is written separately to `docs/api/`, so `npm run docs` never overwrites these guides.
 
@@ -14,13 +21,13 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 
 ## Reference
 
-| Guide                                       | What it covers                                                    |
-| ------------------------------------------- | ----------------------------------------------------------------- |
-| [Tauri migration guide](tauri-migration.md) | Desktop backend, Tauri command reference, build and bundle output |
-| [Design system](design-system.md)           | Token model, theming, glass/sunset UI conventions                 |
-| [SPF and NAPTR notes](spf-naptr.md)         | Record-format reference and the `npm run check-spf` CLI           |
-| [Future work](future-work.md)               | Planned work — not released capability                            |
-| [Project specification](../spec.md)         | Target product contract, with implementation-status annotations   |
+| Guide                                                                                      | What it covers                                                    |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| [Tauri migration guide](tauri-migration.md)                                                | Desktop backend, Tauri command reference, build and bundle output |
+| [Design system](design-system.md)                                                          | Token model, theming, glass/sunset UI conventions                 |
+| [SPF and NAPTR notes](spf-naptr.md)                                                        | Record-format reference and the `npm run check-spf` CLI           |
+| [Future work](future-work.md)                                                              | Planned work — not released capability                            |
+| [Project specification](https://github.com/supermarsx/better-cloudflare/blob/main/spec.md) | Target product contract, with implementation-status annotations   |
 
 ## Retired
 

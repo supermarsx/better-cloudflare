@@ -1,3 +1,10 @@
+---
+title: Design system
+parent: Reference
+nav_order: 2
+description: Token model, theming, and the glass/sunset UI conventions.
+---
+
 # Better Cloudflare — Design System (Glass Modern Sunset)
 
 ## 1) Current System Review (Repo Reality)

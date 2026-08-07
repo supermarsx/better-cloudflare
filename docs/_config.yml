@@ -1,0 +1,131 @@
+# Jekyll configuration for the Better Cloudflare documentation site.
+#
+# This site is built by GitHub Pages' *legacy* (built-in) Jekyll builder from
+# the `docs/` folder on `main`. Only plugins on the GitHub Pages whitelist are
+# available; `jekyll-remote-theme`, `jekyll-include-cache` and `jekyll-seo-tag`
+# are all whitelisted, and `jekyll-relative-links` is enabled by default and
+# cannot be disabled.
+
+# ---------------------------------------------------------------------------
+# Site identity
+# ---------------------------------------------------------------------------
+title: Better Cloudflare
+description: >-
+  Documentation for Better Cloudflare, a Cloudflare DNS console shipped as a
+  Tauri v2 desktop application.
+lang: en-US
+
+# The site is served from a project subpath, not the domain root, so `baseurl`
+# is required. Every theme asset and generated link is passed through Jekyll's
+# `relative_url` filter, which prepends this value.
+url: https://supermarsx.github.io
+baseurl: /better-cloudflare
+
+# Used by jekyll-github-metadata (enabled by default on GitHub Pages).
+repository: supermarsx/better-cloudflare
+
+# ---------------------------------------------------------------------------
+# Theme
+# ---------------------------------------------------------------------------
+# Pinned to a released tag rather than the default branch so an upstream commit
+# cannot change this site without a deliberate bump here.
+remote_theme: just-the-docs/just-the-docs@v0.12.0
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-include-cache
+  - jekyll-seo-tag
+
+# ---------------------------------------------------------------------------
+# Permalinks -- DO NOT set `permalink: pretty`
+# ---------------------------------------------------------------------------
+# Jekyll's default page permalink keeps every page at the top level of the site
+# (`screens.md` -> `/screens.html`). The markdown uses *relative* image paths
+# such as `screenshots/dark/login.png`, which the browser resolves against the
+# page's directory. With the default permalink that directory is
+# `/better-cloudflare/`, so images resolve to
+# `/better-cloudflare/screenshots/dark/login.png` -- correct.
+#
+# Switching to `permalink: pretty` would move pages to `/screens/`, and all 53
+# screenshots would resolve to `/better-cloudflare/screens/screenshots/...`
+# and 404. The relative links are deliberately left untouched in the markdown
+# so they keep working on GitHub's blob view too.
+
+# ---------------------------------------------------------------------------
+# Branding
+# ---------------------------------------------------------------------------
+logo: /assets/images/logo.png
+favicon_ico: /assets/images/favicon.ico
+color_scheme: dark
+
+# ---------------------------------------------------------------------------
+# Search (lunr, built into the theme)
+# ---------------------------------------------------------------------------
+search_enabled: true
+search:
+  # Index down to h3 so the long per-screen sections in "Screens and features"
+  # are individually addressable.
+  heading_level: 3
+  previews: 3
+  preview_words_before: 5
+  preview_words_after: 10
+  tokenizer_separator: /[\s/]+/
+  rel_url: true
+  button: false
+  focus_shortcut_key: "k"
+
+# ---------------------------------------------------------------------------
+# Navigation and chrome
+# ---------------------------------------------------------------------------
+nav_enabled: true
+heading_anchors: true
+back_to_top: true
+back_to_top_text: "Back to top"
+
+aux_links:
+  "Better Cloudflare on GitHub":
+    - "https://github.com/supermarsx/better-cloudflare"
+aux_links_new_tab: true
+
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/supermarsx/better-cloudflare"
+gh_edit_branch: "main"
+# The site source is the `docs/` folder, so the edit URL needs that prefix.
+gh_edit_source: docs
+gh_edit_view_mode: "blob"
+
+enable_copy_code_button: true
+
+callouts:
+  warning:
+    title: Warning
+    color: red
+  note:
+    title: Note
+    color: purple
+
+# ---------------------------------------------------------------------------
+# Defaults and exclusions
+# ---------------------------------------------------------------------------
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "default"
+  # `npm run docs` writes generated TypeDoc markdown to `docs/api/`. If that
+  # output is ever committed it must not flood the sidebar or the search index.
+  - scope:
+      path: "api"
+    values:
+      nav_exclude: true
+      search_exclude: true
+
+exclude:
+  - .jekyll-cache/
+  - .sass-cache/
+  - Gemfile
+  - Gemfile.lock
+  - node_modules/
+  - vendor/

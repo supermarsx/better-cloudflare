@@ -1,0 +1,18 @@
+{%- comment -%}
+  Overrides the theme's `title.html`.
+
+  The stock include replaces the site title *entirely* with the logo when
+  `site.logo` is set, which would leave the sidebar showing a bare icon. This
+  version shows the app icon alongside the wordmark. Styling is inline so the
+  override needs no Sass changes, and the image URL goes through `relative_url`
+  so it resolves under the `/better-cloudflare` baseurl.
+{%- endcomment -%}
+
+{%- if site.logo -%}
+  <span style="display: inline-flex; align-items: center; gap: 0.5rem;">
+    <img src="{{ site.logo | relative_url }}" alt="" width="28" height="28" style="flex: none; border-radius: 6px;">
+    <span>{{ site.title }}</span>
+  </span>
+{%- else -%}
+  {{ site.title }}
+{%- endif -%}

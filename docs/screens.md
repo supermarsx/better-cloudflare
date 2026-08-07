@@ -1,3 +1,9 @@
+---
+title: Screens and features
+nav_order: 2
+description: All 26 screens with screenshots and what you do on each.
+---
+
 # Screens and features
 
 Every screen in Better Cloudflare, what it is for, and what you can do there.

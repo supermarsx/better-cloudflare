@@ -1,3 +1,10 @@
+---
+title: SPF and NAPTR notes
+parent: Reference
+nav_order: 3
+description: Record-format reference and the `npm run check-spf` CLI.
+---
+
 # SPF and NAPTR Support
 
 This project now includes basic SPF and NAPTR support across the UI, server validation, and utilities.`

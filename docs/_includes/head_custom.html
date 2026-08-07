@@ -1,0 +1,14 @@
+{%- comment -%}
+  Overrides the theme's empty `head_custom.html`.
+
+  The theme's own `favicon.html` only emits a single `<link rel="icon">` for an
+  `.ico` file (see `site.favicon_ico` in `_config.yml`). These extra links add
+  the PNG variants of the app icon, which is what modern browsers and mobile
+  home screens actually prefer. Every href is passed through `relative_url` so
+  it picks up the `/better-cloudflare` baseurl.
+{%- endcomment -%}
+
+<link rel="icon" type="image/png" sizes="32x32" href="{{ '/assets/images/favicon-32x32.png' | relative_url }}">
+<link rel="icon" type="image/png" sizes="128x128" href="{{ '/assets/images/favicon-128x128.png' | relative_url }}">
+<link rel="apple-touch-icon" sizes="180x180" href="{{ '/assets/images/apple-touch-icon.png' | relative_url }}">
+<meta name="theme-color" content="#0b0b0f">

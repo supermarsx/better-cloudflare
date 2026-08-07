@@ -1,3 +1,10 @@
+---
+title: Tauri migration guide
+parent: Reference
+nav_order: 1
+description: Desktop backend, Tauri command reference, build and bundle output.
+---
+
 # Tauri Desktop App Migration Guide
 
 This guide explains the conversion of Better Cloudflare from a web application to a Tauri-based desktop application with Rust backend.

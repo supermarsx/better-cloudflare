@@ -1,3 +1,10 @@
+---
+title: Future work
+parent: Reference
+nav_order: 4
+description: Planned work — not released capability.
+---
+
 ## Future improvements & next steps
 
 This file lists suggested improvements, enhancements, and higher-priority next steps for the project. Use this as a roadmap for future PRs and the CI pipeline.

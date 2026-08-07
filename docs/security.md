@@ -1,3 +1,9 @@
+---
+title: Security model
+nav_order: 4
+description: Encryption, keyring storage, and the current limits.
+---
+
 # Security model
 
 What protects your Cloudflare credentials, and — just as important — what does not.

@@ -1,3 +1,9 @@
+---
+title: Architecture
+nav_order: 3
+description: The desktop shell, the 17 Rust crates, key frontend modules, and CI.
+---
+
 # Architecture
 
 Better Cloudflare is a Tauri v2 desktop application: a React 19 / Next.js frontend rendered in the system webview, over a 17-crate Rust workspace reached through Tauri IPC.
