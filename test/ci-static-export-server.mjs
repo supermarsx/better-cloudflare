@@ -11,12 +11,6 @@ import {
 
 const host = "127.0.0.1";
 const root = resolve(fileURLToPath(new URL("../out/", import.meta.url)));
-const configuredBasePath =
-  process.env.PLAYWRIGHT_STATIC_BASE_PATH?.trim() ?? "";
-const basePath =
-  configuredBasePath.length === 0 || configuredBasePath === "/"
-    ? ""
-    : `/${configuredBasePath.replace(/^\/+|\/+$/g, "")}`;
 const contentTypes = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -45,13 +39,6 @@ function requestPathname(requestUrl = "/") {
   return pathname;
 }
 
-function exportPathname(pathname) {
-  if (!basePath) return pathname;
-  if (pathname === basePath || pathname === `${basePath}/`) return "/";
-  if (!pathname.startsWith(`${basePath}/`)) return null;
-  return pathname.slice(basePath.length);
-}
-
 function resolveRequestPath(pathname) {
   const candidate = resolve(root, `.${pathname}`);
   if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) return null;
@@ -74,13 +61,7 @@ function createStaticExportServer() {
       response.end("Bad request");
       return;
     }
-    const mountedPathname = exportPathname(pathname);
-    if (mountedPathname === null) {
-      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      response.end("Not found");
-      return;
-    }
-    const filePath = resolveRequestPath(mountedPathname);
+    const filePath = resolveRequestPath(pathname);
     if (!filePath) {
       response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
       response.end("Bad request");
@@ -177,7 +158,7 @@ export function startStaticExportServer(options = {}) {
       const port = /** @type {import("node:net").AddressInfo} */ (
         server.address()
       ).port;
-      const url = `http://${host}:${port}${basePath || "/"}`;
+      const url = `http://${host}:${port}/`;
       console.log(`Serving static export from ${root} at ${url}`);
       resolve({ server, port, url });
     });

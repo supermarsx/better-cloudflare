@@ -11,13 +11,6 @@ import {
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
-function normalizeStaticBasePath(value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed === "/") return "";
-  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  return withLeadingSlash.replace(/\/+$/, "");
-}
-
 /**
  * Playwright's `webServer.url` is static configuration and the config module is
  * loaded synchronously, so this is the one consumer that cannot be handed a port
@@ -54,22 +47,13 @@ export function resolveDevServerPort(isCI: boolean): number {
 
 export function createPlaywrightConfig(
   isCI = Boolean(process.env.CI),
-  requestedStaticBasePath = process.env.PLAYWRIGHT_STATIC_BASE_PATH,
   port = resolveDevServerPort(isCI),
 ) {
-  const staticBasePath = isCI
-    ? normalizeStaticBasePath(requestedStaticBasePath)
-    : "";
   const origin = `http://localhost:${port}`;
-  const ciBaseURL = `${origin}${staticBasePath}`;
 
   return defineConfig({
     testDir: ".",
-    testMatch: [
-      "e2e/**/*.spec.ts",
-      "test/ci-pages-base-path.spec.ts",
-      "test/ci-playwright-runtime.spec.ts",
-    ],
+    testMatch: ["e2e/**/*.spec.ts", "test/ci-playwright-runtime.spec.ts"],
     timeout: 30_000,
     expect: { timeout: 5000 },
     fullyParallel: !isCI,
@@ -88,14 +72,14 @@ export function createPlaywrightConfig(
       headless: true,
       viewport: { width: 1280, height: 720 },
       actionTimeout: 10_000,
-      baseURL: isCI ? ciBaseURL : origin,
+      baseURL: origin,
       screenshot: "only-on-failure",
       trace: "retain-on-failure",
       video: "retain-on-failure",
     },
     webServer: {
       command: isCI ? "npm run serve:e2e:ci" : "npm run dev",
-      url: isCI ? `${ciBaseURL}/` : origin,
+      url: isCI ? `${origin}/` : origin,
       env: { PORT: String(port) },
       reuseExistingServer: !isCI,
       timeout: 120_000,

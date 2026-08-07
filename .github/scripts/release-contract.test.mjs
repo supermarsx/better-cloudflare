@@ -48,10 +48,6 @@ const CI_WORKFLOW = readFileSync(
   new URL("../workflows/ci.yml", import.meta.url),
   "utf8",
 ).replaceAll("\r\n", "\n");
-const PAGES_WORKFLOW = readFileSync(
-  new URL("../workflows/pages.yml", import.meta.url),
-  "utf8",
-).replaceAll("\r\n", "\n");
 const SECURITY_WORKFLOW = readFileSync(
   new URL("../workflows/security.yml", import.meta.url),
   "utf8",
@@ -1116,7 +1112,6 @@ test("CI and release toolchains are exact rather than mutable channels", () => {
   const nodeWorkflows = [
     AUTOPUBLISH_WORKFLOW,
     CI_WORKFLOW,
-    PAGES_WORKFLOW,
     SUPPORT_WORKFLOWS,
   ].join("\n");
   const setupCount = nodeWorkflows.match(/actions\/setup-node@/g)?.length ?? 0;
@@ -1136,21 +1131,6 @@ test("CI and release toolchains are exact rather than mutable channels", () => {
     `${AUTOPUBLISH_WORKFLOW}\n${CI_WORKFLOW}`,
     /rustup (?:toolchain install|default) stable/,
   );
-});
-
-test("Pages build has read-only contents and no standing administration token", () => {
-  const buildStart = PAGES_WORKFLOW.indexOf("  build:");
-  const deployStart = PAGES_WORKFLOW.indexOf("  deploy:");
-  assert.notEqual(buildStart, -1);
-  assert.notEqual(deployStart, -1);
-  const build = PAGES_WORKFLOW.slice(buildStart, deployStart);
-  const deploy = PAGES_WORKFLOW.slice(deployStart);
-  assert.match(build, /permissions:\n\s+contents: read/);
-  assert.doesNotMatch(build, /pages: write|id-token: write/);
-  assert.match(build, /persist-credentials: false/);
-  assert.match(deploy, /pages: write/);
-  assert.match(deploy, /id-token: write/);
-  assert.doesNotMatch(PAGES_WORKFLOW, /PAGES_ADMIN_TOKEN|enablement:/);
 });
 
 test("security workflows pin external actions to immutable commits", () => {
@@ -1174,7 +1154,6 @@ test("security workflows pin external actions to immutable commits", () => {
     "ci.yml",
     "format.yml",
     "lint.yml",
-    "pages.yml",
     "security.yml",
     "test-package.yml",
   ]) {

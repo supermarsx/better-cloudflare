@@ -25,11 +25,6 @@ const externalActionPins = new Map([
   ["actions/attest@v4.2.1", "508db95dd578ae2727ebd6217d5ba78e4fbda05d"],
   ["actions/checkout@v7.0.1", "3d3c42e5aac5ba805825da76410c181273ba90b1"],
   [
-    "actions/configure-pages@v6.0.0",
-    "45bfe0192ca1faeb007ade9deae92b16b8254a0d",
-  ],
-  ["actions/deploy-pages@v5.0.0", "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128"],
-  [
     "actions/dependency-review-action@v5.0.0",
     "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
   ],
@@ -41,10 +36,6 @@ const externalActionPins = new Map([
   [
     "actions/upload-artifact@v7.0.1",
     "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-  ],
-  [
-    "actions/upload-pages-artifact@v5.0.0",
-    "fc324d3547104276b827a68afc52ff2a11cc49c9",
   ],
   [
     "github/codeql-action/analyze@v4.37.4",
@@ -342,14 +333,6 @@ test("package scripts expose truthful lint and reliability gates", () => {
     scripts["serve:e2e:ci"],
     "node test/ci-static-export-server.mjs",
   );
-  assert.equal(
-    scripts["build:pages:ci"],
-    "cross-env GITHUB_PAGES_BASE_PATH=better-cloudflare npm run build",
-  );
-  assert.equal(
-    scripts["test:e2e:pages"],
-    "cross-env CI=true PLAYWRIGHT_STATIC_BASE_PATH=/better-cloudflare playwright test test/ci-pages-base-path.spec.ts --project=chromium",
-  );
   assert.match(scripts.check, /npm run test:ci-contract/);
   assert.equal(
     scripts["test:release-contract"],
@@ -467,15 +450,11 @@ test("Playwright structurally separates CI static export from local development"
   // CI resolves its port with no probing at all, so the fixed address below is
   // exactly what a CI run sees. Local runs are handed a resolved port instead.
   assert.equal(resolveDevServerPort(true), 3000);
-  const ciConfig = createPlaywrightConfig(true, undefined, 3000);
-  const pagesConfig = createPlaywrightConfig(true, "/better-cloudflare", 3000);
-  const localConfig = createPlaywrightConfig(false, undefined, 4123);
+  const ciConfig = createPlaywrightConfig(true, 3000);
+  const localConfig = createPlaywrightConfig(false, 4123);
   const ciServer = Array.isArray(ciConfig.webServer)
     ? ciConfig.webServer[0]
     : ciConfig.webServer;
-  const pagesServer = Array.isArray(pagesConfig.webServer)
-    ? pagesConfig.webServer[0]
-    : pagesConfig.webServer;
   const localServer = Array.isArray(localConfig.webServer)
     ? localConfig.webServer[0]
     : localConfig.webServer;
@@ -490,26 +469,18 @@ test("Playwright structurally separates CI static export from local development"
   assert.equal(ciConfig.use?.trace, "retain-on-failure");
   assert.deepEqual(ciConfig.testMatch, [
     "e2e/**/*.spec.ts",
-    "test/ci-pages-base-path.spec.ts",
     "test/ci-playwright-runtime.spec.ts",
   ]);
   assert.equal(ciConfig.use?.baseURL, "http://localhost:3000");
   assert.equal(ciServer?.command, "npm run serve:e2e:ci");
   assert.equal(ciServer?.url, "http://localhost:3000/");
   assert.equal(ciServer?.reuseExistingServer, false);
-  assert.equal(
-    pagesConfig.use?.baseURL,
-    "http://localhost:3000/better-cloudflare",
-  );
-  assert.equal(pagesServer?.command, "npm run serve:e2e:ci");
-  assert.equal(pagesServer?.url, "http://localhost:3000/better-cloudflare/");
   assert.equal(localServer?.command, "npm run dev");
   assert.equal(localServer?.reuseExistingServer, true);
 
   // Every consumer of a run must agree on one port: the browser, the web server
   // Playwright starts, and the environment that server is pinned with.
   assert.equal(ciServer?.env?.PORT, "3000");
-  assert.equal(pagesServer?.env?.PORT, "3000");
   assert.equal(localConfig.use?.baseURL, "http://localhost:4123");
   assert.equal(localServer?.url, "http://localhost:4123");
   assert.equal(localServer?.env?.PORT, "4123");
@@ -518,7 +489,6 @@ test("Playwright structurally separates CI static export from local development"
 test("reliability specifications reject browser and network failures", () => {
   for (const relativePath of [
     "e2e/login-key-management.spec.ts",
-    "test/ci-pages-base-path.spec.ts",
     "test/ci-playwright-runtime.spec.ts",
   ]) {
     const specification = read(relativePath);
@@ -722,40 +692,6 @@ test("CI bounds build concurrency and gates deterministic disposal checks", () =
     /memory:smoke:manual/,
     "Heap-growth sampling must remain manual until its variance is proven stable",
   );
-});
-
-test("Pages deployment is gated by a project-base-path browser check", () => {
-  const workflow = read(".github/workflows/pages.yml");
-  const buildJob = workflowJob(workflow, "build");
-  const deployJob = workflowJob(workflow, "deploy");
-  const buildStep = workflowStep(buildJob, "Build project-path export");
-  const installStep = workflowStep(buildJob, "Install Playwright Chromium");
-  const verifyStep = workflowStep(
-    buildJob,
-    "Verify project-path static export",
-  );
-  const uploadStep = workflowStep(buildJob, "Upload artifact");
-
-  assert.equal(stepRun(buildStep), "npm run build:pages:ci");
-  assert.equal(
-    stepRun(installStep),
-    "npx playwright install --with-deps chromium",
-  );
-  assert.equal(stepRun(verifyStep), "npm run test:e2e:pages");
-  assert.ok(buildJob.indexOf(buildStep) < buildJob.indexOf(verifyStep));
-  assert.ok(buildJob.indexOf(verifyStep) < buildJob.indexOf(uploadStep));
-  assert.match(deployJob, /needs: build/);
-  assert.match(deployJob, /pages: write/);
-  assert.match(deployJob, /id-token: write/);
-
-  const server = read("test/ci-static-export-server.mjs");
-  assert.match(server, /process\.env\.PLAYWRIGHT_STATIC_BASE_PATH/);
-  assert.match(server, /pathname\.startsWith\(`\$\{basePath\}\/`\)/);
-
-  const specification = read("test/ci-pages-base-path.spec.ts");
-  assert.match(specification, /const projectBasePath = "\/better-cloudflare"/);
-  assert.match(specification, /rootResponse\.status\(\)\)\.toBe\(404\)/);
-  assert.match(specification, /runtime\.assertClean\(\)/);
 });
 
 test("package workflow typechecks before testing and packaging", () => {
