@@ -1,0 +1,104 @@
+# Architecture
+
+Better Cloudflare is one codebase that produces two products with genuinely different capabilities. Understanding which one you are running explains almost every behavioural difference.
+
+## Two builds
+
+|                    | Web preview                                     | Desktop app                     |
+| ------------------ | ----------------------------------------------- | ------------------------------- |
+| Shell              | Static Next.js 16 export (`output: "export"`)   | Tauri v2                        |
+| Backend            | None — the browser talks to Cloudflare directly | 17 Rust crates behind Tauri IPC |
+| Build              | `npm run build` → `out/`                        | `npm run tauri:build`           |
+| Credential storage | None. Ever.                                     | OS keyring                      |
+
+The frontend is identical. `src/lib/environment.ts` exposes `isDesktop()` / `isWeb()` by probing for the Tauri window bridge, and `src/lib/api/tauri-client.ts` wraps IPC. Features that need the Rust backend check `TauriClient.isTauri()` and degrade rather than break.
+
+### What only the desktop build can do
+
+- Persist credentials at all (see [Security](security.md))
+- Registrar expiry monitoring — every registrar client lives in `bc-registrar`
+- The local MCP server
+- Topology PTR lookups, geolocation, service probing, and export-to-file
+- Audit log persistence and export
+- Biometric unlock (macOS Touch ID only)
+
+The web build renders the topology graph from zone records, and every DNS editing feature — builders, quote normalization, cross-zone copy, import/export, bulk edit, zone compare — works in both.
+
+## Frontend layout
+
+```
+app/                       Next.js route (a single page) and metadata
+src/
+  components/
+    dns/                   Records table, workspace tabs, dialogs, topology
+      builders/            24 per-record-type builders
+      record-actions.ts    One action list, used by menu and right-click
+    auth/                  Login, encryption settings
+    analytics|firewall|workers|email|registrar|mcp/
+  lib/
+    dns/                   character-string.ts, record-normalize.ts, record-copy.ts
+    tables/table-columns.ts
+    tabs/tab-order.ts
+    storage/               Preference persistence and browser sanitization
+    api/                   tauri-client.ts, server-client.ts
+    audit/domain-audit.ts
+  hooks/
+scripts/                   Test runner, screenshot capture, SPF CLI
+```
+
+Three pieces of DNS logic carry most of the app's value and are worth knowing by name:
+
+**`src/lib/dns/character-string.ts`** implements RFC 1035 §3.3/§5.1 character-strings. It parses tolerantly, repairs unmatched quotes instead of rejecting the input, measures UTF-8 byte length correctly against the 255-byte limit, and splits longer values into adjacent quoted strings. `record-normalize.ts` applies the right treatment per record type, on every save path.
+
+**`src/lib/dns/record-copy.ts`** rewrites hostnames when records move between zones — whole-hostname content for CNAME, MX, NS, PTR, DNAME, ALIAS and ANAME, target fields inside SRV, AFSDB, SVCB, NAPTR, RP and URI, SPF mechanisms, and DMARC `rua=` / `ruf=` addresses. Controlled by the `rewriteCopiedRecordDomains` preference, which defaults on.
+
+**`src/lib/tables/table-columns.ts`** models per-table column visibility, with identity columns that cannot be hidden and a guard that stops you hiding the last remaining column.
+
+## Rust workspace
+
+`src-tauri/crates/` holds 17 crates:
+
+| Crate                                                        | Responsibility                                                          |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `bc-error`                                                   | Shared error types                                                      |
+| `bc-crypto`                                                  | PBKDF2-HMAC-SHA256 → AES-256-GCM, the `bc1:` envelope                   |
+| `bc-storage`                                                 | OS keyring access, chunking, manifests                                  |
+| `bc-session`                                                 | Session lifecycle                                                       |
+| `bc-cloudflare-api`                                          | Cloudflare REST client                                                  |
+| `bc-dns-tools`                                               | Resolver helpers                                                        |
+| `bc-spf`                                                     | SPF parsing and expansion                                               |
+| `bc-domain-audit`                                            | Email, Security and Hygiene check engine                                |
+| `bc-topology`                                                | CNAME chain resolution, PTR, geolocation, service probes                |
+| `bc-passkey`                                                 | Passkey storage — registration and auth fail closed                     |
+| `bc-biometrics`                                              | macOS Touch ID; every other platform returns `PlatformNotSupported`     |
+| `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com |
+| `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions           |
+| `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                           |
+
+### The AI crates
+
+Four crates, their Tauri commands in `src-tauri/src/ai_commands.rs`, and a `useAiChat` hook in `src/hooks/ai/use-ai-chat.ts` all exist. **Nothing imports the hook.** There is no AI assistant in the interface and no way for a user to reach this code. It is unshipped groundwork, documented here so nobody mistakes the crate list for a feature list.
+
+### Secure storage internals
+
+`bc-storage` writes each logical secret as immutable, generation-tagged chunks of at most 2000 bytes, then swaps a small manifest pointer — recording generation, chunk count, byte length and a checksum — only after reading every chunk back and verifying it. An interrupted write leaves the previous generation intact. Legacy direct values and older stable-name chunk records stay readable, and ambiguous legacy chunks are deliberately preserved rather than cleaned up, since deleting one could destroy data written by an older release.
+
+Per-logical-key locks serialise concurrent read-modify-write transactions. Lock poisoning is deliberately ignored, because the registry is on the path of every storage operation and one panic would otherwise disable secure storage process-wide.
+
+**There is no in-memory fallback.** `Storage::default()` — the only constructor the application uses — always installs the keyring backend. See [Security](security.md#storage).
+
+## Topology rendering
+
+`bc-topology` resolves; the frontend draws. `ZoneTopologyTab.tsx` builds a Mermaid graph from the resolved data and sanitizes the result (`sanitizeTopologySvg`, with Mermaid's security level and HTML-label settings pinned) before it reaches the DOM, because node labels derive from zone data that the app does not control.
+
+## Testing and CI
+
+The unit test runner is **Node's built-in `node:test`**, driven by `scripts/run-tests-seq.ts`. Not Vitest, not Jest — there is no alternate config file to hunt for. Playwright covers end-to-end separately. Rust tests run with `cd src-tauri && cargo test`.
+
+`.github/workflows/ci.yml` gates release on `ci_contract`, `unit_tests` (matrix: `default` and `sqlite3-only`), `e2e_reliability`, `native_reliability`, `format`, `lint`, `test_package` and `release_contract` — which runs an OSV scan across both `package-lock.json` and `Cargo.lock` behind a fail-closed policy validator.
+
+## See also
+
+- [Screens and features](screens.md)
+- [Security model](security.md)
+- [Tauri migration guide](tauri-migration.md) — command reference and build details

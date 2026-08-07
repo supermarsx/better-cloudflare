@@ -18,7 +18,7 @@ This guide explains the conversion of Better Cloudflare from a web application t
 - **Frontend**: Next.js React application (same)
 - **Backend**: Rust with Tauri framework
 - **Communication**: Tauri IPC (Inter-Process Communication)
-- **Storage**: OS Keychain (via keyring crate) + in-memory fallback
+- **Storage**: OS Keychain (via keyring crate); no automatic fallback
 
 ## Key Changes
 
@@ -61,8 +61,14 @@ const result = await invoke("verify_token", { apiKey, email });
 **Node.js keytar → Rust keyring**
 
 - Same OS-level keychain integration
-- Automatic fallback to in-memory storage
 - Compatible credential format
+- **No automatic fallback.** `Storage::default()` — the only constructor the
+  application uses (`src-tauri/src/main.rs`) — always installs the keyring
+  backend. The in-memory backend is reachable only through the explicit
+  `Storage::new(false)` constructor, which in this repository is used solely by
+  `bc-passkey` unit tests. When the OS keyring is unavailable, secure-storage
+  reads and writes return `StorageError::KeyringError` and the operation fails;
+  secrets are never silently relocated to process memory.
 
 ## Installation & Setup
 
@@ -295,9 +301,14 @@ npm run build
 
 **Keyring not available**
 
-- App will automatically fall back to in-memory storage
-- Data will not persist between restarts
-- Check system keychain permissions
+- The app does **not** fall back to in-memory storage. Secure-storage operations
+  fail with a keyring error instead, so credentials are never silently held in
+  process memory or written somewhere less protected.
+- Expect visible failures when loading or saving API keys, vault secrets,
+  registrar credentials, the audit log, or encryption settings.
+- Check system keychain permissions. On Linux, confirm that a Secret Service
+  provider (GNOME Keyring, KWallet, or equivalent) is running and unlocked —
+  headless sessions frequently have none.
 
 **WebAuthn not working**
 
@@ -359,8 +370,10 @@ npm run tauri:build
 4. **Native Feel**: True native window management
 5. **Cross-Platform**: Single codebase for macOS, Windows, Linux
 6. **WebView**: Uses system webview (no bundled Chromium)
-7. **Updates**: Built-in auto-updater support
-8. **Offline**: Fully functional without internet (after initial auth)
+7. **Updates**: Tauri ships an updater plugin. It is **disabled** in this
+   repository, so the desktop app does not self-update.
+8. **Offline**: Local features work without internet; anything that reaches the
+   Cloudflare API, a registrar API, or a DNS resolver still needs a network.
 
 ## Additional Resources
 

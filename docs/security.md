@@ -1,0 +1,89 @@
+# Security model
+
+What protects your Cloudflare credentials, and — just as important — what does not.
+
+This page states limits plainly. If a security feature is absent or broken, it is listed here rather than omitted.
+
+## Encryption
+
+API keys are encrypted with **AES-256-GCM** under a key derived by **PBKDF2-HMAC-SHA256**.
+
+| Parameter                     | Value                                  |
+| ----------------------------- | -------------------------------------- |
+| Envelope prefix               | `bc1:`                                 |
+| Additional authenticated data | `better-cloudflare:crypto-envelope:v1` |
+| Salt                          | 16 random bytes, per encryption        |
+| Nonce                         | 12 random bytes                        |
+| Authentication tag            | 16 bytes                               |
+| Iterations                    | 100,000 – 1,000,000, user-configurable |
+| Key length                    | 256 bits (fixed)                       |
+
+Iterations are tunable in the encryption settings dialog, which also benchmarks a derivation so you can raise the count until unlock takes as long as you are willing to tolerate.
+
+> **Limit: the iteration floor applies to encryption, not decryption.** A legacy decrypt path still reads older unversioned envelopes, which carry no AAD and may declare as few as one iteration. This exists so upgrades do not strand existing keys. Re-saving a key migrates it onto the `bc1:` envelope. Do not read "100,000 minimum" as a guarantee about data already on disk.
+
+## Storage
+
+### Desktop
+
+Secrets go to the OS keyring — Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
+
+Because keyring entries are size-limited, each logical secret is split into immutable chunks of at most 2000 bytes, tagged with a generation ID. A small manifest recording the generation, chunk count, byte length and a checksum is swapped only after every chunk has been read back and verified. An interrupted or failed write therefore leaves the previous generation intact and readable, rather than producing a half-updated secret.
+
+### There is no in-memory fallback
+
+This is worth stating explicitly, because it is easy to assume the opposite and the assumption is dangerous.
+
+`Storage::default()` — the only constructor the application uses — **always** installs the keyring backend. The in-memory backend is reachable only through the explicit `Storage::new(false)` constructor, which in this repository is used solely by `bc-passkey` unit tests.
+
+When the OS keyring is unavailable, secure-storage reads and writes **fail with an error**. Credentials are never silently relocated into process memory or written somewhere less protected. You will see visible failures loading or saving API keys, vault secrets, registrar credentials, the audit log and encryption settings.
+
+On Linux this means a Secret Service provider (GNOME Keyring, KWallet, or equivalent) must be running and unlocked. Headless sessions frequently have none.
+
+### Web
+
+**The web build never persists credentials.** Browser preference writes are validated against an allowlist schema (`BROWSER_PREFERENCE_SCHEMA` in `src/lib/storage/storage-util.ts`) that contains no `apiKeys` or `currentSession` keys, so credentials are dropped structurally — not by a filter that could be forgotten on a new code path, but because the serializer has nowhere to put them. `serializeForPersistence()` applies it on every persist.
+
+The practical consequence: **the web and desktop builds do not offer the same security guarantee.** In the browser, a key exists only in memory for the session and is gone when you close the tab. Use the web build to try the interface, not to manage credentials.
+
+## Passkeys are disabled
+
+Passkey **registration and authentication do not work**, by design.
+
+`bc-passkey` returns `SecureRegistrationUnavailable` and `SecureVerificationUnavailable` from all four relevant entry points. The prior implementation validated none of the things WebAuthn security depends on — not the clientDataJSON type or origin, not the RP ID hash, not the user-presence or user-verification flags, not the signature, not the authenticator counter. Rather than ship an authentication mechanism that only looked like one, it was removed.
+
+What still works, for recovery only: **listing** legacy credentials and **deleting** them. Every listed credential requires re-enrollment if verified support returns.
+
+The login screen states this in a status panel rather than presenting a button that fails.
+
+> `docs/passkey-architecture.md` is **retired**. It describes an Express/SQLite server design that was never the desktop implementation. Do not infer current behaviour from it.
+
+## Biometrics
+
+**macOS Touch ID only.**
+
+`bc-biometrics` compiles a `macos` module on macOS and a `fallback` module everywhere else; the fallback returns `PlatformNotSupported` for every operation and reports `available: false`. Windows Hello and Linux are **not implemented** — the `BiometricType::WindowsHello` enum variant exists but is unreachable, and a doc comment in that crate overstates support.
+
+## MCP server
+
+The local MCP server is **off by default**. When enabled it binds `127.0.0.1:8787` by default, speaks JSON-RPC at protocol version `2024-11-05`, and requires a bearer token.
+
+Authorisation is per tool, not per server. Enabling any write, bulk, destructive, credential-touching or administrative tool raises a modal listing exactly what you are about to grant and requires explicit confirmation. **Unclassified tools are always denied** and cannot be enabled — an unrecognised tool fails closed rather than inheriting a permissive default.
+
+## Distribution
+
+- **The auto-updater is disabled.** `tauri.conf.json` sets `"updater": { "active": false }`. The desktop app does not self-update.
+- **There is no code signing and no macOS notarization.** `certificateThumbprint` is `null` and the macOS block configures no signing identity or notarization. Bundles produced by `npm run tauri:build` are unsigned.
+- **There is no package-manager distribution.** No Homebrew, Chocolatey, WinGet, Flathub or Snap channel exists. This is future work.
+
+Do not describe release artifacts as signed, notarized, auto-updating or package-manager-installable.
+
+## Supply chain
+
+The `release_contract` CI job runs an OSV scan across both `package-lock.json` and `Cargo.lock`, behind a fail-closed policy validator, and release is gated on it along with the format, lint, unit, e2e, native and packaging jobs.
+
+## See also
+
+- [Architecture](architecture.md) — storage internals and the crate map
+- [Screens and features](screens.md) — the login, encryption and MCP screens
+- [Tauri migration guide](tauri-migration.md)
