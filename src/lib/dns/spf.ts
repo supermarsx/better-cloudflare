@@ -1,3 +1,5 @@
+import { unquoteCharacterString } from "./character-string";
+
 // runtime access to Node DNS and net modules without static imports to avoid Vite externalization
 function getRuntimeRequire(): ((name: string) => any) | undefined {
   try {
@@ -65,9 +67,15 @@ export interface SPFRecord {
   modifiers?: SPFModifier[];
 }
 
+/**
+ * Parse SPF content into mechanisms and modifiers.
+ *
+ * Content may be given bare, quoted, or as adjacent quoted character-strings
+ * (`"v=spf1 …" " ~all"`); all forms parse identically.
+ */
 export function parseSPF(content?: string): SPFRecord | null {
   if (!content) return null;
-  const s = String(content).trim();
+  const s = unquoteCharacterString(content).trim();
   if (!s.toLowerCase().startsWith("v=spf1")) return null;
   const rest = s.substring(6).trim();
   if (rest.length === 0) return { version: "v=spf1", mechanisms: [] };

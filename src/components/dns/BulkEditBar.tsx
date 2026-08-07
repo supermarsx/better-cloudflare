@@ -40,6 +40,10 @@ export function BulkEditBar({
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [applying, setApplying] = useState(false);
+  // Controlled from the first render: an undefined Radix Select value makes the
+  // underlying native select flip from uncontrolled to controlled once a TTL is
+  // chosen. "" is Radix's placeholder sentinel, so the label still reads "Set TTL".
+  const [ttlSelection, setTtlSelection] = useState("");
 
   if (selectedCount === 0) return null;
 
@@ -84,7 +88,14 @@ export function BulkEditBar({
       </span>
       <div className="flex items-center gap-2">
         {onBulkSetTTL && (
-          <Select onValueChange={handleSetTTL} disabled={applying}>
+          <Select
+            value={ttlSelection}
+            onValueChange={(value) => {
+              setTtlSelection(value);
+              void handleSetTTL(value);
+            }}
+            disabled={applying}
+          >
             <SelectTrigger className="h-7 w-28 text-xs">
               <SelectValue placeholder="Set TTL" />
             </SelectTrigger>

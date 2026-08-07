@@ -457,25 +457,54 @@ async fn logical_key_limits_accept_exact_and_reject_invalid_boundaries() {
     }
 }
 
-#[tokio::test]
-async fn completed_unique_key_operations_do_not_leak_lock_registry_entries() {
+/// Guards process-global state (`LOGICAL_LOCKS`) that is shared across test
+/// threads. `completed_unique_key_operations_do_not_leak_lock_registry_entries`
+/// asserts an upper bound on the number of entries the registry holds, which
+/// is only meaningful if no other test is concurrently parking entries of its
+/// own in that same registry. The `*_are_serialized` tests below deliberately
+/// hold entries in the registry for the duration of a simulated concurrent
+/// operation, so they take this gate too.
+///
+/// Recovery uses `unwrap_or_else(|e| e.into_inner())` so a panic in one
+/// gated test (poisoning the mutex) cannot cascade into every other gated
+/// test failing to acquire the gate at all.
+static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+fn lock_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[test]
+fn completed_unique_key_operations_do_not_leak_lock_registry_entries() {
+    // A plain `#[test]` (not `#[tokio::test]`) so the serialization guard
+    // below can be held for the whole test body without holding a
+    // `MutexGuard` across an `.await` point.
+    let _serial = lock_test_serial();
     let (_backend, storage) = fake_storage();
+    let rt = runtime();
     for index in 0..2048 {
-        storage
-            .store_secret(&format!("lock-registry-{index}"), "value")
-            .await
+        rt.block_on(storage.store_secret(&format!("lock-registry-{index}"), "value"))
             .expect("store unique logical key");
     }
 
-    let locks = LOGICAL_LOCKS
-        .get()
-        .expect("logical lock registry initialized")
-        .lock()
-        .expect("inspect logical lock registry");
+    let (len, entries) = {
+        let locks = LOGICAL_LOCKS
+            .get()
+            .expect("logical lock registry initialized")
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let len = locks.len();
+        let entries: Vec<_> = locks
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.strong_count()))
+            .collect();
+        (len, entries)
+    };
     assert!(
-        locks.len() <= 2,
-        "completed operations leaked {} logical lock entries",
-        locks.len()
+        len <= 2,
+        "completed operations leaked {len} logical lock entries: {entries:?}",
     );
 }
 
@@ -1219,6 +1248,7 @@ fn run_concurrently(
 
 #[test]
 fn api_key_add_add_and_add_delete_are_serialized() {
+    let _serial = lock_test_serial();
     let (backend, storage, peer_storage) = fake_storage_pair();
     run_concurrently(
         &backend,
@@ -1293,6 +1323,7 @@ fn api_key_add_add_and_add_delete_are_serialized() {
 
 #[test]
 fn passkey_add_add_and_add_delete_are_serialized() {
+    let _serial = lock_test_serial();
     let (backend, storage, peer_storage) = fake_storage_pair();
     run_concurrently(
         &backend,
@@ -1353,6 +1384,7 @@ fn passkey_add_add_and_add_delete_are_serialized() {
 
 #[test]
 fn registrar_add_add_and_add_delete_are_serialized() {
+    let _serial = lock_test_serial();
     let (backend, storage, peer_storage) = fake_storage_pair();
     run_concurrently(
         &backend,
@@ -1424,6 +1456,7 @@ fn registrar_add_add_and_add_delete_are_serialized() {
 
 #[test]
 fn audit_add_add_uses_the_same_serialized_collection_primitive() {
+    let _serial = lock_test_serial();
     let (backend, storage, peer_storage) = fake_storage_pair();
     run_concurrently(
         &backend,
@@ -1474,6 +1507,7 @@ async fn existing_models_and_bounded_audit_behavior_still_roundtrip() {
     let preferences = Preferences {
         vault_enabled: Some(true),
         auto_refresh_interval: Some(60_000),
+        rewrite_copied_record_domains: Some(false),
         ..Preferences::default()
     };
     storage
@@ -1483,6 +1517,7 @@ async fn existing_models_and_bounded_audit_behavior_still_roundtrip() {
     let loaded = storage.get_preferences().await.expect("get preferences");
     assert!(loaded.vault_enabled == Some(true));
     assert!(loaded.auto_refresh_interval == Some(60_000));
+    assert!(loaded.rewrite_copied_record_domains == Some(false));
 
     for idx in 0..1005 {
         storage

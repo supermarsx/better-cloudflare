@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { legacySourceLintDebt } from "../eslint.config.js";
-import { createPlaywrightConfig } from "../playwright.config.ts";
+import {
+  createPlaywrightConfig,
+  resolveDevServerPort,
+} from "../playwright.config.ts";
 import { discoverTestFiles } from "../scripts/run-tests-seq.ts";
 
 const root = new URL("../", import.meta.url);
@@ -278,7 +281,28 @@ test("package scripts expose truthful lint and reliability gates", () => {
   const scripts = packageJson.scripts;
 
   assert.equal(packageJson.engines.node, "^20.19.0 || ^22.13.0 || >=24.0.0");
-  assert.equal(scripts.dev, "next dev --turbo");
+  // The dev stack resolves its own free port; the launcher owns the Next flags
+  // the script used to carry, so assert they survived the move.
+  assert.equal(scripts.dev, "node scripts/dev-server.mjs");
+  assert.equal(scripts["tauri:dev"], "node scripts/tauri-dev.mjs");
+  assert.equal(scripts.preview, "node test/ci-static-export-server.mjs");
+  const devLauncher = read("scripts/dev-server.mjs");
+  assert.match(devLauncher, /"dev",\r?\n\s*"--turbo",/);
+  // The Tauri CLI only accepts a config patch through `--config`; it ignores the
+  // `TAURI_CONFIG` environment variable that CI uses for bare cargo invocations.
+  const desktopLauncher = read("scripts/tauri-dev.mjs");
+  assert.match(desktopLauncher, /"--config",/);
+  assert.match(desktopLauncher, /buildTauriConfigOverride/);
+  assert.doesNotMatch(
+    desktopLauncher,
+    /TAURI_CONFIG:/,
+    "TAURI_CONFIG must not be set for the CLI; tauri-build would read the partial patch as a whole configuration",
+  );
+  assert.match(
+    workflowJob(read(".github/workflows/ci.yml"), "native_reliability"),
+    /TAURI_CONFIG: '\{"build":\{"frontendDist":"\.\.\/app"\}\}'/,
+    "The cargo-side TAURI_CONFIG override must stay intact",
+  );
   assert.equal(scripts.build, "next build --webpack");
   assert.equal(scripts.typecheck, "tsc -p tsconfig.json --noEmit");
   assert.equal(scripts.lint, "npm run lint:app && npm run lint:src:baseline");
@@ -440,9 +464,12 @@ test("CI changed-source lint uses the event base with complete history", () => {
 });
 
 test("Playwright structurally separates CI static export from local development", () => {
-  const ciConfig = createPlaywrightConfig(true);
-  const pagesConfig = createPlaywrightConfig(true, "/better-cloudflare");
-  const localConfig = createPlaywrightConfig(false);
+  // CI resolves its port with no probing at all, so the fixed address below is
+  // exactly what a CI run sees. Local runs are handed a resolved port instead.
+  assert.equal(resolveDevServerPort(true), 3000);
+  const ciConfig = createPlaywrightConfig(true, undefined, 3000);
+  const pagesConfig = createPlaywrightConfig(true, "/better-cloudflare", 3000);
+  const localConfig = createPlaywrightConfig(false, undefined, 4123);
   const ciServer = Array.isArray(ciConfig.webServer)
     ? ciConfig.webServer[0]
     : ciConfig.webServer;
@@ -478,6 +505,14 @@ test("Playwright structurally separates CI static export from local development"
   assert.equal(pagesServer?.url, "http://localhost:3000/better-cloudflare/");
   assert.equal(localServer?.command, "npm run dev");
   assert.equal(localServer?.reuseExistingServer, true);
+
+  // Every consumer of a run must agree on one port: the browser, the web server
+  // Playwright starts, and the environment that server is pinned with.
+  assert.equal(ciServer?.env?.PORT, "3000");
+  assert.equal(pagesServer?.env?.PORT, "3000");
+  assert.equal(localConfig.use?.baseURL, "http://localhost:4123");
+  assert.equal(localServer?.url, "http://localhost:4123");
+  assert.equal(localServer?.env?.PORT, "4123");
 });
 
 test("reliability specifications reject browser and network failures", () => {

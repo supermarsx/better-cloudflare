@@ -147,3 +147,53 @@ test("ordinary edit and selection controls remain isolated from browser opening"
   assert.equal(selected, true);
   assert.deepEqual(opened, []);
 });
+
+test("RecordRow normalizes character-string content on save", () => {
+  const txtRecord: DNSRecord = {
+    ...sample,
+    id: "txt-1",
+    type: "TXT",
+    name: "_dmarc",
+    content: 'v=DMARC1; p=none"',
+  };
+  let saved: DNSRecord | null = null;
+  render(
+    <RecordRow
+      zoneId="z"
+      zoneName="example.com"
+      record={txtRecord}
+      isEditing={true}
+      onEdit={() => {}}
+      onSave={(r) => {
+        saved = r as DNSRecord;
+      }}
+      onCancel={() => {}}
+      onDelete={() => {}}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /save/i }));
+  // The unmatched quote is repaired into a valid quoted <character-string>.
+  assert.equal(saved?.content, '"v=DMARC1; p=none"');
+});
+
+test("RecordRow leaves non character-string content untouched on save", () => {
+  let saved: DNSRecord | null = null;
+  render(
+    <RecordRow
+      zoneId="z"
+      zoneName="example.com"
+      record={{ ...sample, type: "CNAME", content: "edge.example.com" }}
+      isEditing={true}
+      onEdit={() => {}}
+      onSave={(r) => {
+        saved = r as DNSRecord;
+      }}
+      onCancel={() => {}}
+      onDelete={() => {}}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /save/i }));
+  assert.equal(saved?.content, "edge.example.com");
+});

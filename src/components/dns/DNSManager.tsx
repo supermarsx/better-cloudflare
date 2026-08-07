@@ -97,6 +97,23 @@ import {
   getCachedZoneRecords,
 } from "@/lib/storage/offline-cache";
 import {
+  prepareCopiedDnsRecord,
+  type PreparedCopiedDnsRecord,
+} from "@/lib/dns/record-copy";
+import { normalizeRecordCharacterStrings } from "@/lib/dns/record-normalize";
+import { ImportPreviewDialog } from "./ImportPreviewDialog";
+import {
+  TABLE_COLUMN_GROUPS,
+  buildGridTemplateColumns,
+  canHideTableColumn,
+  getDefaultTableColumns,
+  normalizeTableColumnMap,
+  resolveTableColumns,
+  toggleTableColumn,
+  type DnsRecordColumnId,
+} from "@/lib/tables/table-columns";
+import { reconcileTabOrder } from "@/lib/tabs/tab-order";
+import {
   reportRuntimeError,
   sanitizeRuntimeText,
   type RuntimeDiagnostic,
@@ -373,7 +390,13 @@ type ActionTab =
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-type SettingsSubtab = "general" | "topology" | "audit" | "mcp" | "profiles";
+type SettingsSubtab =
+  | "general"
+  | "columns"
+  | "topology"
+  | "audit"
+  | "mcp"
+  | "profiles";
 type ExportFolderPreset =
   | "system"
   | "documents"
@@ -491,6 +514,29 @@ type ZoneTab = {
   importData: string;
   importFormat: "json" | "csv" | "bind";
 };
+
+/**
+ * A paste that has been rewritten, normalized and deduplicated, waiting for
+ * the user to confirm it in the preview dialog.
+ */
+type PastePreviewState = {
+  tabId: string;
+  zoneId: string;
+  zoneName: string;
+  sourceZoneName: string;
+  /** Records that survived validation and dedupe, ready to create. */
+  items: PreparedCopiedDnsRecord[];
+  /** Records dropped before the preview (invalid or already present). */
+  skipped: number;
+  /** Size of the copy buffer the preview was built from. */
+  sourceCount: number;
+};
+
+/**
+ * Paste sizes above this show the preview even when the rewrite was a no-op:
+ * a one-or-two record paste stays a single click, a bulk paste gets a look.
+ */
+const PASTE_PREVIEW_RECORD_THRESHOLD = 2;
 
 /**
  * Props for the `DNSManager` top-level component.
@@ -1310,6 +1356,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(
     clampAutoRefreshInterval(storageManager.getAutoRefreshInterval()),
   );
+  const [rewriteCopiedRecordDomains, setRewriteCopiedRecordDomains] = useState(
+    storageManager.getRewriteCopiedRecordDomains(),
+  );
+  const [tableColumns, setTableColumns] = useState<Record<string, string[]>>(
+    () => normalizeTableColumnMap(storageManager.getTableColumns()),
+  );
   const registrarMonitor = useRegistrarMonitor(apiKey, email);
   const [auditEntries, setAuditEntries] = useState<
     Array<Record<string, unknown>>
@@ -1362,6 +1414,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     sourceZoneId: string;
     sourceZoneName: string;
   } | null>(null);
+  const [showCopyBuffer, setShowCopyBuffer] = useState(false);
+  const [confirmPastePreview, setConfirmPastePreview] = useState(() =>
+    storageManager.getConfirmPastePreview(),
+  );
+  const [pastePreview, setPastePreview] = useState<PastePreviewState | null>(
+    null,
+  );
 
   const { toast } = useToast();
   const notifySaved = useCallback(
@@ -1370,6 +1429,52 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [t, toast],
   );
+  const dnsRecordColumns = useMemo(
+    () =>
+      resolveTableColumns(
+        "dnsRecords",
+        tableColumns.dnsRecords,
+      ) as DnsRecordColumnId[],
+    [tableColumns.dnsRecords],
+  );
+  const dnsRecordGridTemplate = useMemo(
+    () => buildGridTemplateColumns("dnsRecords", dnsRecordColumns),
+    [dnsRecordColumns],
+  );
+  const auditLogColumns = useMemo(
+    () => resolveTableColumns("auditLog", tableColumns.auditLog),
+    [tableColumns.auditLog],
+  );
+  const auditLogGridTemplate = useMemo(
+    () => buildGridTemplateColumns("auditLog", auditLogColumns),
+    [auditLogColumns],
+  );
+  const zoneCompareColumns = useMemo(
+    () => resolveTableColumns("zoneCompare", tableColumns.zoneCompare),
+    [tableColumns.zoneCompare],
+  );
+  const setTableColumnVisible = useCallback(
+    (tableId: string, columnId: string, visible: boolean) => {
+      setTableColumns((previous) => {
+        const current = resolveTableColumns(tableId, previous[tableId]);
+        const next = toggleTableColumn(tableId, current, columnId, visible);
+        if (
+          next.length === current.length &&
+          next.every((id, index) => id === current[index])
+        ) {
+          return previous;
+        }
+        return { ...previous, [tableId]: next };
+      });
+    },
+    [],
+  );
+  const resetTableColumns = useCallback((tableId: string) => {
+    setTableColumns((previous) => ({
+      ...previous,
+      [tableId]: getDefaultTableColumns(tableId),
+    }));
+  }, []);
   const [tagsZoneId, setTagsZoneId] = useState<string>("");
   const [newTag, setNewTag] = useState("");
   const [renameTagFrom, setRenameTagFrom] = useState<string | null>(null);
@@ -1599,93 +1704,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     checkDnsPropagation,
   } = useCloudflareAPI(apiKey, email);
 
-  /* ── Undo / Redo ────────────────────────────────────── */
-  type DNSOp =
-    | { kind: "create"; zoneId: string; record: DNSRecord }
-    | { kind: "update"; zoneId: string; record: DNSRecord }
-    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord };
-
-  const {
-    push: pushUndo,
-    undo,
-    redo,
-  } = useUndoRedo<DNSOp>({
-    onUndo: async (reverse) => {
-      switch (reverse.kind) {
-        case "create": {
-          // Undo a create → delete the record
-          await deleteDNSRecord(reverse.zoneId, reverse.record.id);
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.filter((r) => r.id !== reverse.record.id),
-          }));
-          break;
-        }
-        case "delete": {
-          // Undo a delete → re-create the record
-          const restored = await createDNSRecord(
-            reverse.zoneId,
-            reverse.record,
-          );
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: [restored, ...prev.records],
-          }));
-          break;
-        }
-        case "update": {
-          // Undo an update → restore old version
-          const reverted = await updateDNSRecord(
-            reverse.zoneId,
-            reverse.record.id,
-            reverse.record,
-          );
-          updateTabByZone(reverse.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.map((r) =>
-              r.id === reverse.record.id ? reverted : r,
-            ),
-          }));
-          break;
-        }
-      }
-    },
-    onRedo: async (forward) => {
-      switch (forward.kind) {
-        case "create": {
-          const created = await createDNSRecord(forward.zoneId, forward.record);
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: [created, ...prev.records],
-          }));
-          break;
-        }
-        case "delete": {
-          await deleteDNSRecord(forward.zoneId, forward.recordId);
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.filter((r) => r.id !== forward.recordId),
-          }));
-          break;
-        }
-        case "update": {
-          const updated = await updateDNSRecord(
-            forward.zoneId,
-            forward.record.id,
-            forward.record,
-          );
-          updateTabByZone(forward.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.map((r) =>
-              r.id === forward.record.id ? updated : r,
-            ),
-          }));
-          break;
-        }
-      }
-    },
-  });
-
   /* Helper: update any tab whose zoneId matches */
   const updateTabByZone = useCallback(
     (zoneId: string, fn: (prev: ZoneTab) => ZoneTab) => {
@@ -1694,6 +1712,112 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       );
     },
     [],
+  );
+
+  /* ── Undo / Redo ────────────────────────────────────── */
+  /**
+   * A history entry stores the operation it performed (`forward`) and the one
+   * that reverses it (`reverse`); both are *executed* verbatim, so a single
+   * applier serves undo and redo. Bulk creates (paste, import) push one entry
+   * covering every record instead of one entry per record.
+   */
+  type DNSOp =
+    | { kind: "create"; zoneId: string; record: DNSRecord }
+    | { kind: "update"; zoneId: string; record: DNSRecord }
+    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
+    | { kind: "bulk-create"; zoneId: string; records: DNSRecord[] }
+    | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] };
+
+  const applyDnsOp = useCallback(
+    async (op: DNSOp) => {
+      switch (op.kind) {
+        case "create": {
+          const created = await createDNSRecord(op.zoneId, op.record);
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: [created, ...prev.records],
+          }));
+          break;
+        }
+        case "delete": {
+          await deleteDNSRecord(op.zoneId, op.recordId);
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => r.id !== op.recordId),
+          }));
+          break;
+        }
+        case "update": {
+          const updated = await updateDNSRecord(
+            op.zoneId,
+            op.record.id,
+            op.record,
+          );
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.map((r) =>
+              r.id === op.record.id ? updated : r,
+            ),
+          }));
+          break;
+        }
+        case "bulk-create": {
+          const created: DNSRecord[] = [];
+          for (const record of op.records) {
+            created.push(await createDNSRecord(op.zoneId, record));
+          }
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: [...created, ...prev.records],
+          }));
+          break;
+        }
+        case "bulk-delete": {
+          const removed = new Set<string>();
+          for (const record of op.records) {
+            await deleteDNSRecord(op.zoneId, record.id);
+            removed.add(record.id);
+          }
+          updateTabByZone(op.zoneId, (prev) => ({
+            ...prev,
+            records: prev.records.filter((r) => !removed.has(r.id)),
+            selectedIds: prev.selectedIds.filter((id) => !removed.has(id)),
+          }));
+          break;
+        }
+      }
+    },
+    [createDNSRecord, deleteDNSRecord, updateDNSRecord, updateTabByZone],
+  );
+
+  const {
+    push: pushUndo,
+    undo,
+    redo,
+  } = useUndoRedo<DNSOp>({
+    onUndo: (reverse) => applyDnsOp(reverse),
+    onRedo: (forward) => applyDnsOp(forward),
+  });
+
+  /**
+   * Record a bulk creation (paste or import) as one undoable step, so a single
+   * Ctrl/⌘+Z removes every record the batch added.
+   */
+  const pushBulkCreateUndo = useCallback(
+    (
+      zoneId: string,
+      records: readonly DNSRecord[],
+      description: string,
+    ): void => {
+      const withIds = records.filter((record) => record?.id);
+      if (!withIds.length) return;
+      pushUndo({
+        description,
+        forward: { kind: "bulk-create", zoneId, records: [...withIds] },
+        reverse: { kind: "bulk-delete", zoneId, records: [...withIds] },
+      });
+    },
+    [pushUndo],
   );
 
   /* Global keyboard shortcuts: Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z redo */
@@ -1761,6 +1885,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useCallback((): SessionSettingsProfile => {
       return {
         autoRefreshInterval,
+        rewriteCopiedRecordDomains,
         defaultPerPage: globalPerPage,
         zonePerPage,
         showUnsupportedRecordTypes,
@@ -1805,6 +1930,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       };
     }, [
       autoRefreshInterval,
+      rewriteCopiedRecordDomains,
       globalPerPage,
       zonePerPage,
       showUnsupportedRecordTypes,
@@ -1857,6 +1983,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         setAutoRefreshInterval(
           clampAutoRefreshInterval(profile.autoRefreshInterval),
         );
+      }
+      if (typeof profile.rewriteCopiedRecordDomains === "boolean") {
+        setRewriteCopiedRecordDomains(profile.rewriteCopiedRecordDomains);
       }
       if (typeof profile.defaultPerPage === "number") {
         setGlobalPerPage(clampDnsPageSize(profile.defaultPerPage));
@@ -2272,7 +2401,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (bounded.evictedTabId) {
         recordRequestGenerationsRef.current.invalidate(bounded.evictedTabId);
       }
-      setTabs(bounded.tabs);
+      // Restoring a session calls this once per persisted tab in a single tick.
+      // A non-functional update would compute every append from the same stale
+      // `tabs` snapshot, so all but the last tab would be dropped and the
+      // persisted order lost. Recompute against the queued state instead.
+      setTabs((prev) => {
+        if (prev === tabs) return bounded.tabs;
+        if (prev.some((tab) => tab.zoneId === zoneId)) return prev;
+        const next = appendBoundedZoneTab(
+          prev,
+          createZoneTab(zone, perPage),
+          activeTabId,
+        );
+        if (next.evictedTabId) {
+          recordRequestGenerationsRef.current.invalidate(next.evictedTabId);
+        }
+        return next.opened ? next.tabs : prev;
+      });
       setActiveTabId(zoneId);
     },
     [activeTabId, availableZones, globalPerPage, tabs, t, toast, zonePerPage],
@@ -2357,27 +2502,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [getZones, toast],
   );
 
-  const reorderTabs = useCallback((sourceId: string, targetId: string) => {
-    if (sourceId === targetId) return;
+  /**
+   * Apply a tab order produced by the tab strip. The persisted `last_open_tabs`
+   * list is driven off `tabs`, so reordering here is what makes the new order
+   * survive a reload.
+   */
+  const applyTabOrder = useCallback((orderedIds: string[]) => {
     setTabs((prev) => {
-      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
-      const targetIndex = prev.findIndex((tab) => tab.id === targetId);
-      if (sourceIndex < 0 || targetIndex < 0) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(sourceIndex, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
-  }, []);
-
-  const moveTabToEnd = useCallback((sourceId: string) => {
-    setTabs((prev) => {
-      const sourceIndex = prev.findIndex((tab) => tab.id === sourceId);
-      if (sourceIndex < 0) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(sourceIndex, 1);
-      next.push(moved);
-      return next;
+      const next = reconcileTabOrder(prev, orderedIds);
+      const unchanged =
+        next.length === prev.length &&
+        next.every((tab, index) => tab.id === prev[index]?.id);
+      return unchanged ? prev : next;
     });
   }, []);
 
@@ -3029,6 +3165,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             last_zone?: string;
             last_active_tab?: string;
             auto_refresh_interval?: number;
+            rewrite_copied_record_domains?: boolean;
             default_per_page?: number;
             zone_per_page?: Record<string, number>;
             show_unsupported_record_types?: boolean;
@@ -3036,6 +3173,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             reopen_last_tabs?: boolean;
             reopen_zone_tabs?: Record<string, boolean>;
             last_open_tabs?: string[];
+            dns_table_columns?: string[];
             confirm_logout?: boolean;
             idle_logout_ms?: number | null;
             confirm_window_close?: boolean;
@@ -3082,6 +3220,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               clampAutoRefreshInterval(prefObj.auto_refresh_interval),
             );
           }
+          if (typeof prefObj.rewrite_copied_record_domains === "boolean") {
+            setRewriteCopiedRecordDomains(
+              prefObj.rewrite_copied_record_domains,
+            );
+          }
           if (typeof prefObj.default_per_page === "number") {
             setGlobalPerPage(clampDnsPageSize(prefObj.default_per_page));
           }
@@ -3116,6 +3259,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           if (Array.isArray(prefObj.last_open_tabs)) {
             setLastOpenTabs(limitRestoredTabIds(prefObj.last_open_tabs));
           }
+          // The paste preview opt-out is browser-owned on every platform: the
+          // desktop preference file has no field for it.
+          setConfirmPastePreview(storageManager.getConfirmPastePreview());
+          // The desktop store owns the DNS table columns; every other table
+          // rides on browser preferences. Preferences written before this
+          // feature simply have no entry and fall through to the defaults.
+          setTableColumns(
+            normalizeTableColumnMap({
+              ...storageManager.getTableColumns(),
+              ...(Array.isArray(prefObj.dns_table_columns)
+                ? { dnsRecords: prefObj.dns_table_columns }
+                : {}),
+            }),
+          );
           if (typeof prefObj.confirm_logout === "boolean") {
             setConfirmLogout(prefObj.confirm_logout);
           }
@@ -3357,6 +3514,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         active = false;
       };
     }
+    setRewriteCopiedRecordDomains(
+      storageManager.getRewriteCopiedRecordDomains(),
+    );
+    setConfirmPastePreview(storageManager.getConfirmPastePreview());
+    setTableColumns(normalizeTableColumnMap(storageManager.getTableColumns()));
     const last = storageManager.getLastZone();
     if (last) setSelectedZoneId(last);
     setGlobalPerPage(clampDnsPageSize(storageManager.getDefaultPerPage()));
@@ -3704,6 +3866,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       auditExportSkipDestinationConfirm,
     );
     storageManager.setDomainAuditCategories(domainAuditCategories);
+    storageManager.setRewriteCopiedRecordDomains(rewriteCopiedRecordDomains);
+    storageManager.setConfirmPastePreview(confirmPastePreview);
+    storageManager.setTableColumns(tableColumns);
     storageManager.setSessionSettingsProfile(
       currentSessionId,
       buildSessionSettingsProfile(),
@@ -3711,6 +3876,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     if (isDesktop()) {
       persistDnsPreferenceFields({
+        rewrite_copied_record_domains: rewriteCopiedRecordDomains,
+        dns_table_columns: resolveTableColumns(
+          "dnsRecords",
+          tableColumns.dnsRecords,
+        ),
         default_per_page: globalPerPage,
         zone_per_page: zonePerPage,
         show_unsupported_record_types: showUnsupportedRecordTypes,
@@ -3761,6 +3931,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
     }
   }, [
+    rewriteCopiedRecordDomains,
+    confirmPastePreview,
+    tableColumns,
     globalPerPage,
     zonePerPage,
     showUnsupportedRecordTypes,
@@ -4639,7 +4812,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
   const handleAddRecord = async () => {
     if (!activeTab) return;
-    const draft = activeTab.newRecord;
+    // Normalize here rather than in the dialog: `onAdd` reads the draft back
+    // out of tab state, so a normalizing `onRecordChange` in the same tick
+    // would still submit the stale value.
+    const draft = normalizeRecordCharacterStrings(activeTab.newRecord);
     if (!draft.type || !draft.name || !draft.content) {
       toast({
         title: t("Error", "Error"),
@@ -5076,7 +5252,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const valid: DNSRecord[] = [];
       let skipped = 0;
 
-      for (const item of items) {
+      for (const rawItem of items) {
+        // Normalize before the duplicate check so an unquoted TXT import does
+        // not create a second copy of an already normalized record.
+        const item = rawItem
+          ? normalizeRecordCharacterStrings(rawItem as Partial<DNSRecord>)
+          : rawItem;
         if (item && item.type && item.name && item.content) {
           const exists = tab.records.some(
             (r) =>
@@ -5110,6 +5291,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 ...prev,
                 records: [...created, ...prev.records],
               }));
+              pushBulkCreateUndo(
+                tab.zoneId,
+                created,
+                `Import ${created.length} record(s) into ${tab.zoneName}`,
+              );
             }
           } catch (err) {
             toast({
@@ -5137,6 +5323,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               ...prev,
               records: [...createdRecords, ...prev.records],
             }));
+            pushBulkCreateUndo(
+              tab.zoneId,
+              createdRecords,
+              `Import ${createdRecords.length} record(s) into ${tab.zoneName}`,
+            );
           }
         }
         if (!dryRun) {
@@ -5190,6 +5381,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  /** Queue records for pasting, from wherever they were read. */
+  const copyRecordsToBuffer = (
+    records: readonly DNSRecord[],
+    source: { zoneId: string; zoneName: string },
+    description: string,
+  ) => {
+    setCopyBuffer({
+      records: [...records],
+      sourceZoneId: source.zoneId,
+      sourceZoneName: source.zoneName,
+    });
+    toast({ title: t("Copied", "Copied"), description });
+  };
+
   const handleCopySelected = () => {
     if (!activeTab) return;
     const selectedRecords = activeTab.records.filter((record) =>
@@ -5205,88 +5410,191 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
       return;
     }
-    setCopyBuffer({
-      records: selectedRecords,
-      sourceZoneId: activeTab.zoneId,
-      sourceZoneName: activeTab.zoneName,
-    });
-    toast({
-      title: t("Copied", "Copied"),
-      description: t("Copied {{count}} record(s) from {{zone}}", {
+    copyRecordsToBuffer(
+      selectedRecords,
+      { zoneId: activeTab.zoneId, zoneName: activeTab.zoneName },
+      t("Copied {{count}} record(s) from {{zone}}", {
         count: selectedRecords.length,
         zone: activeTab.zoneName,
         defaultValue: `Copied ${selectedRecords.length} record(s) from ${activeTab.zoneName}`,
       }),
-    });
+    );
   };
 
   const handleCopySingle = (record: DNSRecord) => {
     if (!activeTab) return;
-    setCopyBuffer({
-      records: [record],
-      sourceZoneId: activeTab.zoneId,
-      sourceZoneName: activeTab.zoneName,
-    });
-    toast({
-      title: t("Copied", "Copied"),
-      description: t("Copied {{record}} from {{zone}}", {
+    copyRecordsToBuffer(
+      [record],
+      { zoneId: activeTab.zoneId, zoneName: activeTab.zoneName },
+      t("Copied {{record}} from {{zone}}", {
         record: record.name,
         zone: activeTab.zoneName,
         defaultValue: `Copied ${record.name} from ${activeTab.zoneName}`,
       }),
+    );
+  };
+
+  /** Zone Compare hands over the records the current zone is missing. */
+  const handleCopyComparedRecords = (
+    records: DNSRecord[],
+    source: { zoneId: string; zoneName: string },
+  ) => {
+    if (!records.length) return;
+    copyRecordsToBuffer(
+      records,
+      source,
+      t("Copied {{count}} record(s) from {{zone}}", {
+        count: records.length,
+        zone: source.zoneName,
+        defaultValue: `Copied ${records.length} record(s) from ${source.zoneName}`,
+      }),
+    );
+  };
+
+  const clearCopyBuffer = () => {
+    setCopyBuffer(null);
+    setShowCopyBuffer(false);
+    setPastePreview(null);
+    toast({
+      title: t("Copy buffer cleared", "Copy buffer cleared"),
+      description: t(
+        "No records are queued for pasting.",
+        "No records are queued for pasting.",
+      ),
     });
   };
 
-  const handlePasteRecords = async () => {
-    if (!activeTab || !copyBuffer) return;
-    const toCreate = copyBuffer.records.map((record) => ({
-      type: record.type,
-      name: record.name,
-      content: record.content,
-      ttl: record.ttl,
-      priority: record.priority,
-      proxied: record.proxied,
-    }));
+  /**
+   * Rewrite, normalize and deduplicate the buffer against the destination
+   * zone. `changed` reports whether the rewrite altered any name or content,
+   * which is what decides if the paste is worth previewing.
+   */
+  const buildPastePlan = (
+    tab: ZoneTab,
+    buffer: { records: DNSRecord[]; sourceZoneName: string },
+  ): {
+    items: PreparedCopiedDnsRecord[];
+    skipped: number;
+    changed: boolean;
+  } => {
+    const recordKey = (record: {
+      type?: string;
+      name?: string;
+      content?: string;
+    }) => `${record.type ?? ""} ${record.name ?? ""} ${record.content ?? ""}`;
+
+    const seen = new Set(tab.records.map(recordKey));
+    const items: PreparedCopiedDnsRecord[] = [];
+    let skipped = 0;
+    let changed = false;
+
+    for (const record of buffer.records) {
+      const prepared = normalizeRecordCharacterStrings(
+        prepareCopiedDnsRecord(
+          record,
+          buffer.sourceZoneName,
+          tab.zoneName,
+          rewriteCopiedRecordDomains,
+        ),
+      );
+      changed ||=
+        prepared.name !== record.name || prepared.content !== record.content;
+
+      if (!prepared.type || !prepared.name || !prepared.content) {
+        skipped++;
+        continue;
+      }
+      const key = recordKey(prepared);
+      if (seen.has(key)) {
+        skipped++;
+        continue;
+      }
+      seen.add(key);
+      items.push(prepared);
+    }
+
+    return { items, skipped, changed };
+  };
+
+  const performPaste = async (
+    target: { tabId: string; zoneId: string; zoneName: string },
+    items: PreparedCopiedDnsRecord[],
+    skipped: number,
+    dryRun: boolean,
+  ) => {
+    const describe = (count: number, totalSkipped: number) => {
+      const suffix = totalSkipped ? `, skipped ${totalSkipped}` : "";
+      return dryRun
+        ? t("Would create {{count}} record(s) in {{zone}}{{suffix}}", {
+            count,
+            zone: target.zoneName,
+            suffix,
+            defaultValue: `Would create ${count} record(s) in ${target.zoneName}${suffix}`,
+          })
+        : t("Created {{count}} record(s) in {{zone}}{{suffix}}", {
+            count,
+            zone: target.zoneName,
+            suffix,
+            defaultValue: `Created ${count} record(s) in ${target.zoneName}${suffix}`,
+          });
+    };
+
     try {
       if (bulkCreateDNSRecords) {
-        const result = await bulkCreateDNSRecords(
-          activeTab.zoneId,
-          toCreate,
-          false,
-        );
+        const result = await bulkCreateDNSRecords(target.zoneId, items, dryRun);
         const created = Array.isArray(result?.created)
           ? (result.created as DNSRecord[])
           : [];
-        updateTab(activeTab.id, (prev) => ({
-          ...prev,
-          records: [...created, ...prev.records],
-        }));
+        // The backend reports what it refused; folding it into the same count
+        // keeps "Created N" from over-reporting.
+        const rejected = Array.isArray(result?.skipped)
+          ? result.skipped.length
+          : 0;
+        if (!dryRun) {
+          updateTab(target.tabId, (prev) => ({
+            ...prev,
+            records: [...created, ...prev.records],
+          }));
+          pushBulkCreateUndo(
+            target.zoneId,
+            created,
+            `Paste ${created.length} record(s) into ${target.zoneName}`,
+          );
+        }
         toast({
-          title: t("Pasted", "Pasted"),
-          description: t("Created {{count}} record(s) in {{zone}}", {
-            count: created.length,
-            zone: activeTab.zoneName,
-            defaultValue: `Created ${created.length} record(s) in ${activeTab.zoneName}`,
-          }),
+          title: dryRun ? t("Dry Run", "Dry Run") : t("Pasted", "Pasted"),
+          description: describe(
+            dryRun ? items.length : created.length,
+            skipped + rejected,
+          ),
         });
         return;
       }
-      const createdRecords: DNSRecord[] = [];
-      for (const record of toCreate) {
-        const created = await createDNSRecord(activeTab.zoneId, record);
-        createdRecords.push(created);
+
+      if (dryRun) {
+        toast({
+          title: t("Dry Run", "Dry Run"),
+          description: describe(items.length, skipped),
+        });
+        return;
       }
-      updateTab(activeTab.id, (prev) => ({
+
+      const createdRecords: DNSRecord[] = [];
+      for (const record of items) {
+        createdRecords.push(await createDNSRecord(target.zoneId, record));
+      }
+      updateTab(target.tabId, (prev) => ({
         ...prev,
         records: [...createdRecords, ...prev.records],
       }));
+      pushBulkCreateUndo(
+        target.zoneId,
+        createdRecords,
+        `Paste ${createdRecords.length} record(s) into ${target.zoneName}`,
+      );
       toast({
         title: t("Pasted", "Pasted"),
-        description: t("Created {{count}} record(s) in {{zone}}", {
-          count: createdRecords.length,
-          zone: activeTab.zoneName,
-          defaultValue: `Created ${createdRecords.length} record(s) in ${activeTab.zoneName}`,
-        }),
+        description: describe(createdRecords.length, skipped),
       });
     } catch (error) {
       toast({
@@ -5298,6 +5606,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         variant: "destructive",
       });
     }
+  };
+
+  const handlePasteRecords = async () => {
+    if (!activeTab || !copyBuffer) return;
+    const plan = buildPastePlan(activeTab, copyBuffer);
+
+    if (!plan.items.length) {
+      toast({
+        title: t("Nothing to paste", "Nothing to paste"),
+        description: plan.skipped
+          ? t(
+              "No new records pasted. Skipped {{count}} duplicate or invalid record(s).",
+              {
+                count: plan.skipped,
+                defaultValue: `No new records pasted. Skipped ${plan.skipped} duplicate or invalid record(s).`,
+              },
+            )
+          : t("The copy buffer is empty.", "The copy buffer is empty."),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // A quick paste stays quick: the preview only interrupts when the rewrite
+    // actually altered a record, or when enough records are in flight that a
+    // look before the write is worth it.
+    const needsPreview =
+      confirmPastePreview &&
+      (plan.changed || plan.items.length > PASTE_PREVIEW_RECORD_THRESHOLD);
+
+    if (needsPreview) {
+      setPastePreview({
+        tabId: activeTab.id,
+        zoneId: activeTab.zoneId,
+        zoneName: activeTab.zoneName,
+        sourceZoneName: copyBuffer.sourceZoneName,
+        items: plan.items,
+        skipped: plan.skipped,
+        sourceCount: copyBuffer.records.length,
+      });
+      return;
+    }
+
+    await performPaste(
+      {
+        tabId: activeTab.id,
+        zoneId: activeTab.zoneId,
+        zoneName: activeTab.zoneName,
+      },
+      plan.items,
+      plan.skipped,
+      false,
+    );
   };
 
   const handleSetDevelopmentMode = useCallback(
@@ -5674,8 +6035,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           closeOnMiddleClick={closeTabOnMiddleClick}
           onActivate={activateTab}
           onClose={closeTab}
-          onReorder={reorderTabs}
-          onMoveToEnd={moveTabToEnd}
+          onOrderChange={applyTabOrder}
         />
       }
       connectionBar={
@@ -5686,7 +6046,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 {t("Domain/Zone", "Domain/Zone")}
               </Label>
               <Select
-                value={selectedZoneId || undefined}
+                // "" is Radix's placeholder sentinel, same as undefined, but it
+                // keeps the underlying native select controlled from the first
+                // render instead of flipping once a zone hydrates.
+                value={selectedZoneId}
                 onValueChange={(value) => {
                   setSelectedZoneId(value);
                   openZoneTab(value);
@@ -6003,7 +6366,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={handlePasteRecords}
+                        onClick={() => void handlePasteRecords()}
                         disabled={!copyBuffer}
                       >
                         <ClipboardPaste className="h-4 w-4 mr-2" />
@@ -6011,12 +6374,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {copyBuffer ? `${copyBuffer.records.length}` : ""}
                       </Button>
                       {copyBuffer && (
-                        <div className="text-xs text-muted-foreground">
-                          {t("Buffer: {{count}} from {{zone}}", {
-                            count: copyBuffer.records.length,
-                            zone: copyBuffer.sourceZoneName,
-                            defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
-                          })}
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className="text-xs text-muted-foreground underline underline-offset-2"
+                            onClick={() => setShowCopyBuffer(true)}
+                          >
+                            {t("Buffer: {{count}} from {{zone}}", {
+                              count: copyBuffer.records.length,
+                              zone: copyBuffer.sourceZoneName,
+                              defaultValue: `Buffer: ${copyBuffer.records.length} from ${copyBuffer.sourceZoneName}`,
+                            })}
+                          </button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-xs"
+                            onClick={clearCopyBuffer}
+                          >
+                            <X className="mr-1 h-3 w-3" />
+                            {t("Clear buffer", "Clear buffer")}
+                          </Button>
                         </div>
                       )}
                       {activeTab.selectedIds.length > 0 && (
@@ -6123,61 +6501,64 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           data-testid="dns-records-table"
                           className="glass-surface glass-sheen ui-table rounded-xl"
                         >
-                          <div className="ui-table-head">
-                            <span />
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("type")}
-                            >
-                              {t("Type", "Type")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("type")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("name")}
-                            >
-                              {t("Name", "Name")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("name")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("content")}
-                            >
-                              {t("Content", "Content")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("content")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("ttl")}
-                            >
-                              {t("TTL", "TTL")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("ttl")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="text-left hover:text-foreground"
-                              onClick={() => toggleSort("proxied")}
-                            >
-                              {t("Proxy", "Proxy")}{" "}
-                              <span className="opacity-70">
-                                {sortIndicator("proxied")}
-                              </span>
-                            </button>
-                            <span className="text-right">
-                              {t("Actions", "Actions")}
-                            </span>
+                          <div
+                            className="ui-table-head"
+                            style={{
+                              gridTemplateColumns: dnsRecordGridTemplate,
+                            }}
+                          >
+                            {dnsRecordColumns.map((column) => {
+                              switch (column) {
+                                case "select":
+                                  return <span key={column} />;
+                                case "type":
+                                case "name":
+                                case "content":
+                                case "ttl":
+                                case "proxied": {
+                                  const labels = {
+                                    type: t("Type", "Type"),
+                                    name: t("Name", "Name"),
+                                    content: t("Content", "Content"),
+                                    ttl: t("TTL", "TTL"),
+                                    proxied: t("Proxy", "Proxy"),
+                                  } as const;
+                                  return (
+                                    <button
+                                      key={column}
+                                      type="button"
+                                      className="text-left hover:text-foreground"
+                                      onClick={() => toggleSort(column)}
+                                    >
+                                      {labels[column]}{" "}
+                                      <span className="opacity-70">
+                                        {sortIndicator(column)}
+                                      </span>
+                                    </button>
+                                  );
+                                }
+                                case "comment":
+                                  return (
+                                    <span key={column}>
+                                      {t("Comment", "Comment")}
+                                    </span>
+                                  );
+                                case "tags":
+                                  return (
+                                    <span key={column}>
+                                      {t("Tags", "Tags")}
+                                    </span>
+                                  );
+                                case "actions":
+                                  return (
+                                    <span key={column} className="text-right">
+                                      {t("Actions", "Actions")}
+                                    </span>
+                                  );
+                                default:
+                                  return null;
+                              }
+                            })}
                           </div>
                           {visibleRecords.map((record) => {
                             const isSelected = selectedRecordIds.has(record.id);
@@ -6187,6 +6568,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 zoneId={activeTab.zoneId}
                                 zoneName={activeTab.zoneName}
                                 record={record}
+                                columns={dnsRecordColumns}
+                                gridTemplateColumns={dnsRecordGridTemplate}
                                 isEditing={
                                   activeTab.editingRecord === record.id
                                 }
@@ -8014,6 +8397,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   zones={zones}
                   currentZoneId={activeTab.zoneId}
                   getDNSRecords={getDNSRecords}
+                  onCopyRecords={handleCopyComparedRecords}
+                  columns={zoneCompareColumns}
                 />
               )}
 
@@ -8470,53 +8855,48 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       !auditError &&
                       limitedAuditEntries.length > 0 && (
                         <div className="overflow-auto rounded-lg border border-border/60">
-                          <div className="grid grid-cols-[220px_160px_1fr_80px] gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground">
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("timestamp")}
-                            >
-                              {t("Timestamp", "Timestamp")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "timestamp"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("operation")}
-                            >
-                              {t("Operation", "Operation")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "operation"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="flex items-center gap-1 text-left hover:text-foreground"
-                              onClick={() => toggleAuditSort("resource")}
-                            >
-                              {t("Resource", "Resource")}
-                              <ArrowUpDown className="h-3 w-3" />
-                              <span className="text-[10px]">
-                                {auditSort.field === "resource"
-                                  ? auditSort.dir === "asc"
-                                    ? t("ASC", "ASC")
-                                    : t("DESC", "DESC")
-                                  : ""}
-                              </span>
-                            </button>
-                            <div>{t("Details", "Details")}</div>
+                          <div
+                            className="grid gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground"
+                            style={{
+                              gridTemplateColumns: auditLogGridTemplate,
+                            }}
+                          >
+                            {auditLogColumns.map((column) => {
+                              if (column === "details") {
+                                return (
+                                  <div key={column}>
+                                    {t("Details", "Details")}
+                                  </div>
+                                );
+                              }
+                              const field = column as
+                                | "timestamp"
+                                | "operation"
+                                | "resource";
+                              const labels = {
+                                timestamp: t("Timestamp", "Timestamp"),
+                                operation: t("Operation", "Operation"),
+                                resource: t("Resource", "Resource"),
+                              } as const;
+                              return (
+                                <button
+                                  key={column}
+                                  type="button"
+                                  className="flex items-center gap-1 text-left hover:text-foreground"
+                                  onClick={() => toggleAuditSort(field)}
+                                >
+                                  {labels[field]}
+                                  <ArrowUpDown className="h-3 w-3" />
+                                  <span className="text-[10px]">
+                                    {auditSort.field === field
+                                      ? auditSort.dir === "asc"
+                                        ? t("ASC", "ASC")
+                                        : t("DESC", "DESC")
+                                      : ""}
+                                  </span>
+                                </button>
+                              );
+                            })}
                           </div>
                           <div className="divide-y divide-white/10">
                             {limitedAuditEntries.map((entry, index) => {
@@ -8543,22 +8923,55 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   key={`${timestamp}-${index}`}
                                   className="px-4 py-3 text-sm"
                                 >
-                                  <summary className="grid grid-cols-[220px_160px_1fr_80px] gap-3 cursor-pointer list-none">
-                                    <div
-                                      className="text-xs text-muted-foreground"
-                                      title={timestampFull}
-                                    >
-                                      {timestampShort}
-                                    </div>
-                                    <div className="font-medium">
-                                      {operation}
-                                    </div>
-                                    <div className="truncate text-muted-foreground">
-                                      {resource}
-                                    </div>
-                                    <div className="text-xs text-muted-foreground hover:text-foreground">
-                                      {t("View", "View")}
-                                    </div>
+                                  <summary
+                                    className="grid gap-3 cursor-pointer list-none"
+                                    style={{
+                                      gridTemplateColumns: auditLogGridTemplate,
+                                    }}
+                                  >
+                                    {auditLogColumns.map((column) => {
+                                      switch (column) {
+                                        case "timestamp":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="text-xs text-muted-foreground"
+                                              title={timestampFull}
+                                            >
+                                              {timestampShort}
+                                            </div>
+                                          );
+                                        case "operation":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="font-medium"
+                                            >
+                                              {operation}
+                                            </div>
+                                          );
+                                        case "resource":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="truncate text-muted-foreground"
+                                            >
+                                              {resource}
+                                            </div>
+                                          );
+                                        case "details":
+                                          return (
+                                            <div
+                                              key={column}
+                                              className="text-xs text-muted-foreground hover:text-foreground"
+                                            >
+                                              {t("View", "View")}
+                                            </div>
+                                          );
+                                        default:
+                                          return null;
+                                      }
+                                    })}
                                   </summary>
                                   <div className="mt-3 rounded-md border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground">
                                     <div className="mb-2">
@@ -9086,6 +9499,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         {t("General", "General")}
                       </button>
                       <button
+                        onClick={() => setSettingsSubtab("columns")}
+                        data-active={settingsSubtab === "columns"}
+                        className="ui-segment"
+                      >
+                        {t("Columns", "Columns")}
+                      </button>
+                      <button
                         onClick={() => setSettingsSubtab("topology")}
                         data-active={settingsSubtab === "topology"}
                         className="ui-segment"
@@ -9116,6 +9536,80 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </div>
                     {settingsSubtab === "general" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t(
+                              "Rewrite copied record domains",
+                              "Rewrite copied record domains",
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={rewriteCopiedRecordDomains}
+                              onCheckedChange={(checked) => {
+                                setRewriteCopiedRecordDomains(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Copied record domain rewriting enabled.",
+                                        "Copied record domain rewriting enabled.",
+                                      )
+                                    : t(
+                                        "Copied record domain rewriting disabled.",
+                                        "Copied record domain rewriting disabled.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Rewrite copied record domains",
+                                "Rewrite copied record domains",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Replace source-zone domain suffixes with the destination zone when pasting records.",
+                                "Replace source-zone domain suffixes with the destination zone when pasting records.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div className="font-medium">
+                            {t(
+                              "Preview pasted records",
+                              "Preview pasted records",
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={confirmPastePreview}
+                              onCheckedChange={(checked) => {
+                                setConfirmPastePreview(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Paste preview enabled.",
+                                        "Paste preview enabled.",
+                                      )
+                                    : t(
+                                        "Paste preview disabled.",
+                                        "Paste preview disabled.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Preview pasted records",
+                                "Preview pasted records",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Confirm rewritten names and content before a paste that changed a record, or that creates more than two.",
+                                "Confirm rewritten names and content before a paste that changed a record, or that creates more than two.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">
                             {t("Auto refresh", "Auto refresh")}
@@ -9506,6 +10000,145 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
+                      </div>
+                    )}
+                    {settingsSubtab === "columns" && (
+                      <div
+                        className="space-y-3"
+                        data-testid="settings-columns-panel"
+                      >
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "Choose which columns each table shows. Locked columns identify the row and stay visible; at least one column always remains.",
+                            "Choose which columns each table shows. Locked columns identify the row and stay visible; at least one column always remains.",
+                          )}
+                        </p>
+                        {TABLE_COLUMN_GROUPS.map((group) => {
+                          const visible = resolveTableColumns(
+                            group.id,
+                            tableColumns[group.id],
+                          );
+                          const isDefault =
+                            visible.join(",") ===
+                            getDefaultTableColumns(group.id).join(",");
+                          return (
+                            <fieldset
+                              key={group.id}
+                              data-testid={`column-group-${group.id}`}
+                              className="rounded-xl border border-border/60 bg-card/60 px-4 py-3"
+                            >
+                              <legend className="flex items-center gap-2 px-1 text-sm font-medium">
+                                {t(group.label, group.label)}
+                                <span className="text-[10px] font-normal uppercase tracking-widest text-muted-foreground">
+                                  {t("{{shown}} of {{total}} shown", {
+                                    shown: visible.length,
+                                    total: group.columns.length,
+                                    defaultValue: `${visible.length} of ${group.columns.length} shown`,
+                                  })}
+                                </span>
+                              </legend>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-xs text-muted-foreground">
+                                  {t(group.description, group.description)}
+                                </p>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7"
+                                  disabled={isDefault}
+                                  onClick={() => {
+                                    resetTableColumns(group.id);
+                                    notifySaved(
+                                      t(
+                                        "{{table}} columns reset to defaults.",
+                                        {
+                                          table: t(group.label, group.label),
+                                          defaultValue: `${group.label} columns reset to defaults.`,
+                                        },
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  {t("Reset", "Reset")}
+                                </Button>
+                              </div>
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                {group.columns.map((column) => {
+                                  const checked = visible.includes(column.id);
+                                  const lockedOn = Boolean(column.required);
+                                  const lastOne =
+                                    checked &&
+                                    !lockedOn &&
+                                    !canHideTableColumn(
+                                      group.id,
+                                      visible,
+                                      column.id,
+                                    );
+                                  const label = t(column.label, column.label);
+                                  return (
+                                    <label
+                                      key={column.id}
+                                      data-column-id={column.id}
+                                      data-locked={
+                                        lockedOn || lastOne ? "true" : "false"
+                                      }
+                                      className="flex items-start gap-2 rounded-lg border border-border/50 bg-background/20 px-3 py-2 text-xs"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="checkbox-themed mt-0.5"
+                                        checked={checked}
+                                        disabled={lockedOn || lastOne}
+                                        aria-label={`${t(group.label, group.label)}: ${label}`}
+                                        onChange={(event) => {
+                                          setTableColumnVisible(
+                                            group.id,
+                                            column.id,
+                                            event.target.checked,
+                                          );
+                                          notifySaved(
+                                            event.target.checked
+                                              ? t("{{column}} column shown.", {
+                                                  column: label,
+                                                  defaultValue: `${label} column shown.`,
+                                                })
+                                              : t("{{column}} column hidden.", {
+                                                  column: label,
+                                                  defaultValue: `${label} column hidden.`,
+                                                }),
+                                          );
+                                        }}
+                                      />
+                                      <span className="min-w-0">
+                                        <span className="flex flex-wrap items-center gap-1 font-medium text-foreground/90">
+                                          {label}
+                                          {lockedOn && (
+                                            <Tag className="text-[8px] px-1.5 py-0.5">
+                                              {t("Always on", "Always on")}
+                                            </Tag>
+                                          )}
+                                          {!lockedOn && lastOne && (
+                                            <Tag className="text-[8px] px-1.5 py-0.5">
+                                              {t("Last column", "Last column")}
+                                            </Tag>
+                                          )}
+                                        </span>
+                                        {column.description && (
+                                          <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                                            {t(
+                                              column.description,
+                                              column.description,
+                                            )}
+                                          </span>
+                                        )}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </fieldset>
+                          );
+                        })}
                       </div>
                     )}
                     {settingsSubtab === "topology" && (
@@ -11066,6 +11699,105 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </div>
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={showCopyBuffer && !!copyBuffer}
+        onOpenChange={setShowCopyBuffer}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("Copy buffer", "Copy buffer")}</DialogTitle>
+            <DialogDescription>
+              {copyBuffer
+                ? t(
+                    "{{count}} record(s) queued from {{zone}}. Pasting creates them in the active zone.",
+                    {
+                      count: copyBuffer.records.length,
+                      zone: copyBuffer.sourceZoneName,
+                      defaultValue: `${copyBuffer.records.length} record(s) queued from ${copyBuffer.sourceZoneName}. Pasting creates them in the active zone.`,
+                    },
+                  )
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className="max-h-64 space-y-1 overflow-y-auto rounded border p-2"
+            data-testid="copy-buffer-list"
+          >
+            {copyBuffer?.records.map((record) => (
+              <div
+                key={record.id}
+                data-testid="copy-buffer-row"
+                className="border-b p-1 last:border-b-0"
+              >
+                <div className="font-mono text-sm">
+                  {record.type} {record.name}
+                </div>
+                <div className="break-all text-xs text-muted-foreground">
+                  {record.content}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={clearCopyBuffer}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              {t("Clear buffer", "Clear buffer")}
+            </Button>
+            <Button className="flex-1" onClick={() => setShowCopyBuffer(false)}>
+              {t("Close", "Close")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {pastePreview && (
+        <ImportPreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPastePreview(null);
+          }}
+          items={pastePreview.items}
+          sourceItemCount={pastePreview.sourceCount}
+          title={t("Paste Preview", "Paste Preview")}
+          description={t(
+            "Review the rewritten names and content before creating these records in {{zone}}.",
+            {
+              zone: pastePreview.zoneName,
+              defaultValue: `Review the rewritten names and content before creating these records in ${pastePreview.zoneName}.`,
+            },
+          )}
+          confirmLabel={t("Paste Selected", "Paste Selected")}
+          askAgain={{
+            label: t(
+              "Ask before pasting rewritten records",
+              "Ask before pasting rewritten records",
+            ),
+            checked: confirmPastePreview,
+            onChange: setConfirmPastePreview,
+          }}
+          onConfirm={(items, dryRun) => {
+            const target = {
+              tabId: pastePreview.tabId,
+              zoneId: pastePreview.zoneId,
+              zoneName: pastePreview.zoneName,
+            };
+            // Deselected rows count as skipped so the toast still adds up.
+            const skipped =
+              pastePreview.skipped + (pastePreview.items.length - items.length);
+            setPastePreview(null);
+            void performPaste(
+              target,
+              items as PreparedCopiedDnsRecord[],
+              skipped,
+              dryRun === true,
+            );
+          }}
+          onCancel={() => setPastePreview(null)}
+        />
+      )}
       <HotkeyHelpDialog />
     </AuthenticatedAppShell>
   );

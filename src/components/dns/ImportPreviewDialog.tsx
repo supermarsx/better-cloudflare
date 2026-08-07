@@ -19,6 +19,22 @@ interface ImportPreviewDialogProps {
   sourceItemCount?: number;
   rejectedItemCount?: number;
   diagnostics?: string[];
+  /** Dialog heading. Defaults to the import wording. */
+  title?: string;
+  /** Sentence under the heading. Defaults to the import wording. */
+  description?: string;
+  /** Label of the confirm button. Defaults to "Import Selected". */
+  confirmLabel?: string;
+  /**
+   * Optional opt-out control. When provided the dialog renders a checkbox that
+   * lets the user stop the preview from appearing again; `checked` means the
+   * preview is still enabled.
+   */
+  askAgain?: {
+    label: string;
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+  };
 }
 
 export const IMPORT_PREVIEW_VISIBLE_ROW_LIMIT = 200;
@@ -32,6 +48,10 @@ export function ImportPreviewDialog({
   sourceItemCount = items.length,
   rejectedItemCount = 0,
   diagnostics = [],
+  title = "Import Preview",
+  description = "Review parsed records before importing. Only selected and valid records will be imported.",
+  confirmLabel = "Import Selected",
+  askAgain,
 }: ImportPreviewDialogProps) {
   const [selected, setSelected] = useState<boolean[]>([]);
   const [dryRun, setDryRun] = useState(false);
@@ -71,11 +91,8 @@ export function ImportPreviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Import Preview</DialogTitle>
-          <DialogDescription>
-            Review parsed records before importing. Only selected and valid
-            records will be imported.
-          </DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -183,6 +200,20 @@ export function ImportPreviewDialog({
             })}
           </div>
 
+          {askAgain && (
+            <div className="flex items-center gap-2">
+              <input
+                id="import-preview-ask-again"
+                type="checkbox"
+                checked={askAgain.checked}
+                onChange={(event) => askAgain.onChange(event.target.checked)}
+                aria-label={askAgain.label}
+                className="checkbox-themed"
+              />
+              <Label htmlFor="import-preview-ask-again">{askAgain.label}</Label>
+            </div>
+          )}
+
           <div className="flex gap-2">
             <div className="flex items-center gap-2">
               <Label>Dry Run</Label>
@@ -209,7 +240,7 @@ export function ImportPreviewDialog({
               }}
               className="flex-1"
             >
-              Import Selected
+              {confirmLabel}
             </Button>
             <Button
               variant="outline"

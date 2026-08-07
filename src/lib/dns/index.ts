@@ -10,6 +10,27 @@ export {
   parseNAPTR,
   composeNAPTR,
 } from "./dns-parsers";
+export {
+  CHARACTER_STRING_MAX_BYTES,
+  characterStringByteLength,
+  escapeCharacterString,
+  hasUnbalancedQuotes,
+  isNormalizedCharacterString,
+  isQuotedForm,
+  normalizeCharacterString,
+  parseCharacterStrings,
+  parseCharacterStringTokens,
+  quoteCharacterString,
+  splitCharacterString,
+  unquoteCharacterString,
+} from "./character-string";
+export {
+  CHARACTER_STRING_RECORD_TYPES,
+  isCharacterStringRecordType,
+  normalizeRecordCharacterStrings,
+  normalizeRecordContent,
+  normalizeRecordListCharacterStrings,
+} from "./record-normalize";
 export { filterRecords } from "./dns-utils";
 export { recordsToCSV, recordsToBIND, recordsToJSON } from "./export-api";
 export {

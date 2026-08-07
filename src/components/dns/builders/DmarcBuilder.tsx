@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { unquoteCharacterString } from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
 import type { BuilderWarningsChange, RecordDraft } from "./types";
@@ -70,9 +71,13 @@ function DmarcFieldLabel({
   );
 }
 
-function validateDMARC(value: string) {
+/**
+ * Validate DMARC TXT content. Quoted and multi-string content is accepted and
+ * validated as its concatenated logical value.
+ */
+export function validateDMARC(value: string) {
   const problems: string[] = [];
-  const content = value.trim();
+  const content = unquoteCharacterString(value).trim();
   if (!content) return { ok: true, problems };
   if (!/^v=DMARC1\b/i.test(content)) {
     problems.push("Missing v=DMARC1.");
@@ -244,8 +249,12 @@ function validateDMARC(value: string) {
   return { ok: problems.length === 0, problems };
 }
 
-function parseDMARC(value: string | undefined) {
-  const content = (value ?? "").trim();
+/**
+ * Parse DMARC TXT content into builder fields. Quoted and multi-string content
+ * is unwrapped before the tags are read.
+ */
+export function parseDMARC(value: string | undefined) {
+  const content = unquoteCharacterString(value).trim();
   if (!content.toLowerCase().startsWith("v=dmarc1")) {
     return {
       policy: "none" as const,
@@ -413,7 +422,7 @@ export function DmarcBuilder({
     if (!name || (name !== "_dmarc" && name !== expectedAbsoluteName))
       uniquePush(nameIssues, 'DMARC: name is usually "_dmarc".');
 
-    const content = (record.content ?? "").trim();
+    const content = unquoteCharacterString(record.content).trim();
     if (!content) {
       uniquePush(issues, "DMARC: content is empty.");
     } else {

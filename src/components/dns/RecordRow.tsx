@@ -2,7 +2,7 @@
  * UI component rendering a single DNS record row and optional inline
  * editor allowing update and deletion of the record.
  */
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
 import type { ChangeEvent, MouseEvent as ReactMouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,6 +37,7 @@ import type { SPFGraph } from "@/lib/dns/spf";
 import { parseSPF, composeSPF, validateSPF } from "@/lib/dns/spf";
 import { storageManager } from "@/lib/storage/storage";
 import { getRecordBrowserUrl } from "@/lib/dns/record-browser-url";
+import { normalizeRecordCharacterStrings } from "@/lib/dns/record-normalize";
 import { openExternalUrl } from "@/lib/external-url";
 import { useI18n } from "@/hooks/use-i18n";
 import {
@@ -83,6 +84,56 @@ import {
   MoreHorizontal,
   ExternalLink,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import {
+  buildRecordActions,
+  type RecordActionId,
+} from "@/components/dns/record-actions";
+import {
+  getDefaultTableColumns,
+  type DnsRecordColumnId,
+} from "@/lib/tables/table-columns";
+
+const RECORD_ACTION_ICONS: Record<RecordActionId, LucideIcon> = {
+  edit: Edit2,
+  copy: Copy,
+  "open-in-browser": ExternalLink,
+  clone: CopyPlus,
+  delete: Trash2,
+};
+
+/**
+ * Open the row context menu without a mouse.
+ *
+ * Radix's `ContextMenu.Root` is uncontrolled: the only way in is a `contextmenu`
+ * event on the trigger. Synthesizing one keeps the Menu key and Shift+F10 paths
+ * on exactly the same code path as a real right-click (same items, same Radix
+ * focus management, arrow keys and Escape included).
+ */
+function openRowContextMenu(element: HTMLElement): void {
+  const rect = element.getBoundingClientRect();
+  const clientX = Math.round(rect.left + Math.min(32, rect.width / 2));
+  const clientY = Math.round(rect.top + rect.height / 2);
+  element.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      buttons: 2,
+      clientX,
+      clientY,
+    }),
+  );
+}
+
+function isContextMenuKey(event: { key: string; shiftKey: boolean }): boolean {
+  return (
+    event.key === "ContextMenu" ||
+    (event.shiftKey && event.key === "F10") ||
+    // Older engines report the Menu key as "Apps".
+    event.key === "Apps"
+  );
+}
 
 const INTERACTIVE_RECORD_TARGET =
   'a, button, input, select, textarea, [contenteditable="true"], [role="checkbox"], [role="menuitem"], [role="switch"]';
@@ -141,17 +192,7 @@ export interface RecordRowProps {
   /** The DNS record to display or edit */
   record: DNSRecord;
   /** Visible table columns in order (controls rendering of row cells). */
-  columns?: Array<
-    | "select"
-    | "type"
-    | "name"
-    | "content"
-    | "comment"
-    | "tags"
-    | "ttl"
-    | "proxied"
-    | "actions"
-  >;
+  columns?: DnsRecordColumnId[];
   /** Optional grid template columns string (keeps header/rows aligned). */
   gridTemplateColumns?: string;
   /** Whether the row is currently in edit mode */
@@ -661,121 +702,67 @@ export function RecordRow({
       ? `${value.slice(0, MAX_PREVIEW_CHARS)}...`
       : value;
 
+  const recordActions = useMemo(
+    () =>
+      buildRecordActions({
+        onEdit,
+        onDelete,
+        onCopy,
+        onClone,
+        onOpenInBrowser: recordBrowserUrl ? openRecordInBrowser : undefined,
+      }),
+    [onClone, onCopy, onDelete, onEdit, openRecordInBrowser, recordBrowserUrl],
+  );
+
+  // Radix menu items compose `onClick` ahead of their internal select handler,
+  // so a single `onClick` fires the action once and still closes the menu.
   const renderActionsMenuItems = useCallback(() => {
-    return (
-      <>
-        <DropdownMenuItem
-          onSelect={() => {
-            onEdit();
-          }}
-        >
-          <Edit2 className="mr-2 h-3.5 w-3.5" />
-          {t("Edit", "Edit")}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={!onCopy}
-          onSelect={() => {
-            onCopy?.();
-          }}
-        >
-          <Copy className="mr-2 h-3.5 w-3.5" />
-          {t("Copy", "Copy")}
-        </DropdownMenuItem>
-        {recordBrowserUrl && (
-          <DropdownMenuItem onSelect={openRecordInBrowser}>
-            <ExternalLink className="mr-2 h-3.5 w-3.5" />
-            {t("Open in browser", "Open in browser")}
-          </DropdownMenuItem>
-        )}
-        {onClone && (
+    return recordActions.map((action) => {
+      const Icon = RECORD_ACTION_ICONS[action.id];
+      return (
+        <Fragment key={action.id}>
+          {action.separatorBefore && <DropdownMenuSeparator />}
           <DropdownMenuItem
-            onSelect={() => {
-              onClone();
-            }}
+            data-record-action={action.id}
+            disabled={action.disabled}
+            className={
+              action.destructive
+                ? "text-destructive focus:text-destructive"
+                : undefined
+            }
+            onClick={action.run}
           >
-            <CopyPlus className="mr-2 h-3.5 w-3.5" />
-            {t("Clone", "Clone")}
+            <Icon className="mr-2 h-3.5 w-3.5" />
+            {t(action.label, action.label)}
           </DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="text-destructive focus:text-destructive"
-          onSelect={() => {
-            onDelete();
-          }}
-        >
-          <Trash2 className="mr-2 h-3.5 w-3.5" />
-          {t("Delete", "Delete")}
-        </DropdownMenuItem>
-      </>
-    );
-  }, [
-    onClone,
-    onCopy,
-    onDelete,
-    onEdit,
-    openRecordInBrowser,
-    recordBrowserUrl,
-    t,
-  ]);
+        </Fragment>
+      );
+    });
+  }, [recordActions, t]);
 
   const renderContextMenuItems = useCallback(() => {
-    return (
-      <>
-        <ContextMenuItem
-          onSelect={() => {
-            onEdit();
-          }}
-        >
-          <Edit2 className="mr-2 h-3.5 w-3.5" />
-          {t("Edit", "Edit")}
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={!onCopy}
-          onSelect={() => {
-            onCopy?.();
-          }}
-        >
-          <Copy className="mr-2 h-3.5 w-3.5" />
-          {t("Copy", "Copy")}
-        </ContextMenuItem>
-        {recordBrowserUrl && (
-          <ContextMenuItem onSelect={openRecordInBrowser}>
-            <ExternalLink className="mr-2 h-3.5 w-3.5" />
-            {t("Open in browser", "Open in browser")}
-          </ContextMenuItem>
-        )}
-        {onClone && (
+    return recordActions.map((action) => {
+      const Icon = RECORD_ACTION_ICONS[action.id];
+      return (
+        <Fragment key={action.id}>
+          {action.separatorBefore && <ContextMenuSeparator />}
           <ContextMenuItem
-            onSelect={() => {
-              onClone();
-            }}
+            data-record-action={action.id}
+            disabled={action.disabled}
+            className={
+              action.destructive
+                ? "text-destructive focus:text-destructive"
+                : undefined
+            }
+            onClick={action.run}
           >
-            <CopyPlus className="mr-2 h-3.5 w-3.5" />
-            {t("Clone", "Clone")}
+            <Icon className="mr-2 h-3.5 w-3.5" />
+            {t(action.label, action.label)}
           </ContextMenuItem>
-        )}
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          className="text-destructive focus:text-destructive"
-          onSelect={() => {
-            onDelete();
-          }}
-        >
-          <Trash2 className="mr-2 h-3.5 w-3.5" />
-          {t("Delete", "Delete")}
-        </ContextMenuItem>
-      </>
-    );
-  }, [
-    onClone,
-    onCopy,
-    onDelete,
-    onEdit,
-    openRecordInBrowser,
-    recordBrowserUrl,
-    t,
-  ]);
+        </Fragment>
+      );
+    });
+  }, [recordActions, t]);
 
   if (isEditing) {
     return (
@@ -790,7 +777,12 @@ export function RecordRow({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => onSave(editedRecord)}>
+            <Button
+              size="sm"
+              onClick={() =>
+                onSave(normalizeRecordCharacterStrings(editedRecord))
+              }
+            >
               <Save className="h-3.5 w-3.5 mr-1" />
               {t("Save", "Save")}
             </Button>
@@ -1514,16 +1506,8 @@ export function RecordRow({
     );
   }
 
-  const visibleColumns = (columns ??
-    ([
-      "select",
-      "type",
-      "name",
-      "content",
-      "ttl",
-      "proxied",
-      "actions",
-    ] as const)) as NonNullable<RecordRowProps["columns"]>;
+  const visibleColumns =
+    columns ?? (getDefaultTableColumns("dnsRecords") as DnsRecordColumnId[]);
 
   return (
     <ContextMenu onOpenChange={setContextMenuOpen}>
@@ -1534,10 +1518,21 @@ export function RecordRow({
           role="button"
           tabIndex={0}
           data-selected={isSelected}
+          data-record-row={record.id}
           data-context-open={contextMenuOpen ? "true" : "false"}
+          aria-haspopup="menu"
+          aria-keyshortcuts="Shift+F10 ContextMenu"
           onClickCapture={handleModifiedRecordClick}
           onDoubleClick={() => onEdit()}
           onKeyDown={(event) => {
+            if (isContextMenuKey(event)) {
+              // Suppress the engine's own context menu so the synthesized event
+              // is the only one Radix sees.
+              event.preventDefault();
+              event.stopPropagation();
+              openRowContextMenu(event.currentTarget);
+              return;
+            }
             if (event.key === "Enter") {
               if (
                 (event.ctrlKey || event.metaKey) &&
@@ -1646,7 +1641,13 @@ export function RecordRow({
                 }
                 return (
                   <Tooltip key={col} tip={c} side="top">
-                    <div className="min-w-0 truncate text-[10px] text-muted-foreground">
+                    {/* `title` keeps the full note reachable even before the
+                        hover tooltip mounts. */}
+                    <div
+                      className="min-w-0 truncate text-[10px] text-muted-foreground"
+                      title={c}
+                      data-record-comment=""
+                    >
                       {truncate(c)}
                     </div>
                   </Tooltip>

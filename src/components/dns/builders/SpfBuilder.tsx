@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { normalizeCharacterString } from "@/lib/dns/character-string";
 import type { SPFGraph, SPFMechanism } from "@/lib/dns/spf";
 import { composeSPF, parseSPF, validateSPF } from "@/lib/dns/spf";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
@@ -587,12 +588,32 @@ export function SpfBuilder({
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/20 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">
-          Preview (canonical)
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-muted-foreground">
+            Preview (canonical)
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7"
+            onClick={() =>
+              onRecordChange({
+                ...record,
+                content: normalizeCharacterString(diagnostics.canonical),
+              })
+            }
+            disabled={!diagnostics.canonical}
+          >
+            Apply quoted form
+          </Button>
         </div>
         <pre className="mt-2 whitespace-pre-wrap break-words text-xs">
           {diagnostics.canonical}
         </pre>
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          Quoted form:{" "}
+          <code>{normalizeCharacterString(diagnostics.canonical)}</code>
+        </div>
       </div>
 
       {diagnostics.issues.length > 0 && (

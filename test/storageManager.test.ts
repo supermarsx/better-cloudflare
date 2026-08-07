@@ -191,6 +191,25 @@ test("failed clear restores durable and in-memory data", () => {
   assert.equal(storage.getItem(STORAGE_KEY), stableRaw);
 });
 
+test("copied-record domain rewriting defaults on and survives restarts", () => {
+  const storage = new LocalStorageMock();
+  const first = new StorageManager(storage, new CryptoManager({}, storage));
+
+  assert.equal(first.getRewriteCopiedRecordDomains(), true);
+  first.setRewriteCopiedRecordDomains(false);
+
+  const restarted = new StorageManager(storage, new CryptoManager({}, storage));
+  assert.equal(restarted.getRewriteCopiedRecordDomains(), false);
+
+  restarted.clearSettings();
+  assert.equal(restarted.getRewriteCopiedRecordDomains(), true);
+  const afterClear = new StorageManager(
+    storage,
+    new CryptoManager({}, storage),
+  );
+  assert.equal(afterClear.getRewriteCopiedRecordDomains(), true);
+});
+
 test("nonconflicting preferences merge while sessions remain runtime-only", () => {
   const storage = new LocalStorageMock();
   const first = new StorageManager(storage, new CryptoManager({}, storage));

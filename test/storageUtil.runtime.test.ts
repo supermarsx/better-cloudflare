@@ -315,6 +315,7 @@ test("preference reconstruction drops unknown, inherited, and invalid nested lea
     unknown
   >;
   profile.defaultPerPage = 25;
+  profile.rewriteCopiedRecordDomains = false;
   profile.email = "nested@example.test";
   profile.zonePerPage = { good: 50, bad: "secret" };
   const zoneMap = Object.create({ inherited: 100 }) as Record<string, unknown>;
@@ -323,14 +324,17 @@ test("preference reconstruction drops unknown, inherited, and invalid nested lea
     apiKeys: [{ encryptedKey: "secret" }],
     currentSession: "secret-session",
     unknown: "secret",
+    rewriteCopiedRecordDomains: false,
     zonePerPage: zoneMap,
     sessionSettingsProfiles: { profile },
   });
   const plain = JSON.parse(JSON.stringify(safe)) as typeof safe;
 
   assert.deepEqual(plain.zonePerPage, { own: 20 });
+  assert.equal(plain.rewriteCopiedRecordDomains, false);
   assert.deepEqual(plain.sessionSettingsProfiles?.profile, {
     defaultPerPage: 25,
+    rewriteCopiedRecordDomains: false,
     zonePerPage: { good: 50 },
   });
   assert.equal(JSON.stringify(safe).includes("secret"), false);

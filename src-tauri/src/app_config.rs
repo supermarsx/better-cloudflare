@@ -398,7 +398,14 @@ mod tests {
             .expect("locked read");
         assert_eq!(loaded.theme, None);
         store
-            .update_preferences(fields(&[("theme", json!("dark"))]), locked, deleted)
+            .update_preferences(
+                fields(&[
+                    ("theme", json!("dark")),
+                    ("rewrite_copied_record_domains", json!(false)),
+                ]),
+                locked,
+                deleted,
+            )
             .await
             .expect("locked write");
         let loaded = store
@@ -406,6 +413,14 @@ mod tests {
             .await
             .expect("file read");
         assert_eq!(loaded.theme.as_deref(), Some("dark"));
+        assert_eq!(loaded.rewrite_copied_record_domains, Some(false));
+
+        let restarted = AppConfigStore::new(directory.0.clone());
+        let loaded = restarted
+            .get_preferences(no_legacy, deleted)
+            .await
+            .expect("restarted file read");
+        assert_eq!(loaded.rewrite_copied_record_domains, Some(false));
     }
 
     #[tokio::test]
@@ -437,6 +452,12 @@ mod tests {
     async fn corruption_and_version_errors_are_explicit() {
         let directory = TestDir::new();
         let store = AppConfigStore::new(directory.0.clone());
+        fs::write(&store.path, br#"{"version":1,"preferences":{}}"#).expect("write old v1 file");
+        let old = store
+            .read()
+            .expect("read old v1 file")
+            .expect("old v1 envelope");
+        assert_eq!(old.preferences.rewrite_copied_record_domains, None);
         fs::write(&store.path, b"{broken").expect("write corrupt file");
         assert!(matches!(store.read(), Err(AppConfigError::Corrupt(_))));
         fs::write(&store.path, br#"{"version":2,"preferences":{}}"#).expect("write future version");
@@ -471,6 +492,7 @@ mod tests {
         let store = AppConfigStore::new(directory.0.clone());
         let legacy = Preferences {
             theme: Some("legacy".into()),
+            rewrite_copied_record_domains: Some(false),
             ..Preferences::default()
         };
         let loaded = store
@@ -481,6 +503,7 @@ mod tests {
             .await
             .expect("migrate despite delete failure");
         assert_eq!(loaded.theme.as_deref(), Some("legacy"));
+        assert_eq!(loaded.rewrite_copied_record_domains, Some(false));
         store
             .update_preferences(
                 fields(&[("theme", json!("newer"))]),

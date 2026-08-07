@@ -26,6 +26,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import type { DNSRecord, RecordType, TTLValue } from "@/types/dns";
+import {
+  CHARACTER_STRING_MAX_BYTES,
+  characterStringByteLength,
+  hasUnbalancedQuotes,
+  parseCharacterStrings,
+} from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 import { useCloudflareAPI } from "@/hooks/dns/use-cloudflare-api";
 import { useI18n } from "@/hooks/use-i18n";
@@ -247,7 +253,7 @@ export function AddRecordDialog({
       case "MX":
         return "Mail server hostname; set Priority below (lower = higher priority).";
       case "TXT":
-        return "Text value (SPF/DKIM/etc). Newlines are unusual; quotes are optional.";
+        return "Text value (SPF/DKIM/etc). Newlines are unusual; quotes are balanced automatically and values over 255 bytes are split into adjacent strings.";
       case "NS":
         return "Authoritative nameserver hostname.";
       case "PTR":
@@ -659,16 +665,25 @@ export function AddRecordDialog({
         }
         break;
       }
-      case "TXT":
+      case "TXT": {
         if (content.includes("\n"))
           pushUnique(
             "TXT content contains newlines (often rejected by DNS providers).",
           );
-        if (content.length > 255)
+        if (hasUnbalancedQuotes(content))
           pushUnique(
-            "TXT content is longer than 255 characters (may need quoting/splitting).",
+            'TXT content has an unmatched quote; use "Normalize quotes" to balance it.',
+          );
+        const oversized = parseCharacterStrings(content).some(
+          (part) =>
+            characterStringByteLength(part) > CHARACTER_STRING_MAX_BYTES,
+        );
+        if (oversized)
+          pushUnique(
+            'TXT content has a character-string longer than 255 bytes; use "Normalize quotes" to split it into adjacent quoted strings.',
           );
         break;
+      }
       case "SRV": {
         // SRV warnings are shown in the SRV builder panel; keep confirmation logic separate.
         break;

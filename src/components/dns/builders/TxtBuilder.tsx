@@ -1,6 +1,7 @@
 import type { ChangeEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -10,6 +11,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  CHARACTER_STRING_MAX_BYTES,
+  characterStringByteLength,
+  isNormalizedCharacterString,
+  normalizeCharacterString,
+  splitCharacterString,
+  unquoteCharacterString,
+} from "@/lib/dns/character-string";
 import type { SPFGraph } from "@/lib/dns/spf";
 
 import { DkimBuilder } from "./DkimBuilder";
@@ -43,15 +52,37 @@ export function TxtBuilder({
 }) {
   const [txtHelperMode, setTxtHelperMode] = useState<TxtHelperMode>("auto");
 
+  // Auto-detection reads the logical value so quoted and multi-string content
+  // ("v=spf1 …" " ~all") is recognised just like bare content.
   const effectiveMode = useMemo(() => {
     if (record.type !== "TXT") return "generic" as const;
     if (txtHelperMode !== "auto") return txtHelperMode;
-    const content = (record.content ?? "").trim().toLowerCase();
+    const content = unquoteCharacterString(record.content).trim().toLowerCase();
     if (content.startsWith("v=spf1")) return "spf" as const;
     if (content.startsWith("v=dmarc1")) return "dmarc" as const;
     if (content.startsWith("v=dkim1")) return "dkim" as const;
     return "generic" as const;
   }, [record.type, record.content, txtHelperMode]);
+
+  const quoting = useMemo(() => {
+    const content = record.content ?? "";
+    const value = unquoteCharacterString(content);
+    const bytes = characterStringByteLength(value);
+    return {
+      bytes,
+      chunks: splitCharacterString(value).length,
+      normalized: normalizeCharacterString(content),
+      isNormalized: !content.trim() || isNormalizedCharacterString(content),
+      needsSplit: bytes > CHARACTER_STRING_MAX_BYTES,
+    };
+  }, [record.content]);
+
+  const applyQuoteNormalization = () => {
+    const content = record.content ?? "";
+    if (!content.trim()) return;
+    if (quoting.normalized === content) return;
+    onRecordChange({ ...record, content: quoting.normalized });
+  };
 
   const placeholder = useMemo(() => {
     switch (effectiveMode) {
@@ -88,8 +119,28 @@ export function TxtBuilder({
             content: e.target.value,
           })
         }
+        onBlur={applyQuoteNormalization}
         placeholder={placeholder}
       />
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] text-muted-foreground">
+          Saved as quoted character-strings: quotes are balanced and escaped
+          automatically
+          {quoting.needsSplit
+            ? `, and ${quoting.bytes} bytes are split into ${quoting.chunks} strings.`
+            : "."}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7"
+          onClick={applyQuoteNormalization}
+          disabled={quoting.isNormalized}
+        >
+          Normalize quotes
+        </Button>
+      </div>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <div className="space-y-1">
