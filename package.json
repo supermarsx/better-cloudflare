@@ -44,6 +44,7 @@
     "ci": "npm run check",
     "clean:src": "tsx ./scripts/cleanup-src-js.ts",
     "check-spf": "tsx ./scripts/check-spf.ts",
+    "screenshots": "tsx ./scripts/capture-screenshots.ts",
     "docs": "typedoc"
   },
   "dependencies": {
