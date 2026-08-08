@@ -35,12 +35,6 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 | ----------------------------- | -------------------------------------------------------------------------------------- |
 | [Development](development.md) | Dev commands, the `node:test` runner, Rust tests, CI gates, and the screenshot harness |
 
-## Retired
-
-| Document                                        | Status                                                                                                                                                                                                |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Passkey architecture](passkey-architecture.md) | **Retired.** Describes an Express/SQLite server design that was never the desktop implementation. Do not infer current passkey behaviour from it — see [Security](security.md#passkeys-are-disabled). |
-
 ## About the screenshots
 
 Every image on this site uses synthetic demo data — a fictional "Harborline Freight Systems" on RFC 2606 `.test` domains with RFC 5737 and RFC 3849 documentation IP ranges. **No real account, zone or credential appears in any capture.**

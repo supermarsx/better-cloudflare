@@ -80,8 +80,6 @@ The three secondary buttons add a key, edit or delete an existing one (deletion 
 
 Biometric unlock only appears on this screen on macOS, where Touch ID is the sole implemented runtime — see [Biometrics](#biometrics) below.
 
-> `docs/passkey-architecture.md` is **retired**. It describes an Express/SQLite server design that was never the desktop implementation. Do not infer current behaviour from it.
-
 ## Biometrics
 
 **macOS Touch ID only.**
