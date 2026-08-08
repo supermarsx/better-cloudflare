@@ -1,4 +1,6 @@
-/// <reference types="vite/client" />
+// Ambient declarations retained from the pre-Next.js build. The `VITE_*` names
+// below are still read at runtime as legacy fallbacks (see `src/lib/env.ts`),
+// so the interfaces stay even though Vite itself is no longer a dependency.
 
 declare module "*.css";
 
