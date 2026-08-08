@@ -39,6 +39,12 @@ Everything that needs the Rust backend therefore needs the desktop shell:
 
 ## Frontend layout
 
+The whole application is a **single route**. There are no per-screen URLs; navigation is state inside the page. What the user experiences as "screens" are workspace tabs — one per open zone, plus utility tabs such as Settings, Tags, Audit and Registry — each of which swaps the panel below the tab strip:
+
+![The DNS records table for harborline.test: assigned nameservers across the top, a filter row with search, a record-type filter and page controls, an action row with Add Record, Copy selected and Paste, and a sortable table of A, AAAA and CNAME records with comments, TTLs and proxy toggles](screenshots/dark/dns-records-table.png)
+
+That shape is why the tree below is organised by feature rather than by route, and why `src/lib/tabs/tab-order.ts` — tab ordering — is application-level state rather than something a router provides.
+
 ```
 app/                       Next.js route (a single page) and metadata
 src/
@@ -88,6 +94,14 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 | `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions           |
 | `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                           |
 
+### The local MCP server
+
+`bc-mcp` exposes the application's Cloudflare operations to local MCP clients over JSON-RPC at protocol version `2024-11-05`. It is **off by default**, binds `127.0.0.1:8787` when enabled, and requires a bearer token.
+
+<img src="screenshots/dark/mcp-tool-permissions.png" width="720" alt="MCP settings: server status with its local URL, an enable switch, bind host and port fields, and a searchable tool permission list summarising 34 of 53 classified tools enabled, grouped by category with per-tool risk labels">
+
+The permission model is the architecturally interesting part: authorisation is **per tool**, not per server, and every tool carries a classification — capability, category and risk. Tools the classifier does not recognise are denied outright and cannot be enabled, so adding a tool to the crate does not implicitly expose it. See [Security](security.md#mcp-server).
+
 ### The AI crates
 
 Four crates, their Tauri commands in `src-tauri/src/ai_commands.rs`, and a `useAiChat` hook in `src/hooks/ai/use-ai-chat.ts` all exist. **Nothing imports the hook.** There is no AI assistant in the interface and no way for a user to reach this code. It is unshipped groundwork, documented here so nobody mistakes the crate list for a feature list.
@@ -102,7 +116,15 @@ Per-logical-key locks serialise concurrent read-modify-write transactions. Lock 
 
 ## Topology rendering
 
-`bc-topology` resolves; the frontend draws. `ZoneTopologyTab.tsx` builds a Mermaid graph from the resolved data and sanitizes the result (`sanitizeTopologySvg`, with Mermaid's security level and HTML-label settings pinned) before it reaches the DOM, because node labels derive from zone data that the app does not control.
+`bc-topology` resolves; the frontend draws. The split is worth understanding because it is the clearest example of the division of labour across the IPC boundary in this codebase.
+
+![Zone topology graph following a CNAME chain from docs.shipwright.test through two intermediate hostnames to terminal A and AAAA addresses, each annotated with country geolocation and a PTR result, with pan, zoom, annotate, copy and export controls above the canvas](screenshots/light/zone-topology.png)
+
+The Rust side does everything that needs a network or the operating system: it walks CNAME chains to their terminal addresses, performs PTR lookups, attaches geolocation, probes TCP services on the resolved addresses, and handles export-to-file. The frontend receives resolved data and is responsible only for turning it into a picture.
+
+`ZoneTopologyTab.tsx` builds a Mermaid graph from that data and sanitizes the result (`sanitizeTopologySvg`, with Mermaid's security level and HTML-label settings pinned) before it reaches the DOM, because node labels derive from zone data that the app does not control.
+
+This is also why the topology view degrades outside the desktop shell: without the Rust backend there is nothing to resolve, and the frontend has no resolver of its own.
 
 ## Testing and CI
 
@@ -110,8 +132,11 @@ The unit test runner is **Node's built-in `node:test`**, driven by `scripts/run-
 
 `.github/workflows/ci.yml` gates release on `ci_contract`, `unit_tests` (matrix: `default` and `sqlite3-only`), `e2e_reliability`, `native_reliability`, `format`, `lint`, `test_package` and `release_contract` — which runs an OSV scan across both `package-lock.json` and `Cargo.lock` behind a fail-closed policy validator.
 
+[Development](development.md) covers all of this in working detail: the commands, why the runner serialises test files, how to run the Rust suite the way CI does, and what each gate actually enforces.
+
 ## See also
 
 - [Screens and features](screens.md)
 - [Security model](security.md)
+- [Development](development.md) — commands, tests, CI gates, screenshot harness
 - [Tauri migration guide](tauri-migration.md) — command reference and build details

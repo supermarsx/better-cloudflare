@@ -21,13 +21,19 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 
 ## Reference
 
-| Guide                                                                                      | What it covers                                                    |
-| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| [Tauri migration guide](tauri-migration.md)                                                | Desktop backend, Tauri command reference, build and bundle output |
-| [Design system](design-system.md)                                                          | Token model, theming, glass/sunset UI conventions                 |
-| [SPF and NAPTR notes](spf-naptr.md)                                                        | Record-format reference and the `npm run check-spf` CLI           |
-| [Future work](future-work.md)                                                              | Planned work — not released capability                            |
-| [Project specification](https://github.com/supermarsx/better-cloudflare/blob/main/spec.md) | Target product contract, with implementation-status annotations   |
+| Guide                                                                                      | What it covers                                                     |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| [Tauri migration guide](tauri-migration.md)                                                | Desktop backend, Tauri command reference, build and bundle output  |
+| [Design system](design-system.md)                                                          | Token model, theming, glass/sunset UI conventions                  |
+| [SPF and NAPTR notes](spf-naptr.md)                                                        | What the two formats contain, the guided builders, and the SPF CLI |
+| [Future work](future-work.md)                                                              | Planned work — not released capability                             |
+| [Project specification](https://github.com/supermarsx/better-cloudflare/blob/main/spec.md) | Target product contract, with implementation-status annotations    |
+
+## For contributors
+
+| Guide                         | What it covers                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------------- |
+| [Development](development.md) | Dev commands, the `node:test` runner, Rust tests, CI gates, and the screenshot harness |
 
 ## Retired
 
@@ -35,11 +41,9 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Passkey architecture](passkey-architecture.md) | **Retired.** Describes an Express/SQLite server design that was never the desktop implementation. Do not infer current passkey behaviour from it — see [Security](security.md#passkeys-are-disabled). |
 
-## Screenshots
+## About the screenshots
 
-`docs/screenshots/` holds every screen in `dark/` (the default sunset theme) and `light/`, plus the records table in `oled/`. All images use synthetic data — a fictional "Harborline Freight Systems" on RFC 2606 `.test` domains with RFC 5737 and RFC 3849 documentation IPs. No real account, zone or credential appears in any capture.
-
-Regenerate them with `npm run screenshots`, optionally narrowed with `--only=<names>` or `--theme=<themes>`.
+Every image on this site uses synthetic demo data — a fictional "Harborline Freight Systems" on RFC 2606 `.test` domains with RFC 5737 and RFC 3849 documentation IP ranges. **No real account, zone or credential appears in any capture.**
 
 ## Current status at a glance
 
@@ -51,4 +55,4 @@ These are the things most likely to be assumed incorrectly:
 - **The updater is disabled**, and there is no code signing or macOS notarization. Package-manager channels do not exist.
 - **The desktop app is the only shipped target.** A browser-context storage path still exists in the source — it backs the frontend dev server and the jsdom tests — and it never persists credentials.
 - **Secure storage has no in-memory fallback.** If the OS keyring is unavailable, operations fail rather than degrading silently.
-- **The test runner is Node's built-in `node:test`** via `scripts/run-tests-seq.ts` — not Vitest or Jest.
+- **The test runner is Node's built-in `node:test`** via `scripts/run-tests-seq.ts` — not Vitest or Jest. See [Development](development.md#the-unit-runner-is-nodetest-not-vitest-and-not-jest).

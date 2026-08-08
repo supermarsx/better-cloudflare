@@ -10,17 +10,9 @@ Every screen in Better Cloudflare, what it is for, and what you can do there.
 
 The application is a **single route**. There are no per-screen URLs — you move around by opening zone workspaces, switching the action segment inside a workspace, or opening a utility workspace from the command bar. That is why this guide is organised by task rather than by path.
 
-**About the screenshots.** All images use synthetic demo data: a fictional freight company, "Harborline Freight Systems", on RFC 2606 `.test` domains with RFC 5737 and RFC 3849 documentation IP ranges. No real account, zone or credential appears anywhere. Regenerate the whole set with:
+**About the screenshots.** All images use synthetic demo data: a fictional freight company, "Harborline Freight Systems", on RFC 2606 `.test` domains with RFC 5737 and RFC 3849 documentation IP ranges. No real account, zone or credential appears anywhere.
 
-```bash
-npm run screenshots                        # every screen, dark + light
-npm run screenshots -- --only=login,cache  # just these screens
-npm run screenshots -- --theme=light       # just one theme
-```
-
-The harness (`scripts/capture-screenshots.ts`) drives the real UI against stubbed backend fixtures at 1440×960 with a 2× device scale factor, and refuses to save a capture if a Tauri command went unanswered, the page threw, a decrypted token appeared on screen, or the PNG came out suspiciously small.
-
-Screens are shown in the default **sunset** dark theme. A light-theme gallery closes each section; `oled` is a third theme, captured for the records table only.
+Screens are shown in the default **sunset** dark theme. A light-theme gallery closes each section; `oled` is a third theme, captured for the records table only. Contributors regenerating the set will want the [screenshot harness notes](development.md#the-documentation-screenshot-harness).
 
 ---
 
@@ -428,4 +420,5 @@ See [the design system notes](design-system.md) for the token model behind them.
 
 - [Architecture](architecture.md) — the desktop shell, the crate map, how data flows
 - [Security model](security.md) — encryption, storage, and what does not work
+- [Development](development.md) — how these screenshots are produced, and the rest of the contributor tooling
 - [Documentation hub](index.md)

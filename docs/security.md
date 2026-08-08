@@ -26,7 +26,13 @@ API keys are encrypted with **AES-256-GCM** under a key derived by **PBKDF2-HMAC
 | Iterations                    | 100,000 – 1,000,000, user-configurable |
 | Key length                    | 256 bits (fixed)                       |
 
-Iterations are tunable in the encryption settings dialog, which also benchmarks a derivation so you can raise the count until unlock takes as long as you are willing to tolerate.
+Only the iteration count is yours to choose. The dialog below is the whole of the user-facing surface:
+
+<img src="screenshots/dark/encryption-settings.png" width="620" alt="Encryption Settings modal: a PBKDF2 iterations field set to 310000 with its permitted range printed underneath, key length and algorithm selects that are visibly disabled, Benchmark and Update buttons, an Enable OS Vault switch, and the reading from the last benchmark run">
+
+**Key length** and **algorithm** are rendered as disabled controls rather than hidden, so you can see what you are getting: 256-bit AES-GCM, not negotiable. **Iterations** is the free parameter, and the field is clamped to the range printed beneath it. **Benchmark** times one derivation at the current setting and reports the result, which is the honest way to pick a number — raise the count until unlock takes as long as you are willing to wait on the slowest machine you use, rather than copying a figure from a blog post.
+
+**Enable OS Vault** stores decrypted keys in the system vault. It exists to support passkey login, which is [currently unavailable](#passkeys-are-disabled), so leaving it off costs you nothing today.
 
 > **Limit: the iteration floor applies to encryption, not decryption.** A legacy decrypt path still reads older unversioned envelopes, which carry no AAD and may declare as few as one iteration. This exists so upgrades do not strand existing keys. Re-saving a key migrates it onto the `bc1:` envelope. Do not read "100,000 minimum" as a guarantee about data already on disk.
 
@@ -64,7 +70,15 @@ Passkey **registration and authentication do not work**, by design.
 
 What still works, for recovery only: **listing** legacy credentials and **deleting** them. Every listed credential requires re-enrollment if verified support returns.
 
-The login screen states this in a status panel rather than presenting a button that fails.
+The login screen states this outright, in a status panel, rather than presenting a button that fails:
+
+<img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel reporting that passkey registration and authentication are unavailable">
+
+This is also the screen where the credential-unlock model is visible in one glance. Nothing is decrypted at rest by the act of selecting a key: you pick a stored credential from **API Key**, and the vault password you type is what derives the PBKDF2 key that unwraps it. The password is never stored — losing it means losing access to that key, which is the intended property.
+
+The three secondary buttons add a key, edit or delete an existing one (deletion is confirm-gated), and open the [encryption settings](#encryption) dialog.
+
+Biometric unlock only appears on this screen on macOS, where Touch ID is the sole implemented runtime — see [Biometrics](#biometrics) below.
 
 > `docs/passkey-architecture.md` is **retired**. It describes an Express/SQLite server design that was never the desktop implementation. Do not infer current behaviour from it.
 
@@ -78,7 +92,13 @@ The login screen states this in a status panel rather than presenting a button t
 
 The local MCP server is **off by default**. When enabled it binds `127.0.0.1:8787` by default, speaks JSON-RPC at protocol version `2024-11-05`, and requires a bearer token.
 
-Authorisation is per tool, not per server. Enabling any write, bulk, destructive, credential-touching or administrative tool raises a modal listing exactly what you are about to grant and requires explicit confirmation. **Unclassified tools are always denied** and cannot be enabled — an unrecognised tool fails closed rather than inheriting a permissive default.
+Authorisation is per tool, not per server:
+
+<img src="screenshots/dark/mcp-tool-permissions.png" width="720" alt="MCP settings: server status with its local URL, an enable switch, bind host and port fields with an Apply and restart button, and a searchable per-tool permission list whose summary reads 34 of 53 classified tools enabled, with tools grouped by category and carrying risk labels such as CREDENTIAL ACCESS">
+
+Granting the server access is not one decision but many. Each tool is classified by capability, category and risk, the summary line keeps the count of what is actually enabled visible ("N of M classified tools enabled"), and the risk labels — `CREDENTIAL ACCESS` and its peers — are attached to the individual rows rather than buried in a description.
+
+Enabling any write, bulk, destructive, credential-touching or administrative tool raises a modal listing exactly what you are about to grant and requires explicit confirmation. **Unclassified tools are always denied** and cannot be enabled — an unrecognised tool fails closed rather than inheriting a permissive default, so adding a tool to the backend does not silently expose it.
 
 ## Distribution
 
@@ -96,4 +116,5 @@ The `release_contract` CI job runs an OSV scan across both `package-lock.json` a
 
 - [Architecture](architecture.md) — storage internals and the crate map
 - [Screens and features](screens.md) — the login, encryption and MCP screens
+- [Development](development.md) — how CI enforces the supply-chain gate above
 - [Tauri migration guide](tauri-migration.md)

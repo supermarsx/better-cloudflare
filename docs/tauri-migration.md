@@ -27,6 +27,10 @@ This guide explains the conversion of Better Cloudflare from a web application t
 - **Communication**: Tauri IPC (Inter-Process Communication)
 - **Storage**: OS Keychain (via keyring crate); no automatic fallback
 
+What that produces is a native window with its own title bar and tab strip, running the same React tree the browser build renders — the visible difference is not the UI but what is behind it, because every panel here is fed by a Tauri command rather than an HTTP endpoint:
+
+![The Better Cloudflare desktop window showing a row of workspace tabs for four zones, each with a drag grip and a close button, and a drop indicator marking where a tab being dragged will land](screenshots/dark/workspace-tabs.png)
+
 ## Key Changes
 
 ### 1. Backend Migration (TypeScript → Rust)
@@ -274,6 +278,8 @@ cargo test
 npm run test:e2e
 ```
 
+The JavaScript unit suite runs on **Node's built-in `node:test`** rather than Vitest or Jest. [Development](development.md#tests) covers the full command set, the reason the runner serialises test files, and what CI gates on.
+
 ### Manual Testing
 
 1. Launch with `npm run tauri:dev`
@@ -386,6 +392,7 @@ npm run tauri:build
 
 ## Additional Resources
 
+- [Development](development.md) — local commands, tests and CI gates in this repository
 - [Tauri Documentation](https://tauri.app/)
 - [Tauri Command Guide](https://tauri.app/v1/guides/features/command)
 - [Rust Book](https://doc.rust-lang.org/book/)
