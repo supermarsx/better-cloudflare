@@ -45,7 +45,15 @@ const UNSAFE_RESOURCE_OPTIONS = new Set([
 const MAX_TEST_FILTER_LENGTH = 1024;
 const MAX_PROCESS_TREE_MEMORY_MIB = 1792;
 const MAX_OLD_SPACE_SIZE_MIB = 1536;
+const MAX_BATCH_CONCURRENCY = 8;
+const BATCH_MEMORY_HEADROOM = 0.5;
 
+/**
+ * The bounded profile every CI runner gets. One file per process, one process at
+ * a time, so the peak footprint of the whole suite is the peak footprint of its
+ * single heaviest file. {@link resolveBatchConcurrency} returns exactly this on
+ * CI; only a developer machine is allowed to widen it.
+ */
 export const TEST_RUNNER_LIMITS = Object.freeze({
   maxWorkers: 1,
   fileParallelism: false,
@@ -136,6 +144,19 @@ interface RunTestSuiteOptions {
   files?: string[];
   executeBatch?: (batch: BatchDescriptor) => Promise<BatchResult>;
   writeOutput?: boolean;
+  /**
+   * How many one-file batches may be in flight at once. Defaults to the bounded
+   * value of 1 so that every caller - including the contract suite - has to opt
+   * in explicitly; `main` is the only place that consults the host.
+   */
+  batchConcurrency?: number;
+}
+
+export interface BatchConcurrencyInputs {
+  env?: NodeJS.ProcessEnv;
+  availableParallelism?: number;
+  freeMemoryBytes?: number;
+  memoryLimitMiB?: number;
 }
 
 interface SignalSource {
@@ -205,6 +226,76 @@ function readPositiveInteger(
 
 function signalExitCode(reason: unknown): number | null {
   return reason instanceof TestRunnerSignalError ? reason.exitCode : null;
+}
+
+/**
+ * `CI` is the repository-wide signal for "bounded shared runner". `dev-port.mjs`
+ * and `next.config.mjs` read it exactly the same way, so a value of `0`, `false`
+ * or the empty string never counts as CI.
+ */
+export function isContinuousIntegration(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = env.CI;
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 && normalized !== "0" && normalized !== "false";
+}
+
+/**
+ * How many one-file batches may run at once.
+ *
+ * CI always gets {@link TEST_RUNNER_LIMITS}.maxWorkers - the enforced value of 1
+ * - and returns before any host capability or override is even read, so a CI run
+ * cannot be widened by an environment variable. A developer machine gets the
+ * smallest of: half its logical CPUs, however many whole
+ * {@link MAX_PROCESS_TREE_MEMORY_MIB} process trees fit in half of free memory,
+ * and {@link MAX_BATCH_CONCURRENCY}. `TEST_BATCH_CONCURRENCY` overrides that
+ * locally, still bounded by {@link MAX_BATCH_CONCURRENCY}.
+ *
+ * Note that this is *batch* concurrency, not `--test-concurrency`. Every batch
+ * is a single file in its own process, so `--test-concurrency` - which caps how
+ * many files one `node --test` process runs at once - has no effect on wall time
+ * here and stays pinned at 1.
+ */
+export function resolveBatchConcurrency(
+  inputs: BatchConcurrencyInputs = {},
+): number {
+  const env = inputs.env ?? process.env;
+  if (isContinuousIntegration(env)) {
+    return TEST_RUNNER_LIMITS.maxWorkers;
+  }
+
+  const memoryLimitMiB = inputs.memoryLimitMiB ?? MAX_PROCESS_TREE_MEMORY_MIB;
+  const freeMemoryMiB = (inputs.freeMemoryBytes ?? os.freemem()) / 1024 / 1024;
+  const memoryBudget = Math.floor(
+    (freeMemoryMiB * BATCH_MEMORY_HEADROOM) / memoryLimitMiB,
+  );
+  const cpuBudget = Math.floor(
+    (inputs.availableParallelism ?? os.availableParallelism()) / 2,
+  );
+  const ceiling = Math.max(
+    1,
+    Math.min(MAX_BATCH_CONCURRENCY, cpuBudget, memoryBudget),
+  );
+
+  const override = env.TEST_BATCH_CONCURRENCY;
+  if (override === undefined || override.length === 0) {
+    return ceiling;
+  }
+  const parsed = Number(override);
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < 1 ||
+    parsed > MAX_BATCH_CONCURRENCY
+  ) {
+    throw new Error(
+      `TEST_BATCH_CONCURRENCY must be an integer between 1 and ${MAX_BATCH_CONCURRENCY}.`,
+    );
+  }
+  return parsed;
 }
 
 export function validateNodeOptions(nodeOptions: string | undefined): number {
@@ -793,6 +884,10 @@ export async function runTestSuite(
   const summary = emptySummary();
   const startedAt = Date.now();
   const universeFileCount = options.universeFileCount ?? discoveredFiles.length;
+  const batchConcurrency = Math.max(
+    1,
+    options.batchConcurrency ?? TEST_RUNNER_LIMITS.maxWorkers,
+  );
   let peakSingleRssBytes = 0;
   let peakAggregateRssBytes = 0;
   let firstFailure: { exitCode: number; file: string } | null = null;
@@ -801,8 +896,8 @@ export async function runTestSuite(
   console.log(
     `[test-orchestrator] discovered=${universeFileCount} ` +
       `selected=${discoveredFiles.length} ` +
-      `maxWorkers=${TEST_RUNNER_LIMITS.maxWorkers} ` +
-      `fileParallelism=${TEST_RUNNER_LIMITS.fileParallelism} ` +
+      `maxWorkers=${batchConcurrency} ` +
+      `fileParallelism=${batchConcurrency > 1} ` +
       `filesPerBatch=${TEST_RUNNER_LIMITS.filesPerBatch}`,
   );
 
@@ -831,22 +926,16 @@ export async function runTestSuite(
     };
   };
 
-  for (const [batchIndex, [file]] of batches.entries()) {
-    if (options.signal?.aborted) {
-      return finish(
-        signalExitCode(options.signal.reason) ?? 1,
-        firstFailure?.file ?? file,
-      );
-    }
+  // Results are recorded by batch index and only folded into the suite summary
+  // once every worker has stopped, so the summary, the completed-file list and
+  // the first-failure attribution are byte-for-byte independent of how many
+  // batches ran side by side.
+  const results: Array<BatchResult | null> = batches.map(() => null);
+  let nextBatchIndex = 0;
+  let stoppedFile: string | null = null;
+  let timedOut = false;
 
-    const elapsedMs = Date.now() - startedAt;
-    const remainingSuiteMs = options.suiteTimeoutMs - elapsedMs;
-    if (remainingSuiteMs <= 0) {
-      failedBatches += 1;
-      console.error(`[test-orchestrator] suite timeout before file=${file}`);
-      return finish(124, firstFailure?.file ?? file);
-    }
-
+  const runBatch = async (batchIndex: number, file: string): Promise<void> => {
     const summaryFile = path.join(
       os.tmpdir(),
       `better-cloudflare-test-summary-${process.pid}-${randomUUID()}.tap`,
@@ -861,16 +950,18 @@ export async function runTestSuite(
         summaryFile,
       ),
       summaryFile,
-      timeoutMs: Math.min(options.batchTimeoutMs, remainingSuiteMs),
+      timeoutMs: Math.min(
+        options.batchTimeoutMs,
+        options.suiteTimeoutMs - (Date.now() - startedAt),
+      ),
       memoryLimitMiB: options.memoryLimitMiB,
     };
     console.log(
       `[test-orchestrator] batch=${descriptor.index}/${descriptor.total} file=${file}`,
     );
 
-    let result: BatchResult;
     try {
-      result = options.executeBatch
+      results[batchIndex] = options.executeBatch
         ? await options.executeBatch(descriptor)
         : await executeRealBatch(
             options.rootDir,
@@ -884,7 +975,7 @@ export async function runTestSuite(
       console.error(
         `[test-orchestrator] runner error file=${file}\n${String(detail)}`,
       );
-      result = {
+      results[batchIndex] = {
         exitCode: 1,
         signal: null,
         stdout: "",
@@ -894,6 +985,55 @@ export async function runTestSuite(
       };
     } finally {
       fs.rmSync(summaryFile, { force: true });
+    }
+
+    // Report the failure next to the output that produced it. Attribution of
+    // the *first* failure still happens in the ordered pass below.
+    const result = results[batchIndex];
+    if (result !== null && result.exitCode !== 0) {
+      console.error(
+        `[test-orchestrator] failed file=${file} exitCode=${result.exitCode}`,
+      );
+    } else if (result !== null && result.summary === null) {
+      console.error(
+        `[test-orchestrator] missing node:test summary for passing file=${file}`,
+      );
+    }
+  };
+
+  const drainQueue = async (): Promise<void> => {
+    while (nextBatchIndex < batches.length) {
+      if (options.signal?.aborted || timedOut) {
+        stoppedFile ??= batches[nextBatchIndex][0];
+        return;
+      }
+
+      const batchIndex = nextBatchIndex;
+      nextBatchIndex += 1;
+      const [file] = batches[batchIndex];
+
+      if (options.suiteTimeoutMs - (Date.now() - startedAt) <= 0) {
+        timedOut = true;
+        stoppedFile ??= file;
+        failedBatches += 1;
+        console.error(`[test-orchestrator] suite timeout before file=${file}`);
+        return;
+      }
+
+      await runBatch(batchIndex, file);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(batchConcurrency, batches.length) }, () =>
+      drainQueue(),
+    ),
+  );
+
+  for (const [batchIndex, [file]] of batches.entries()) {
+    const result = results[batchIndex];
+    if (result === null) {
+      continue;
     }
 
     if (result.watchdog !== null) {
@@ -915,19 +1055,23 @@ export async function runTestSuite(
     if (result.exitCode !== 0) {
       firstFailure ??= { exitCode: result.exitCode, file };
       failedBatches += 1;
-      console.error(
-        `[test-orchestrator] failed file=${file} exitCode=${result.exitCode}`,
-      );
       continue;
     }
 
     if (result.summary === null) {
       firstFailure ??= { exitCode: 1, file };
       failedBatches += 1;
-      console.error(
-        `[test-orchestrator] missing node:test summary for passing file=${file}`,
-      );
     }
+  }
+
+  if (options.signal?.aborted) {
+    return finish(
+      signalExitCode(options.signal.reason) ?? 1,
+      firstFailure?.file ?? stoppedFile,
+    );
+  }
+  if (timedOut) {
+    return finish(124, firstFailure?.file ?? stoppedFile);
   }
 
   return finish(firstFailure?.exitCode ?? 0, firstFailure?.file ?? null);
@@ -1001,6 +1145,7 @@ async function main(): Promise<number> {
       universeFileCount: universeFiles.length,
       files: invocation.files,
       signal: controller.signal,
+      batchConcurrency: resolveBatchConcurrency(),
     });
     return signalExitCode(controller.signal.reason) ?? result.exitCode;
   } finally {

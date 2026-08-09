@@ -556,3 +556,22 @@ browserWindow.dispatchEvent = function (this: Window, event: Event) {
     return true;
   }
 } as (event: Event) => boolean;
+
+// Loaded last, and through `require` rather than a hoisted `import`, because
+// `@testing-library/dom` binds `screen` to `globalThis.document` at module
+// evaluation - importing it before the globals above exist makes every
+// screen-based query throw "a global document has to be available".
+//
+// Testing Library's 1000ms `asyncUtilTimeout` is not a budget, it is a race:
+// mounting a full DNSManager and settling its effects measurably exceeds it.
+// Three suites have been observed failing at 1186ms, 1199ms and 1228ms on an
+// otherwise idle machine, always reported as "Unable to find ...". Every
+// `findBy*` and `waitFor` resolves the moment its condition holds, so a higher
+// ceiling costs nothing on the passing path; it only stops a slow render from
+// being misreported as a missing element. Explicit per-call `{ timeout }`
+// options still take precedence.
+const requireTestingLibrary = createRequire(import.meta.url);
+const { configure: configureTestingLibrary } = requireTestingLibrary(
+  "@testing-library/dom",
+) as { configure: (options: { asyncUtilTimeout: number }) => void };
+configureTestingLibrary({ asyncUtilTimeout: 15_000 });

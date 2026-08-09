@@ -8,20 +8,26 @@ import path from "node:path";
 import { test } from "node:test";
 
 import {
+  TEST_RUNNER_LIMITS,
   TestRunnerSignalError,
   buildBatchPlan,
   buildNodeTestArguments,
   discoverTestFiles,
   installSignalHandlers,
+  isContinuousIntegration,
   matchesGlobPattern,
   normalizeTestFilePath,
   prepareTestInvocation,
+  resolveBatchConcurrency,
   runGuardedProcess,
   runTestSuite,
   validateNodeOptions,
   type BatchResult,
   type TestSummary,
 } from "./run-tests-seq.ts";
+
+/** Enough free memory that the memory budget never becomes the binding limit. */
+const ampleMemoryBytes = 256 * 1024 * 1024 * 1024;
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const liveFixtureProcessIds = new Set<number>();
@@ -346,6 +352,76 @@ test("filters, help, reporting, and concurrency overrides are handled safely", (
     () => prepareTestInvocation(files, ["--test-concurrency=8"]),
     /cannot override/u,
   );
+
+  // Batch concurrency is adaptive, but CI is pinned to the bounded profile and
+  // resolves it *before* any host capability or override is consulted. These
+  // assertions pin the CI-constrained value, not the raw ceiling.
+  assert.equal(TEST_RUNNER_LIMITS.maxWorkers, 1);
+  assert.equal(TEST_RUNNER_LIMITS.fileParallelism, false);
+  assert.equal(TEST_RUNNER_LIMITS.filesPerBatch, 1);
+  for (const ciValue of ["true", "1", "TRUE", " true "]) {
+    assert.equal(isContinuousIntegration({ CI: ciValue }), true);
+    assert.equal(
+      resolveBatchConcurrency({
+        env: { CI: ciValue, TEST_BATCH_CONCURRENCY: "8" },
+        availableParallelism: 64,
+        freeMemoryBytes: ampleMemoryBytes,
+      }),
+      TEST_RUNNER_LIMITS.maxWorkers,
+      `CI=${ciValue} must stay on the bounded single-batch profile`,
+    );
+  }
+  for (const ciValue of ["", "0", "false", "FALSE"]) {
+    assert.equal(isContinuousIntegration({ CI: ciValue }), false);
+  }
+  assert.equal(isContinuousIntegration({}), false);
+
+  // A developer machine widens, but never past the ceiling, and never past what
+  // whole 1792 MiB process trees fit in half of free memory.
+  assert.equal(
+    resolveBatchConcurrency({
+      env: {},
+      availableParallelism: 64,
+      freeMemoryBytes: ampleMemoryBytes,
+    }),
+    8,
+  );
+  assert.equal(
+    resolveBatchConcurrency({
+      env: {},
+      availableParallelism: 4,
+      freeMemoryBytes: ampleMemoryBytes,
+    }),
+    2,
+  );
+  assert.equal(
+    resolveBatchConcurrency({
+      env: {},
+      availableParallelism: 64,
+      freeMemoryBytes: 4 * 1024 * 1024 * 1024,
+    }),
+    1,
+    "A memory-poor host must fall back to the bounded profile",
+  );
+  assert.equal(
+    resolveBatchConcurrency({
+      env: { TEST_BATCH_CONCURRENCY: "3" },
+      availableParallelism: 64,
+      freeMemoryBytes: ampleMemoryBytes,
+    }),
+    3,
+  );
+  for (const invalid of ["0", "9", "-1", "two", "1.5"]) {
+    assert.throws(
+      () =>
+        resolveBatchConcurrency({
+          env: { TEST_BATCH_CONCURRENCY: invalid },
+          availableParallelism: 64,
+          freeMemoryBytes: ampleMemoryBytes,
+        }),
+      /TEST_BATCH_CONCURRENCY must be an integer between 1 and 8/u,
+    );
+  }
   assert.throws(
     () => prepareTestInvocation(files, ["--watch"]),
     /incompatible/u,
@@ -403,6 +479,40 @@ test("a failing batch propagates its exit code without omitting later files", as
   assert.deepEqual(result.completedFiles, files);
   assert.equal(result.summary.tests, 2);
   assert.equal(result.summary.pass, 2);
+
+  // Widening batch concurrency is a scheduling change only: completion order,
+  // the aggregate summary and first-failure attribution stay in file order even
+  // when batches finish out of order.
+  let inFlight = 0;
+  let observedPeakInFlight = 0;
+  const parallel = await runTestSuite({
+    rootDir: repositoryRoot,
+    callerArguments: [],
+    batchTimeoutMs: 10_000,
+    suiteTimeoutMs: 20_000,
+    memoryLimitMiB: 256,
+    files,
+    writeOutput: false,
+    batchConcurrency: 3,
+    executeBatch: async (batch) => {
+      inFlight += 1;
+      observedPeakInFlight = Math.max(observedPeakInFlight, inFlight);
+      // Finish in reverse order so completion order cannot match file order.
+      const delayMs = batch.file.endsWith("01.test.ts") ? 40 : 5;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      inFlight -= 1;
+      return batch.file === "test/01.test.ts" ||
+        batch.file === "test/02.test.ts"
+        ? fakeBatchResult(batch.file.endsWith("01.test.ts") ? 21 : 37, null)
+        : fakeBatchResult(0, passingSummary());
+    },
+  });
+
+  assert.equal(observedPeakInFlight, 3, "Batches must actually overlap");
+  assert.deepEqual(parallel.completedFiles, files);
+  assert.equal(parallel.failedFile, "test/01.test.ts");
+  assert.equal(parallel.exitCode, 21);
+  assert.equal(parallel.summary.tests, 1);
 });
 
 test(

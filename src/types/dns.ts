@@ -278,14 +278,12 @@ function parsePresets(presetsStr: string): (number | "auto")[] {
 export function getTTLPresets(): TTLValue[] {
   // Client build environment (Vite) has `import.meta.env`; server has process.env
   let envVal: string | undefined;
-  // import.meta may be available when the code is bundled by Vite. Use a
-  // safe typed access to avoid linting and TS errors in environments where
-  // import.meta is undefined.
+  // Bundlers only support *property access* on `import.meta`; binding the object
+  // itself to a variable makes webpack emit a "Critical dependency: Accessing
+  // import.meta directly is unsupported" warning on every build. Read the
+  // property directly, exactly like `src/lib/env.ts` does.
   if (typeof import.meta !== "undefined") {
-    const meta = import.meta as { env?: Record<string, string> } | undefined;
-    if (meta?.env) {
-      envVal = meta.env.VITE_TTL_PRESETS;
-    }
+    envVal = import.meta.env?.VITE_TTL_PRESETS;
   }
   if (!envVal) envVal = process.env.TTL_PRESETS || process.env.VITE_TTL_PRESETS;
   if (!envVal) {
