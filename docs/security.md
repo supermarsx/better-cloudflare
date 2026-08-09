@@ -115,4 +115,3 @@ The `release_contract` CI job runs an OSV scan across both `package-lock.json` a
 - [Architecture](architecture.md) — storage internals and the crate map
 - [Screens and features](screens.md) — the login, encryption and MCP screens
 - [Development](development.md) — how CI enforces the supply-chain gate above
-- [Tauri migration guide](tauri-migration.md)

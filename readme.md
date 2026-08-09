@@ -167,7 +167,6 @@ CI (`.github/workflows/ci.yml`) gates release on `ci_contract`, `unit_tests` (ma
 - [Screens and features](docs/screens.md) — all 26 screens, what each one does
 - [Architecture](docs/architecture.md) — the desktop shell, the crate map, how data flows
 - [Security model](docs/security.md) — encryption, storage, and current limits
-- [Tauri migration guide](docs/tauri-migration.md) — desktop backend and command reference
 - [Design system](docs/design-system.md) — theming and UI conventions
 - [SPF and NAPTR notes](docs/spf-naptr.md)
 - [Documentation hub](docs/index.md)

@@ -2690,7 +2690,6 @@ See `CONTRIBUTING.md` for guidelines.
 
 - Main readme: `readme.md`
 - Documentation hub: `docs/index.md`
-- Migration guide: `docs/tauri-migration.md`
 - Screens and features: `docs/screens.md`
 - Spec: `spec.md`
 

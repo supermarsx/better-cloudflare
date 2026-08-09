@@ -139,4 +139,3 @@ The unit test runner is **Node's built-in `node:test`**, driven by `scripts/run-
 - [Screens and features](screens.md)
 - [Security model](security.md)
 - [Development](development.md) — commands, tests, CI gates, screenshot harness
-- [Tauri migration guide](tauri-migration.md) — command reference and build details

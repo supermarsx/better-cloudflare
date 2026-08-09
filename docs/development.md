@@ -167,5 +167,4 @@ Generated TypeDoc output goes to `docs/api/`, which `_config.yml` marks `nav_exc
 ## See also
 
 - [Architecture](architecture.md) — the crate map and how the frontend reaches the backend
-- [Tauri migration guide](tauri-migration.md) — Tauri command reference and bundle output
 - [Screens and features](screens.md) — what the screenshots show

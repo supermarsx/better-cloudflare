@@ -23,7 +23,6 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 
 | Guide                                                                                      | What it covers                                                     |
 | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| [Tauri migration guide](tauri-migration.md)                                                | Desktop backend, Tauri command reference, build and bundle output  |
 | [Design system](design-system.md)                                                          | Token model, theming, glass/sunset UI conventions                  |
 | [SPF and NAPTR notes](spf-naptr.md)                                                        | What the two formats contain, the guided builders, and the SPF CLI |
 | [Future work](future-work.md)                                                              | Planned work — not released capability                             |
