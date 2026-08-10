@@ -25,6 +25,7 @@ import {
   composeSSHFP,
   composeTLSA,
   parseBINDZone,
+  parseCSVRecords,
   parseNAPTR,
   parseSRV,
   parseSSHFP,
@@ -534,4 +535,301 @@ test("address and hostname RDATA is validated against the documentation ranges",
       `${entry.type} ${entry.content}`,
     );
   }
+});
+
+/** Quote a value for one RFC 4180 CSV cell. */
+function csvCell(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+/**
+ * The structured record types whose RDATA is a fixed sequence of fields. Each
+ * fixture is written in the presentation form of its defining RFC; `fields` is
+ * the leading token sequence that must survive in position.
+ */
+const STRUCTURED_RDATA = [
+  {
+    type: "LOC",
+    rfc: "RFC 1876 §3",
+    rdata: "42 21 54.000 N 71 06 18.000 W -24m 30m 10m 2m",
+    fields: ["42", "21", "54.000", "N"],
+  },
+  {
+    type: "APL",
+    rfc: "RFC 3123 §4",
+    rdata: "1:192.0.2.0/24 !1:192.0.2.7/32 2:2001:db8::/32",
+    fields: ["1:192.0.2.0/24", "!1:192.0.2.7/32"],
+  },
+  {
+    type: "CERT",
+    rfc: "RFC 4398 §2",
+    rdata: "1 12345 8 MIICajCCAdOgAwIBAgICBEUwDQYJKoZIhvcNAQEFBQAw",
+    fields: ["1", "12345", "8"],
+  },
+  {
+    type: "NAPTR",
+    rfc: "RFC 3403 §4.1",
+    rdata: '100 10 "S" "SIP+D2U" "" _sip._udp.example.com.',
+    fields: ["100", "10", '"S"'],
+  },
+  {
+    type: "SVCB",
+    rfc: "RFC 9460 §2.1",
+    rdata: '1 svc.example.net. alpn="h2,h3" port=8443',
+    fields: ["1", "svc.example.net."],
+  },
+  {
+    type: "HTTPS",
+    rfc: "RFC 9460 §2.1",
+    rdata: '1 . alpn="h2,h3" ipv4hint=192.0.2.1',
+    fields: ["1", "."],
+  },
+  {
+    type: "SSHFP",
+    rfc: "RFC 4255 §3.1",
+    rdata: "4 2 0123456789abcdef",
+    fields: ["4", "2", "0123456789abcdef"],
+  },
+  {
+    type: "TLSA",
+    rfc: "RFC 6698 §2.1",
+    rdata: "3 1 1 0123456789abcdef",
+    fields: ["3", "1", "1", "0123456789abcdef"],
+  },
+  {
+    type: "DNSKEY",
+    rfc: "RFC 4034 §2.1",
+    rdata: "257 3 8 AwEAAaHIwpx3w4VHKi6i1LHnTaWeHCL154Jug0Ykv",
+    fields: ["257", "3", "8"],
+  },
+  {
+    type: "DS",
+    rfc: "RFC 4034 §5.1",
+    rdata: "12345 8 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE",
+    fields: ["12345", "8", "2"],
+  },
+  {
+    type: "RP",
+    rfc: "RFC 1183 §2.2",
+    rdata: "admin.example.com. contact.example.com.",
+    fields: ["admin.example.com.", "contact.example.com."],
+  },
+  {
+    type: "AFSDB",
+    rfc: "RFC 1183 §1",
+    rdata: "1 afsdb.example.com.",
+    fields: ["1", "afsdb.example.com."],
+  },
+  {
+    type: "SMIMEA",
+    rfc: "RFC 8162 §2",
+    rdata: "3 0 0 0123456789abcdef",
+    fields: ["3", "0", "0", "0123456789abcdef"],
+  },
+  {
+    type: "OPENPGPKEY",
+    rfc: "RFC 7929 §2",
+    rdata: "mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==",
+    fields: ["mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ=="],
+  },
+  {
+    type: "CAA",
+    rfc: "RFC 8659 §4",
+    rdata: '0 issue "ca.example.net"',
+    fields: ["0", "issue"],
+  },
+  {
+    type: "HINFO",
+    rfc: "RFC 1035 §3.3.2",
+    rdata: '"PC-Intel-700mhz" "FreeBSD 14.0"',
+    fields: ['"PC-Intel-700mhz"'],
+  },
+  {
+    type: "URI",
+    rfc: "RFC 7553 §4.5",
+    rdata: '10 1 "https://example.com/path?a=1&b=2"',
+    fields: ["10", "1"],
+  },
+] as const;
+
+test("every structured record type imports identically from BIND and from CSV", () => {
+  for (const entry of STRUCTURED_RDATA) {
+    const label = `${entry.type} (${entry.rfc})`;
+
+    // BIND: `<owner> <ttl> <class> <type> <rdata>`.
+    const fromZone = parseZoneLine(
+      `example.com. 3600 IN ${entry.type} ${entry.rdata}`,
+    );
+    assert.equal(fromZone.type, entry.type, label);
+    assert.equal(fromZone.ttl, 3600, label);
+    assert.equal(fromZone.content, entry.rdata, label);
+
+    // The same record with the class omitted, the TTL omitted, and the type in
+    // lower case — all legal zone syntax — yields the same RDATA and type.
+    for (const line of [
+      `example.com. 3600 ${entry.type} ${entry.rdata}`,
+      `example.com. IN ${entry.type} ${entry.rdata}`,
+      `example.com. ${entry.type} ${entry.rdata}`,
+      `example.com. 3600 in ${entry.type.toLowerCase()} ${entry.rdata}`,
+    ]) {
+      const parsed = parseZoneLine(line);
+      assert.equal(parsed.type, entry.type, line);
+      assert.equal(parsed.content, entry.rdata, line);
+    }
+
+    // CSV: the RDATA travels in one quoted cell, commas and quotes included.
+    const [fromCsv] = parseCSVRecords(
+      [
+        "Type,Name,Content,TTL,Priority,Proxied",
+        `${entry.type},example.com,${csvCell(entry.rdata)},3600,,false`,
+      ].join("\n"),
+    );
+    assert.equal(fromCsv.type, entry.type, label);
+    assert.equal(fromCsv.ttl, 3600, label);
+
+    // The two import paths must not disagree about the same record.
+    assert.equal(fromCsv.content, fromZone.content, label);
+
+    // The RDATA fields stay in the order the RFC defines them.
+    assert.deepEqual(
+      (fromZone.content ?? "").split(/\s+/u).slice(0, entry.fields.length),
+      [...entry.fields],
+      label,
+    );
+
+    // Nothing in the fixture is rejected locally: a structured type either has
+    // an explicit rule below or is left for Cloudflare to judge.
+    assert.deepEqual(
+      validate({
+        type: entry.type,
+        name: "example.com",
+        content: entry.rdata,
+        ttl: 3600,
+      }),
+      { ok: true, problems: [] },
+      label,
+    );
+  }
+});
+
+test("malformed structured RDATA is rejected at validation, not passed through", () => {
+  // The parser deliberately does not judge RDATA — a record that imports and is
+  // then refused with a precise message is recoverable, one that is silently
+  // rewritten is not. These are the types the validator has strict rules for,
+  // so a truncated or mistyped value from either import path is caught before
+  // it can be written.
+  const malformed = [
+    { type: "TLSA", rdata: "3 1", problem: "usage selector matching-type" },
+    { type: "TLSA", rdata: "x 1 1 abcdef", problem: "usage selector" },
+    { type: "SSHFP", rdata: "4 2", problem: "algorithm fptype fingerprint" },
+    { type: "SSHFP", rdata: "4 2 nothex!", problem: "algorithm fptype" },
+    { type: "NAPTR", rdata: '100 10 "S" "SIP+D2U" ""', problem: "NAPTR" },
+    { type: "NAPTR", rdata: 'x 10 "S" "S" "" .', problem: "NAPTR order" },
+    { type: "SRV", rdata: "10 60 sip.example.com.", problem: "SRV content" },
+  ] as const;
+  // CAA is deliberately absent: `dnsRecordSchema` has no CAA rule, so a
+  // truncated `0 issue` is caught by the Rust write gate (`validate_caa` in
+  // bc-dns-tools) rather than here. It is covered on that side instead.
+
+  for (const entry of malformed) {
+    const label = `${entry.type} ${entry.rdata}`;
+
+    // It imports — the record is shown to the user rather than vanishing.
+    const fromZone = parseZoneLine(
+      `example.com. 3600 IN ${entry.type} ${entry.rdata}`,
+    );
+    assert.equal(fromZone.content, entry.rdata, label);
+    const [fromCsv] = parseCSVRecords(
+      [
+        "Type,Name,Content",
+        `${entry.type},example.com,${csvCell(entry.rdata)}`,
+      ].join("\n"),
+    );
+    assert.equal(fromCsv.content, entry.rdata, label);
+
+    // ...and both import paths are then refused by the same rule.
+    for (const [source, content] of [
+      ["bind", fromZone.content],
+      ["csv", fromCsv.content],
+    ] as const) {
+      const result = validate({
+        type: entry.type,
+        name: "example.com",
+        content,
+      });
+      assert.equal(result.ok, false, `${source}: ${label}`);
+      if (entry.problem) {
+        assert.ok(
+          result.problems.some((problem) => problem.includes(entry.problem)),
+          `${source}: ${label} -> ${result.problems.join(" | ")}`,
+        );
+      }
+    }
+  }
+
+  // An unknown type is caught by the type enum rather than being forwarded.
+  // Case-folding the mnemonic on import is what makes `in a 192.0.2.1` reach
+  // this check as the known type `A` instead of as the unknown type `a`.
+  assert.equal(
+    validate({ type: "NOTATYPE", name: "example.com", content: "x" }).ok,
+    false,
+  );
+  assert.equal(
+    validate({
+      type: parseZoneLine("example.com. 3600 in a 192.0.2.1").type,
+      name: "example.com",
+      content: "192.0.2.1",
+    }).ok,
+    true,
+  );
+});
+
+test("the structured types with no local rule are left for Cloudflare to judge", () => {
+  // Deliberately permissive: the app has no authority to decide that a LOC
+  // altitude or an SVCB parameter key is wrong, so these import and validate
+  // and Cloudflare stays the final gate. Recorded here so that the boundary is
+  // a decision rather than an oversight.
+  const permissive = [
+    "LOC",
+    "APL",
+    "CERT",
+    "SVCB",
+    "HTTPS",
+    "DNSKEY",
+    "DS",
+    "RP",
+    "AFSDB",
+    "SMIMEA",
+    "OPENPGPKEY",
+    "HINFO",
+    "URI",
+  ] as const;
+
+  for (const type of permissive) {
+    assert.equal(
+      validate({ type, name: "example.com", content: "definitely not valid" })
+        .ok,
+      true,
+      type,
+    );
+  }
+
+  // The two rules that do apply to every type: content must be present, and a
+  // TTL of 0 — which the zone parser now preserves rather than replacing with
+  // its default — is not a TTL Cloudflare can store.
+  const zeroTtl = parseZoneLine(
+    "example.com. 0 IN LOC 42 21 54.000 N 71 06 18.000 W -24m",
+  );
+  assert.equal(zeroTtl.ttl, 0);
+  const result = validate({
+    type: "LOC",
+    name: "example.com",
+    content: zeroTtl.content,
+    ttl: zeroTtl.ttl,
+  });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes("TTL must be 1")),
+    result.problems.join(" | "),
+  );
 });

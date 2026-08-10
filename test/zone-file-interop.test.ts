@@ -238,7 +238,54 @@ test("a full dig transcript imports only its answer section", () => {
   assert.deepEqual(parseBINDZone(answerOnly), records);
 });
 
-test("documents the export shapes that do NOT import", () => {
+test("the awkward export shapes import correctly", () => {
+  // 1. A BIND-formatted SOA in parentheses: the continuation lines are folded
+  //    into the record that opened the group and the parens are removed.
+  const parenthesisedSoa = [
+    "example.com.\t3600\tIN\tSOA\tns1.example.net. hostmaster.example.com. (",
+    "\t\t\t2026080701\t; serial",
+    "\t\t\t7200\t\t; refresh",
+    "\t\t\t3600\t\t; retry",
+    "\t\t\t1209600\t\t; expire",
+    "\t\t\t3600 )\t\t; minimum",
+  ].join("\n");
+  assert.deepEqual(parseBINDZone(parenthesisedSoa), [
+    {
+      name: "example.com.",
+      ttl: 3600,
+      type: "SOA",
+      content:
+        "ns1.example.net. hostmaster.example.com. 2026080701 7200 3600 1209600 3600",
+    },
+  ]);
+
+  // 2. Repeated owner names elided as leading whitespace, which BIND, NSD and
+  //    Knot all emit: the owner is inherited from the previous record.
+  const elidedOwners = [
+    "example.com.\t300\tIN\tA\t192.0.2.1",
+    "\t\t300\tIN\tA\t192.0.2.2",
+    "\t\t300\tIN\tA\t192.0.2.3",
+  ].join("\n");
+  assert.deepEqual(summarize(parseBINDZone(elidedOwners)), [
+    "A example.com.",
+    "A example.com.",
+    "A example.com.",
+  ]);
+
+  // 3. An export using BIND duration TTLs: the duration is resolved to seconds.
+  assert.equal(parseBINDZone("example.com. 1h IN A 192.0.2.1")[0].ttl, 3600);
+
+  // 4. Lower-case type mnemonics, which are legal in a zone file: the type is
+  //    folded to the canonical upper-case form that matches RECORD_TYPES.
+  assert.equal(parseBINDZone("example.com. 300 in a 192.0.2.1")[0].type, "A");
+
+  // 5. A record written with neither TTL nor class, legal per RFC 1035 §5.1.
+  assert.deepEqual(parseBINDZone("example.com. A 192.0.2.1"), [
+    { name: "example.com.", ttl: 300, type: "A", content: "192.0.2.1" },
+  ]);
+});
+
+test("documents the export shapes that still do NOT import", () => {
   // 1. A zone that relies on $ORIGIN: the directive is skipped and the relative
   //    owner names arrive unqualified, so the records land on the wrong names.
   //    Export with fully qualified names, or qualify them before importing.
@@ -254,49 +301,36 @@ test("documents the export shapes that do NOT import", () => {
     "CNAME www",
     "A mail",
   ]);
+  // $TTL is not applied either: the records keep the parser's own default.
+  assert.deepEqual(
+    parseBINDZone(relativeZone).map((record) => record.ttl),
+    [300, 300, 300],
+  );
 
-  // 2. A BIND-formatted SOA in parentheses: the continuation lines are dropped
-  //    and the record keeps a dangling "(".
-  const parenthesisedSoa = [
-    "example.com.\t3600\tIN\tSOA\tns1.example.net. hostmaster.example.com. (",
-    "\t\t\t2026080701\t; serial",
-    "\t\t\t7200\t\t; refresh",
-    "\t\t\t3600\t\t; retry",
-    "\t\t\t1209600\t\t; expire",
-    "\t\t\t3600 )\t\t; minimum",
-  ].join("\n");
-  assert.deepEqual(parseBINDZone(parenthesisedSoa), [
-    {
-      name: "example.com.",
-      ttl: 3600,
-      type: "SOA",
-      content: "ns1.example.net. hostmaster.example.com. (",
-    },
-  ]);
+  // 2. `$GENERATE` is a BIND extension for expanding a range into many records.
+  //    It is skipped whole rather than expanded — and, since it is recognised
+  //    by its "$" and not by a field count, it no longer becomes a bogus record
+  //    named "$GENERATE" of type "1-10".
+  assert.deepEqual(parseBINDZone("$GENERATE 1-10 host$ A 192.0.2.1"), []);
 
-  // 3. Repeated owner names elided as leading whitespace, which BIND, NSD and
-  //    Knot all emit: the TTL is consumed as the owner name.
-  const elidedOwners = [
-    "example.com.\t300\tIN\tA\t192.0.2.1",
-    "\t\t300\tIN\tA\t192.0.2.2",
-  ].join("\n");
-  // The second record's owner is the string "300" — the TTL field.
-  assert.deepEqual(summarize(parseBINDZone(elidedOwners)), [
-    "A example.com.",
-    "A 300",
-  ]);
+  // 3. A snippet whose *first* record line is indented has no previous owner to
+  //    inherit, so it is dropped rather than reading its TTL as an owner name.
+  assert.deepEqual(parseBINDZone("\t\t300\tIN\tA\t192.0.2.2"), []);
 
-  // 4. An export using BIND duration TTLs: the record imports but the TTL is
-  //    replaced by the 300 second default.
-  assert.equal(parseBINDZone("example.com. 1h IN A 192.0.2.1")[0].ttl, 300);
-
-  // 5. Lower-case type mnemonics, which are legal in a zone file: the type is
-  //    carried through in lower case and no longer matches RECORD_TYPES.
-  assert.equal(parseBINDZone("example.com. 300 in a 192.0.2.1")[0].type, "a");
-
-  // 6. A record written with neither TTL nor class, legal per RFC 1035 §5.1 but
-  //    below the parser's four-field minimum.
-  assert.deepEqual(parseBINDZone("example.com. A 192.0.2.1"), []);
+  // 4. Key material split across the lines of a parenthesised group is rejoined
+  //    with single spaces, not concatenated: the tokens are separate fields in
+  //    presentation form, and merging them would corrupt a numeric RDATA such
+  //    as SOA. Cloudflare may refuse the spaced form of a long key.
+  assert.equal(
+    parseBINDZone(
+      [
+        "example.com. 3600 IN DNSKEY 257 3 8 (",
+        "\t\t\tAwEAAaHIwpx3w4VHKi6i1LHnTaWeHCL154Jug0Ykv",
+        "\t\t\tXdBOZmDNGqAdKKlpKZKGgTKmDVmDNGqAdKKlpKZK )",
+      ].join("\n"),
+    )[0].content,
+    "257 3 8 AwEAAaHIwpx3w4VHKi6i1LHnTaWeHCL154Jug0Ykv XdBOZmDNGqAdKKlpKZKGgTKmDVmDNGqAdKKlpKZK",
+  );
 });
 
 test("a Cloudflare CSV export imports with its quoted values intact", () => {

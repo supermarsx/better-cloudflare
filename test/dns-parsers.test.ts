@@ -149,10 +149,10 @@ test("BIND import accepts a TTL without a class and a class before the TTL", () 
   });
 });
 
-test("BIND import falls back to the default TTL for a duration suffix", () => {
+test("BIND import resolves a duration-suffixed TTL to seconds", () => {
   assert.deepEqual(parseOne("example.com. 1h IN A 192.0.2.1"), {
     name: "example.com.",
-    ttl: 300,
+    ttl: 3600,
     type: "A",
     content: "192.0.2.1",
   });

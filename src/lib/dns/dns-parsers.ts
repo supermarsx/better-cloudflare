@@ -44,6 +44,12 @@ function parseCSVLine(line: string): string[] {
  * Expected header columns (case-insensitive): Type, Name, Content, TTL,
  * Priority, Proxied. Missing TTL/priority/proxied fields will be omitted
  * from the returned partial record.
+ *
+ * The record type is upper-cased (RFC 1035 §5.1 mnemonics are
+ * case-insensitive) and the TTL accepts the same grammar as the zone parser,
+ * so the two import paths agree about the same record. A TTL or priority that
+ * is not a number is *dropped* rather than retained as `NaN`: an absent field
+ * is recoverable, a `NaN` that serialises to `null` is not.
  */
 export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
@@ -58,24 +64,40 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
     priority: headers.indexOf("priority"),
     proxied: headers.indexOf("proxied"),
   };
+  const cell = (values: string[], index: number): string | undefined => {
+    if (index < 0) return undefined;
+    const value = values[index];
+    return value ? value : undefined;
+  };
 
   const records: Partial<DNSRecord>[] = [];
   for (const line of lines.slice(1)) {
     const values = parseCSVLine(line);
     if (!values.length) continue;
+    const type = cell(values, idx.type);
     const record: Partial<DNSRecord> = {
-      type: idx.type >= 0 ? values[idx.type] : undefined,
-      name: idx.name >= 0 ? values[idx.name] : undefined,
-      content: idx.content >= 0 ? values[idx.content] : undefined,
+      type: type === undefined ? undefined : type.toUpperCase(),
+      name: cell(values, idx.name),
+      content: cell(values, idx.content),
     };
 
-    const ttlVal = idx.ttl >= 0 ? values[idx.ttl] : undefined;
-    if (ttlVal) record.ttl = ttlVal === "auto" ? "auto" : Number(ttlVal);
+    const ttlVal = cell(values, idx.ttl);
+    if (ttlVal) {
+      if (/^auto$/iu.test(ttlVal)) {
+        record.ttl = "auto";
+      } else {
+        const seconds = parseBINDTTL(ttlVal);
+        if (seconds !== null) record.ttl = seconds;
+      }
+    }
 
-    const prVal = idx.priority >= 0 ? values[idx.priority] : undefined;
-    if (prVal) record.priority = Number(prVal);
+    const prVal = cell(values, idx.priority);
+    if (prVal) {
+      const preference = parsePreference(prVal);
+      if (preference !== null) record.priority = preference;
+    }
 
-    const proxiedVal = idx.proxied >= 0 ? values[idx.proxied] : undefined;
+    const proxiedVal = cell(values, idx.proxied);
     if (proxiedVal) record.proxied = /^(true|1)$/i.test(proxiedVal);
 
     records.push(record);
@@ -87,8 +109,68 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
 /** DNS classes that may appear between the owner name and the record type. */
 const BIND_CLASSES = new Set(["IN", "CH", "CS", "HS"]);
 
-/** `3600`, or a BIND duration such as `1h` / `2d`. */
-const BIND_TTL_PATTERN = /^\d+[smhdwSMHDW]?$/u;
+/** TTL used when a zone line omits one (the parser's documented default). */
+const DEFAULT_BIND_TTL = 300;
+
+/**
+ * Widest TTL the parser will read out of a zone file. The DNS TTL field is
+ * 31 bits (RFC 2181 §8) but the transport carries a `u32`, so anything that
+ * still fits a `u32` is read and left for validation to reject with a precise
+ * message. Anything wider is not a TTL at all.
+ */
+const MAX_BIND_TTL_SECONDS = 4_294_967_295;
+
+/** Seconds per BIND duration suffix (`60m`, `1h`, `2d`, `1w`). */
+const BIND_TTL_UNIT_SECONDS: Record<string, number> = {
+  s: 1,
+  m: 60,
+  h: 3_600,
+  d: 86_400,
+  w: 604_800,
+};
+
+/** A bare second count, e.g. `3600`. Zero is legal (RFC 2181 §8). */
+const BIND_TTL_SECONDS_PATTERN = /^\d+$/u;
+
+/** One or more `<count><unit>` groups, e.g. `1h`, `2d`, `1w12h`. */
+const BIND_TTL_DURATION_PATTERN = /^(?:\d+[smhdwSMHDW])+$/u;
+
+/** A record type mnemonic: alphabetic-leading, e.g. `A`, `AAAA`, `TYPE65535`. */
+const BIND_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9-]*$/u;
+
+/**
+ * Read a zone-file TTL.
+ *
+ * Accepts a bare second count (RFC 1035 §5.1) and BIND's duration suffixes,
+ * including combined forms such as `1w12h`. Returns `null` when the token is
+ * not a TTL at all, so the caller can fall through to the class/type fields
+ * instead of inventing a value.
+ *
+ * A TTL of `0` is returned as `0`. RFC 2181 §8 makes zero legal and meaningful
+ * ("do not cache"), and it is what `version.bind. 0 CH TXT` and a `dig` answer
+ * captured at the end of its life both carry.
+ */
+function parseBINDTTL(field: string): number | null {
+  if (BIND_TTL_SECONDS_PATTERN.test(field)) {
+    const seconds = Number(field);
+    return seconds <= MAX_BIND_TTL_SECONDS ? seconds : null;
+  }
+  if (!BIND_TTL_DURATION_PATTERN.test(field)) return null;
+
+  let total = 0;
+  for (const match of field.matchAll(/(\d+)([smhdwSMHDW])/gu)) {
+    total += Number(match[1]) * BIND_TTL_UNIT_SECONDS[match[2].toLowerCase()];
+    if (total > MAX_BIND_TTL_SECONDS) return null;
+  }
+  return total;
+}
+
+/** Read a 16-bit preference/priority, or `null` when the token is not one. */
+function parsePreference(field: string): number | null {
+  if (!/^\d+$/u.test(field)) return null;
+  const value = Number(field);
+  return value <= 65_535 ? value : null;
+}
 
 /**
  * Remove a trailing BIND comment from `line`.
@@ -118,56 +200,229 @@ function stripBINDComment(line: string): string {
 /** A whitespace-separated field plus the offset just past it. */
 type BINDField = { value: string; end: number };
 
-/** Split `line` on whitespace, keeping each field's end offset. */
+/**
+ * The most leading fields any zone line needs to be understood: the owner, a
+ * `[ttl] [class]` prefix in either order, the type, and one lookahead for the
+ * MX preference. Everything past that is RDATA and is sliced verbatim, so it
+ * is never tokenised — a 64 KiB TXT record costs no field array.
+ */
+const MAX_BIND_LEADING_FIELDS = 6;
+
+/**
+ * Split the leading fields of `line` on whitespace, keeping each field's end
+ * offset. At most `MAX_BIND_LEADING_FIELDS` fields are produced; the parser
+ * only ever looks two fields past the type, so a truncated list is never
+ * distinguishable from a complete one.
+ */
 function splitBINDFields(line: string): BINDField[] {
   const fields: BINDField[] = [];
   const pattern = /\S+/gu;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(line)) !== null) {
+  while (
+    fields.length < MAX_BIND_LEADING_FIELDS &&
+    (match = pattern.exec(line)) !== null
+  ) {
     fields.push({ value: match[0], end: match.index + match[0].length });
   }
   return fields;
 }
 
+/** The net `(` depth a line adds, and whether it held any grouping paren. */
+type BINDParenScan = { delta: number; saw: boolean };
+
 /**
- * Parse a BIND zone file snippet into a list of DNS records. This parser is a
- * lightweight convenience parser that expects simplified zone lines with the
- * format: `<name> [ttl] [class] <type> <content>`. The TTL and the class are
- * both optional, in either order. Lines beginning with `;` or the empty line
- * are ignored, as are lines with fewer than four whitespace-separated fields.
+ * Count the RFC 1035 §5.1 grouping parentheses in `line`.
  *
- * RDATA is kept verbatim, so quoted `<character-string>` values (TXT, SPF,
+ * A paren inside a quoted `<character-string>` is data, and a backslash escapes
+ * the character after it, so neither flips the state.
+ */
+function scanBINDParens(line: string): BINDParenScan {
+  let inQuotes = false;
+  let delta = 0;
+  let saw = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (character === "\\") {
+      index++;
+      continue;
+    }
+    if (character === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+    if (character === "(") {
+      delta++;
+      saw = true;
+    } else if (character === ")") {
+      delta--;
+      saw = true;
+    }
+  }
+  return { delta, saw };
+}
+
+/**
+ * Flatten a logical line that used grouping parentheses.
+ *
+ * The parens are removed and every run of whitespace *outside* a quoted
+ * `<character-string>` collapses to one space, so the continuation lines of a
+ * parenthesised SOA arrive as ordinary RDATA fields. Whitespace inside a quoted
+ * string is significant and is preserved exactly.
+ */
+function flattenGroupedRDATA(line: string): string {
+  let flattened = "";
+  let inQuotes = false;
+  let pendingSpace = false;
+  const separate = () => {
+    if (pendingSpace && flattened) flattened += " ";
+    pendingSpace = false;
+  };
+
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (character === "\\") {
+      separate();
+      flattened += character + (line[index + 1] ?? "");
+      index++;
+      continue;
+    }
+    if (character === '"') {
+      separate();
+      inQuotes = !inQuotes;
+      flattened += character;
+      continue;
+    }
+    if (
+      !inQuotes &&
+      (character === "(" || character === ")" || /\s/u.test(character))
+    ) {
+      pendingSpace = true;
+      continue;
+    }
+    separate();
+    flattened += character;
+  }
+  return flattened;
+}
+
+/** One RFC 1035 §5.1 "line": physical lines joined across `( ... )`. */
+type BINDLogicalLine = { text: string; indented: boolean };
+
+/**
+ * Fold `text` into logical zone lines.
+ *
+ * Comments are stripped per physical line (they run to end of line), blank and
+ * comment-only lines are dropped, `$` directives are skipped whole, and lines
+ * inside an open `(` are joined onto the line that opened it.
+ *
+ * `indented` records whether the *first* physical line began with whitespace,
+ * which RFC 1035 §5.1 defines as "the owner is the same as the previous RR".
+ * The text is deliberately not trimmed as a whole, because doing so would strip
+ * that indentation from the very first line and change its meaning.
+ */
+function toBINDLogicalLines(text: string): BINDLogicalLine[] {
+  const logical: BINDLogicalLine[] = [];
+  let pending: BINDLogicalLine | null = null;
+  let grouped = false;
+  let depth = 0;
+
+  for (const raw of text.split(/\r?\n/)) {
+    const stripped = stripBINDComment(raw);
+    const trimmed = stripped.trim();
+
+    if (pending === null) {
+      // A directive is not a record. `$ORIGIN` and `$TTL` are short enough to
+      // be dropped by any field-count rule, but `$GENERATE 1-10 host$ A ...`
+      // is not, and used to be mis-parsed into a record named "$GENERATE".
+      if (!trimmed || trimmed.startsWith("$")) continue;
+      pending = { text: trimmed, indented: /^[ \t]/u.test(raw) };
+      grouped = false;
+    } else if (trimmed) {
+      pending.text += ` ${trimmed}`;
+    }
+
+    const scan = scanBINDParens(stripped);
+    if (scan.saw) grouped = true;
+    depth += scan.delta;
+    if (depth > 0) continue;
+    depth = 0;
+
+    if (grouped) pending.text = flattenGroupedRDATA(pending.text);
+    logical.push(pending);
+    pending = null;
+  }
+
+  // An unterminated `(` still yields the record it opened rather than nothing.
+  if (pending) {
+    logical.push({
+      text: flattenGroupedRDATA(pending.text),
+      indented: pending.indented,
+    });
+  }
+  return logical;
+}
+
+/**
+ * Parse a BIND zone file snippet into a list of DNS records.
+ *
+ * The accepted line is RFC 1035 §5.1's `[<owner>] [<ttl>] [<class>] <type>
+ * <rdata>`: the TTL and the class are both optional and may appear in either
+ * order, the TTL may use BIND's duration suffixes (`1h`, `2d`, `1w12h`), the
+ * type mnemonic is case-insensitive and is normalised to upper case, and an
+ * owner elided as leading whitespace is inherited from the previous record.
+ * Physical lines joined by `( ... )` are folded into one logical line first.
+ *
+ * RDATA is sliced verbatim, so quoted `<character-string>` values (TXT, SPF,
  * DKIM, DMARC) survive with their internal semicolons, spacing and escapes
- * intact. This is deliberately not a full RFC 1035 zone parser: `$` directives,
- * parenthesised multi-line records and `@`/blank-owner inheritance are not
- * interpreted.
+ * intact. The one exception is a line that used grouping parentheses, where the
+ * parens are removed and unquoted whitespace runs collapse to a single space —
+ * the continuation lines have no other meaningful spacing to preserve.
+ *
+ * This is still deliberately not a full RFC 1035 implementation. `$ORIGIN`,
+ * `$TTL`, `$INCLUDE` and `$GENERATE` are skipped rather than interpreted, so
+ * relative owner names and `@` arrive exactly as written and are not qualified
+ * against an origin. A line that cannot be read as a record is dropped rather
+ * than guessed at; genuinely malformed *RDATA* is still passed through whole,
+ * because the write-time validator is the component that judges it.
  */
 export function parseBINDZone(text: string): Partial<DNSRecord>[] {
-  const lines = text.trim().split(/\r?\n/);
   const records: Partial<DNSRecord>[] = [];
+  let previousOwner: string | undefined;
 
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || line.startsWith(";")) continue;
-    const noComment = stripBINDComment(line).trim();
-    const fields = splitBINDFields(noComment);
-    if (fields.length < 4) continue;
+  for (const line of toBINDLogicalLines(text)) {
+    const fields = splitBINDFields(line.text);
 
-    const name = fields[0].value;
-    let cursor = 1;
-    let ttl = 300;
+    let name: string;
+    let cursor: number;
+    if (line.indented) {
+      // RFC 1035 §5.1: a line beginning with a blank keeps the previous owner.
+      // Without one there is nothing to inherit, so the line is dropped rather
+      // than having its TTL silently promoted to an owner name.
+      if (previousOwner === undefined) continue;
+      name = previousOwner;
+      cursor = 0;
+    } else {
+      if (fields.length < 2) continue;
+      name = fields[0].value;
+      cursor = 1;
+    }
+
+    let ttl = DEFAULT_BIND_TTL;
     let sawTTL = false;
     let sawClass = false;
-    // TTL and class are both optional and may appear in either order.
-    while (cursor < fields.length - 1) {
+    // TTL and class are both optional and may appear in either order. Only a
+    // field with a successor can be one of them: the last field is the RDATA.
+    while (fields[cursor + 1] !== undefined) {
       const field = fields[cursor].value;
-      if (!sawTTL && BIND_TTL_PATTERN.test(field)) {
-        // A duration suffix (`1h`) is not resolved; it falls back to the
-        // default rather than being mistaken for the record type.
-        ttl = Number(field) || 300;
-        sawTTL = true;
-        cursor++;
-        continue;
+      if (!sawTTL) {
+        const seconds = parseBINDTTL(field);
+        if (seconds !== null) {
+          ttl = seconds;
+          sawTTL = true;
+          cursor++;
+          continue;
+        }
       }
       if (!sawClass && BIND_CLASSES.has(field.toUpperCase())) {
         sawClass = true;
@@ -177,22 +432,31 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
       break;
     }
 
-    const type = fields[cursor].value;
+    const typeField = fields[cursor];
+    if (!typeField || !BIND_TYPE_PATTERN.test(typeField.value)) continue;
+    // RFC 1035 §5.1 mnemonics are case-insensitive; BIND, NSD and PowerDNS all
+    // emit them in either case, so the type is folded to the canonical form.
+    const type = typeField.value.toUpperCase();
+
     let contentStart = cursor;
     let priority: number | undefined;
-    if (type.toUpperCase() === "MX" && fields.length - cursor - 1 >= 2) {
-      priority = Number(fields[cursor + 1].value);
-      contentStart = cursor + 1;
+    if (type === "MX" && fields[cursor + 2] !== undefined) {
+      const preference = parsePreference(fields[cursor + 1].value);
+      if (preference !== null) {
+        priority = preference;
+        contentStart = cursor + 1;
+      }
     }
 
-    const record: Partial<DNSRecord> = {
-      name,
-      ttl,
-      type,
-      content: noComment.slice(fields[contentStart].end).trim(),
-    };
+    const content = line.text.slice(fields[contentStart].end).trim();
+    // A record with no RDATA is not a record. `example.com. 3600 IN` reaches
+    // here with "IN" read as the type, and is dropped instead of retained.
+    if (!content) continue;
+
+    const record: Partial<DNSRecord> = { name, ttl, type, content };
     if (priority !== undefined) record.priority = priority;
     records.push(record);
+    previousOwner = name;
   }
 
   return records;
