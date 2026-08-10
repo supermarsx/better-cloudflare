@@ -22,6 +22,7 @@ pub enum AppConfigError {
     Oversize,
     UnsupportedVersion(u32),
     InvalidUpdate(String),
+    LegacyUnavailable(String),
 }
 
 impl std::fmt::Display for AppConfigError {
@@ -36,6 +37,10 @@ impl std::fmt::Display for AppConfigError {
             Self::InvalidUpdate(message) => {
                 write!(formatter, "invalid preference update: {message}")
             }
+            Self::LegacyUnavailable(message) => write!(
+                formatter,
+                "previous preferences could not be read, so they were left untouched: {message}"
+            ),
         }
     }
 }
@@ -94,6 +99,9 @@ impl AppConfigStore {
                         self.write_verified(&Envelope::new(preferences.clone()))?;
                         (preferences, false)
                     }
+                    // Serve defaults for this session but deliberately do not write:
+                    // the legacy store may still hold real preferences, and creating
+                    // this file would permanently shadow them.
                     Err(_) => (Preferences::default(), false),
                 },
             }
@@ -123,7 +131,12 @@ impl AppConfigStore {
                 Some(envelope) => (envelope.preferences, false),
                 None => match load_legacy().await {
                     Ok(Some(preferences)) => (preferences, true),
-                    Ok(None) | Err(_) => (Preferences::default(), false),
+                    Ok(None) => (Preferences::default(), false),
+                    // The legacy store answered with an error rather than "no data".
+                    // Writing defaults here would make this file authoritative and
+                    // orphan preferences that may still exist in the legacy store,
+                    // so refuse the write and let the caller retry or surface it.
+                    Err(error) => return Err(AppConfigError::LegacyUnavailable(error.to_string())),
                 },
             };
             let preferences = self.merge(current, fields)?;
@@ -354,6 +367,8 @@ fn sync_parent(_: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     struct TestDir(PathBuf);
@@ -387,32 +402,60 @@ mod tests {
         Ok(())
     }
 
+    async fn locked() -> Result<Option<Preferences>, StorageError> {
+        Err(StorageError::KeyringError("locked".into()))
+    }
+
     #[tokio::test]
-    async fn locked_keyring_does_not_block_reads_or_writes() {
+    async fn locked_keyring_does_not_block_reads_and_never_overwrites_legacy() {
         let directory = TestDir::new();
         let store = AppConfigStore::new(directory.0.clone());
-        let locked = || async { Err(StorageError::KeyringError("locked".into())) };
         let loaded = store
             .get_preferences(locked, deleted)
             .await
             .expect("locked read");
         assert_eq!(loaded.theme, None);
+        assert!(
+            !store.path.exists(),
+            "a failed legacy read must not create the authoritative file"
+        );
+        assert!(
+            matches!(
+                store
+                    .update_preferences(fields(&[("theme", json!("dark"))]), locked, deleted)
+                    .await,
+                Err(AppConfigError::LegacyUnavailable(_))
+            ),
+            "an update must not persist defaults over an unreadable legacy store"
+        );
+        assert!(
+            !store.path.exists(),
+            "a failed legacy read must not create the authoritative file"
+        );
+
+        // Once the legacy store answers, the file becomes authoritative and a
+        // later keyring outage no longer blocks writes.
         store
             .update_preferences(
                 fields(&[
                     ("theme", json!("dark")),
                     ("rewrite_copied_record_domains", json!(false)),
                 ]),
-                locked,
+                no_legacy,
                 deleted,
             )
             .await
-            .expect("locked write");
+            .expect("first write after legacy answered");
+        store
+            .update_preferences(fields(&[("locale", json!("pt-PT"))]), locked, deleted)
+            .await
+            .expect("locked write once the file exists");
         let loaded = store
             .get_preferences(no_legacy, deleted)
             .await
             .expect("file read");
         assert_eq!(loaded.theme.as_deref(), Some("dark"));
+        assert_eq!(loaded.locale.as_deref(), Some("pt-PT"));
         assert_eq!(loaded.rewrite_copied_record_domains, Some(false));
 
         let restarted = AppConfigStore::new(directory.0.clone());
@@ -517,5 +560,142 @@ mod tests {
             .await
             .expect("read authoritative file");
         assert_eq!(loaded.theme.as_deref(), Some("newer"));
+    }
+
+    fn rich_legacy() -> Preferences {
+        Preferences {
+            theme: Some("legacy".into()),
+            locale: Some("pt-PT".into()),
+            idle_logout_ms: Some(900_000),
+            zone_per_page: Some(HashMap::from([("example.com".to_string(), 200)])),
+            ..Preferences::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_read_failure_during_update_never_destroys_preferences() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&deletes);
+        let result = store
+            .update_preferences(fields(&[("theme", json!("dark"))]), locked, || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+        assert!(matches!(result, Err(AppConfigError::LegacyUnavailable(_))));
+        assert_eq!(deletes.load(Ordering::SeqCst), 0, "legacy must be retained");
+        assert!(
+            !store.path.exists(),
+            "defaults must not be persisted over an unreadable legacy store"
+        );
+
+        // The outage was transient; every legacy preference is still reachable.
+        let loaded = store
+            .get_preferences(|| async { Ok(Some(rich_legacy())) }, deleted)
+            .await
+            .expect("migrate after the outage clears");
+        assert_eq!(loaded, rich_legacy());
+    }
+
+    #[tokio::test]
+    async fn legacy_read_failure_leaves_an_existing_file_untouched() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        fs::write(
+            &store.path,
+            br#"{"version":1,"preferences":{"theme":"kept"}}"#,
+        )
+        .expect("seed the authoritative file");
+        store
+            .update_preferences(fields(&[("locale", json!("en"))]), locked, deleted)
+            .await
+            .expect("an existing file makes the legacy store irrelevant");
+        let loaded = store.read().expect("read").expect("envelope").preferences;
+        assert_eq!(loaded.theme.as_deref(), Some("kept"));
+        assert_eq!(loaded.locale.as_deref(), Some("en"));
+    }
+
+    #[tokio::test]
+    async fn absent_legacy_still_writes_defaults_plus_the_update() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&deletes);
+        store
+            .update_preferences(
+                fields(&[("theme", json!("dark"))]),
+                no_legacy,
+                || async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("no legacy data is not an error");
+        let loaded = store.read().expect("read").expect("envelope").preferences;
+        assert_eq!(loaded.theme.as_deref(), Some("dark"));
+        assert_eq!(
+            loaded,
+            Preferences {
+                theme: Some("dark".into()),
+                ..Preferences::default()
+            },
+            "nothing beyond the updated field may be invented"
+        );
+        assert_eq!(
+            deletes.load(Ordering::SeqCst),
+            0,
+            "there was nothing to delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_legacy_load_still_migrates_during_update() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&deletes);
+        store
+            .update_preferences(
+                fields(&[("theme", json!("dark"))]),
+                || async { Ok(Some(rich_legacy())) },
+                || async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("migrating update");
+        assert_eq!(deletes.load(Ordering::SeqCst), 1, "legacy copy is removed");
+        let loaded = store.read().expect("read").expect("envelope").preferences;
+        assert_eq!(
+            loaded,
+            Preferences {
+                theme: Some("dark".into()),
+                ..rich_legacy()
+            },
+            "the update merges onto migrated preferences, not onto defaults"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_preferences_does_not_write_on_legacy_error() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&deletes);
+        let loaded = store
+            .get_preferences(locked, || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .expect("a legacy outage must not break reads");
+        assert_eq!(loaded, Preferences::default());
+        assert!(!store.path.exists(), "reads must not persist defaults");
+        assert_eq!(deletes.load(Ordering::SeqCst), 0);
+        assert!(store.read().expect("read absent file").is_none());
     }
 }
