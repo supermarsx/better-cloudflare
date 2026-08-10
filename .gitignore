@@ -35,3 +35,7 @@ src-tauri/Cargo.lock
 /.next
 /target/debug
 /target
+
+# Python bytecode
+__pycache__/
+*.py[cod]
