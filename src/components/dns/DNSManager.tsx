@@ -60,6 +60,7 @@ import { isDesktop } from "@/lib/environment";
 import {
   createPreferenceFailureReporter,
   TauriClient,
+  type BulkDnsDeleteFailure,
   type McpServerStatus,
 } from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
@@ -92,7 +93,7 @@ import { PropagationChecker } from "./PropagationChecker";
 import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
 import { HotkeyHelpDialog } from "@/components/layout/HotkeyHelpDialog";
-import { useUndoRedo } from "@/hooks/dns/use-undo-redo";
+import { useUndoRedo, type UndoRedoEntry } from "@/hooks/dns/use-undo-redo";
 import {
   cacheZoneRecords,
   getCachedZoneRecords,
@@ -636,6 +637,104 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   tags: "Tags",
   registry: "Registry",
 };
+
+/**
+ * A history entry stores the operation it performed (`forward`) and the one
+ * that reverses it (`reverse`); both are *executed* verbatim, so a single
+ * applier serves undo and redo. Bulk operations (paste, import, bulk delete,
+ * bulk edit) push one entry covering every record instead of one per record.
+ */
+type DNSOp =
+  | { kind: "create"; zoneId: string; record: DNSRecord }
+  | { kind: "update"; zoneId: string; record: DNSRecord }
+  | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
+  | { kind: "bulk-create"; zoneId: string; records: DNSRecord[] }
+  | { kind: "bulk-update"; zoneId: string; records: DNSRecord[] }
+  | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] };
+
+/** How many individual failures a bulk toast names before it summarises. */
+const BULK_FAILURE_DETAIL_LIMIT = 3;
+
+function describeRecordForFailure(record?: DNSRecord, fallback = ""): string {
+  return record ? `${record.type} ${record.name}` : fallback;
+}
+
+function joinBulkFailures(details: string[], total: number): string {
+  if (total > details.length) {
+    details.push(`and ${total - details.length} more`);
+  }
+  return details.join("; ");
+}
+
+/** Name the records a bulk delete refused, so the toast is actionable. */
+function describeBulkDeleteFailures(
+  failed: readonly BulkDnsDeleteFailure[],
+  records: readonly DNSRecord[],
+): string {
+  const byId = new Map(records.map((record) => [record.id, record]));
+  return joinBulkFailures(
+    failed
+      .slice(0, BULK_FAILURE_DETAIL_LIMIT)
+      .map(
+        (failure) =>
+          `${describeRecordForFailure(byId.get(failure.id), failure.id)}: ${failure.error}`,
+      ),
+    failed.length,
+  );
+}
+
+/** Name the records a bulk field edit could not change. */
+function describeBulkUpdateFailures(
+  failures: ReadonlyArray<{ record: DNSRecord; error: string }>,
+): string {
+  return joinBulkFailures(
+    failures
+      .slice(0, BULK_FAILURE_DETAIL_LIMIT)
+      .map(
+        (failure) =>
+          `${describeRecordForFailure(failure.record, failure.record.id)}: ${failure.error}`,
+      ),
+    failures.length,
+  );
+}
+
+/**
+ * Rebuild the op paired with a create so it names the records that were just
+ * created rather than the ones the create was modelled on.
+ *
+ * Recreating a record does not restore its Cloudflare id — the API mints a new
+ * one — so the delete that reverses a create goes stale the moment the create
+ * is replayed. Returns `null` when nothing needs re-pointing.
+ */
+function repointPairedDnsOp(
+  paired: DNSOp,
+  created: readonly DNSRecord[],
+): DNSOp | null {
+  const withIds = created.filter((record) => record?.id);
+  if (!withIds.length) return null;
+  if (paired.kind === "delete") {
+    const record = withIds[0];
+    if (record.id === paired.recordId) return null;
+    return {
+      kind: "delete",
+      zoneId: paired.zoneId,
+      recordId: record.id,
+      record,
+    };
+  }
+  if (paired.kind === "bulk-delete") {
+    const unchanged =
+      withIds.length === paired.records.length &&
+      withIds.every((record, index) => record.id === paired.records[index]?.id);
+    if (unchanged) return null;
+    return {
+      kind: "bulk-delete",
+      zoneId: paired.zoneId,
+      records: [...withIds],
+    };
+  }
+  return null;
+}
 
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
   basic:
@@ -1723,24 +1822,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 
   /* ── Undo / Redo ────────────────────────────────────── */
-  /**
-   * A history entry stores the operation it performed (`forward`) and the one
-   * that reverses it (`reverse`); both are *executed* verbatim, so a single
-   * applier serves undo and redo. Bulk creates (paste, import) push one entry
-   * covering every record instead of one entry per record.
-   */
-  type DNSOp =
-    | { kind: "create"; zoneId: string; record: DNSRecord }
-    | { kind: "update"; zoneId: string; record: DNSRecord }
-    | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
-    | { kind: "bulk-create"; zoneId: string; records: DNSRecord[] }
-    | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] };
-
   const applyDnsOp = useCallback(
-    async (op: DNSOp) => {
+    async (op: DNSOp, onCreated?: (record: DNSRecord) => void) => {
       switch (op.kind) {
         case "create": {
           const created = await createDNSRecord(op.zoneId, op.record);
+          onCreated?.(created);
           updateTabByZone(op.zoneId, (prev) => ({
             ...prev,
             records: [created, ...prev.records],
@@ -1769,28 +1856,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }));
           break;
         }
+        case "bulk-update": {
+          const updated: DNSRecord[] = [];
+          try {
+            for (const record of op.records) {
+              updated.push(await updateDNSRecord(op.zoneId, record.id, record));
+            }
+          } finally {
+            // Whatever landed before a rejection is already live at
+            // Cloudflare, so the table has to show it either way.
+            if (updated.length) {
+              const byId = new Map(updated.map((r) => [r.id, r]));
+              updateTabByZone(op.zoneId, (prev) => ({
+                ...prev,
+                records: prev.records.map((r) => byId.get(r.id) ?? r),
+              }));
+            }
+          }
+          break;
+        }
         case "bulk-create": {
           const created: DNSRecord[] = [];
-          for (const record of op.records) {
-            created.push(await createDNSRecord(op.zoneId, record));
+          try {
+            for (const record of op.records) {
+              const next = await createDNSRecord(op.zoneId, record);
+              created.push(next);
+              onCreated?.(next);
+            }
+          } finally {
+            if (created.length) {
+              updateTabByZone(op.zoneId, (prev) => ({
+                ...prev,
+                records: [...created, ...prev.records],
+              }));
+            }
           }
-          updateTabByZone(op.zoneId, (prev) => ({
-            ...prev,
-            records: [...created, ...prev.records],
-          }));
           break;
         }
         case "bulk-delete": {
           const removed = new Set<string>();
-          for (const record of op.records) {
-            await deleteDNSRecord(op.zoneId, record.id);
-            removed.add(record.id);
+          try {
+            for (const record of op.records) {
+              await deleteDNSRecord(op.zoneId, record.id);
+              removed.add(record.id);
+            }
+          } finally {
+            if (removed.size) {
+              updateTabByZone(op.zoneId, (prev) => ({
+                ...prev,
+                records: prev.records.filter((r) => !removed.has(r.id)),
+                selectedIds: prev.selectedIds.filter((id) => !removed.has(id)),
+              }));
+            }
           }
-          updateTabByZone(op.zoneId, (prev) => ({
-            ...prev,
-            records: prev.records.filter((r) => !removed.has(r.id)),
-            selectedIds: prev.selectedIds.filter((id) => !removed.has(id)),
-          }));
           break;
         }
       }
@@ -1798,13 +1916,38 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [createDNSRecord, deleteDNSRecord, updateDNSRecord, updateTabByZone],
   );
 
+  /**
+   * Run one half of a history entry and re-point the other half at whatever
+   * was actually created. Recreating a record mints a new Cloudflare id, so
+   * without this the entry that moves to the opposite stack still names the
+   * dead id and every later undo/redo of it 404s.
+   */
+  const runHistoryOp = useCallback(
+    async (
+      op: DNSOp,
+      pairedKey: "forward" | "reverse",
+      entry: UndoRedoEntry<DNSOp>,
+    ) => {
+      const created: DNSRecord[] = [];
+      try {
+        await applyDnsOp(op, (record) => created.push(record));
+      } finally {
+        const repointed = repointPairedDnsOp(entry[pairedKey], created);
+        // The hook moves this exact entry object between stacks, so patching
+        // it here is what the next undo/redo will read.
+        if (repointed) entry[pairedKey] = repointed;
+      }
+    },
+    [applyDnsOp],
+  );
+
   const {
     push: pushUndo,
     undo,
     redo,
   } = useUndoRedo<DNSOp>({
-    onUndo: (reverse) => applyDnsOp(reverse),
-    onRedo: (forward) => applyDnsOp(forward),
+    onUndo: (reverse, entry) => runHistoryOp(reverse, "forward", entry),
+    onRedo: (forward, entry) => runHistoryOp(forward, "reverse", entry),
   });
 
   /**
@@ -5132,6 +5275,165 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  /**
+   * Delete every selected record and report exactly what the API confirmed.
+   *
+   * The backend deletes one record at a time and resolves with both halves, so
+   * a partial failure is silent unless it is read: only the ids it lists as
+   * deleted leave the table, and anything it refused stays selected and
+   * visible because it is still live at Cloudflare.
+   */
+  const handleBulkDelete = async () => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const targetIds = activeTab.selectedIds;
+    if (!targetIds.length) return;
+    const zoneId = activeTab.zoneId;
+    const zoneName = activeTab.zoneName;
+    const tabId = activeTab.id;
+    const targeted = activeTab.records.filter((r) => targetIds.includes(r.id));
+
+    try {
+      const result = await deleteBulkDnsRecords(zoneId, targetIds);
+      const deletedIds = new Set(result.deleted);
+      const deletedRecords = targeted.filter((r) => deletedIds.has(r.id));
+
+      for (const id of deletedIds) storageManager.clearRecordTags(zoneId, id);
+      updateTab(tabId, (prev) => ({
+        ...prev,
+        selectedIds: prev.selectedIds.filter((id) => !deletedIds.has(id)),
+        records: prev.records.filter((r) => !deletedIds.has(r.id)),
+      }));
+
+      if (deletedRecords.length) {
+        pushUndo({
+          description: `Delete ${deletedRecords.length} record(s) from ${zoneName}`,
+          forward: { kind: "bulk-delete", zoneId, records: deletedRecords },
+          reverse: { kind: "bulk-create", zoneId, records: deletedRecords },
+        });
+      }
+
+      if (result.failed.length) {
+        toast({
+          title: t("Partially deleted", "Partially deleted"),
+          description: t(
+            "Deleted {{deleted}} of {{total}}. {{failed}} record(s) still exist: {{reasons}}",
+            {
+              deleted: deletedIds.size,
+              total: targetIds.length,
+              failed: result.failed.length,
+              reasons: describeBulkDeleteFailures(result.failed, targeted),
+              defaultValue: `Deleted ${deletedIds.size} of ${targetIds.length}. ${result.failed.length} record(s) still exist: ${describeBulkDeleteFailures(result.failed, targeted)}`,
+            },
+          ),
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: t("Deleted", "Deleted"),
+        description: t("{{count}} records deleted", {
+          count: deletedIds.size,
+          defaultValue: `${deletedIds.size} records deleted`,
+        }),
+      });
+    } catch (err) {
+      toast({
+        title: t("Error", "Error"),
+        description: err instanceof Error ? err.message : "Bulk delete failed",
+        variant: "destructive",
+      });
+    }
+  };
+
+  /**
+   * Apply one field to every selected record, one call at a time.
+   *
+   * Cloudflare rate-limits partway through large batches, so each record is
+   * tracked on its own: the table is rebuilt from the records that actually
+   * changed, the undo entry restores only those, and the toast names how many
+   * were refused instead of leaving the whole batch unreported.
+   */
+  const handleBulkFieldChange = async (
+    patch: Partial<Pick<DNSRecord, "ttl" | "proxied">>,
+    describe: (count: number) => string,
+    label: string,
+  ) => {
+    if (!activeTab || activeTab.kind !== "zone") return;
+    const targetIds = activeTab.selectedIds;
+    if (!targetIds.length) return;
+    const zoneId = activeTab.zoneId;
+    const tabId = activeTab.id;
+    const targeted = activeTab.records.filter((r) => targetIds.includes(r.id));
+
+    const before: DNSRecord[] = [];
+    const after: DNSRecord[] = [];
+    const applied = new Map<string, DNSRecord>();
+    const failures: Array<{ record: DNSRecord; error: string }> = [];
+
+    for (const rec of targeted) {
+      try {
+        const updated = await updateDNSRecord(zoneId, rec.id, {
+          ...rec,
+          ...patch,
+        });
+        // Trust the server echo when it comes back usable; fall back to the
+        // patch we know was accepted rather than inventing a record.
+        const next = updated?.id
+          ? { ...rec, ...patch, ...updated }
+          : { ...rec, ...patch };
+        // Undo has to target whatever id the record carries now, not the one
+        // it carried before the call.
+        before.push({ ...rec, id: next.id });
+        after.push(next);
+        applied.set(rec.id, next);
+      } catch (error) {
+        failures.push({
+          record: rec,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : String(error),
+        });
+      }
+    }
+
+    if (after.length) {
+      updateTab(tabId, (prev) => ({
+        ...prev,
+        records: prev.records.map((r) => applied.get(r.id) ?? r),
+      }));
+      pushUndo({
+        description: `${label} on ${after.length} record(s)`,
+        forward: { kind: "bulk-update", zoneId, records: after },
+        reverse: { kind: "bulk-update", zoneId, records: before },
+      });
+    }
+
+    if (failures.length) {
+      toast({
+        title: t("Partially updated", "Partially updated"),
+        description: t(
+          "{{updated}} of {{total}} updated. {{failed}} unchanged: {{reasons}}",
+          {
+            updated: after.length,
+            total: targeted.length,
+            failed: failures.length,
+            reasons: describeBulkUpdateFailures(failures),
+            defaultValue: `${after.length} of ${targeted.length} updated. ${failures.length} unchanged: ${describeBulkUpdateFailures(failures)}`,
+          },
+        ),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: t("Updated", "Updated"),
+      description: describe(after.length),
+    });
+  };
+
   const handleExport = async (format: "json" | "csv" | "bind") => {
     if (!activeTab || activeTab.kind !== "zone") return;
     exportRequestRef.current?.abort();
@@ -5352,6 +5654,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
 
       if (valid.length) {
+        // What the backend confirmed, never what was attempted.
+        let imported = 0;
         if (bulkCreateDNSRecords) {
           try {
             const result = await bulkCreateDNSRecords(
@@ -5361,7 +5665,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             );
             const created = Array.isArray(result?.created)
               ? (result.created as DNSRecord[])
-              : valid;
+              : [];
+            // `skipped` is the backend's per-record rejection list; folding it
+            // in is what keeps the toast from over-reporting the import.
+            if (Array.isArray(result?.skipped))
+              skipped += result.skipped.length;
+            imported = created.length;
             if (!dryRun) {
               updateTab(tab.id, (prev) => ({
                 ...prev,
@@ -5394,6 +5703,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               skipped++;
             }
           }
+          imported = createdRecords.length;
           if (!dryRun) {
             updateTab(tab.id, (prev) => ({
               ...prev,
@@ -5407,26 +5717,41 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
         }
         if (!dryRun) {
-          updateTab(tab.id, (prev) => ({
-            ...prev,
-            importData: "",
-            showImport: false,
-          }));
-          toast({
-            title: t("Success", "Success"),
-            description: t("Imported {{imported}} record(s){{suffix}}", {
-              imported: valid.length,
-              suffix: skipped ? `, skipped ${skipped}` : "",
-              defaultValue: `Imported ${valid.length} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
-            }),
-          });
+          if (imported) {
+            updateTab(tab.id, (prev) => ({
+              ...prev,
+              importData: "",
+              showImport: false,
+            }));
+            toast({
+              title: t("Success", "Success"),
+              description: t("Imported {{imported}} record(s){{suffix}}", {
+                imported,
+                suffix: skipped ? `, skipped ${skipped}` : "",
+                defaultValue: `Imported ${imported} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
+              }),
+            });
+          } else {
+            // Nothing landed, so the pasted source is kept for an exact retry.
+            toast({
+              title: t("Error", "Error"),
+              description: t(
+                "No records were imported. Skipped {{count}} item(s).",
+                {
+                  count: skipped,
+                  defaultValue: `No records were imported. Skipped ${skipped} item(s).`,
+                },
+              ),
+              variant: "destructive",
+            });
+          }
         } else {
           toast({
             title: t("Dry Run", "Dry Run"),
             description: t("Would import {{imported}} record(s){{suffix}}", {
-              imported: valid.length,
+              imported,
               suffix: skipped ? `, skipped ${skipped}` : "",
-              defaultValue: `Would import ${valid.length} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
+              defaultValue: `Would import ${imported} record(s)${skipped ? `, skipped ${skipped}` : ""}`,
             }),
           });
         }
@@ -6162,11 +6487,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               : t("No workspace selected", "No workspace selected")
           }
           activeStatus={
-            activeTab?.kind === "zone"
-              ? activeTab.status
-              : activeTab
-                ? t(ACTION_TAB_LABELS[activeTab.kind], activeTab.kind)
-                : undefined
+            // An action tab's name IS its label, so a second chip would just
+            // render "Settings Settings". Only a zone has a distinct status.
+            activeTab?.kind === "zone" ? activeTab.status : undefined
           }
           recordCount={
             activeTab?.kind === "zone" ? activeTab.records.length : undefined
@@ -6760,98 +7083,35 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </div>
                   <BulkEditBar
                     selectedCount={activeTab.selectedIds.length}
-                    onBulkDelete={async () => {
-                      if (!activeTab.selectedIds.length) return;
-                      try {
-                        await deleteBulkDnsRecords(
-                          activeTab.zoneId,
-                          activeTab.selectedIds,
-                        );
-                        toast({
-                          title: t("Deleted", "Deleted"),
-                          description: t("{{count}} records deleted", {
-                            count: activeTab.selectedIds.length,
-                            defaultValue: `${activeTab.selectedIds.length} records deleted`,
-                          }),
-                        });
-                        updateTab(activeTab.id, (prev) => ({
-                          ...prev,
-                          selectedIds: [],
-                          records: prev.records.filter(
-                            (r) => !activeTab.selectedIds.includes(r.id),
-                          ),
-                        }));
-                      } catch (err) {
-                        toast({
-                          title: t("Error", "Error"),
-                          description:
-                            err instanceof Error
-                              ? err.message
-                              : "Bulk delete failed",
-                          variant: "destructive",
-                        });
-                      }
-                    }}
+                    onBulkDelete={handleBulkDelete}
                     onDeselectAll={() =>
                       updateTab(activeTab.id, (prev) => ({
                         ...prev,
                         selectedIds: [],
                       }))
                     }
-                    onBulkSetTTL={async (ttl: number) => {
-                      if (!activeTab.selectedIds.length) return;
-                      const selected = activeTab.records.filter((r) =>
-                        activeTab.selectedIds.includes(r.id),
-                      );
-                      for (const rec of selected) {
-                        await updateDNSRecord(activeTab.zoneId, rec.id, {
-                          ...rec,
-                          ttl,
-                        });
-                      }
-                      updateTab(activeTab.id, (prev) => ({
-                        ...prev,
-                        records: prev.records.map((r) =>
-                          activeTab.selectedIds.includes(r.id)
-                            ? { ...r, ttl }
-                            : r,
-                        ),
-                      }));
-                      toast({
-                        title: t("Updated", "Updated"),
-                        description: t("TTL set on {{count}} records", {
-                          count: selected.length,
-                          defaultValue: `TTL set on ${selected.length} records`,
-                        }),
-                      });
-                    }}
-                    onBulkSetProxy={async (proxied: boolean) => {
-                      if (!activeTab.selectedIds.length) return;
-                      const selected = activeTab.records.filter((r) =>
-                        activeTab.selectedIds.includes(r.id),
-                      );
-                      for (const rec of selected) {
-                        await updateDNSRecord(activeTab.zoneId, rec.id, {
-                          ...rec,
-                          proxied,
-                        });
-                      }
-                      updateTab(activeTab.id, (prev) => ({
-                        ...prev,
-                        records: prev.records.map((r) =>
-                          activeTab.selectedIds.includes(r.id)
-                            ? { ...r, proxied }
-                            : r,
-                        ),
-                      }));
-                      toast({
-                        title: t("Updated", "Updated"),
-                        description: t("Proxy set on {{count}} records", {
-                          count: selected.length,
-                          defaultValue: `Proxy set on ${selected.length} records`,
-                        }),
-                      });
-                    }}
+                    onBulkSetTTL={(ttl: number) =>
+                      handleBulkFieldChange(
+                        { ttl },
+                        (count) =>
+                          t("TTL set on {{count}} records", {
+                            count,
+                            defaultValue: `TTL set on ${count} records`,
+                          }),
+                        "Set TTL",
+                      )
+                    }
+                    onBulkSetProxy={(proxied: boolean) =>
+                      handleBulkFieldChange(
+                        { proxied },
+                        (count) =>
+                          t("Proxy set on {{count}} records", {
+                            count,
+                            defaultValue: `Proxy set on ${count} records`,
+                          }),
+                        "Set proxy",
+                      )
+                    }
                     onBulkExport={() => handleExport("json")}
                   />
                 </>
@@ -11906,6 +12166,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 }
 
+DNSManager.repointPairedDnsOp = repointPairedDnsOp;
 DNSManager.clampDnsPageSize = clampDnsPageSize;
 DNSManager.clampAutoRefreshInterval = clampAutoRefreshInterval;
 DNSManager.retainDnsRecordsForUi = retainDnsRecordsForUi;

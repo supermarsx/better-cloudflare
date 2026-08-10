@@ -1391,8 +1391,8 @@ export class TauriClient {
     recordIds: string[],
     email?: string,
     signal?: AbortSignal,
-  ): Promise<void> {
-    return invoke(
+  ): Promise<BulkDnsDeleteResult> {
+    const raw = await invoke<unknown>(
       "delete_bulk_dns_records",
       {
         apiKey,
@@ -1402,6 +1402,7 @@ export class TauriClient {
       },
       { signal },
     );
+    return normalizeBulkDnsDeleteResult(raw, recordIds);
   }
 
   // ── DNS Propagation ───────────────────────────────────────────────────────
@@ -1567,6 +1568,64 @@ export interface PageRuleResponse {
   status: string;
   created_on?: string;
   modified_on?: string;
+}
+
+// ── Bulk operation types ──────────────────────────────────────────────────────
+
+/** One record the backend tried and failed to delete, with Cloudflare's reason. */
+export interface BulkDnsDeleteFailure {
+  id: string;
+  error: string;
+}
+
+/**
+ * Outcome of a bulk delete. The backend deletes one record at a time and
+ * reports both halves, so a partial failure resolves rather than throwing —
+ * callers MUST read `failed` before telling the user anything was removed.
+ */
+export interface BulkDnsDeleteResult {
+  deleted: string[];
+  failed: BulkDnsDeleteFailure[];
+}
+
+function bulkDeleteFailureReason(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value instanceof Error && value.message) return value.message;
+  return "Unknown error";
+}
+
+/**
+ * Coerce the IPC payload into {@link BulkDnsDeleteResult}.
+ *
+ * A backend that predates the `{deleted, failed}` shape resolves with nothing
+ * to report, and resolving at all was its only success signal — so an
+ * unrecognised payload is read as "every requested id was deleted". Any
+ * payload that *does* carry the arrays is trusted verbatim.
+ */
+export function normalizeBulkDnsDeleteResult(
+  raw: unknown,
+  requestedIds: readonly string[],
+): BulkDnsDeleteResult {
+  const source = (raw ?? {}) as {
+    deleted?: unknown;
+    failed?: unknown;
+  };
+  if (!Array.isArray(source.deleted) && !Array.isArray(source.failed)) {
+    return { deleted: [...requestedIds], failed: [] };
+  }
+  const deleted = Array.isArray(source.deleted)
+    ? source.deleted.filter((id): id is string => typeof id === "string")
+    : [];
+  const failed = Array.isArray(source.failed)
+    ? source.failed.map((entry): BulkDnsDeleteFailure => {
+        const item = (entry ?? {}) as { id?: unknown; error?: unknown };
+        return {
+          id: typeof item.id === "string" ? item.id : "",
+          error: bulkDeleteFailureReason(item.error),
+        };
+      })
+    : [];
+  return { deleted, failed };
 }
 
 // ── DNS Propagation types ─────────────────────────────────────────────────────

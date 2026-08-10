@@ -12,7 +12,11 @@ import {
   ResponseBodyLimitError,
 } from "../resource-limits";
 import { TauriClient, type EmailRoutingRuleInput } from "./tauri-client";
-import type { TauriDNSRecordInput } from "./tauri-client";
+import type {
+  BulkDnsDeleteFailure,
+  BulkDnsDeleteResult,
+  TauriDNSRecordInput,
+} from "./tauri-client";
 import {
   backendConfigurationError,
   malformedResponseError,
@@ -1389,7 +1393,7 @@ export class ServerClient {
     zoneId: string,
     recordIds: string[],
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<BulkDnsDeleteResult> {
     if (isDesktop()) {
       return TauriClient.deleteBulkDnsRecords(
         this.apiKey,
@@ -1399,14 +1403,32 @@ export class ServerClient {
         signal,
       );
     }
-    // Web mode: delete one-by-one
+    // Web mode: delete one-by-one. A record Cloudflare refuses is recorded and
+    // the loop continues, so the caller learns exactly which ids are still live
+    // instead of losing that answer to the first rejection.
+    const deleted: string[] = [];
+    const failed: BulkDnsDeleteFailure[] = [];
     for (const id of recordIds) {
-      await this.request(`/zones/${zoneId}/dns_records/${id}`, {
-        method: "DELETE",
-        signal,
-        responseMode: "json-or-empty",
-      });
+      try {
+        await this.request(`/zones/${zoneId}/dns_records/${id}`, {
+          method: "DELETE",
+          signal,
+          responseMode: "json-or-empty",
+        });
+        deleted.push(id);
+      } catch (error) {
+        // A cancelled batch is not a per-record failure — surface the abort.
+        if (signal?.aborted) throw error;
+        failed.push({
+          id,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : String(error),
+        });
+      }
     }
+    return { deleted, failed };
   }
 
   // ── DNS Propagation ───────────────────────────────────────────────────────

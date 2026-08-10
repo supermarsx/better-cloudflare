@@ -4,6 +4,7 @@
  */
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 import {
   Select,
   SelectContent,
@@ -47,6 +48,17 @@ export function BulkEditBar({
 
   if (selectedCount === 0) return null;
 
+  // These handlers are fired from event handlers that discard the promise, so
+  // a rejection that escapes the owner would become an unhandled rejection and
+  // the user would see nothing at all. The owner reports its own failures;
+  // this is the backstop for anything it did not anticipate.
+  const reportEscapedFailure = (action: string, error: unknown) => {
+    reportRuntimeError(error, {
+      source: "runtime",
+      label: `Bulk ${action} on selected DNS records`,
+    });
+  };
+
   const handleDelete = async () => {
     if (!confirmDelete) {
       setConfirmDelete(true);
@@ -55,6 +67,8 @@ export function BulkEditBar({
     setDeleting(true);
     try {
       await onBulkDelete();
+    } catch (error) {
+      reportEscapedFailure("delete", error);
     } finally {
       setDeleting(false);
       setConfirmDelete(false);
@@ -66,6 +80,8 @@ export function BulkEditBar({
     setApplying(true);
     try {
       await onBulkSetTTL(parseInt(val, 10));
+    } catch (error) {
+      reportEscapedFailure("TTL change", error);
     } finally {
       setApplying(false);
     }
@@ -76,6 +92,8 @@ export function BulkEditBar({
     setApplying(true);
     try {
       await onBulkSetProxy(proxied);
+    } catch (error) {
+      reportEscapedFailure("proxy change", error);
     } finally {
       setApplying(false);
     }
@@ -114,7 +132,7 @@ export function BulkEditBar({
               size="sm"
               variant="outline"
               className="h-7 text-xs"
-              onClick={() => handleSetProxy(true)}
+              onClick={() => void handleSetProxy(true)}
               disabled={applying}
             >
               Proxy On
@@ -123,7 +141,7 @@ export function BulkEditBar({
               size="sm"
               variant="outline"
               className="h-7 text-xs"
-              onClick={() => handleSetProxy(false)}
+              onClick={() => void handleSetProxy(false)}
               disabled={applying}
             >
               Proxy Off
@@ -146,7 +164,7 @@ export function BulkEditBar({
         <Button
           size="sm"
           variant={confirmDelete ? "destructive" : "outline"}
-          onClick={handleDelete}
+          onClick={() => void handleDelete()}
           disabled={deleting}
         >
           {deleting
