@@ -317,7 +317,10 @@ test("updateDNSRecord success and error", async () => {
   );
   const called = restore();
   assert.equal(called.url, "http://example.com/zones/zone/dns_records/1");
-  assert.equal(called.init?.method, "PUT");
+  // PATCH, not PUT: a PUT overwrites the whole record at Cloudflare, so the
+  // attributes this client cannot model (`tags`, `settings`) would be reset
+  // every time a record is updated.
+  assert.equal(called.init?.method, "PATCH");
 
   restore = mockFetch({
     ok: false,
@@ -330,6 +333,46 @@ test("updateDNSRecord success and error", async () => {
     /backend endpoint was not found.*HTTP 404 Not Found.*missing/i,
   );
   restore();
+});
+
+test("updateDNSRecord never sends tags or settings it cannot populate", async () => {
+  const client = new ServerClient("key", "http://example.com");
+  // A record organised with Cloudflare tags and per-record settings, as it
+  // comes back from a list call and is spread into a proxy toggle.
+  const stored = {
+    id: "1",
+    name: "www.example.com",
+    type: "A",
+    content: "192.0.2.1",
+    ttl: 300,
+    proxied: true,
+    tags: ["team:platform", "env:prod"],
+    settings: { ipv4_only: true },
+  } as unknown as Parameters<typeof client.updateDNSRecord>[2];
+
+  const restore = mockFetch({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: { id: "1" },
+  });
+  await client.updateDNSRecord("zone", "1", stored, undefined);
+  const called = restore();
+
+  assert.equal(called.init?.method, "PATCH");
+  const body = JSON.parse(String(called.init?.body));
+  // Omitting them is what preserves them: PATCH leaves absent fields alone,
+  // whereas sending `tags: []` would destroy exactly what we are protecting.
+  assert.equal("tags" in body, false);
+  assert.equal("settings" in body, false);
+  // The modelled fields still travel.
+  assert.deepEqual(body, {
+    type: "A",
+    name: "www.example.com",
+    content: "192.0.2.1",
+    ttl: 300,
+    proxied: true,
+  });
 });
 
 test("deleteDNSRecord success and error", async () => {

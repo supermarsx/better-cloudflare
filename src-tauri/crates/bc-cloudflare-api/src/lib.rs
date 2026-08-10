@@ -2100,12 +2100,35 @@ impl CloudflareClient {
         record: DNSRecordInput,
     ) -> Result<DNSRecord, CloudflareError> {
         let url = format!(
-            "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
-            zone_id, record_id
+            "{}/zones/{}/dns_records/{}",
+            self.api_base.trim_end_matches('/'),
+            zone_id,
+            record_id
         );
 
+        // PATCH, not PUT. Cloudflare documents `PUT /dns_records/{id}` as
+        // "Overwrite an existing DNS record" and `PATCH` as "Update an existing
+        // DNS record": a PUT replaces the whole record, so every field missing
+        // from the body reverts to its default. `DNSRecordInput` models only
+        // type/name/content/comment/ttl/priority/proxied, so a PUT would silently
+        // drop the record attributes this app never reads — most importantly
+        // `tags` (record grouping, invisible in this UI) and `settings`
+        // (`flatten_cname`, `ipv4_only`, `ipv6_only`). Toggling proxy or applying
+        // a bulk TTL change would then wipe them.
+        //
+        // PATCH only touches the fields present in the body, so unmodeled
+        // attributes survive untouched. This is safe for the fields we *do*
+        // model: every write path spreads a record that was just read back from
+        // Cloudflare, so a field is absent from the body only when the record
+        // did not have it — and there "reset to default" and "leave alone" agree.
+        // Cleared values are sent explicitly (an emptied comment serializes as
+        // `""`, not as an omission), so clearing still works.
+        //
+        // Both methods accept an identical request body: the schemas for
+        // `RecordUpdateParams` and `RecordEditParams` in Cloudflare's own
+        // generated SDK are byte-for-byte the same.
         let response = self
-            .request_with_retry(|s| s.apply_auth(s.client.put(&url).json(&record)))
+            .request_with_retry(|s| s.apply_auth(s.client.patch(&url).json(&record)))
             .await?;
 
         let (json, metadata) = read_dns_mutation_response(response).await?;
@@ -3576,6 +3599,7 @@ mod dns_record_wire_regression_tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
 
     fn provider_record(record_type: &str, data: Value) -> Value {
@@ -3613,6 +3637,166 @@ mod dns_record_wire_regression_tests {
                 .expect("write DNS fixture response");
         });
         format!("http://{address}")
+    }
+
+    /// Like [`spawn_json_response`], but hands the raw request back to the test
+    /// so it can assert on the method, path, and body actually put on the wire.
+    fn spawn_capturing_json_response(body: String) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind DNS fixture server");
+        let address = listener.local_addr().expect("read DNS fixture address");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept DNS fixture request");
+            let mut request = [0_u8; 8192];
+            let bytes_read = stream.read(&mut request).unwrap_or(0);
+            let _ = sender.send(String::from_utf8_lossy(&request[..bytes_read]).into_owned());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write DNS fixture response");
+        });
+        (format!("http://{address}"), receiver)
+    }
+
+    /// A stored A record as Cloudflare echoes it back from an update.
+    fn stored_a_record() -> Value {
+        json!({
+            "id": "record-1",
+            "type": "A",
+            "name": "www.example.com",
+            "content": "192.0.2.10",
+            "comment": null,
+            "ttl": 300,
+            "proxied": true,
+            "zone_id": "zone-1",
+            "zone_name": "example.com",
+            "created_on": "2026-07-28T00:00:00Z",
+            "modified_on": "2026-07-28T00:00:01Z"
+        })
+    }
+
+    fn capture_update_request(record: DNSRecordInput, result: Value) -> (String, Value) {
+        let (base, requests) =
+            spawn_capturing_json_response(json!({"success": true, "result": result}).to_string());
+        let client = CloudflareClient::new("token", None).with_api_base(base);
+        let updated = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime")
+            .block_on(async { client.update_dns_record("zone-1", "record-1", record).await });
+        updated.expect("update should succeed against the fixture");
+
+        let raw = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fixture server should capture the request");
+        let (head, body) = raw
+            .split_once("\r\n\r\n")
+            .expect("request should have a body");
+        let request_line = head.lines().next().unwrap_or_default().to_string();
+        let body: Value =
+            serde_json::from_str(body.trim_end_matches('\0')).expect("request body should be JSON");
+        (request_line, body)
+    }
+
+    /// Cloudflare's `PUT /dns_records/{id}` overwrites the whole record, so any
+    /// attribute missing from the body reverts to its default. `DNSRecordInput`
+    /// models neither `tags` nor `settings`, so a PUT would wipe them on every
+    /// proxy toggle and bulk TTL change. The update path must therefore use
+    /// PATCH, which only touches the fields present in the body.
+    #[test]
+    fn dns_record_updates_use_patch_so_unmodeled_attributes_survive() {
+        let (request_line, _) = capture_update_request(
+            DNSRecordInput {
+                r#type: "A".to_string(),
+                name: "www.example.com".to_string(),
+                content: "192.0.2.10".to_string(),
+                comment: None,
+                ttl: Some(300),
+                priority: None,
+                proxied: Some(true),
+            },
+            stored_a_record(),
+        );
+
+        assert!(
+            request_line.starts_with("PATCH "),
+            "DNS record updates must use PATCH, not PUT; got {request_line:?}"
+        );
+        assert!(
+            request_line.contains("/zones/zone-1/dns_records/record-1"),
+            "unexpected request target: {request_line:?}"
+        );
+    }
+
+    /// The guard that matters: a record carrying Cloudflare `tags` and
+    /// `settings` must round-trip them unchanged. The app cannot populate either
+    /// field, so the only correct behaviour is to never mention them — sending
+    /// `"tags": []` would cause exactly the data loss this test defends against.
+    #[test]
+    fn proxy_toggle_never_sends_tags_or_settings_it_cannot_populate() {
+        let mut stored = stored_a_record();
+        stored["tags"] = json!(["team:platform", "env:prod"]);
+        stored["settings"] = json!({"ipv4_only": true});
+
+        let (_, body) = capture_update_request(
+            DNSRecordInput {
+                r#type: "A".to_string(),
+                name: "www.example.com".to_string(),
+                content: "192.0.2.10".to_string(),
+                comment: None,
+                ttl: Some(300),
+                priority: None,
+                proxied: Some(true),
+            },
+            stored,
+        );
+
+        assert!(
+            body.get("tags").is_none(),
+            "the update body must not mention tags it cannot populate: {body}"
+        );
+        assert!(
+            body.get("settings").is_none(),
+            "the update body must not mention settings it cannot populate: {body}"
+        );
+        // The fields the app does model still have to be sent.
+        assert_eq!(body["type"], json!("A"));
+        assert_eq!(body["name"], json!("www.example.com"));
+        assert_eq!(body["content"], json!("192.0.2.10"));
+        assert_eq!(body["proxied"], json!(true));
+        assert_eq!(body["ttl"], json!(300));
+    }
+
+    /// PATCH only acts on fields that are present, so clearing a value has to
+    /// travel as an explicit empty string rather than as an omission.
+    #[test]
+    fn cleared_comments_are_sent_explicitly_rather_than_omitted() {
+        let (_, body) = capture_update_request(
+            DNSRecordInput {
+                r#type: "A".to_string(),
+                name: "www.example.com".to_string(),
+                content: "192.0.2.10".to_string(),
+                comment: Some(String::new()),
+                ttl: Some(300),
+                priority: None,
+                proxied: None,
+            },
+            stored_a_record(),
+        );
+
+        assert_eq!(
+            body["comment"],
+            json!(""),
+            "an emptied comment must be sent so PATCH clears it: {body}"
+        );
+        // Absent optionals stay absent; PATCH leaves the stored values alone,
+        // which matches PUT's behaviour for a record that never had them.
+        assert!(body.get("priority").is_none(), "{body}");
+        assert!(body.get("proxied").is_none(), "{body}");
     }
 
     #[tokio::test]

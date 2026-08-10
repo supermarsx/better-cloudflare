@@ -526,8 +526,17 @@ export class ServerClient {
         signal,
       ) as Promise<DNSRecord>;
     }
+    // PATCH, not PUT: Cloudflare's `PUT /dns_records/{id}` is documented as
+    // "Overwrite an existing DNS record", so attributes missing from the body
+    // revert to their defaults. `normalizeTauriRecordInput` only ever emits
+    // type/name/content/comment/ttl/priority/proxied, so a PUT would silently
+    // discard the record attributes this app never reads — `tags` and
+    // `settings` — on every proxy toggle and bulk TTL change. PATCH updates
+    // only the fields present in the body. This mirrors the desktop path in
+    // `bc-cloudflare-api::update_dns_record`; see the note there for why this
+    // is safe for the fields we do model.
     return this.request(`/zones/${zoneId}/dns_records/${recordId}`, {
-      method: "PUT",
+      method: "PATCH",
       body: normalizedRecord,
       signal,
     });
