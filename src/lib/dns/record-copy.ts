@@ -1,5 +1,10 @@
 import type { DNSRecord } from "@/types/dns";
 
+import {
+  isQuotedForm,
+  quoteCharacterString,
+  unquoteCharacterString,
+} from "./character-string";
 import { parseNAPTR } from "./dns-parsers";
 
 export type PreparedCopiedDnsRecord = Pick<
@@ -646,6 +651,41 @@ function rewriteDmarcContent(content: string, zones: NormalizedZones): string {
   return changed ? rewrittenSegments.join(";") : content;
 }
 
+/**
+ * Run a rewriter that understands *logical* payloads over presentation-format
+ * `<character-string>` content.
+ *
+ * TXT and SPF content reaches this module in any of the shapes
+ * `parseCharacterStrings` accepts — bare, quoted, several adjacent quoted
+ * strings, or with an unmatched quote — because save-time normalization
+ * (`record-normalize`) quotes character-string content on every write path.
+ * The SPF and DMARC rewriters only ever understood the bare shape, so a copied
+ * record that arrived quoted was left silently pointing at the source zone.
+ *
+ * Presentation is preserved by *class*, not by byte layout:
+ *
+ * - bare in → bare out: the rewriter runs on the raw content, so every span it
+ *   does not touch (outer whitespace included) survives byte-for-byte;
+ * - quoted in → quoted out: the rewriter runs on the decoded logical value and
+ *   the result is re-emitted as one quoted `<character-string>`.
+ *
+ * Re-emission only happens when the rewrite actually changed the logical value.
+ * Content this module decides not to rewrite is returned byte-for-byte, so
+ * copying never normalizes quoting as a side effect; balancing quotes and
+ * splitting an over-long payload into adjacent strings stay the job of
+ * `record-normalize`, which runs later on every save path.
+ */
+function rewriteCharacterStringContent(
+  content: string,
+  rewrite: (value: string) => string,
+): string {
+  if (!isQuotedForm(content)) return rewrite(content);
+
+  const logical = unquoteCharacterString(content);
+  const rewritten = rewrite(logical);
+  return rewritten === logical ? content : quoteCharacterString(rewritten);
+}
+
 function rewriteRecordContent(
   record: DNSRecord,
   zones: NormalizedZones,
@@ -669,13 +709,14 @@ function rewriteRecordContent(
     case "URI":
       return rewriteUriContent(record.content, zones);
     case "SPF":
-      return rewriteSpfContent(record.content, zones);
-    case "TXT": {
-      const spf = rewriteSpfContent(record.content, zones);
-      return spf !== record.content
-        ? spf
-        : rewriteDmarcContent(record.content, zones);
-    }
+      return rewriteCharacterStringContent(record.content, (value) =>
+        rewriteSpfContent(value, zones),
+      );
+    case "TXT":
+      return rewriteCharacterStringContent(record.content, (value) => {
+        const spf = rewriteSpfContent(value, zones);
+        return spf !== value ? spf : rewriteDmarcContent(value, zones);
+      });
     default:
       return record.content;
   }

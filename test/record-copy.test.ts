@@ -483,6 +483,170 @@ test("rewrites RP mbox and txt domain fields, leaving '.' unspecified", () => {
   );
 });
 
+function copyContent(
+  type: string,
+  content: string,
+  options: { source?: string; target?: string; enabled?: boolean } = {},
+): string {
+  return prepareCopiedDnsRecord(
+    dnsRecord({ type, content }),
+    options.source ?? SOURCE,
+    options.target ?? TARGET,
+    options.enabled ?? true,
+  ).content;
+}
+
+const SPF_BARE = `v=spf1 include:_spf.${SOURCE} ~all`;
+const SPF_BARE_REWRITTEN = `v=spf1 include:_spf.${TARGET} ~all`;
+const DMARC_BARE = `v=DMARC1; p=none; rua=mailto:agg@${SOURCE}`;
+const DMARC_BARE_REWRITTEN = `v=DMARC1; p=none; rua=mailto:agg@${TARGET}`;
+
+/** Every presentation form save-time normalization can hand back to a copy. */
+const SPF_PRESENTATION_FORMS = [
+  { label: "bare", content: SPF_BARE, expected: SPF_BARE_REWRITTEN },
+  {
+    label: "quoted",
+    content: `"${SPF_BARE}"`,
+    expected: `"${SPF_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "adjacent quoted strings",
+    content: `"v=spf1 include:_spf.${SOURCE}" " ~all"`,
+    expected: `"${SPF_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "unbalanced leading quote",
+    content: `"${SPF_BARE}`,
+    expected: `"${SPF_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "unbalanced trailing quote",
+    content: `${SPF_BARE}"`,
+    expected: `"${SPF_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "escaped inner quotes",
+    content: `"v=spf1 include:_spf.${SOURCE} note=\\"x\\" ~all"`,
+    expected: `"v=spf1 include:_spf.${TARGET} note=\\"x\\" ~all"`,
+  },
+] as const;
+
+const DMARC_PRESENTATION_FORMS = [
+  { label: "bare", content: DMARC_BARE, expected: DMARC_BARE_REWRITTEN },
+  {
+    label: "quoted",
+    content: `"${DMARC_BARE}"`,
+    expected: `"${DMARC_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "adjacent quoted strings",
+    content: `"v=DMARC1; p=none; " "rua=mailto:agg@${SOURCE}"`,
+    expected: `"${DMARC_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "unbalanced leading quote",
+    content: `"${DMARC_BARE}`,
+    expected: `"${DMARC_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "unbalanced trailing quote",
+    content: `${DMARC_BARE}"`,
+    expected: `"${DMARC_BARE_REWRITTEN}"`,
+  },
+  {
+    label: "escaped inner quotes",
+    content: `"v=DMARC1; p=none; rua=mailto:agg@${SOURCE}; sp=\\"none\\""`,
+    expected: `"v=DMARC1; p=none; rua=mailto:agg@${TARGET}; sp=\\"none\\""`,
+  },
+] as const;
+
+test("rewrites SPF domain-specs in every character-string presentation form", () => {
+  for (const type of ["TXT", "SPF"]) {
+    for (const form of SPF_PRESENTATION_FORMS) {
+      assert.equal(
+        copyContent(type, form.content),
+        form.expected,
+        `${type}:${form.label}`,
+      );
+    }
+  }
+});
+
+test("rewrites DMARC report addresses in every character-string presentation form", () => {
+  for (const form of DMARC_PRESENTATION_FORMS) {
+    assert.equal(copyContent("TXT", form.content), form.expected, form.label);
+  }
+});
+
+test("copying preserves the quoting style of character-string content", () => {
+  // Bare in, bare out: the rewrite never introduces quoting of its own.
+  for (const bare of [SPF_BARE, DMARC_BARE]) {
+    const prepared = copyContent("TXT", bare);
+    assert.equal(prepared.includes('"'), false, bare);
+    assert.notEqual(prepared, bare);
+  }
+
+  // Quoted in, quoted out: the payload stays one <character-string>.
+  for (const form of [...SPF_PRESENTATION_FORMS, ...DMARC_PRESENTATION_FORMS]) {
+    if (form.label === "bare") continue;
+    const prepared = copyContent("TXT", form.content);
+    assert.ok(prepared.startsWith('"'), form.label);
+    assert.ok(prepared.endsWith('"'), form.label);
+  }
+
+  // Splitting an over-long payload back into adjacent strings stays the job of
+  // record-normalize, so a rewritten payload is emitted as a single string.
+  const long = `v=spf1 ${`include:${"x".repeat(60)}.vendor.test `.repeat(4)}include:_spf.${SOURCE} ~all`;
+  const preparedLong = copyContent("TXT", `"${long}"`);
+  assert.ok(preparedLong.length > 255);
+  assert.equal(preparedLong.indexOf('"', 1), preparedLong.length - 1);
+});
+
+test("leaves quoted character-string content byte-exact when it rewrites nothing", () => {
+  const untouched = [
+    // Out-of-zone domains.
+    `"v=spf1 include:_spf.vendor.test ~all"`,
+    `"v=DMARC1; p=none; rua=mailto:agg@vendor.test"`,
+    // Domains that merely share a substring with the source zone.
+    `"v=spf1 include:_spf.not${SOURCE} ~all"`,
+    `"v=spf1 include:${SOURCE}.vendor.test ~all"`,
+    `"v=DMARC1; p=none; rua=mailto:agg@not${SOURCE}"`,
+    // Content that does not parse as SPF or DMARC at all.
+    `"v=spf1 include: -all"`,
+    `"v=DMARC1; p=none; rua=mailto:missing-at-${SOURCE}"`,
+    `"verification=${SOURCE}"`,
+    `"v=DKIM1; p=key-${SOURCE}"`,
+    // Damaged quoting is repaired by record-normalize, never by the copy.
+    `"v=spf1 include:_spf.vendor.test ~all`,
+    `v=spf1 include:_spf.vendor.test ~all"`,
+  ];
+
+  for (const content of untouched) {
+    assert.equal(copyContent("TXT", content), content, content);
+    assert.equal(copyContent("SPF", content), content, `SPF:${content}`);
+  }
+});
+
+test("copying character-string content is a no-op without a zone rewrite", () => {
+  for (const form of [...SPF_PRESENTATION_FORMS, ...DMARC_PRESENTATION_FORMS]) {
+    // Rewriting disabled.
+    assert.equal(
+      copyContent("TXT", form.content, { enabled: false }),
+      form.content,
+      `disabled:${form.label}`,
+    );
+
+    // Source and target are the same zone, spelled two different ways.
+    for (const target of [SOURCE, `${SOURCE.toUpperCase()}.`]) {
+      assert.equal(
+        copyContent("TXT", form.content, { target }),
+        form.content,
+        `${target}:${form.label}`,
+      );
+    }
+  }
+});
+
 test("copying inside one zone rewrites nothing", () => {
   const records = [
     dnsRecord({
