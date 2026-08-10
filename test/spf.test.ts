@@ -110,7 +110,7 @@ test("validateSPF should accept valid spf", () => {
 
 test("simulateSPF should detect ip4 pass", async () => {
   const domain = "example.local";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (_d: string) => {
       void _d;
       return [["v=spf1 ip4:1.2.3.0/24 -all"]];
@@ -202,7 +202,7 @@ test("composeSPF and parseSPF support add/edit/remove operations", () => {
 test("buildSPFGraphFromContent should build include nodes", async () => {
   const domain = "example.org";
   const content = "v=spf1 include:inc.example -all";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (d: string) => {
       void d;
       return d === "inc.example" ? [["v=spf1 ip4:1.2.3.0/24 -all"]] : [];
@@ -239,7 +239,7 @@ test("validateSPFContentAsync should reject lookup limit", async () => {
   const domain = "example.org";
   const content =
     "v=spf1 include:one include:two include:three include:four include:five include:six include:seven include:eight include:nine include:ten include:eleven -all";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (_d: string) => {
       void _d;
       return [["v=spf1 -all"]];
@@ -282,7 +282,7 @@ test("validateSPFContentAsync should reject lookup limit", async () => {
 
 test("simulateSPF should honor ptr with forward-confirmation", async () => {
   const domain = "ptr.example";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (_d: string) => {
       void _d;
       return [["v=spf1 ptr:example.com -all"]];
@@ -312,7 +312,7 @@ test("simulateSPF should honor ptr with forward-confirmation", async () => {
 
 test("simulateSPF should not match ptr without forward-confirmation", async () => {
   const domain = "ptr.example";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (_d: string) => {
       void _d;
       return [["v=spf1 ptr:example.com -all"]];
@@ -439,7 +439,7 @@ test("SPF builder UI renders the canonical record with an exact host token", asy
 
 test("simulateSPF should include exp TXT explanation on fail", async () => {
   const domain = "exp.example";
-  const mockResolver: import("../src/lib/spf").DNSResolver = {
+  const mockResolver: import("../src/lib/dns/spf").DNSResolver = {
     resolveTxt: async (d: string) => {
       if (d === "explain.exp.example") return [["Explanation text"]];
       if (d === domain) return [["v=spf1 -all exp=explain.%{d}"]];
