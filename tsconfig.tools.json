@@ -1,0 +1,85 @@
+{
+  // Second TS project: covers everything tsconfig.json deliberately excludes
+  // (scripts/, test/, e2e/, playwright.config.ts). Until this existed,
+  // `npm run typecheck` had never checked a single test file.
+  //
+  // Compiler options are inherited from tsconfig.json unchanged - `strict` stays
+  // on. The two overrides below are corrections, not relaxations:
+  //
+  //  - allowImportingTsExtensions: these files are run by tsx/node with type
+  //    stripping and legitimately import "./foo.ts". The project never emits,
+  //    which is exactly the condition the flag exists for.
+  //  - next-env.d.ts is intentionally NOT included (unlike tsconfig.json).
+  //    It pulls in Next's ambient `NodeJS.ProcessEnv` augmentation, which makes
+  //    NODE_ENV a *required* property. That is right for app code and wrong for
+  //    scripts/tests that legitimately build partial env objects.
+  //
+  // `exclude` carries a quarantine list of files that were never type-checked
+  // and do not currently pass. Nothing is suppressed at the config level - each
+  // file is named, and the list is a ratchet: it only shrinks, and any NEW file
+  // under scripts/, test/ or e2e/ is checked from the moment it is added.
+  // See the burn-down inventory in the accompanying report.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./tsconfig.tools.tsbuildinfo",
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "playwright.config.ts",
+    "scripts/**/*.ts",
+    "scripts/**/*.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx",
+    "e2e/**/*.ts",
+    "e2e/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+
+    // --- QUARANTINE: pre-existing failures, never checked before. ---
+    // Remove entries as they are fixed; do not add new ones.
+
+    // scripts/ (2 files)
+    "scripts/debug-rbac-run.ts",
+    "scripts/capture-screenshots.ts",
+
+    // test/ harness helpers (2 files)
+    "test/node-test-env.ts",
+    "test/testRenderer.ts",
+
+    // test/ specs (31 files)
+    "test/auth-state-utils.test.ts",
+    "test/ci-reliability-workflow.contract.ts",
+    "test/cloudflareApi.test.ts",
+    "test/DNSManager.columns.test.tsx",
+    "test/DNSManager.copy.test.tsx",
+    "test/DNSManager.normalize.test.tsx",
+    "test/DNSManager.runtime.test.tsx",
+    "test/domainStatusBadges.test.tsx",
+    "test/EncryptionSettingsDialog.test.tsx",
+    "test/ErrorBoundary.runtime.test.tsx",
+    "test/LanguageSelector.test.tsx",
+    "test/LoginForm.test.tsx",
+    "test/McpToolPermissions.test.tsx",
+    "test/offline-cache.test.ts",
+    "test/PasskeyManagerDialog.test.tsx",
+    "test/PropagationChecker.test.tsx",
+    "test/RecordRow.test.tsx",
+    "test/resource-disposal.test.tsx",
+    "test/serverClient.desktop.test.ts",
+    "test/serverClient.spf.test.ts",
+    "test/serverClient.test.ts",
+    "test/spf.test.ts",
+    "test/sqlite-driver.test.ts",
+    "test/sqlite-fallback.test.ts",
+    "test/storageUtil.runtime.test.ts",
+    "test/ThemeToggle.void.test.tsx",
+    "test/topologyRuntime.test.ts",
+    "test/useCloudflareApi.desktop.test.ts",
+    "test/useCloudflareApi.test.ts",
+    "test/webauthn.test.ts",
+    "test/zone-file-interop.test.ts"
+  ]
+}

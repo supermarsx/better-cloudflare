@@ -268,29 +268,24 @@ test("a parsed record re-emits to a zone line that parses identically", () => {
 });
 
 test("documents that $ directives are skipped rather than interpreted", () => {
-  // The parser's contract: "$ directives ... are not interpreted". A directive
-  // short enough to fall under the four-field minimum is simply dropped, which
-  // is the graceful outcome — but the origin and default TTL it carried are
-  // then lost, so relative owner names arrive unqualified.
+  // The parser's contract: "$ directives ... are not interpreted". Every line
+  // beginning with "$" is skipped whole, which is the graceful outcome — but
+  // the origin and default TTL it carried are then lost, so relative owner
+  // names arrive unqualified.
   for (const directive of [
     "$ORIGIN example.com.",
     "$TTL 3600",
     "$INCLUDE sub.example.com.zone",
     "$INCLUDE sub.zone example.com.",
+    // `$GENERATE` (a BIND extension, not RFC 1035) has enough fields to look
+    // like a record. It is recognised as a directive by its "$" rather than by
+    // a field count, so it is skipped instead of becoming a record named
+    // "$GENERATE" of type "1-10".
+    "$GENERATE 1-10 host$ A 192.0.2.1",
+    "$GENERATE 1-10/2 dhcp-$ A 192.0.2.$",
   ]) {
     assert.deepEqual(parseBINDZone(directive), [], directive);
   }
-
-  // GAP: `$GENERATE` (a BIND extension, not RFC 1035) has enough fields to look
-  // like a record and is mis-parsed into one instead of being skipped.
-  assert.deepEqual(parseBINDZone("$GENERATE 1-10 host$ A 192.0.2.1"), [
-    {
-      name: "$GENERATE",
-      ttl: 300,
-      type: "1-10",
-      content: "host$ A 192.0.2.1",
-    },
-  ]);
 
   // A zone that relies on $ORIGIN keeps its owner names relative: `@` and `www`
   // are NOT expanded to example.com., and the $TTL default is not applied.
@@ -310,10 +305,11 @@ test("documents that $ directives are skipped rather than interpreted", () => {
   );
 });
 
-test("documents that parenthesised multi-line RDATA is not joined", () => {
+test("parenthesised multi-line RDATA is joined into one record", () => {
   // RFC 1035 §5.1 allows RDATA to span lines inside parentheses; SOA is almost
-  // always written that way. The parser keeps the opening paren as content and
-  // drops the continuation lines (each has fewer than four fields).
+  // always written that way. The physical lines are folded into one logical
+  // line, the per-line comments are stripped before the join, and the grouping
+  // parens themselves are removed.
   const records = parseBINDZone(
     [
       "example.com. 3600 IN SOA ns1.example.net. hostmaster.example.com. (",
@@ -330,42 +326,153 @@ test("documents that parenthesised multi-line RDATA is not joined", () => {
       name: "example.com.",
       ttl: 3600,
       type: "SOA",
-      content: "ns1.example.net. hostmaster.example.com. (",
+      content:
+        "ns1.example.net. hostmaster.example.com. 2026080701 7200 3600 1209600 3600",
     },
   ]);
 
-  // The single-line SOA form that Route 53 and dig emit parses correctly.
+  // The single-line SOA form that Route 53 and dig emit parses identically.
   assert.equal(
     parseOne(
       "example.com. 900 IN SOA ns1.example.net. hostmaster.example.com. 2026080701 7200 3600 1209600 3600",
     ).content,
     "ns1.example.net. hostmaster.example.com. 2026080701 7200 3600 1209600 3600",
   );
+
+  // A group that opens and closes on one line is the same record without them.
+  assert.equal(
+    parseOne(
+      "example.com. 900 IN SOA ns1.example.net. hostmaster.example.com. ( 2026080701 7200 3600 1209600 3600 )",
+    ).content,
+    "ns1.example.net. hostmaster.example.com. 2026080701 7200 3600 1209600 3600",
+  );
+
+  // A parenthesis inside a quoted <character-string> is data, not grouping:
+  // it neither opens a group nor is removed, and the string keeps its spacing.
+  assert.equal(
+    parseOne('example.com. 3600 IN TXT "a (grouped)  value"').content,
+    '"a (grouped)  value"',
+  );
+  // An escaped paren in bare RDATA is data too.
+  assert.equal(
+    parseOne(String.raw`example.com. 3600 IN TXT bare\(value\)`).content,
+    String.raw`bare\(value\)`,
+  );
+
+  // A key split across continuation lines is rejoined with single spaces: the
+  // tokens are separate <character-string>s in presentation form, and merging
+  // them would corrupt a numeric RDATA such as SOA.
+  assert.equal(
+    parseOne(
+      [
+        "example.com. 3600 IN DNSKEY 257 3 8 (",
+        "    AwEAAaHIwpx3w4VHKi6i1LHnTaWeHCL154Jug0Ykv",
+        "    XdBOZmDNGqAdKKlpKZKGgTKmDVmDNGqAdKKlpKZK ) ; key id = 12345",
+      ].join("\n"),
+    ).content,
+    "257 3 8 AwEAAaHIwpx3w4VHKi6i1LHnTaWeHCL154Jug0Ykv XdBOZmDNGqAdKKlpKZKGgTKmDVmDNGqAdKKlpKZK",
+  );
+
+  // An unterminated group still yields the record it opened rather than
+  // swallowing the rest of the file.
+  assert.deepEqual(
+    parseBINDZone(
+      [
+        "example.com. 3600 IN SOA ns1.example.net. root.example.com. (",
+        "  1",
+      ].join("\n"),
+    ),
+    [
+      {
+        name: "example.com.",
+        ttl: 3600,
+        type: "SOA",
+        content: "ns1.example.net. root.example.com. 1",
+      },
+    ],
+  );
 });
 
-test("documents that a blank owner does not inherit the previous owner", () => {
+test("a blank owner inherits the previous owner (RFC 1035 §5.1)", () => {
   // RFC 1035 §5.1: "if a line begins with a blank, then the owner is assumed to
-  // be the same as that of the previous RR". The parser does not implement
-  // inheritance, and the failure is not graceful: the TTL field is consumed as
-  // the owner name, producing a record whose owner is the string "3600".
+  // be the same as that of the previous RR". The elided owner is filled in from
+  // the preceding record rather than the TTL field being consumed as a name.
   assert.deepEqual(
     parseBINDZone(
       ["example.com. 3600 IN A 192.0.2.1", "\t3600 IN A 192.0.2.2"].join("\n"),
     ),
     [
       { name: "example.com.", ttl: 3600, type: "A", content: "192.0.2.1" },
-      { name: "3600", ttl: 300, type: "A", content: "192.0.2.2" },
+      { name: "example.com.", ttl: 3600, type: "A", content: "192.0.2.2" },
     ],
+  );
+
+  // Inheritance carries every optional-field layout, and chains across records.
+  assert.deepEqual(
+    parseBINDZone(
+      [
+        "example.com. 3600 IN MX 10 a.example.net.",
+        "             3600 IN MX 20 b.example.net.",
+        "                  IN MX 30 c.example.net.",
+        "                     MX 40 d.example.net.",
+      ].join("\n"),
+    ).map((record) => `${record.name} ${record.ttl} ${record.priority}`),
+    [
+      "example.com. 3600 10",
+      "example.com. 3600 20",
+      "example.com. 300 30",
+      "example.com. 300 40",
+    ],
+  );
+
+  // The owner only advances on a record, so a run of elided owners all inherit
+  // the same name.
+  assert.deepEqual(
+    parseBINDZone(
+      [
+        "example.com. 300 IN NS ns1.example.net.",
+        "  300 IN NS ns2.example.net.",
+        "  300 IN NS ns3.example.net.",
+        "www.example.com. 300 IN A 192.0.2.1",
+        "  300 IN A 192.0.2.2",
+      ].join("\n"),
+    ).map((record) => record.name),
+    [
+      "example.com.",
+      "example.com.",
+      "example.com.",
+      "www.example.com.",
+      "www.example.com.",
+    ],
+  );
+
+  // With no previous record there is nothing to inherit, so the line is dropped
+  // rather than having its TTL promoted to an owner name. That includes the
+  // very first line of the snippet, which is why the input is not trimmed.
+  assert.deepEqual(parseBINDZone("\t3600 IN A 192.0.2.2"), []);
+  assert.deepEqual(parseBINDZone("    IN A 192.0.2.2"), []);
+  assert.deepEqual(
+    parseBINDZone(
+      ["  3600 IN A 192.0.2.1", "example.com. 3600 IN A 192.0.2.2"].join("\n"),
+    ),
+    [{ name: "example.com.", ttl: 3600, type: "A", content: "192.0.2.2" }],
   );
 });
 
-test("documents that a record with neither TTL nor class is dropped", () => {
+test("a record with neither TTL nor class parses (RFC 1035 §5.1)", () => {
   // RFC 1035 §5.1 permits "<name> <type> <rdata>" with both optional fields
-  // omitted. The four-field minimum drops it instead of parsing it.
-  assert.deepEqual(parseBINDZone("example.com. A 192.0.2.1"), []);
-  assert.deepEqual(parseBINDZone("www.example.com. CNAME example.com."), []);
-
-  // Two-field RDATA survives the minimum, so the same omission parses here.
+  // omitted, and the parser's default TTL applies.
+  assert.deepEqual(parseBINDZone("example.com. A 192.0.2.1"), [
+    { name: "example.com.", ttl: 300, type: "A", content: "192.0.2.1" },
+  ]);
+  assert.deepEqual(parseBINDZone("www.example.com. CNAME example.com."), [
+    {
+      name: "www.example.com.",
+      ttl: 300,
+      type: "CNAME",
+      content: "example.com.",
+    },
+  ]);
   assert.deepEqual(parseBINDZone("example.com. MX 10 inbound.example.net."), [
     {
       name: "example.com.",
@@ -375,46 +482,102 @@ test("documents that a record with neither TTL nor class is dropped", () => {
       priority: 10,
     },
   ]);
+
+  // A line with no RDATA at all is still not a record: dropping it is the
+  // graceful outcome, and a record with empty content could not be written.
+  assert.deepEqual(parseBINDZone("example.com. 3600 IN"), []);
+  assert.deepEqual(parseBINDZone("example.com. 3600 IN TXT"), []);
+  assert.deepEqual(parseBINDZone("example.com. A"), []);
+  assert.deepEqual(parseBINDZone("example.com."), []);
 });
 
-test("documents that the record type is carried through verbatim, including case", () => {
+test("the record type mnemonic is case-folded (RFC 1035 §5.1)", () => {
   // RFC 1035 §5.1 type mnemonics are case-insensitive, and BIND, PowerDNS and
-  // NSD all accept lower case. The parser does not fold the case, so a
-  // lower-case export yields a `type` that no longer matches RECORD_TYPES.
-  const record = parseOne("example.com. 3600 in a 192.0.2.1");
-  assert.equal(record.type, "a");
+  // NSD all accept lower case. The type is folded to the canonical upper-case
+  // form so a lower-case export still matches RECORD_TYPES.
+  assert.equal(parseOne("example.com. 3600 in a 192.0.2.1").type, "A");
+  assert.equal(parseOne("example.com. 3600 In AaAa 2001:db8::1").type, "AAAA");
+  assert.equal(
+    parseOne('example.com. 3600 IN caa 0 issue "ca.example.net"').type,
+    "CAA",
+  );
 
-  // The MX preference is still split out, because that check folds case itself.
   assert.deepEqual(
     parseOne("example.com. 3600 in mx 10 inbound.example.net."),
     {
       name: "example.com.",
       ttl: 3600,
-      type: "mx",
+      type: "MX",
       content: "inbound.example.net.",
       priority: 10,
     },
   );
+
+  // The owner name is NOT folded: RFC 4343 makes names case-preserving.
+  assert.equal(
+    parseOne("EXAMPLE.com. 3600 in a 192.0.2.1").name,
+    "EXAMPLE.com.",
+  );
 });
 
-test("documents that BIND duration suffixes fall back to the default TTL", () => {
-  // BIND accepts `1h` / `2d` / `1w` TTLs. The parser recognises the shape well
-  // enough not to mistake it for a type, but does not convert it, so the
-  // configured TTL is silently replaced by the 300 second default.
-  for (const ttl of ["1h", "1H", "2d", "1w", "30m", "60s"]) {
-    assert.equal(parseOne(`example.com. ${ttl} IN A 192.0.2.1`).ttl, 300, ttl);
+test("BIND duration TTLs are converted to seconds", () => {
+  // BIND accepts `1h` / `2d` / `1w` TTLs, and combines units without a
+  // separator. Each is resolved rather than being replaced by the default.
+  const cases = [
+    { ttl: "60s", seconds: 60 },
+    { ttl: "30m", seconds: 1_800 },
+    { ttl: "1h", seconds: 3_600 },
+    { ttl: "1H", seconds: 3_600 },
+    { ttl: "2d", seconds: 172_800 },
+    { ttl: "1w", seconds: 604_800 },
+    { ttl: "1w12h", seconds: 648_000 },
+    { ttl: "1h30m", seconds: 5_400 },
+  ] as const;
+
+  for (const entry of cases) {
+    assert.equal(
+      parseOne(`example.com. ${entry.ttl} IN A 192.0.2.1`).ttl,
+      entry.seconds,
+      entry.ttl,
+    );
+    // The same value with the class first resolves identically.
+    assert.equal(
+      parseOne(`example.com. IN ${entry.ttl} A 192.0.2.1`).ttl,
+      entry.seconds,
+      entry.ttl,
+    );
+  }
+
+  // A token that only looks like a duration is not one. It is then read as the
+  // record type, fails the mnemonic check, and the line is dropped — a
+  // recoverable failure rather than a silently substituted TTL.
+  for (const token of ["1h30", "1x", "1h-", "1.5h"]) {
+    assert.deepEqual(
+      parseBINDZone(`example.com. ${token} IN A 192.0.2.1`),
+      [],
+      token,
+    );
   }
 });
 
-// BUG (not in flight, no fix pending): `ttl = Number(field) || 300` treats a
-// TTL of 0 as falsy and replaces it with 300. RFC 1035 §3.2.1 defines TTL as an
-// unsigned 32-bit value and RFC 2181 §8 explicitly permits 0 to mean "do not
-// cache". dig writes 0 for a record fetched at the end of its life, and
-// `version.bind. 0 CH TXT` is the canonical CHAOS probe. Un-skip once fixed.
-test(
-  "a TTL of zero is preserved (RFC 2181 §8)",
-  { skip: "parseBINDZone replaces a zero TTL with the 300 second default" },
-  () => {
-    assert.equal(parseOne("example.com. 0 IN A 192.0.2.1").ttl, 0);
-  },
-);
+test("a TTL of zero is preserved (RFC 2181 §8)", () => {
+  // RFC 1035 §3.2.1 defines TTL as an unsigned 32-bit value and RFC 2181 §8
+  // explicitly permits 0, meaning "do not cache". dig writes 0 for a record
+  // fetched at the end of its life, and `version.bind. 0 CH TXT` is the
+  // canonical CHAOS probe. A falsy check used to replace it with the default.
+  assert.equal(parseOne("example.com. 0 IN A 192.0.2.1").ttl, 0);
+  assert.equal(parseOne('version.bind. 0 CH TXT "9.18.1"').ttl, 0);
+  assert.equal(parseOne("example.com. 0s IN A 192.0.2.1").ttl, 0);
+
+  // Zero is not a TTL Cloudflare can store, so the write-time validator refuses
+  // it with "TTL must be 1 for automatic or a positive number of seconds". That
+  // is the graceful failure; silently substituting 300 changed the record.
+  assert.equal(parseOne("example.com. 0 IN A 192.0.2.1").content, "192.0.2.1");
+
+  // The 32-bit ceiling still parses; wider is not a TTL and is not guessed at.
+  assert.equal(
+    parseOne("example.com. 4294967295 IN A 192.0.2.1").ttl,
+    4294967295,
+  );
+  assert.deepEqual(parseBINDZone("example.com. 4294967296 IN A 192.0.2.1"), []);
+});

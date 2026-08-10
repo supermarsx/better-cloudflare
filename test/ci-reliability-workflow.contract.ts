@@ -295,7 +295,17 @@ test("package scripts expose truthful lint and reliability gates", () => {
     "The cargo-side TAURI_CONFIG override must stay intact",
   );
   assert.equal(scripts.build, "next build --webpack");
-  assert.equal(scripts.typecheck, "tsc -p tsconfig.json --noEmit");
+  // `typecheck` must fan out to both projects, because test-package.yml runs
+  // that script directly — anything it does not reach is not covered by CI.
+  assert.equal(
+    scripts.typecheck,
+    "npm run typecheck:app && npm run typecheck:tools",
+  );
+  assert.equal(scripts["typecheck:app"], "tsc -p tsconfig.json --noEmit");
+  assert.equal(
+    scripts["typecheck:tools"],
+    "tsc -p tsconfig.tools.json --noEmit",
+  );
   assert.equal(scripts.lint, "npm run lint:app && npm run lint:src:baseline");
   assert.equal(
     scripts["lint:src:baseline"],
