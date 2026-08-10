@@ -78,6 +78,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { RegistryMonitor } from "@/components/registrar/RegistryMonitor";
 import { TOPOLOGY_MODEL_NODE_LIMIT, ZoneTopologyTab } from "./ZoneTopologyTab";
+import { RecordTypeReference } from "@/components/docs/RecordTypeReference";
 import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
 import {
   runDomainAudit,
@@ -388,7 +389,8 @@ type ActionTab =
   | "workers"
   | "email-routing"
   | "propagation"
-  | "zone-compare";
+  | "zone-compare"
+  | "reference";
 type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
@@ -622,6 +624,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     id: "zone-compare",
     label: "Compare",
     hint: "Compare DNS records between zones",
+  },
+  {
+    id: "reference",
+    label: "Reference",
+    hint: "What each record type is for, with formats, examples and RFCs",
   },
 ];
 const ZONE_ACTION_PANEL_ID = "dns-zone-action-panel";
@@ -2477,7 +2484,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         raw === "ssl-tls" ||
         raw === "domain-audit" ||
         raw === "domain-registry" ||
-        raw === "topology"
+        raw === "topology" ||
+        raw === "reference"
       ) {
         // Legacy malformed value (action without zone id): ignore.
         return null;
@@ -2492,7 +2500,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         actionRaw === "ssl-tls" ||
         actionRaw === "domain-audit" ||
         actionRaw === "domain-registry" ||
-        actionRaw === "topology"
+        actionRaw === "topology" ||
+        actionRaw === "reference"
       ) {
         return { tabId: zoneId, action: actionRaw };
       }
@@ -8763,6 +8772,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   onCopyRecords={handleCopyComparedRecords}
                   columns={zoneCompareColumns}
                 />
+              )}
+
+              {/* The reference opens at whichever type the record list is
+                  filtered to, so "filter to CAA, then read about CAA" is one
+                  click rather than a search. */}
+              {activeTab.kind === "zone" && actionTab === "reference" && (
+                <RecordTypeReference initialType={activeTab.typeFilter} />
               )}
 
               {activeTab.kind === "audit" && (

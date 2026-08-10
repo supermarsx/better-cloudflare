@@ -227,3 +227,264 @@ export function getRecordFormat(type: string | undefined) {
   if (!type) return undefined;
   return RECORD_FORMATS[type as RecordType];
 }
+
+/** A specification a record type is defined by, linked to rfc-editor.org. */
+export type RfcReference = {
+  /** Canonical label, e.g. `RFC 1035`. */
+  label: string;
+  /** Section the type is defined in, when it is one section of a larger RFC. */
+  section?: string;
+  /** Absolute rfc-editor.org URL, anchored at `section` when there is one. */
+  url: string;
+  /** Why this reference matters, when it is not simply "defines the type". */
+  note?: string;
+};
+
+/**
+ * What a record type is *for*, in plain language, plus the specifications that
+ * define it.
+ *
+ * This is a sibling of {@link RECORD_FORMATS} rather than part of it because
+ * the two have different coverage on purpose: a type's job and its RFC are
+ * knowable even where its presentation format was not stated with confidence
+ * (see {@link RECORD_FORMAT_OMISSIONS}). Typing this as a total
+ * `Record<RecordType, …>` makes the compiler the coverage test — a new entry in
+ * `RECORD_TYPES` cannot ship without an explanation.
+ *
+ * Voice matches the guided builders: say what the record does, name the one
+ * mistake people make with it, and stop. Where the semantics could not be
+ * stated confidently the entry is deliberately short rather than padded.
+ */
+export type RecordDoc = {
+  /** One or two sentences: what this record is for and its common pitfall. */
+  purpose: string;
+  /** Defining specs, most relevant first. Empty for non-standard types. */
+  rfcs: RfcReference[];
+};
+
+/** Build an rfc-editor.org reference, anchored at a section when given. */
+function rfc(number: number, section?: string, note?: string): RfcReference {
+  const base = `https://www.rfc-editor.org/rfc/rfc${number}`;
+  return {
+    label: `RFC ${number}`,
+    ...(section ? { section } : {}),
+    url: section ? `${base}#section-${section}` : base,
+    ...(note ? { note } : {}),
+  };
+}
+
+export const RECORD_DOCS: Record<RecordType, RecordDoc> = {
+  A: {
+    purpose:
+      "Publishes the IPv4 address a hostname resolves to. This is the record that points a name at a server; publish one record per address to hand out several.",
+    rfcs: [rfc(1035, "3.4.1")],
+  },
+  AAAA: {
+    purpose:
+      "Publishes the IPv6 address a hostname resolves to — the IPv6 counterpart of an A record. A name can carry both, and clients pick per their own preference.",
+    rfcs: [rfc(3596)],
+  },
+  CNAME: {
+    purpose:
+      "Declares that this name is an alias for another name; a resolver restarts the lookup at the target. Because the alias stands in for the whole name, a name with a CNAME cannot carry any other record — which is why it cannot be used at a zone apex.",
+    rfcs: [rfc(1034, "3.6.2"), rfc(1035, "3.3.1")],
+  },
+  MX: {
+    purpose:
+      "Names a mail server that accepts email for this domain, with a preference number choosing between them. The target must be a hostname that has address records — never an IP address and never an alias.",
+    rfcs: [
+      rfc(1035, "3.3.9"),
+      rfc(
+        7505,
+        undefined,
+        "Defines the null MX, `0 .`, meaning this domain accepts no mail.",
+      ),
+    ],
+  },
+  TXT: {
+    purpose:
+      "Holds arbitrary text attached to a name. In practice it carries machine-readable policy: SPF, DKIM, DMARC and domain-ownership verification tokens all live here.",
+    rfcs: [rfc(1035, "3.3.14")],
+  },
+  SRV: {
+    purpose:
+      "Advertises which host and port run a particular service, so clients need not assume a well-known port. The owner name encodes the service and protocol, as in `_sip._tcp.example.com`.",
+    rfcs: [rfc(2782)],
+  },
+  NS: {
+    purpose:
+      "Delegates a zone, or a subdomain of it, to a nameserver. The NS set at the zone apex is what the parent zone points at, so it decides who is authoritative.",
+    rfcs: [rfc(1035, "3.3.11")],
+  },
+  PTR: {
+    purpose:
+      "Maps an address back to a name — the reverse of an A or AAAA lookup. It lives in the `in-addr.arpa` or `ip6.arpa` reverse zone, which is normally controlled by whoever owns the IP range rather than by you.",
+    rfcs: [rfc(1035, "3.3.12")],
+  },
+  CAA: {
+    purpose:
+      "Lists which certificate authorities may issue certificates for this domain. CAs are obliged to check it before issuing, so it guards against mis-issuance; resolvers themselves do nothing with it.",
+    rfcs: [rfc(8659)],
+  },
+  DS: {
+    purpose:
+      "Delegation Signer: publishes a digest of the child zone's key-signing key in the parent zone, linking the two into the DNSSEC chain of trust. It belongs in the parent, so it is normally submitted through your registrar.",
+    rfcs: [rfc(4034, "5")],
+  },
+  DNSKEY: {
+    purpose:
+      "Publishes a zone's DNSSEC public key so validators can check the RRSIG signatures made with the matching private key.",
+    rfcs: [rfc(4034, "2")],
+  },
+  NAPTR: {
+    purpose:
+      "Rewrites a name into a URI or into another lookup by applying a regular expression, for chained service discovery — most familiarly ENUM, which maps a telephone number to a SIP address.",
+    rfcs: [rfc(3403)],
+  },
+  SSHFP: {
+    purpose:
+      "Publishes a fingerprint of a host's SSH key so a client can verify the host on first connection instead of trusting it blindly. It is only worth trusting when the answer is DNSSEC-validated.",
+    rfcs: [rfc(4255)],
+  },
+  TLSA: {
+    purpose:
+      "Ties a TLS certificate, or its issuer, to one host and port, so a client can reject a certificate that is valid to the public PKI but is not the one the domain owner published. This is DANE.",
+    rfcs: [rfc(6698)],
+  },
+  HINFO: {
+    purpose:
+      "States the CPU and operating system of a host. Legacy: publishing it tells anyone asking exactly what the host runs.",
+    rfcs: [rfc(1035, "3.3.2")],
+  },
+  LOC: {
+    purpose:
+      "Records a physical location — latitude, longitude and altitude — for a name. Informational; nothing routes on it.",
+    rfcs: [rfc(1876)],
+  },
+  SPF: {
+    purpose:
+      "The retired dedicated record type for Sender Policy Framework. RFC 7208 removed it: publish the same policy as a TXT record instead, because that is the only place senders look.",
+    rfcs: [
+      rfc(7208, undefined, "Deprecates this type in favour of TXT."),
+      rfc(4408, undefined, "The obsolete specification that introduced it."),
+    ],
+  },
+  RP: {
+    purpose:
+      "Names a person responsible for a host: a mailbox, plus an optional pointer to a TXT record holding more detail. Informational.",
+    rfcs: [rfc(1183)],
+  },
+  DNAME: {
+    purpose:
+      "Redirects an entire subtree: every name below this one is rewritten to the same name below the target. Unlike CNAME it does not redirect the name itself, which still needs its own records.",
+    rfcs: [rfc(6672)],
+  },
+  CERT: {
+    purpose:
+      "Stores a certificate or a certificate revocation list in DNS, or a URL pointing at one.",
+    rfcs: [rfc(4398)],
+  },
+  SMIMEA: {
+    purpose:
+      "Associates an S/MIME certificate with one email address so a sender can find and verify it — the DANE mechanism for mail, mirroring TLSA field for field.",
+    rfcs: [rfc(8162)],
+  },
+  OPENPGPKEY: {
+    purpose:
+      "Publishes the OpenPGP public key for one email address, so a sender can find it without consulting a keyserver.",
+    rfcs: [rfc(7929)],
+  },
+  CDNSKEY: {
+    purpose:
+      "The child zone's request to its parent: build the DS record from this key. It lets a zone roll its key-signing key without an out-of-band exchange with the registrar.",
+    rfcs: [
+      rfc(7344),
+      rfc(8078, undefined, "Adds the initial-trust and removal cases."),
+    ],
+  },
+  AFSDB: {
+    purpose:
+      "Points at the database servers for an AFS cell, or at a DCE authenticated-name server.",
+    rfcs: [
+      rfc(1183),
+      rfc(
+        5864,
+        undefined,
+        "Replaces AFSDB with SRV records for AFS service location.",
+      ),
+    ],
+  },
+  APL: {
+    purpose:
+      "Lists ranges of IP address prefixes attached to a name, each optionally negated. Experimental: the RFC defines the record and its format, but what a list means is left to the application reading it.",
+    rfcs: [rfc(3123)],
+  },
+  DCHID: {
+    purpose:
+      "Lets a DHCP server prove it already owns a name before updating it, so two clients cannot fight over the same hostname. The content is an opaque digest the DHCP server generates. Listed here as DCHID, but the IANA type is DHCID.",
+    rfcs: [rfc(4701)],
+  },
+  HIP: {
+    purpose:
+      "Publishes a host's Host Identity Protocol identity — a public key, with optional rendezvous servers — so peers can reach a host that is named by key rather than by address.",
+    rfcs: [rfc(8005)],
+  },
+  IPSECKEY: {
+    purpose:
+      "Publishes an IPsec public key and gateway for a host or an address range, so a peer can set up IPsec without having the key configured in advance.",
+    rfcs: [rfc(4025)],
+  },
+  NSEC: {
+    purpose:
+      "Proves that a name, or a type at a name, does not exist, by naming the next name in the zone's sorted order. Produced by the zone signer; it is not written by hand.",
+    rfcs: [rfc(4034, "4")],
+  },
+  RRSIG: {
+    purpose:
+      "The DNSSEC signature over one record set, carrying its validity window and the key that made it. Produced by the zone signer; it is not written by hand.",
+    rfcs: [rfc(4034, "3")],
+  },
+  SOA: {
+    purpose:
+      "Start of Authority: one per zone, holding the primary nameserver, the administrator's mailbox, the serial number secondaries watch for changes, and the timers that govern transfers and negative caching.",
+    rfcs: [
+      rfc(1035, "3.3.13"),
+      rfc(
+        2308,
+        undefined,
+        "Redefines the final field as the negative-caching TTL.",
+      ),
+    ],
+  },
+  SVCB: {
+    purpose:
+      "Service Binding: describes how to reach a service — an alternative endpoint, a port, which protocols it speaks — in a single lookup, instead of several round-trips of discovery.",
+    rfcs: [rfc(9460)],
+  },
+  HTTPS: {
+    purpose:
+      "The HTTPS-specific form of SVCB. A browser learns ALPN support (so it can start on HTTP/3), a port, an alternative endpoint and address hints before it connects — and an apex name can point at another host, which a CNAME cannot do.",
+    rfcs: [rfc(9460)],
+  },
+  URI: {
+    purpose:
+      "Maps a service name to a URI, for when the answer is a URL rather than the host and port an SRV record would give you.",
+    rfcs: [rfc(7553)],
+  },
+  ALIAS: {
+    purpose:
+      "A provider-specific record, not an IANA type: it behaves like a CNAME but is legal at the zone apex, because the DNS provider resolves the target itself and serves the resulting addresses. Support and exact behaviour vary between providers.",
+    rfcs: [],
+  },
+  ANAME: {
+    purpose:
+      "A provider-specific apex alias, equivalent to ALIAS at most providers that offer it. An IETF draft was proposed but never standardised, so behaviour is defined by your provider, not by a spec.",
+    rfcs: [],
+  },
+};
+
+/** Look up the purpose and specifications for a record type. */
+export function getRecordDoc(type: string | undefined) {
+  if (!type) return undefined;
+  return RECORD_DOCS[type as RecordType];
+}
