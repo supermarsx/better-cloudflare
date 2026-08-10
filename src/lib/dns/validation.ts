@@ -4,6 +4,12 @@ import { validateSPF } from "./spf";
 import { RECORD_TYPES } from "../../types/dns";
 
 /**
+ * Highest value the 31-bit DNS TTL field can hold. Matches `MAX_TTL_SECONDS` in
+ * `src-tauri/crates/bc-dns-tools/src/validate.rs`.
+ */
+const MAX_TTL_SECONDS = 2_147_483_647;
+
+/**
  * Zod schema describing a DNS record input the application accepts for
  * create/update operations.
  *
@@ -13,6 +19,19 @@ import { RECORD_TYPES } from "../../types/dns";
  * - `ttl` can be a number of seconds or the string 'auto'
  * - `priority` optional (for MX records)
  * - `proxied` optional boolean for Cloudflare proxy
+ *
+ * The rules here are the browser/Node counterpart of the Rust validator in
+ * `src-tauri/crates/bc-dns-tools/src/validate.rs` and follow its split: a value
+ * is rejected only when it is unambiguously invalid for the record type, so a
+ * local rule can never block a record Cloudflare would have accepted. Two
+ * checks therefore stay out of this schema on purpose:
+ *
+ * - **which types may be proxied** — provider- and plan-specific, so Cloudflare
+ *   stays the authority (the Rust validator omits it for the same reason). The
+ *   CLI reports it as its own check.
+ * - **CNAME owner-name collisions** (RFC 1034 §3.6.2) — a whole-zone rule that
+ *   cannot be decided from one record, so it lives in the CLI's cross-record
+ *   pass instead.
  */
 export const dnsRecordSchema = z
   .object({
@@ -24,6 +43,24 @@ export const dnsRecordSchema = z
     proxied: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
+    // TTL: `1` is Cloudflare's "automatic", `0` is not a usable record TTL, and
+    // the wire field is 31 bits wide. Plan-specific floors (Cloudflare's 60
+    // second free-plan minimum) are deliberately not enforced here — they are
+    // Cloudflare's to apply, and the CLI reports them as warnings.
+    if (typeof val.ttl === "number") {
+      if (val.ttl < 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "TTL must be 1 for automatic or a positive number of seconds",
+        });
+      } else if (val.ttl > MAX_TTL_SECONDS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `TTL must be at most ${MAX_TTL_SECONDS} seconds`,
+        });
+      }
+    }
     // MX records should provide an integer priority
     if (val.type === "MX") {
       if (typeof val.priority !== "number" || !Number.isInteger(val.priority)) {
@@ -61,13 +98,30 @@ export const dnsRecordSchema = z
         });
       }
     }
-    // SRV record content should be: priority weight port target
+    // SRV record content is "priority weight port target" in presentation form.
+    //
+    // Cloudflare, however, commonly returns SRV content as the three fields
+    // "weight port target" and carries the priority in its own `priority`
+    // column — the same shape `record-copy.ts` and `export-api.ts` each handle
+    // explicitly. That record is valid, so it is accepted here whenever a
+    // separate integer `priority` is present. Three fields *without* a priority
+    // stays an error: the priority is then genuinely missing.
     if (val.type === "SRV") {
-      const srvRe = /^\s*\d+\s+\d+\s+\d+\s+\S+\s*$/;
-      if (!srvRe.test(String(val.content))) {
+      const fields = String(val.content).trim().split(/\s+/u);
+      const hasSeparatePriority =
+        typeof val.priority === "number" && Number.isInteger(val.priority);
+      // How many leading numeric fields the content is expected to carry.
+      const numericFields = fields.length === 3 && hasSeparatePriority ? 2 : 3;
+      const wellFormed =
+        fields.length === numericFields + 1 &&
+        fields.slice(0, numericFields).every((field) => /^\d+$/u.test(field)) &&
+        fields[numericFields].length > 0;
+      if (!wellFormed) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'SRV content must be: "priority weight port target"',
+          message:
+            'SRV content must be: "priority weight port target", or ' +
+            '"weight port target" when the priority is a separate field',
         });
       }
     }

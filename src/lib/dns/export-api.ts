@@ -1,4 +1,9 @@
 import type { DNSRecord } from "@/types/dns";
+import {
+  hasUnbalancedQuotes,
+  isQuotedForm,
+  normalizeCharacterString,
+} from "./character-string";
 // date-fns not required for now; avoid dependency in build
 
 /**
@@ -56,19 +61,47 @@ function absoluteDNSName(value: string): string {
   return `${name}.`;
 }
 
-function quoteBINDCharacterString(value: string): string {
-  const escaped = Array.from(value, (character) => {
-    if (character === "\\") return "\\\\";
-    if (character === '"') return '\\"';
-
+/**
+ * True when `value` holds a literal control character. One of those — a raw
+ * newline above all — would split the single line a record is written on, so
+ * such content is re-escaped rather than emitted as it stands.
+ */
+function hasRawControlCharacter(value: string): boolean {
+  for (const character of value) {
     const codePoint = character.codePointAt(0) ?? 0;
-    if (codePoint < 32 || codePoint === 127) {
-      return `\\${codePoint.toString().padStart(3, "0")}`;
-    }
-    return character;
-  }).join("");
+    if (codePoint <= 0x1f || codePoint === 0x7f) return true;
+  }
+  return false;
+}
 
-  return `"${escaped}"`;
+/**
+ * Write a `<character-string>` payload (TXT, SPF, and the TXT-shaped DKIM and
+ * DMARC records) in BIND presentation form.
+ *
+ * Content that already carries its own quotes — the form Cloudflare returns,
+ * and the form `parseBINDZone` produces on import — is emitted verbatim.
+ * Quoting it a second time would bury the value under an escaped-quote layer
+ * (`"\"v=DMARC1; p=reject\""`) that the next import reads back as literal
+ * quote characters, so every export/import round trip would mutate the record.
+ *
+ * Bare content must be quoted: an unquoted `;` starts a zone-file comment, and
+ * DMARC and DKIM values are full of them.
+ *
+ * Content that is quoted but damaged — an unbalanced quote, or a raw control
+ * character that would split the record across lines — is re-serialized from
+ * its logical value by {@link normalizeCharacterString}, which is exactly how
+ * the import side reads it back, so the round trip still agrees.
+ */
+function bindCharacterString(value: string): string {
+  const trimmed = value.trim();
+  if (
+    isQuotedForm(trimmed) &&
+    !hasUnbalancedQuotes(trimmed) &&
+    !hasRawControlCharacter(trimmed)
+  ) {
+    return trimmed;
+  }
+  return normalizeCharacterString(trimmed);
 }
 
 function absoluteNameFields(
@@ -85,7 +118,7 @@ function absoluteNameFields(
 function bindContent(record: DNSRecord): string {
   const type = record.type.toUpperCase();
   if (type === "TXT" || type === "SPF") {
-    return quoteBINDCharacterString(record.content);
+    return bindCharacterString(record.content);
   }
   if (WHOLE_CONTENT_NAME_TYPES.has(type)) {
     return absoluteDNSName(record.content);

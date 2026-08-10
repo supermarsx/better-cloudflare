@@ -4,15 +4,15 @@
  * several distinct defects, the location reported for each defect in all three
  * formats, and the exit codes CI depends on.
  *
- * They also pin the behaviour of `src/lib/dns/validation.ts`'s SRV rule, which
- * rejects the three-field-plus-separate-priority shape Cloudflare commonly
- * returns.
+ * They also pin the behaviour of `src/lib/dns/validation.ts`'s SRV rule on the
+ * three-field-plus-separate-priority shape Cloudflare commonly returns: the CLI
+ * passes that content to the schema untouched and the schema accepts it.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dnsRecordSchema } from "../src/lib/dns/validation";
 import { parseRecords } from "../scripts/cli/records";
-import { srvContentForSchema, validateRecords } from "../scripts/cli/validate";
+import { validateRecords } from "../scripts/cli/validate";
 import { BROKEN_ZONE, GOOD_ZONE, runHarness } from "./dns-cli-harness";
 
 const files = {
@@ -180,72 +180,61 @@ test("validate is a usage error for an unreadable file or unknown format", async
   assert.match(unknownExtension.stderr, /Could not infer the format/u);
 });
 
-test("dnsRecordSchema's SRV rule rejects Cloudflare's three-field content", () => {
+test("dnsRecordSchema accepts both SRV content shapes", () => {
   // Cloudflare commonly returns SRV content as "weight port target" with the
-  // priority carried in its own field. `src/lib/dns/record-copy.ts` and
-  // `src/lib/dns/export-api.ts` both handle that shape explicitly; the schema
-  // does not, and rejects it. This test documents the discrepancy so a fix to
-  // validation.ts shows up here rather than silently changing CLI behaviour.
+  // priority carried in its own field — the shape `src/lib/dns/record-copy.ts`
+  // and `src/lib/dns/export-api.ts` both handle explicitly. The schema accepts
+  // it, so the CLI hands the record over untouched.
   const cloudflareShape = {
     type: "SRV" as const,
     name: "_sip._tcp.example.com",
     content: "5 5060 sip.example.com",
     priority: 10,
   };
-  const asIs = dnsRecordSchema.safeParse(cloudflareShape);
-  assert.equal(asIs.success, false);
-  assert.ok(
-    asIs.error?.issues.some((issue) => issue.message.includes("SRV content")),
-  );
+  assert.equal(dnsRecordSchema.safeParse(cloudflareShape).success, true);
 
-  // The four-field presentation form the schema does accept.
-  const fourField = dnsRecordSchema.safeParse({
-    ...cloudflareShape,
-    content: "10 5 5060 sip.example.com",
-  });
-  assert.equal(fourField.success, true);
-});
-
-test("srvContentForSchema folds a separate priority back in, and only then", () => {
-  assert.deepEqual(
-    srvContentForSchema({
-      type: "SRV",
-      content: "5 5060 sip.example.com",
-      priority: 10,
-    }),
-    { content: "10 5 5060 sip.example.com", substituted: true },
-  );
-
-  // Already four fields: left alone.
+  // The four-field presentation form is accepted with or without a priority.
   assert.equal(
-    srvContentForSchema({
-      type: "SRV",
+    dnsRecordSchema.safeParse({
+      ...cloudflareShape,
       content: "10 5 5060 sip.example.com",
-      priority: 10,
-    }).substituted,
-    false,
+    }).success,
+    true,
   );
-
-  // Three fields but no separate priority: genuinely malformed, left alone so
-  // the schema still rejects it.
   assert.equal(
-    srvContentForSchema({ type: "SRV", content: "5 5060 sip.example.com" })
-      .substituted,
-    false,
-  );
-
-  // Three tokens that are not numbers: not the Cloudflare shape.
-  assert.equal(
-    srvContentForSchema({
+    dnsRecordSchema.safeParse({
       type: "SRV",
+      name: "_sip._tcp.example.com",
+      content: "10 5 5060 sip.example.com",
+    }).success,
+    true,
+  );
+
+  // Three fields with no separate priority: the priority is genuinely missing.
+  const missingPriority = dnsRecordSchema.safeParse({
+    type: "SRV",
+    name: "_sip._tcp.example.com",
+    content: "5 5060 sip.example.com",
+  });
+  assert.equal(missingPriority.success, false);
+  assert.ok(
+    missingPriority.error?.issues.some((issue) =>
+      issue.message.includes("SRV content"),
+    ),
+  );
+
+  // Three tokens that are not "weight port target" stay rejected even with a
+  // priority, so the relaxation cannot swallow malformed content.
+  assert.equal(
+    dnsRecordSchema.safeParse({
+      ...cloudflareShape,
       content: "a b sip.example.com",
-      priority: 10,
-    }).substituted,
+    }).success,
     false,
   );
 });
 
-test("validate accepts Cloudflare's SRV shape and says why", async () => {
+test("validate accepts Cloudflare's SRV shape with nothing to compensate for", async () => {
   const json = JSON.stringify([
     {
       type: "SRV",
@@ -260,8 +249,9 @@ test("validate accepts Cloudflare's SRV shape and says why", async () => {
   });
 
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /note {2}One or more SRV records/u);
-  assert.match(result.stdout, /srvContentForSchema/u);
+  assert.match(result.stdout, /1 record\(s\), 0 error\(s\), 0 warning\(s\)/u);
+  // The record is validated as it stands: no rule is relaxed, so no note.
+  assert.doesNotMatch(result.stdout, /note {2}/u);
 });
 
 test("validateRecords flags an exact duplicate as a warning", () => {

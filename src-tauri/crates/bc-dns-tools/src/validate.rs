@@ -189,7 +189,7 @@ fn validate_content(
         "A" => validate_ipv4(content, issues),
         "AAAA" => validate_ipv6(content, issues),
         "MX" => validate_mx(content, priority, issues),
-        "SRV" => validate_srv(content, issues),
+        "SRV" => validate_srv(content, priority, issues),
         "CAA" => validate_caa(content, issues),
         "TXT" | "SPF" => validate_text(record_type, content, issues),
         "TLSA" => validate_tlsa(content, issues),
@@ -242,21 +242,53 @@ fn validate_mx(content: &str, priority: Option<u16>, issues: &mut Vec<String>) {
 /// a 16-bit integer, and the target is a hostname. Permissive: the "no such
 /// service" target `.` (RFC 2782) is accepted, and trailing tokens are left to
 /// Cloudflare rather than rejected locally.
-fn validate_srv(content: &str, issues: &mut Vec<String>) {
+///
+/// Cloudflare returns SRV records with the priority in its own field and only
+/// `weight port target` in the content, so that shape is accepted when a
+/// priority is present. Rejecting it would make every SRV record read back
+/// from the API unsavable, and the copy engine and the exporter already agree
+/// that both shapes are real.
+fn validate_srv(content: &str, priority: Option<u16>, issues: &mut Vec<String>) {
     let parts: Vec<&str> = content.split_whitespace().collect();
-    if parts.len() < 4 {
-        issues.push("SRV content must be: \"priority weight port target\"".to_string());
-        return;
-    }
-    for (index, field) in [(0_usize, "priority"), (1, "weight"), (2, "port")] {
-        if parts[index].parse::<u16>().is_err() {
+    let embeds_priority = match parts.len() {
+        0..=2 => {
+            issues.push(
+                "SRV content must be: \"priority weight port target\", or \
+                 \"weight port target\" when the priority is a separate field"
+                    .to_string(),
+            );
+            return;
+        }
+        // Three tokens are only a complete record when the priority arrives
+        // separately; otherwise the port or the target is missing.
+        3 if priority.is_none() => {
+            issues.push(
+                "SRV content must be: \"priority weight port target\", or \
+                 \"weight port target\" when the priority is a separate field"
+                    .to_string(),
+            );
+            return;
+        }
+        3 => false,
+        _ => true,
+    };
+
+    let numeric: &[(usize, &str)] = if embeds_priority {
+        &[(0, "priority"), (1, "weight"), (2, "port")]
+    } else {
+        &[(0, "weight"), (1, "port")]
+    };
+    for (index, field) in numeric {
+        if parts[*index].parse::<u16>().is_err() {
             issues.push(format!(
                 "SRV {field} must be an integer between 0 and 65535"
             ));
         }
     }
-    if parts[3] != "." {
-        if let Some(issue) = hostname_issue("SRV target", parts[3]) {
+
+    let target = parts[if embeds_priority { 3 } else { 2 }];
+    if target != "." {
+        if let Some(issue) = hostname_issue("SRV target", target) {
             issues.push(issue);
         }
     }
@@ -811,6 +843,50 @@ mod tests {
         rejects_with("SRV", "10 70000 8080 target.example.com", "SRV weight");
         rejects_with("SRV", "10 5 70000 target.example.com", "SRV port");
         rejects_with("SRV", "10 5 8080 not_a_host!", "SRV target");
+    }
+
+    /// Cloudflare returns SRV records with the priority in its own field and
+    /// `weight port target` in the content. Rejecting that shape would make
+    /// every SRV record read back from the API impossible to save again.
+    #[test]
+    fn srv_accepts_the_shape_cloudflare_returns() {
+        let with_priority = |content: &str, priority: Option<u16>| {
+            let mut record = input("SRV", content);
+            record.priority = priority;
+            validate_dns_record(&record)
+        };
+
+        let result = with_priority("5 8080 target.example.com", Some(10));
+        assert!(result.ok, "{:?}", result.issues);
+
+        // Zero is a legitimate priority and must not be read as absent.
+        let result = with_priority("5 8080 target.example.com", Some(0));
+        assert!(result.ok, "{:?}", result.issues);
+
+        // The four-field form still validates its own priority field.
+        let result = with_priority("10 5 8080 target.example.com", Some(10));
+        assert!(result.ok, "{:?}", result.issues);
+
+        // Without a separate priority, three tokens are still incomplete.
+        let result = with_priority("5 8080 target.example.com", None);
+        assert!(!result.ok);
+
+        // The remaining numeric fields and the target are still checked in the
+        // shortened form, at their shifted positions.
+        let result = with_priority("70000 8080 target.example.com", Some(10));
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.contains("SRV weight")));
+        let result = with_priority("5 70000 target.example.com", Some(10));
+        assert!(result.issues.iter().any(|issue| issue.contains("SRV port")));
+        let result = with_priority("5 8080 not_a_host!", Some(10));
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.contains("SRV target")));
+        let result = with_priority("5 8080 192.0.2.1", Some(10));
+        assert!(!result.ok, "an IP literal is not a valid SRV target");
     }
 
     #[test]

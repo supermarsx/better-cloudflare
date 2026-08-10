@@ -8,13 +8,14 @@
  * used here as-is rather than duplicated.
  *
  * Around the schema sit the checks Cloudflare enforces at the API boundary but
- * zod does not express: TTL bounds, proxiable record types, name shape, zone
- * containment, and the RFC 1034 rule that a CNAME may not share its owner name
- * with any other record. Every finding carries the source line or record index
- * so a migration can be checked before a live zone is touched.
+ * the schema deliberately leaves to it: the plan TTL range (a warning, not an
+ * error), proxiable record types, name shape, zone containment, and the RFC
+ * 1034 rule that a CNAME may not share its owner name with any other record —
+ * a whole-file rule no single-record schema can decide. Every finding carries
+ * the source line or record index so a migration can be checked before a live
+ * zone is touched.
  */
 import type { DNSRecord } from "../../src/types/dns";
-import { composeSRV } from "../../src/lib/dns/dns-parsers";
 import { dnsRecordSchema } from "../../src/lib/dns/validation";
 import type { SourceRecord } from "./records";
 
@@ -42,8 +43,9 @@ export interface ValidationReport {
   errorCount: number;
   warningCount: number;
   /**
-   * Behaviour of the shared rule set that the operator should know about, such
-   * as the SRV compensation below. Never silently applied.
+   * Behaviour of the shared rule set that the operator should know about — a
+   * rule that was relaxed, or an input that was reinterpreted before it was
+   * checked. Nothing of that kind is applied silently.
    */
   notes: string[];
 }
@@ -62,48 +64,6 @@ const MAX_TTL_SECONDS = 86_400;
 const PROXIABLE_TYPES = new Set(["A", "AAAA", "CNAME"]);
 
 const DNS_LABEL = /^(?:\*|[\p{L}\p{N}_](?:[\p{L}\p{N}_-]*[\p{L}\p{N}_])?)$/u;
-
-/**
- * `dnsRecordSchema` requires SRV content to be four space-separated fields
- * (`priority weight port target`). Cloudflare commonly returns three, carrying
- * the priority in the separate `priority` column instead — the shape
- * `src/lib/dns/record-copy.ts` and `src/lib/dns/export-api.ts` each handle
- * explicitly. Handing that shape to the schema unchanged produces a false
- * rejection of a perfectly valid record.
- *
- * Rather than skip the schema's SRV rule, the priority is folded back into the
- * content before validation and the substitution is recorded as a note on the
- * report, so the compensation is visible in the CLI's own output instead of
- * hidden in this function.
- *
- * Returns the content to validate, and whether a substitution happened.
- */
-export function srvContentForSchema(record: Partial<DNSRecord>): {
-  content: string;
-  substituted: boolean;
-} {
-  const content = record.content ?? "";
-  const priority = record.priority;
-  if (typeof priority !== "number" || !Number.isInteger(priority)) {
-    return { content, substituted: false };
-  }
-  const fields = content.trim().split(/\s+/u);
-  if (
-    fields.length !== 3 ||
-    !fields.slice(0, 2).every((f) => /^\d+$/u.test(f))
-  ) {
-    return { content, substituted: false };
-  }
-  return {
-    content: composeSRV(
-      priority,
-      Number(fields[0]),
-      Number(fields[1]),
-      fields[2],
-    ),
-    substituted: true,
-  };
-}
 
 function normalizeName(name: string): string {
   const trimmed = name.trim();
@@ -185,7 +145,6 @@ function labelFor(record: Partial<DNSRecord>): string {
 function validateOne(
   source: SourceRecord,
   options: ValidateOptions,
-  notes: Set<string>,
 ): RecordReport {
   const issues: ValidationIssue[] = [];
   const record = source.record;
@@ -207,23 +166,10 @@ function validateOne(
 
   if (issues.length === 0) {
     const type = (record.type ?? "").toUpperCase();
-    const srv =
-      type === "SRV"
-        ? srvContentForSchema(record)
-        : { content: record.content ?? "", substituted: false };
-    if (srv.substituted) {
-      notes.add(
-        "One or more SRV records carried the priority in a separate field with " +
-          "three-field content. dnsRecordSchema requires four fields, so the " +
-          "priority was folded back into the content before validation. See " +
-          "srvContentForSchema in scripts/cli/validate.ts.",
-      );
-    }
-
     const parsed = dnsRecordSchema.safeParse({
       type,
       name: record.name,
-      content: srv.content,
+      content: record.content,
       ...(record.ttl !== undefined ? { ttl: record.ttl } : {}),
       ...(record.priority !== undefined ? { priority: record.priority } : {}),
       ...(record.proxied !== undefined ? { proxied: record.proxied } : {}),
@@ -322,8 +268,7 @@ export function validateRecords(
   sources: SourceRecord[],
   options: ValidateOptions = {},
 ): ValidationReport {
-  const notes = new Set<string>();
-  const reports = sources.map((source) => validateOne(source, options, notes));
+  const reports = sources.map((source) => validateOne(source, options));
   checkAcrossRecords(sources, reports);
 
   let errorCount = 0;
@@ -340,6 +285,9 @@ export function validateRecords(
     reports,
     errorCount,
     warningCount,
-    notes: [...notes],
+    // No rule is currently relaxed or reinterpreted: `dnsRecordSchema` accepts
+    // Cloudflare's SRV shape directly, so nothing has to be compensated for
+    // here. The field stays part of the report so the `--json` shape is stable.
+    notes: [],
   };
 }

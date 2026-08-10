@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { unquoteCharacterString } from "../src/lib/dns/character-string";
+import { parseBINDZone } from "../src/lib/dns/dns-parsers";
 import {
   recordsToBIND,
   recordsToCSV,
@@ -102,6 +104,164 @@ test("BIND export safely represents known absolute DNS names and targets", () =>
       "_sip._tcp.example.com.\t300\tIN\tSRV\t0 0 5060 sip.example.net.",
       'example.com.\t300\tIN\tHTTPS\t1 . alpn="h2,h3"',
     ].join("\n"),
+  );
+});
+
+/**
+ * The character-string records a migration actually carries, each with the
+ * logical value that must survive an export/import round trip untouched.
+ */
+const CHARACTER_STRING_RECORDS = [
+  {
+    label: "TXT",
+    type: "TXT",
+    name: "example.com",
+    value: "hello world",
+  },
+  {
+    label: "SPF",
+    type: "SPF",
+    name: "example.com",
+    value: "v=spf1 include:_spf.example.net ~all",
+  },
+  {
+    label: "SPF as TXT",
+    type: "TXT",
+    name: "example.com",
+    value: "v=spf1 ip4:192.0.2.20 -all",
+  },
+  {
+    label: "DMARC",
+    type: "TXT",
+    name: "_dmarc.example.com",
+    value: "v=DMARC1; p=reject; rua=mailto:dmarc@example.com; pct=100",
+  },
+  {
+    label: "DKIM",
+    type: "TXT",
+    name: "selector1._domainkey.example.com",
+    value:
+      "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest==",
+  },
+] as const;
+
+/** Export one record, import the result, and return the single record back. */
+function roundTrip(record: DNSRecord): Partial<DNSRecord> {
+  const exported = recordsToBIND([record]);
+  assert.equal(
+    exported.split("\n").length,
+    1,
+    `a record must export as one line: ${JSON.stringify(exported)}`,
+  );
+  const imported = parseBINDZone(exported);
+  assert.equal(imported.length, 1, `re-import of ${exported}`);
+  return imported[0];
+}
+
+test("BIND export leaves already-quoted character-string content alone", () => {
+  // The bug this pins: quoting quoted content again produced
+  // TXT "\"v=DMARC1; p=reject\"", which reimports with a literal quote layer.
+  assert.equal(
+    recordsToBIND([
+      {
+        type: "TXT",
+        name: "_dmarc.example.com",
+        content: '"v=DMARC1; p=reject"',
+        ttl: 300,
+      } as DNSRecord,
+    ]),
+    '_dmarc.example.com.\t300\tIN\tTXT\t"v=DMARC1; p=reject"',
+  );
+
+  // A DKIM key already split into adjacent character-strings stays two strings
+  // rather than becoming one escaped blob.
+  assert.equal(
+    recordsToBIND([
+      {
+        type: "TXT",
+        name: "default._domainkey.example.com",
+        content: '"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQ" "EFAAOCAQ8AMIIB"',
+        ttl: 300,
+      } as DNSRecord,
+    ]),
+    'default._domainkey.example.com.\t300\tIN\tTXT\t"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQ" "EFAAOCAQ8AMIIB"',
+  );
+});
+
+test("quoted character-string content survives export then import byte for byte", () => {
+  for (const { label, type, name, value } of CHARACTER_STRING_RECORDS) {
+    const content = `"${value}"`;
+    const record = { type, name, content, ttl: 300 } as DNSRecord;
+
+    const imported = roundTrip(record);
+    assert.equal(imported.content, content, label);
+    assert.equal(imported.type, type, label);
+    assert.equal(imported.name, `${name}.`, label);
+
+    // No escaped-quote layer was introduced anywhere in the exported line.
+    assert.doesNotMatch(recordsToBIND([record]), /\\"/u, label);
+
+    // And the trip is a fixed point: exporting the imported record again and
+    // reimporting yields the same bytes.
+    assert.equal(
+      roundTrip({ ...record, content: imported.content } as DNSRecord).content,
+      content,
+      label,
+    );
+  }
+});
+
+test("bare character-string content is quoted once and keeps its logical value", () => {
+  for (const { label, type, name, value } of CHARACTER_STRING_RECORDS) {
+    const record = { type, name, content: value, ttl: 300 } as DNSRecord;
+
+    // Bare content must gain quotes — an unquoted ";" starts a zone comment —
+    // but exactly one layer of them, and nothing else changes.
+    const imported = roundTrip(record);
+    assert.equal(imported.content, `"${value}"`, label);
+    assert.equal(unquoteCharacterString(imported.content ?? ""), value, label);
+
+    // The second trip changes nothing further.
+    assert.equal(
+      roundTrip({ ...record, content: imported.content } as DNSRecord).content,
+      `"${value}"`,
+      label,
+    );
+  }
+});
+
+test("damaged quoted content is repaired the way the importer reads it", () => {
+  // An unbalanced quote is not emitted verbatim: it would produce a zone line
+  // no parser agrees on. It is re-serialized from the value the import side
+  // recovers, so the round trip converges instead of drifting.
+  const imported = roundTrip({
+    type: "TXT",
+    name: "broken.example.com",
+    content: '"v=spf1 -all',
+    ttl: 300,
+  } as DNSRecord);
+  assert.equal(imported.content, '"v=spf1 -all"');
+  assert.equal(
+    roundTrip({
+      type: "TXT",
+      name: "broken.example.com",
+      content: imported.content,
+      ttl: 300,
+    } as DNSRecord).content,
+    '"v=spf1 -all"',
+  );
+
+  // A raw newline inside otherwise valid quoted content is escaped rather than
+  // written out, so the record still occupies exactly one line. `roundTrip`
+  // asserts the single line; the escaped form is what survives the import.
+  assert.equal(
+    roundTrip({
+      type: "TXT",
+      name: "multiline.example.com",
+      content: '"first\nsecond"',
+      ttl: 300,
+    } as DNSRecord).content,
+    '"first\\010second"',
   );
 });
 
