@@ -2,7 +2,14 @@
  * UI component rendering a single DNS record row and optional inline
  * editor allowing update and deletion of the record.
  */
-import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
+import {
+  Fragment,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import type { ChangeEvent, MouseEvent as ReactMouseEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,6 +188,173 @@ function supportsRecordBuilder(type: RecordType | undefined): boolean {
 }
 
 /**
+ * Every inline sub-field the structured content editors expose. The keys are
+ * namespaced per record type so a draft can never be read back by the wrong
+ * editor after the type changes.
+ */
+type SubFieldKey =
+  | "srvPriority"
+  | "srvWeight"
+  | "srvPort"
+  | "srvTarget"
+  | "tlsaUsage"
+  | "tlsaSelector"
+  | "tlsaMatchingType"
+  | "tlsaData"
+  | "sshfpAlgorithm"
+  | "sshfpFptype"
+  | "sshfpFingerprint"
+  | "naptrOrder"
+  | "naptrPreference"
+  | "naptrFlags"
+  | "naptrService"
+  | "naptrRegexp"
+  | "naptrReplacement";
+
+/** Raw, exactly-as-typed text for each inline sub-field. */
+type SubFields = Partial<Record<SubFieldKey, string>>;
+
+/**
+ * A sub-field draft, tagged with the content it composed to. The tag is what
+ * makes the draft self-invalidating: as soon as `editedRecord.content` is
+ * changed by anything else (the builder assistant, a canonical-content apply,
+ * or a fresh server record) the tag stops matching and the sub-fields are
+ * re-derived from the content instead of lingering as stale mirrors.
+ */
+interface SubFieldDraft {
+  type: RecordType | undefined;
+  content: string;
+  fields: SubFields;
+}
+
+const EMPTY_SUB_FIELDS: SubFields = {};
+
+/** Render a parsed numeric sub-field; `NaN` and `undefined` show as empty. */
+function formatSubFieldNumber(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : "";
+}
+
+/** Read a typed sub-field back as a number, or `undefined` while incomplete. */
+function toSubFieldNumber(raw: string | undefined): number | undefined {
+  const parsed = Number.parseInt(raw ?? "", 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Project a record's content onto the inline sub-fields of its type. This is
+ * the single source of truth for what the structured inputs display whenever
+ * the user is not part-way through typing one of them.
+ */
+function deriveSubFields(
+  type: RecordType | undefined,
+  content: string,
+): SubFields {
+  switch (type) {
+    case "SRV": {
+      const parsed = parseSRV(content);
+      return {
+        srvPriority: formatSubFieldNumber(parsed.priority),
+        srvWeight: formatSubFieldNumber(parsed.weight),
+        srvPort: formatSubFieldNumber(parsed.port),
+        srvTarget: parsed.target ?? "",
+      };
+    }
+    case "TLSA": {
+      const parsed = parseTLSA(content);
+      return {
+        tlsaUsage: formatSubFieldNumber(parsed.usage),
+        tlsaSelector: formatSubFieldNumber(parsed.selector),
+        tlsaMatchingType: formatSubFieldNumber(parsed.matchingType),
+        tlsaData: parsed.data ?? "",
+      };
+    }
+    case "SSHFP": {
+      const parsed = parseSSHFP(content);
+      return {
+        sshfpAlgorithm: formatSubFieldNumber(parsed.algorithm),
+        sshfpFptype: formatSubFieldNumber(parsed.fptype),
+        sshfpFingerprint: parsed.fingerprint ?? "",
+      };
+    }
+    case "NAPTR": {
+      const parsed = parseNAPTR(content);
+      return {
+        naptrOrder: formatSubFieldNumber(parsed.order),
+        naptrPreference: formatSubFieldNumber(parsed.preference),
+        naptrFlags: parsed.flags ?? "",
+        naptrService: parsed.service ?? "",
+        naptrRegexp: parsed.regexp ?? "",
+        naptrReplacement: parsed.replacement ?? "",
+      };
+    }
+    default:
+      return EMPTY_SUB_FIELDS;
+  }
+}
+
+/**
+ * Compose record content from inline sub-fields, or `null` for record types
+ * that have no structured inline editor.
+ */
+function composeSubFields(
+  type: RecordType | undefined,
+  fields: SubFields,
+): string | null {
+  switch (type) {
+    case "SRV":
+      return composeSRV(
+        toSubFieldNumber(fields.srvPriority),
+        toSubFieldNumber(fields.srvWeight),
+        toSubFieldNumber(fields.srvPort),
+        fields.srvTarget ?? "",
+      );
+    case "TLSA":
+      return composeTLSA(
+        toSubFieldNumber(fields.tlsaUsage),
+        toSubFieldNumber(fields.tlsaSelector),
+        toSubFieldNumber(fields.tlsaMatchingType),
+        fields.tlsaData ?? "",
+      );
+    case "SSHFP":
+      return composeSSHFP(
+        toSubFieldNumber(fields.sshfpAlgorithm),
+        toSubFieldNumber(fields.sshfpFptype),
+        fields.sshfpFingerprint ?? "",
+      );
+    case "NAPTR":
+      return composeNAPTR(
+        toSubFieldNumber(fields.naptrOrder),
+        toSubFieldNumber(fields.naptrPreference),
+        fields.naptrFlags ?? "",
+        fields.naptrService ?? "",
+        fields.naptrRegexp ?? "",
+        fields.naptrReplacement ?? "",
+      );
+    default:
+      return null;
+  }
+}
+
+/**
+ * Compare the fields this row can edit. Used to tell an untouched draft from
+ * one the user has started changing.
+ */
+function isSameEditableRecord(left: DNSRecord, right: DNSRecord): boolean {
+  return (
+    left.id === right.id &&
+    left.type === right.type &&
+    left.name === right.name &&
+    left.content === right.content &&
+    left.ttl === right.ttl &&
+    left.priority === right.priority &&
+    left.proxied === right.proxied &&
+    left.comment === right.comment
+  );
+}
+
+/**
  * Properties for the `RecordRow` UI component which renders and optionally
  * edits a DNS record.
  */
@@ -286,59 +460,13 @@ export function RecordRow({
     [openRecordInBrowser, recordBrowserUrl],
   );
 
-  const [srvPriority, setSrvPriority] = useState<number | undefined>(
-    parseSRV(record.content).priority,
-  );
-  const [srvWeight, setSrvWeight] = useState<number | undefined>(
-    parseSRV(record.content).weight,
-  );
-  const [srvPort, setSrvPort] = useState<number | undefined>(
-    parseSRV(record.content).port,
-  );
-  const [srvTarget, setSrvTarget] = useState<string>(
-    parseSRV(record.content).target ?? "",
-  );
-
-  const [tlsaUsage, setTlsaUsage] = useState<number | undefined>(
-    parseTLSA(record.content).usage,
-  );
-  const [tlsaSelector, setTlsaSelector] = useState<number | undefined>(
-    parseTLSA(record.content).selector,
-  );
-  const [tlsaMatchingType, setTlsaMatchingType] = useState<number | undefined>(
-    parseTLSA(record.content).matchingType,
-  );
-  const [tlsaData, setTlsaData] = useState<string>(
-    parseTLSA(record.content).data ?? "",
-  );
-
-  const [sshfpAlgorithm, setSshfpAlgorithm] = useState<number | undefined>(
-    parseSSHFP(record.content).algorithm,
-  );
-  const [sshfpFptype, setSshfpFptype] = useState<number | undefined>(
-    parseSSHFP(record.content).fptype,
-  );
-  const [sshfpFingerprint, setSshfpFingerprint] = useState<string>(
-    parseSSHFP(record.content).fingerprint ?? "",
-  );
-
-  const [naptrOrder, setNaptrOrder] = useState<number | undefined>(
-    parseNAPTR(record.content).order,
-  );
-  const [naptrPref, setNaptrPref] = useState<number | undefined>(
-    parseNAPTR(record.content).preference,
-  );
-  const [naptrFlags, setNaptrFlags] = useState<string>(
-    parseNAPTR(record.content).flags ?? "",
-  );
-  const [naptrService, setNaptrService] = useState<string>(
-    parseNAPTR(record.content).service ?? "",
-  );
-  const [naptrRegexp, setNaptrRegexp] = useState<string>(
-    parseNAPTR(record.content).regexp ?? "",
-  );
-  const [naptrReplacement, setNaptrReplacement] = useState<string>(
-    parseNAPTR(record.content).replacement ?? "",
+  // The structured content editors (SRV/TLSA/SSHFP/NAPTR) are *derived* from
+  // `editedRecord.content`, never mirrored into state. Only the raw text of
+  // fields the user is actively typing is held locally, because a partially
+  // typed record (an empty port, a target being retyped) does not survive a
+  // compose/parse round trip and would otherwise blank its siblings.
+  const [subFieldDraft, setSubFieldDraft] = useState<SubFieldDraft | null>(
+    null,
   );
   const [spfQualifier, setSpfQualifier] = useState<string>("+");
   const [spfMechanism, setSpfMechanism] = useState<string>("include");
@@ -384,64 +512,46 @@ export function RecordRow({
     if (spfMechanism === "all") setSpfValue("");
   }, [editedRecord, spfMechanism, spfQualifier, spfValue, t]);
 
+  // Which server record the draft was last seeded from. A background refresh
+  // (the zone auto-refresh poller re-delivers every record) is adopted only
+  // while the draft still matches that seed; once the user has changed
+  // anything, their in-flight edit wins and the incoming record is ignored
+  // rather than silently overwriting what they typed.
+  const syncedRecordRef = useRef(record);
   useEffect(() => {
-    setEditedRecord(record);
+    const previous = syncedRecordRef.current;
+    if (isSameEditableRecord(record, previous)) return;
+    syncedRecordRef.current = record;
     setExpandedName(false);
     setExpandedContent(false);
-    if (record.type === "SRV") {
-      const parsed = parseSRV(record.content);
-      if (parsed.priority !== srvPriority) setSrvPriority(parsed.priority);
-      if (parsed.weight !== srvWeight) setSrvWeight(parsed.weight);
-      if (parsed.port !== srvPort) setSrvPort(parsed.port);
-      if (parsed.target !== srvTarget) setSrvTarget(parsed.target ?? "");
+    setEditedRecord((prev) =>
+      isSameEditableRecord(prev, previous) ? record : prev,
+    );
+  }, [record]);
+
+  const subFields = useMemo(() => {
+    const type = editedRecord.type as RecordType | undefined;
+    if (
+      subFieldDraft &&
+      subFieldDraft.type === type &&
+      subFieldDraft.content === editedRecord.content
+    ) {
+      return subFieldDraft.fields;
     }
-    if (record.type === "TLSA") {
-      const parsed = parseTLSA(record.content);
-      if (parsed.usage !== tlsaUsage) setTlsaUsage(parsed.usage);
-      if (parsed.selector !== tlsaSelector) setTlsaSelector(parsed.selector);
-      if (parsed.matchingType !== tlsaMatchingType)
-        setTlsaMatchingType(parsed.matchingType);
-      if (parsed.data !== tlsaData) setTlsaData(parsed.data ?? "");
-    }
-    if (record.type === "SSHFP") {
-      const parsed = parseSSHFP(record.content);
-      if (parsed.algorithm !== sshfpAlgorithm)
-        setSshfpAlgorithm(parsed.algorithm);
-      if (parsed.fptype !== sshfpFptype) setSshfpFptype(parsed.fptype);
-      if (parsed.fingerprint !== sshfpFingerprint)
-        setSshfpFingerprint(parsed.fingerprint ?? "");
-    }
-    if (record.type === "NAPTR") {
-      const parsed = parseNAPTR(record.content);
-      if (parsed.order !== naptrOrder) setNaptrOrder(parsed.order);
-      if (parsed.preference !== naptrPref) setNaptrPref(parsed.preference);
-      if (parsed.flags !== naptrFlags) setNaptrFlags(parsed.flags ?? "");
-      if (parsed.service !== naptrService)
-        setNaptrService(parsed.service ?? "");
-      if (parsed.regexp !== naptrRegexp) setNaptrRegexp(parsed.regexp ?? "");
-      if (parsed.replacement !== naptrReplacement)
-        setNaptrReplacement(parsed.replacement ?? "");
-    }
-  }, [
-    record,
-    srvPriority,
-    srvWeight,
-    srvPort,
-    srvTarget,
-    tlsaUsage,
-    tlsaSelector,
-    tlsaMatchingType,
-    tlsaData,
-    sshfpAlgorithm,
-    sshfpFptype,
-    sshfpFingerprint,
-    naptrOrder,
-    naptrPref,
-    naptrFlags,
-    naptrService,
-    naptrRegexp,
-    naptrReplacement,
-  ]);
+    return deriveSubFields(type, editedRecord.content);
+  }, [editedRecord.type, editedRecord.content, subFieldDraft]);
+
+  const updateSubField = useCallback(
+    (key: SubFieldKey, raw: string) => {
+      const type = editedRecord.type as RecordType | undefined;
+      const fields = { ...subFields, [key]: raw };
+      const content = composeSubFields(type, fields);
+      if (content === null) return;
+      setEditedRecord((prev) => ({ ...prev, content }));
+      setSubFieldDraft({ type, content, fields });
+    },
+    [editedRecord.type, subFields],
+  );
 
   useEffect(() => {
     setTags(storageManager.getRecordTags(zoneId, record.id));
@@ -905,68 +1015,36 @@ export function RecordRow({
                 <Input
                   type="number"
                   placeholder={t("SRV priority", "priority")}
-                  value={srvPriority ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setSrvPriority(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSRV(val, srvWeight, srvPort, srvTarget),
-                    });
-                  }}
+                  value={subFields.srvPriority ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("srvPriority", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("SRV weight", "weight")}
-                  value={srvWeight ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setSrvWeight(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSRV(srvPriority, val, srvPort, srvTarget),
-                    });
-                  }}
+                  value={subFields.srvWeight ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("srvWeight", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("SRV port", "port")}
-                  value={srvPort ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setSrvPort(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSRV(
-                        srvPriority,
-                        srvWeight,
-                        val,
-                        srvTarget,
-                      ),
-                    });
-                  }}
+                  value={subFields.srvPort ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("srvPort", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("SRV target", "target")}
-                  value={srvTarget}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setSrvTarget(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSRV(
-                        srvPriority,
-                        srvWeight,
-                        srvPort,
-                        e.target.value,
-                      ),
-                    });
-                  }}
+                  value={subFields.srvTarget ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("srvTarget", e.target.value)
+                  }
                   className="h-8"
                 />
               </div>
@@ -975,78 +1053,36 @@ export function RecordRow({
                 <Input
                   type="number"
                   placeholder={t("TLSA usage", "usage")}
-                  value={tlsaUsage ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setTlsaUsage(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeTLSA(
-                        val,
-                        tlsaSelector,
-                        tlsaMatchingType,
-                        tlsaData,
-                      ),
-                    });
-                  }}
+                  value={subFields.tlsaUsage ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("tlsaUsage", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("TLSA selector", "selector")}
-                  value={tlsaSelector ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setTlsaSelector(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeTLSA(
-                        tlsaUsage,
-                        val,
-                        tlsaMatchingType,
-                        tlsaData,
-                      ),
-                    });
-                  }}
+                  value={subFields.tlsaSelector ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("tlsaSelector", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("TLSA matching type", "matching type")}
-                  value={tlsaMatchingType ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setTlsaMatchingType(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeTLSA(
-                        tlsaUsage,
-                        tlsaSelector,
-                        val,
-                        tlsaData,
-                      ),
-                    });
-                  }}
+                  value={subFields.tlsaMatchingType ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("tlsaMatchingType", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("TLSA data", "data")}
-                  value={tlsaData}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setTlsaData(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeTLSA(
-                        tlsaUsage,
-                        tlsaSelector,
-                        tlsaMatchingType,
-                        e.target.value,
-                      ),
-                    });
-                  }}
+                  value={subFields.tlsaData ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("tlsaData", e.target.value)
+                  }
                   className="h-8"
                 />
               </div>
@@ -1055,51 +1091,27 @@ export function RecordRow({
                 <Input
                   type="number"
                   placeholder={t("SSHFP algorithm", "algorithm")}
-                  value={sshfpAlgorithm ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setSshfpAlgorithm(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSSHFP(val, sshfpFptype, sshfpFingerprint),
-                    });
-                  }}
+                  value={subFields.sshfpAlgorithm ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("sshfpAlgorithm", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("SSHFP fptype", "fptype")}
-                  value={sshfpFptype ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setSshfpFptype(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSSHFP(
-                        sshfpAlgorithm,
-                        val,
-                        sshfpFingerprint,
-                      ),
-                    });
-                  }}
+                  value={subFields.sshfpFptype ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("sshfpFptype", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("SSHFP fingerprint", "fingerprint")}
-                  value={sshfpFingerprint}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setSshfpFingerprint(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeSSHFP(
-                        sshfpAlgorithm,
-                        sshfpFptype,
-                        e.target.value,
-                      ),
-                    });
-                  }}
+                  value={subFields.sshfpFingerprint ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("sshfpFingerprint", e.target.value)
+                  }
                   className="h-8"
                 />
               </div>
@@ -1108,121 +1120,51 @@ export function RecordRow({
                 <Input
                   type="number"
                   placeholder={t("NAPTR order", "order")}
-                  value={naptrOrder ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setNaptrOrder(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        val,
-                        naptrPref,
-                        naptrFlags,
-                        naptrService,
-                        naptrRegexp,
-                        naptrReplacement,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrOrder ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrOrder", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   type="number"
                   placeholder={t("NAPTR preference", "preference")}
-                  value={naptrPref ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    const n = Number.parseInt(e.target.value, 10);
-                    const val = Number.isNaN(n) ? undefined : n;
-                    setNaptrPref(val);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        naptrOrder,
-                        val,
-                        naptrFlags,
-                        naptrService,
-                        naptrRegexp,
-                        naptrReplacement,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrPreference ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrPreference", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("NAPTR flags", "flags")}
-                  value={naptrFlags}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setNaptrFlags(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        naptrOrder,
-                        naptrPref,
-                        e.target.value,
-                        naptrService,
-                        naptrRegexp,
-                        naptrReplacement,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrFlags ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrFlags", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("NAPTR service", "service")}
-                  value={naptrService}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setNaptrService(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        naptrOrder,
-                        naptrPref,
-                        naptrFlags,
-                        e.target.value,
-                        naptrRegexp,
-                        naptrReplacement,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrService ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrService", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("NAPTR regexp", "regexp")}
-                  value={naptrRegexp}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setNaptrRegexp(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        naptrOrder,
-                        naptrPref,
-                        naptrFlags,
-                        naptrService,
-                        e.target.value,
-                        naptrReplacement,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrRegexp ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrRegexp", e.target.value)
+                  }
                   className="h-8"
                 />
                 <Input
                   placeholder={t("NAPTR replacement", "replacement")}
-                  value={naptrReplacement}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                    setNaptrReplacement(e.target.value);
-                    setEditedRecord({
-                      ...editedRecord,
-                      content: composeNAPTR(
-                        naptrOrder,
-                        naptrPref,
-                        naptrFlags,
-                        naptrService,
-                        naptrRegexp,
-                        e.target.value,
-                      ),
-                    });
-                  }}
+                  value={subFields.naptrReplacement ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    updateSubField("naptrReplacement", e.target.value)
+                  }
                   className="h-8"
                 />
               </div>
@@ -1733,7 +1675,11 @@ export function RecordRow({
                 return (
                   <div
                     key={col}
-                    className="flex justify-end opacity-0 transition-opacity group-hover:opacity-100"
+                    // The trigger is in the tab order whether or not it is
+                    // visible, so it has to reveal itself on focus as well as
+                    // on hover - otherwise a keyboard user tabs onto a control
+                    // that shows nothing at all.
+                    className="flex justify-end opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
