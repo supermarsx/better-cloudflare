@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -622,6 +623,12 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     hint: "Compare DNS records between zones",
   },
 ];
+const ZONE_ACTION_PANEL_ID = "dns-zone-action-panel";
+
+function getZoneActionTabId(id: ActionTab): string {
+  return `dns-zone-action-tab-${id}`;
+}
+
 const ACTION_TAB_LABELS: Record<TabKind, string> = {
   zone: "Zone",
   settings: "Settings",
@@ -1342,6 +1349,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [actionTab, setActionTab] = useState<ActionTab>("records");
+  const actionTabRefs = useRef(new Map<ActionTab, HTMLButtonElement>());
   const [topologyRecordState, setTopologyRecordState] =
     useState<DnsTopologyRecordState>(EMPTY_DNS_TOPOLOGY_RECORD_STATE);
   const [globalPerPage, setGlobalPerPage] = useState(DNS_DEFAULT_PAGE_SIZE);
@@ -2467,6 +2475,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   useEffect(() => {
     setTabs((previous) => evictInactiveTabRecords(previous, activeTabId));
   }, [activeTabId]);
+
+  // The shell keeps one persistent scroll node, so switching to a shorter view
+  // would otherwise drop the viewer halfway down a page they never scrolled.
+  // The node carries `scroll-smooth`, hence scrollTo with an explicit "auto".
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const region = document.querySelector<HTMLElement>(
+      '[data-app-shell-scroll-region="body"]',
+    );
+    if (typeof region?.scrollTo !== "function") return;
+    region.scrollTo({ top: 0, behavior: "auto" });
+  }, [activeTabId, actionTab]);
+
+  const focusActionTab = useCallback((index: number) => {
+    const tab = ACTION_TABS[(index + ACTION_TABS.length) % ACTION_TABS.length];
+    if (!tab) return;
+    setActionTab(tab.id);
+    actionTabRefs.current.get(tab.id)?.focus();
+  }, []);
+
+  const handleActionTabKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        focusActionTab(index + 1);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        focusActionTab(index - 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        focusActionTab(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        focusActionTab(ACTION_TABS.length - 1);
+      }
+    },
+    [focusActionTab],
+  );
+
   const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
     const id = `__${kind}`;
     setTabs((prev) => {
@@ -6139,7 +6186,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         className="mx-auto w-full max-w-6xl space-y-6 p-4 pb-10 fade-in-up"
       >
         {activeTab ? (
-          <Card className="min-h-[70vh] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
+          <Card className="min-h-[520px] border-border/60 bg-card/70 shadow-[0_20px_40px_rgba(0,0,0,0.18)] fade-in">
             <CardHeader className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -6157,11 +6204,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 <div className="flex flex-wrap items-center gap-2" />
               </div>
               {activeTab.kind === "zone" && (
-                <div className="glass-surface glass-sheen glass-fade ui-segment-group fade-in">
-                  {ACTION_TABS.map((tab) => (
+                <div
+                  role="tablist"
+                  aria-label={t("Zone views", "Zone views")}
+                  aria-orientation="horizontal"
+                  data-responsive-overflow="horizontal"
+                  className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed fade-in"
+                >
+                  {ACTION_TABS.map((tab, index) => (
                     <button
                       key={tab.id}
+                      ref={(node) => {
+                        if (node) actionTabRefs.current.set(tab.id, node);
+                        else actionTabRefs.current.delete(tab.id);
+                      }}
+                      id={getZoneActionTabId(tab.id)}
+                      type="button"
+                      role="tab"
+                      aria-selected={actionTab === tab.id}
+                      aria-controls={ZONE_ACTION_PANEL_ID}
+                      tabIndex={actionTab === tab.id ? 0 : -1}
                       onClick={() => setActionTab(tab.id)}
+                      onKeyDown={(event) =>
+                        handleActionTabKeyDown(event, index)
+                      }
                       data-active={actionTab === tab.id}
                       className="ui-segment"
                     >
@@ -6171,7 +6237,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </div>
               )}
             </CardHeader>
-            <CardContent>
+            <CardContent
+              id={activeTab.kind === "zone" ? ZONE_ACTION_PANEL_ID : undefined}
+              role={activeTab.kind === "zone" ? "tabpanel" : undefined}
+              aria-labelledby={
+                activeTab.kind === "zone"
+                  ? getZoneActionTabId(actionTab)
+                  : undefined
+              }
+            >
               {activeTab.kind === "zone" && actionTab === "records" && (
                 <>
                   <div className="space-y-4 fade-in">
@@ -6221,7 +6295,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     )}
                     <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto_auto] md:items-center">
-                      <div className="relative">
+                      <div className="relative min-w-0">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
                           placeholder={t("Search records", "Search records")}
@@ -6291,7 +6365,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </SelectItem>
                         </SelectContent>
                       </Select>
-                      <div className="flex items-center gap-2 justify-start md:justify-end">
+                      <div className="flex flex-wrap items-center gap-2 justify-start md:justify-end">
                         <Button
                           size="sm"
                           variant="outline"
@@ -9518,7 +9592,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         "Session settings sections",
                         "Session settings sections",
                       )}
-                      className="glass-surface glass-sheen glass-fade ui-segment-group"
+                      className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
                     >
                       <button
                         onClick={() => setSettingsSubtab("general")}

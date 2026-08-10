@@ -10,6 +10,7 @@ import {
   WindowTitleBar,
 } from "@/components/layout/WindowTitleBar";
 import { isDesktop } from "@/lib/environment";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import i18n from "@/i18n";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { cn } from "@/lib/utils";
@@ -83,6 +84,7 @@ function App() {
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [prefsDockOpen, setPrefsDockOpen] = useState(false);
+  const prefersReducedMotion = usePrefersReducedMotion();
   const runtimeResourcesRef = useRef<TrackedRuntimeResources | null>(null);
   const prefsDockHideTimeout = useRef<number | null>(null);
   const transitionInFlight = useRef(false);
@@ -175,10 +177,8 @@ function App() {
 
   const beginTransition = (nextView: "login" | "app") => {
     if (transitionInFlight.current || isTransitioning) return;
-    transitionInFlight.current = true;
-    setIsTransitioning(true);
-    setIsVisible(false);
-    runtimeResources.setTimeout(() => {
+
+    const applyView = () => {
       setActiveView(nextView);
       if (nextView === "login") {
         setApiKey("");
@@ -187,6 +187,23 @@ function App() {
       } else {
         setIsAuthenticated(true);
       }
+    };
+
+    // Without the fade there is nothing to wait for, so swapping through two
+    // 220ms timers would only make the viewer sit through 440ms of nothing.
+    if (prefersReducedMotion) {
+      transitionInFlight.current = false;
+      setIsTransitioning(false);
+      setIsVisible(true);
+      applyView();
+      return;
+    }
+
+    transitionInFlight.current = true;
+    setIsTransitioning(true);
+    setIsVisible(false);
+    runtimeResources.setTimeout(() => {
+      applyView();
       runtimeResources.requestAnimationFrame(() => setIsVisible(true));
       runtimeResources.setTimeout(() => {
         transitionInFlight.current = false;
@@ -261,7 +278,10 @@ function App() {
         <div
           data-auth-scroll-region={showingAuthenticatedApp ? undefined : "body"}
           className={cn(
-            "min-h-0 flex-1 transition-opacity duration-300 ease-out",
+            "min-h-0 flex-1",
+            prefersReducedMotion
+              ? "transition-none"
+              : "transition-opacity duration-300 ease-out",
             showingAuthenticatedApp
               ? "h-full overflow-hidden"
               : "min-h-full overflow-x-hidden overflow-y-auto scrollbar-themed scroll-smooth",

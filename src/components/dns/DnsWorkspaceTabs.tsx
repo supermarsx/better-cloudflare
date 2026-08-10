@@ -10,6 +10,7 @@ import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import {
   describeTabMove,
   moveItemBy,
@@ -68,29 +69,6 @@ export function getNextActiveTabIdAfterClose(
   if (closedIndex < 0) return activeId;
 
   return items[closedIndex + 1]?.id ?? items[closedIndex - 1]?.id ?? null;
-}
-
-/** `true` when the viewer asked for reduced motion (or we cannot tell). */
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-
-  useEffect(() => {
-    if (
-      typeof window === "undefined" ||
-      typeof window.matchMedia !== "function"
-    )
-      return;
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(query.matches);
-    const onChange = (event: MediaQueryListEvent) => setReduced(event.matches);
-    if (typeof query.addEventListener === "function") {
-      query.addEventListener("change", onChange);
-      return () => query.removeEventListener("change", onChange);
-    }
-    return undefined;
-  }, []);
-
-  return reduced;
 }
 
 export function DnsWorkspaceTabs({
@@ -385,8 +363,10 @@ export function DnsWorkspaceTabs({
               data-tab-id={item.id}
               data-dragging={isDragged ? "true" : "false"}
               className={cn(
-                "flex h-8 shrink-0 items-center rounded-md border transition",
-                !prefersReducedMotion && "duration-150",
+                "flex h-8 shrink-0 items-center rounded-md border",
+                prefersReducedMotion
+                  ? "transition-none"
+                  : "transition duration-150",
                 isActive
                   ? "border-primary/35 bg-primary/10 text-foreground shadow-sm"
                   : "border-transparent bg-transparent text-muted-foreground hover:border-border/70 hover:bg-accent/45 hover:text-foreground",

@@ -19,6 +19,17 @@
   :root,
   :root[data-theme="light"] {
     --app-top-inset: 0px;
+
+    /* Motion scale. Enters use --ease-standard; exits run about two thirds of
+       the enter duration and use --ease-exit. */
+    --motion-fast: 120ms;
+    --motion-quick: 160ms;
+    --motion-base: 180ms;
+    --motion-slow: 240ms;
+    --motion-slower: 320ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
     /* Midday light: warm, faded ivory base with sunset accents. */
     --background: 36 35% 96%;
     --foreground: 24 30% 10%;
@@ -371,16 +382,16 @@
     );
     opacity: 0;
     pointer-events: none;
-    transition: opacity 220ms ease;
+    transition: opacity var(--motion-slow) ease;
     mix-blend-mode: screen;
   }
 
   .glass-surface-hover {
     transition:
-      transform 200ms ease,
-      box-shadow 220ms ease,
-      border-color 220ms ease,
-      background-color 220ms ease;
+      transform var(--motion-base) ease,
+      box-shadow var(--motion-slow) ease,
+      border-color var(--motion-slow) ease,
+      background-color var(--motion-slow) ease;
   }
 
   .glass-surface-hover:hover {
@@ -460,10 +471,10 @@
     padding: 0.25rem 0.5rem;
     color: hsl(var(--foreground) / 0.88);
     transition:
-      background-color 160ms ease,
-      color 160ms ease,
-      transform 160ms ease,
-      box-shadow 180ms ease;
+      background-color var(--motion-quick) ease,
+      color var(--motion-quick) ease,
+      transform var(--motion-quick) ease,
+      box-shadow var(--motion-base) ease;
   }
 
   .ui-entry::after {
@@ -478,7 +489,7 @@
     );
     opacity: 0;
     pointer-events: none;
-    transition: opacity 180ms ease;
+    transition: opacity var(--motion-base) ease;
     mix-blend-mode: screen;
   }
 
@@ -536,10 +547,10 @@
       0 10px 24px hsl(0 0% 0% / 0.18),
       inset 0 1px 0 hsl(0 0% 100% / 0.06);
     transition:
-      transform 160ms ease,
-      border-color 160ms ease,
-      background-color 160ms ease,
-      box-shadow 180ms ease;
+      transform var(--motion-quick) ease,
+      border-color var(--motion-quick) ease,
+      background-color var(--motion-quick) ease,
+      box-shadow var(--motion-base) ease;
   }
 
   .ui-tag::before {
@@ -669,11 +680,11 @@
       0 10px 22px hsl(0 0% 0% / 0.18),
       inset 0 1px 0 hsl(0 0% 100% / 0.06);
     transition:
-      transform 160ms ease,
-      border-color 160ms ease,
-      background-color 160ms ease,
-      box-shadow 180ms ease,
-      color 160ms ease;
+      transform var(--motion-quick) ease,
+      border-color var(--motion-quick) ease,
+      background-color var(--motion-quick) ease,
+      box-shadow var(--motion-base) ease,
+      color var(--motion-quick) ease;
   }
 
   .ui-icon-button:disabled {
@@ -731,7 +742,7 @@
       0 18px 46px hsl(0 0% 0% / 0.28),
       inset 0 1px 0 hsl(0 0% 100% / 0.06);
     pointer-events: none;
-    animation: uiTooltipIn 140ms ease both;
+    animation: uiTooltipIn var(--motion-fast) ease both;
   }
 
   .ui-tooltip::before {
@@ -773,10 +784,10 @@
     -webkit-backdrop-filter: blur(14px) saturate(1.3);
     backdrop-filter: blur(14px) saturate(1.3);
     transition:
-      background-color 160ms ease,
-      border-color 160ms ease,
-      color 160ms ease,
-      box-shadow 180ms ease;
+      background-color var(--motion-quick) ease,
+      border-color var(--motion-quick) ease,
+      color var(--motion-quick) ease,
+      box-shadow var(--motion-base) ease;
   }
 
   .ui-tab:hover {
@@ -793,16 +804,22 @@
     padding: 0.25rem 0.5rem;
   }
 
+  /* The shell clips horizontally (`overflow-x-hidden`), so a strip that does not
+     own a scroller silently hides its trailing segments for good. */
   .ui-segment-group {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
     padding: 0.25rem;
     border-radius: 0.9rem;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
   }
 
   .ui-segment {
     position: relative;
+    flex: 0 0 auto;
     cursor: pointer;
     border-radius: 0.75rem;
     padding: 0.4rem 0.7rem;
@@ -811,11 +828,11 @@
     font-weight: 600;
     color: hsl(var(--muted-foreground));
     transition:
-      transform 160ms ease,
-      background-color 160ms ease,
-      color 160ms ease,
-      box-shadow 180ms ease,
-      border-color 160ms ease;
+      transform var(--motion-quick) ease,
+      background-color var(--motion-quick) ease,
+      color var(--motion-quick) ease,
+      box-shadow var(--motion-base) ease,
+      border-color var(--motion-quick) ease;
   }
 
   .ui-segment:hover {
@@ -835,8 +852,16 @@
       inset 0 1px 0 hsl(0 0% 100% / 0.06);
   }
 
+  /* Header and rows share one grid template and must stay in the same scroller,
+     otherwise they desync the moment the table is scrolled sideways. */
   .ui-table {
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .ui-table-head,
+  .ui-table-row {
+    min-width: min-content;
   }
 
   .ui-table-head {
@@ -867,8 +892,8 @@
     line-height: 1.25;
     border-bottom: 1px solid hsl(var(--border) / 0.4);
     transition:
-      background-color 150ms ease,
-      box-shadow 160ms ease;
+      background-color var(--motion-quick) ease,
+      box-shadow var(--motion-quick) ease;
   }
 
   .ui-table-row .ui-tag[data-record-type] {
@@ -1050,6 +1075,51 @@
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
     }
+
+    /* Radix unmounts immediately when the computed animation-name is `none`,
+       so cancelling these does not strand a closed dialog or menu on screen. */
+    .ui-overlay-motion,
+    .ui-surface-motion,
+    .ui-menu-motion,
+    .ui-toast-motion,
+    .ui-tooltip,
+    .fade-in,
+    .fade-in-up,
+    .skeleton {
+      animation: none !important;
+    }
+
+    .glass-surface-hover,
+    .glass-sheen::after,
+    .ui-entry,
+    .ui-entry::after,
+    .ui-tag,
+    .ui-icon-button,
+    .ui-tab,
+    .ui-segment,
+    .ui-table-row,
+    .checkbox-themed,
+    .checkbox-themed::after {
+      transition: none !important;
+    }
+
+    /* Collapsing a transform to zero duration is still a jump, so drop the
+       hover and press lifts outright. */
+    .glass-surface-hover:hover,
+    .ui-entry:active,
+    .ui-tag:hover,
+    .ui-icon-button:hover,
+    .ui-segment:hover,
+    .ui-segment[data-active="true"],
+    .ui-table-row:hover,
+    .checkbox-themed:active {
+      transform: none !important;
+    }
+
+    /* `animate-spin` is a status signal, so slow it rather than remove it. */
+    .animate-spin {
+      animation-duration: 2s !important;
+    }
   }
 
   .checkbox-themed {
@@ -1070,10 +1140,10 @@
     position: relative;
     cursor: pointer;
     transition:
-      transform 140ms ease,
-      box-shadow 160ms ease,
-      border-color 160ms ease,
-      background-color 160ms ease;
+      transform var(--motion-fast) ease,
+      box-shadow var(--motion-quick) ease,
+      border-color var(--motion-quick) ease,
+      background-color var(--motion-quick) ease;
   }
 
   .checkbox-themed::after {
@@ -1084,7 +1154,7 @@
     border-bottom: 2px solid transparent;
     transform: rotate(-45deg) translateY(-0.5px);
     opacity: 0;
-    transition: opacity 120ms ease;
+    transition: opacity var(--motion-fast) ease;
   }
 
   .checkbox-themed:checked {
@@ -1139,12 +1209,106 @@
     cursor: not-allowed;
   }
 
+  /* Radix enter/exit motion.
+     Radix's Presence keeps a node mounted until `animationend`, so every exit
+     here has to be a real `animation` — a `transition` would unmount first and
+     the exit would never be seen. Enters use --ease-standard; exits run about
+     two thirds of the enter duration on --ease-exit. */
+  .ui-overlay-motion[data-state="open"] {
+    animation: uiOverlayIn var(--motion-base) var(--ease-standard) both;
+  }
+
+  .ui-overlay-motion[data-state="closed"] {
+    animation: uiOverlayOut var(--motion-fast) var(--ease-exit) both;
+  }
+
+  .ui-surface-motion[data-state="open"] {
+    animation: uiSurfaceIn var(--motion-base) var(--ease-standard) both;
+  }
+
+  .ui-surface-motion[data-state="closed"] {
+    animation: uiSurfaceOut var(--motion-fast) var(--ease-exit) both;
+  }
+
+  /* Menus, selects, dropdowns and context menus have to feel instant. */
+  .ui-menu-motion[data-state="open"] {
+    animation: uiSurfaceIn var(--motion-quick) var(--ease-standard) both;
+  }
+
+  .ui-menu-motion[data-state="closed"] {
+    animation: uiSurfaceOut var(--motion-fast) var(--ease-exit) both;
+  }
+
+  /* The toast keeps its swipe transform after the enter finishes, so the enter
+     keyframe declares only a `from` and never fills forwards. */
+  .ui-toast-motion[data-state="open"] {
+    animation: uiToastIn var(--motion-slow) var(--ease-standard);
+  }
+
+  .ui-toast-motion[data-state="closed"] {
+    animation: uiToastOut var(--motion-quick) var(--ease-exit) forwards;
+  }
+
+  @keyframes uiOverlayIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes uiOverlayOut {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes uiSurfaceIn {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes uiSurfaceOut {
+    from {
+      opacity: 1;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+
+  @keyframes uiToastIn {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes uiToastOut {
+    to {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
   .fade-in {
-    animation: fadeIn 320ms ease-out both;
+    animation: fadeIn var(--motion-slower) ease-out both;
   }
 
   .fade-in-up {
-    animation: fadeInUp 380ms ease-out both;
+    animation: fadeInUp var(--motion-slower) ease-out both;
   }
 
   @keyframes fadeIn {

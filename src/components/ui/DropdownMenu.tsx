@@ -50,7 +50,7 @@ const DropdownMenuSubContent = React.forwardRef<
     sticky="always"
     hideWhenDetached
     className={cn(
-      "glass-surface glass-fade z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-popover-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+      "glass-surface glass-fade ui-menu-motion z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-popover-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
       className,
     )}
     {...props}
@@ -72,7 +72,7 @@ const DropdownMenuContent = React.forwardRef<
       sticky="always"
       hideWhenDetached
       className={cn(
-        "glass-surface glass-fade z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+        "glass-surface glass-fade ui-menu-motion z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
         className,
       )}
       {...props}

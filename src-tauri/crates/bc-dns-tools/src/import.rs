@@ -234,6 +234,75 @@ pub fn parse_csv_records(text: &str) -> Vec<PartialDNSRecord> {
     try_parse_csv_records(text).unwrap_or_default()
 }
 
+/// Zone file classes that may appear between the owner name and the type.
+const BIND_CLASSES: &[&str] = &["IN", "CH", "HS", "CS"];
+
+/// Strip a trailing zone-file comment.
+///
+/// In a zone file `;` starts a comment only outside a quoted character-string.
+/// `;` is also the field separator inside DMARC and DKIM TXT values, so a
+/// quote-blind split truncates `"v=DMARC1; p=reject; rua=..."` to `"v=DMARC1`
+/// and silently destroys the policy. A backslash escapes the following
+/// character, so `\"` does not flip the quote state and `\;` is not a comment.
+fn strip_bind_comment(line: &str) -> &str {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ';' if !in_quotes => return &line[..index],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// A record type token is alphabetic-leading; anything else is a malformed line.
+fn is_record_type_token(token: &str) -> bool {
+    let mut characters = token.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Resolve the optional `[ttl] [class]` / `[class] [ttl]` prefix that may sit
+/// between a zone-file owner name and its record type.
+///
+/// BIND lets both fields be omitted, so `example.com. IN MX 10 mail.example.com.`
+/// and `example.com. 300 A 1.2.3.4` are both well-formed. Assuming a fixed
+/// `name ttl class type` layout shifts every field left and yields a record
+/// whose type is the next token — `MX` becomes the type `10`.
+fn split_bind_prefix<'a, I>(tokens: &mut I) -> Option<(Option<u32>, &'a str)>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut ttl = None;
+    let mut seen_class = false;
+    for _ in 0..3 {
+        let token = tokens.next()?;
+        if ttl.is_none() && token.chars().all(|c| c.is_ascii_digit()) {
+            ttl = Some(token.parse().unwrap_or(300));
+            continue;
+        }
+        if !seen_class
+            && BIND_CLASSES
+                .iter()
+                .any(|class| token.eq_ignore_ascii_case(class))
+        {
+            seen_class = true;
+            continue;
+        }
+        return is_record_type_token(token).then_some((ttl, token));
+    }
+    None
+}
+
 /// Parse a simplified BIND zone file with explicit resource ceilings.
 pub fn try_parse_bind_zone(text: &str) -> Result<Vec<PartialDNSRecord>, ImportLimitError> {
     validate_import_text(text)?;
@@ -245,7 +314,8 @@ pub fn try_parse_bind_zone(text: &str) -> Result<Vec<PartialDNSRecord>, ImportLi
         line_count = line_count.saturating_add(1);
         validate_line(raw, line_count)?;
         let line = raw.trim();
-        if line.is_empty() || line.starts_with(';') {
+        // `$TTL`, `$ORIGIN`, and friends are directives, not records.
+        if line.is_empty() || line.starts_with(';') || line.starts_with('$') {
             continue;
         }
         if records.len() >= MAX_IMPORT_RECORDS {
@@ -256,11 +326,12 @@ pub fn try_parse_bind_zone(text: &str) -> Result<Vec<PartialDNSRecord>, ImportLi
             ));
         }
 
-        let no_comment = line.split(';').next().unwrap_or("").trim();
+        let no_comment = strip_bind_comment(line).trim();
         let mut parts = no_comment.split_whitespace();
-        let (Some(name), Some(ttl_text), Some(_class), Some(record_type)) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        let Some((parsed_ttl, record_type)) = split_bind_prefix(&mut parts) else {
             continue;
         };
         for (label, value) in [("BIND name", name), ("BIND type", record_type)] {
@@ -273,7 +344,7 @@ pub fn try_parse_bind_zone(text: &str) -> Result<Vec<PartialDNSRecord>, ImportLi
             }
         }
 
-        let ttl = ttl_text.parse().unwrap_or(300);
+        let ttl = parsed_ttl.unwrap_or(300);
         let mut priority = None;
         let mut content = String::new();
         if record_type.eq_ignore_ascii_case("MX") {
@@ -382,5 +453,90 @@ mod tests {
             "x".repeat(MAX_IMPORT_FIELD_BYTES + 1)
         );
         assert!(try_parse_bind_zone(&oversized).is_err());
+    }
+
+    fn parse_one(line: &str) -> PartialDNSRecord {
+        let mut records = try_parse_bind_zone(line).expect("line should parse");
+        assert_eq!(records.len(), 1, "expected one record from {line:?}");
+        records.remove(0)
+    }
+
+    #[test]
+    fn bind_semicolons_inside_dmarc_values_are_not_comments() {
+        let record = parse_one(
+            r#"_dmarc.example.com. 3600 IN TXT "v=DMARC1; p=reject; rua=mailto:dmarc@example.com""#,
+        );
+        assert_eq!(record.r#type.as_deref(), Some("TXT"));
+        assert_eq!(record.name.as_deref(), Some("_dmarc.example.com."));
+        assert_eq!(
+            record.content.as_deref(),
+            Some(r#""v=DMARC1; p=reject; rua=mailto:dmarc@example.com""#)
+        );
+    }
+
+    #[test]
+    fn bind_semicolons_inside_dkim_keys_are_not_comments() {
+        let record = parse_one(
+            r#"default._domainkey.example.com. 3600 IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA""#,
+        );
+        assert_eq!(
+            record.content.as_deref(),
+            Some(r#""v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA""#)
+        );
+    }
+
+    #[test]
+    fn bind_comments_outside_quotes_are_still_stripped() {
+        let record = parse_one("example.com. 300 IN A 1.2.3.4 ; primary origin");
+        assert_eq!(record.content.as_deref(), Some("1.2.3.4"));
+
+        let quoted = parse_one(r#"example.com. 300 IN TXT "v=DMARC1; p=none" ; reporting only"#);
+        assert_eq!(quoted.content.as_deref(), Some(r#""v=DMARC1; p=none""#));
+    }
+
+    #[test]
+    fn bind_escaped_quote_does_not_flip_comment_state() {
+        let record = parse_one(r#"example.com. 300 IN TXT "a \" b; c" ; trailing"#);
+        assert_eq!(record.content.as_deref(), Some(r#""a \" b; c""#));
+    }
+
+    #[test]
+    fn bind_records_without_an_explicit_ttl_keep_their_type() {
+        let record = parse_one("example.com. IN MX 10 mail.example.com.");
+        assert_eq!(record.r#type.as_deref(), Some("MX"));
+        assert_eq!(record.priority, Some(10));
+        assert_eq!(record.content.as_deref(), Some("mail.example.com."));
+        assert_eq!(record.ttl, Some(300));
+    }
+
+    #[test]
+    fn bind_optional_ttl_and_class_orders_all_parse() {
+        for line in [
+            "example.com. 600 IN A 1.2.3.4",
+            "example.com. IN 600 A 1.2.3.4",
+            "example.com. 600 A 1.2.3.4",
+            "example.com. IN A 1.2.3.4",
+            "example.com. A 1.2.3.4",
+        ] {
+            let record = parse_one(line);
+            assert_eq!(record.r#type.as_deref(), Some("A"), "line {line:?}");
+            assert_eq!(record.content.as_deref(), Some("1.2.3.4"), "line {line:?}");
+        }
+        assert_eq!(parse_one("example.com. 600 IN A 1.2.3.4").ttl, Some(600));
+        assert_eq!(parse_one("example.com. A 1.2.3.4").ttl, Some(300));
+    }
+
+    #[test]
+    fn bind_directives_and_malformed_lines_produce_no_records() {
+        let zone = concat!(
+            "$ORIGIN example.com.\n",
+            "$TTL 3600\n",
+            "; a full line comment\n",
+            "\n",
+            "www 300 IN A 1.2.3.4\n",
+        );
+        let records = try_parse_bind_zone(zone).expect("zone should parse");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].r#type.as_deref(), Some("A"));
     }
 }

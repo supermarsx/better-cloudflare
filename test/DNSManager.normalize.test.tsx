@@ -178,7 +178,7 @@ test("adding a TXT record normalizes an unmatched quote before creating it", asy
 
 /** Drive the import dialog end to end with the given JSON payload. */
 async function importJson(items: unknown[]): Promise<void> {
-  fireEvent.click(await screen.findByRole("button", { name: "Import/Export" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Import/Export" }));
   fireEvent.click(await screen.findByRole("button", { name: "Import" }));
 
   const importDialog = await screen.findByRole("dialog", {
@@ -230,7 +230,7 @@ test("importing normalizes character strings and dedupes against normalized reco
   const { bulkCalls } = mockNormalizeRuntime([existing]);
 
   render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Import/Export" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Import/Export" }));
   fireEvent.click(await screen.findByRole("button", { name: "Import" }));
 
   const importDialog = await screen.findByRole("dialog", {

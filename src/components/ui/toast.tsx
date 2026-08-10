@@ -34,7 +34,7 @@ const ToastViewport = React.forwardRef<
 ToastViewport.displayName = ToastPrimitives.Viewport.displayName;
 
 const toastVariants = cva(
-  "glass-surface glass-sheen glass-opaque group pointer-events-auto relative flex min-w-0 w-full max-w-full items-start justify-between gap-2 overflow-hidden rounded-lg border p-3.5 pr-9 shadow-[0_14px_36px_hsl(0_0%_0%_/_0.26)] transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
+  "glass-surface glass-sheen glass-opaque ui-toast-motion group pointer-events-auto relative flex min-w-0 w-full max-w-full items-start justify-between gap-2 overflow-hidden rounded-lg border p-3.5 pr-9 shadow-[0_14px_36px_hsl(0_0%_0%_/_0.26)] transition-[translate] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none",
   {
     variants: {
       variant: {

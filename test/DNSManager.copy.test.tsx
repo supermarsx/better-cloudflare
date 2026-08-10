@@ -473,7 +473,7 @@ test("Zone Compare queues the records the current zone is missing", async () => 
     assert.equal(targetTab.getAttribute("aria-selected"), "true"),
   );
 
-  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Compare" }));
   // A combobox takes its accessible name from a label, not its contents, so
   // the placeholder text is the only handle on the compare-zone picker.
   const zonePicker = (await screen.findByText("Select zone…")).closest(
@@ -495,7 +495,7 @@ test("Zone Compare queues the records the current zone is missing", async () => 
   });
   fireEvent.click(copyMissing);
 
-  fireEvent.click(screen.getByRole("button", { name: "Records" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Records" }));
   const pasteButton = await screen.findByRole("button", {
     name: /^Paste\s+1$/,
   });

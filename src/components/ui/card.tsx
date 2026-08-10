@@ -9,7 +9,10 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "glass-surface glass-sheen glass-surface-hover glass-fade rounded-xl text-card-foreground",
+      // `glass-surface-hover` is deliberately not here: on a page-sized card it
+      // repaints an 18px blur, a saturate backdrop and a 22px/58px shadow on
+      // every stray pointer move. Add it per-card where the card is clickable.
+      "glass-surface glass-sheen glass-fade rounded-xl text-card-foreground",
       className,
     )}
     {...props}

@@ -742,7 +742,7 @@ test("DNSManager passes an exact 10,000-record authoritative set to topology ind
   await waitFor(() =>
     assert.equal(view.container.querySelectorAll(".ui-table-row").length, 50),
   );
-  fireEvent.click(await screen.findByRole("button", { name: "Topology" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Topology" }));
 
   await waitFor(
     () =>
@@ -803,7 +803,7 @@ test("DNSManager refuses a 10,001-record topology without passing a truncated gr
   );
 
   render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Topology" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Topology" }));
 
   const refusal = await screen.findByTestId("dns-topology-record-limit");
   assert.match(refusal.textContent ?? "", /more than 10,000 authoritative/i);
@@ -820,7 +820,7 @@ test("DNSManager refuses a 10,001-record topology without passing a truncated gr
     target: { value: "host-1" },
   });
   requestedPages.length = 0;
-  fireEvent.click(screen.getByRole("button", { name: "Topology" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Topology" }));
 
   await waitFor(
     () => {

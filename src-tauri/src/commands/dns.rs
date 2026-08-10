@@ -573,6 +573,253 @@ mod structured_request_tests {
     }
 }
 
+// ─── DNS record validation gate ─────────────────────────────────────────────
+
+/// Render validation issues as one sentence-terminated message.
+fn validation_detail(issues: &[String]) -> String {
+    issues
+        .iter()
+        .map(|issue| {
+            let issue = issue.trim();
+            if issue.ends_with(['.', '!', '?']) {
+                issue.to_string()
+            } else {
+                format!("{issue}.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+const DNS_VALIDATE_OPERATION: &str = "dns:validate";
+const DNS_VALIDATE_REMEDIATION: &str =
+    "Correct the highlighted record fields, then submit the record again.";
+
+/// Reject a record that cannot be a valid DNS record before any HTTP call.
+///
+/// Every DNS write path — dialog, inline edit, paste, import, and bulk create —
+/// funnels through the three commands below, so this is the one gate that
+/// cannot be bypassed by a frontend path added later.
+///
+/// The failure uses the same structured shape [`map_validation_error`] already
+/// gives a client-side validation failure: `Provider` kind with a `Client`
+/// source. That choice is load-bearing rather than cosmetic. The renderer's
+/// `normalizeRequestError` classifies an unstructured payload by pattern
+/// matching its text, and its DNS-resolution heuristic matches the substring
+/// `dns` — so a bare `AppError::Validation` carrying "DNS record validation
+/// failed…" is reclassified as a name-resolution network failure and the
+/// actionable text is replaced with connectivity advice. The structured shape
+/// is classified before those heuristics run, so the message survives intact.
+fn ensure_record_is_valid(record: &DNSRecordInput, position: Option<usize>) -> Result<(), String> {
+    let result = bc_dns_tools::validate_record_input(record);
+    if result.ok {
+        return Ok(());
+    }
+    let detail = validation_detail(&result.issues);
+    let message = match position {
+        Some(index) => format!(
+            "DNS record validation failed for record {} ({} {}): {detail}",
+            index + 1,
+            record.r#type,
+            record.name
+        ),
+        None => format!("DNS record validation failed: {detail}"),
+    };
+    let provider_errors = result
+        .issues
+        .iter()
+        .map(|issue| ProviderErrorDetail {
+            code: Some("validation".to_string()),
+            message: issue.clone(),
+        })
+        .collect();
+
+    Err(AppError::request_failed(
+        RequestFailureKind::Provider,
+        message,
+        None,
+        RequestErrorSource::Client,
+        DNS_VALIDATE_OPERATION,
+        false,
+        provider_errors,
+        None,
+        DNS_VALIDATE_REMEDIATION,
+        None,
+    )
+    .into())
+}
+
+/// Reject a bulk batch if any record is invalid, before any HTTP call.
+fn ensure_records_are_valid(records: &[DNSRecordInput]) -> Result<(), String> {
+    for (index, record) in records.iter().enumerate() {
+        ensure_record_is_valid(record, Some(index))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod validation_gate_tests {
+    use super::*;
+    use serde_json::Value;
+
+    /// The commands below never reach the network on this path, so any HTTP
+    /// attempt would surface as a Cloudflare or transport error instead of the
+    /// validation message these tests assert on.
+    fn storage() -> Storage {
+        Storage::new(false)
+    }
+
+    fn record(record_type: &str, name: &str, content: &str) -> DNSRecordInput {
+        DNSRecordInput {
+            r#type: record_type.to_string(),
+            name: name.to_string(),
+            content: content.to_string(),
+            comment: None,
+            ttl: Some(300),
+            priority: None,
+            proxied: None,
+        }
+    }
+
+    fn valid_record() -> DNSRecordInput {
+        record("A", "www.example.com", "1.2.3.4")
+    }
+
+    fn invalid_record() -> DNSRecordInput {
+        record("A", "www.example.com", "not-an-ip")
+    }
+
+    fn parse(error: &str) -> Value {
+        serde_json::from_str(error).expect("the gate must return a serialized AppError")
+    }
+
+    #[test]
+    fn valid_records_pass_the_gate() {
+        assert!(ensure_record_is_valid(&valid_record(), None).is_ok());
+        assert!(ensure_records_are_valid(&[valid_record(), valid_record()]).is_ok());
+    }
+
+    #[test]
+    fn the_gate_returns_an_actionable_validation_error() {
+        let error = ensure_record_is_valid(&invalid_record(), None)
+            .expect_err("an invalid record must be rejected");
+        let value = parse(&error);
+
+        assert_eq!(value["code"], "REQUEST_FAILED");
+        assert_eq!(value["source"], "client");
+        assert_eq!(value["operation"], DNS_VALIDATE_OPERATION);
+        assert_eq!(value["retryable"], false);
+        assert!(value.get("status").is_none());
+        assert_eq!(
+            value["message"],
+            "DNS record validation failed: A record content must be a valid IPv4 address."
+        );
+        assert_eq!(value["details"]["remediation"], DNS_VALIDATE_REMEDIATION);
+        assert_eq!(
+            value["details"]["provider_messages"][0],
+            "A record content must be a valid IPv4 address"
+        );
+    }
+
+    /// The renderer classifies an unstructured payload by pattern matching its
+    /// text, and its DNS-resolution heuristic matches the substring `dns`. The
+    /// structured shape must keep the failure out of that path, or the message
+    /// is replaced by connectivity advice before the user ever sees it.
+    #[test]
+    fn the_validation_failure_is_not_mistakable_for_a_network_failure() {
+        let error = ensure_record_is_valid(&invalid_record(), None)
+            .expect_err("an invalid record must be rejected");
+        let value = parse(&error);
+
+        assert_eq!(value["kind"], "provider");
+        assert_ne!(value["kind"], "network");
+        assert_ne!(value["kind"], "timeout");
+        assert_ne!(value["source"], "network");
+    }
+
+    #[test]
+    fn bulk_rejection_identifies_the_offending_record() {
+        let error = ensure_records_are_valid(&[valid_record(), invalid_record()])
+            .expect_err("an invalid record must fail the batch");
+        let message = parse(&error)["message"]
+            .as_str()
+            .expect("the validation error must carry a message")
+            .to_string();
+
+        assert!(
+            message.starts_with("DNS record validation failed for record 2 (A www.example.com):"),
+            "unexpected message: {message}"
+        );
+        assert!(message.contains("valid IPv4 address"));
+    }
+
+    #[tokio::test]
+    async fn create_dns_record_rejects_before_any_http_call() {
+        let error = create_dns_record_impl(
+            &storage(),
+            "token".to_string(),
+            None,
+            "zone-id".to_string(),
+            invalid_record(),
+        )
+        .await
+        .expect_err("create must reject an invalid record");
+
+        assert_eq!(parse(&error)["operation"], DNS_VALIDATE_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn update_dns_record_rejects_before_any_http_call() {
+        let error = update_dns_record_impl(
+            &storage(),
+            "token".to_string(),
+            None,
+            "zone-id".to_string(),
+            "record-id".to_string(),
+            record("MX", "example.com", "mail.example.com"),
+        )
+        .await
+        .expect_err("update must reject a record with no MX priority");
+
+        let value = parse(&error);
+        assert_eq!(value["operation"], DNS_VALIDATE_OPERATION);
+        assert!(value["message"]
+            .as_str()
+            .expect("message")
+            .contains("MX records must include an integer priority"));
+    }
+
+    #[tokio::test]
+    async fn create_bulk_dns_records_rejects_before_any_http_call() {
+        for dryrun in [None, Some(false), Some(true)] {
+            let error = create_bulk_dns_records_impl(
+                &storage(),
+                "token".to_string(),
+                None,
+                "zone-id".to_string(),
+                vec![valid_record(), invalid_record()],
+                dryrun,
+            )
+            .await
+            .expect_err("bulk create must reject a batch containing an invalid record");
+
+            assert_eq!(
+                parse(&error)["operation"],
+                DNS_VALIDATE_OPERATION,
+                "dryrun {dryrun:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_detail_terminates_every_issue() {
+        assert_eq!(
+            validation_detail(&["first issue".to_string(), "second issue.".to_string()]),
+            "first issue. second issue."
+        );
+    }
+}
+
 // ─── DNS Operations ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -604,13 +851,24 @@ pub async fn create_dns_record(
     zone_id: String,
     record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
+    create_dns_record_impl(&storage, api_key, email, zone_id, record).await
+}
+
+async fn create_dns_record_impl(
+    storage: &Storage,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    record: DNSRecordInput,
+) -> Result<DNSRecord, String> {
+    ensure_record_is_valid(&record, None)?;
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let created = client
         .create_dns_record(&zone_id, record)
         .await
         .map_err(|e| e.to_string())?;
     log_audit(
-        &storage,
+        storage,
         serde_json::json!({
             "operation": "dns:create",
             "resource": created.id.clone().unwrap_or_default(),
@@ -632,13 +890,25 @@ pub async fn update_dns_record(
     record_id: String,
     record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
+    update_dns_record_impl(&storage, api_key, email, zone_id, record_id, record).await
+}
+
+async fn update_dns_record_impl(
+    storage: &Storage,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    record_id: String,
+    record: DNSRecordInput,
+) -> Result<DNSRecord, String> {
+    ensure_record_is_valid(&record, None)?;
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let updated = client
         .update_dns_record(&zone_id, &record_id, record)
         .await
         .map_err(|e| e.to_string())?;
     log_audit(
-        &storage,
+        storage,
         serde_json::json!({
             "operation": "dns:update",
             "resource": record_id,
@@ -685,13 +955,25 @@ pub async fn create_bulk_dns_records(
     records: Vec<DNSRecordInput>,
     dryrun: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    create_bulk_dns_records_impl(&storage, api_key, email, zone_id, records, dryrun).await
+}
+
+async fn create_bulk_dns_records_impl(
+    storage: &Storage,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    records: Vec<DNSRecordInput>,
+    dryrun: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    ensure_records_are_valid(&records)?;
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let result = client
         .create_bulk_dns_records(&zone_id, records, dryrun.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())?;
     log_audit(
-        &storage,
+        storage,
         serde_json::json!({
             "operation": "dns:bulk_create",
             "resource": zone_id,

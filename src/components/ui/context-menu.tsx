@@ -42,7 +42,7 @@ const ContextMenuSubContent = React.forwardRef<
   <ContextMenuPrimitive.SubContent
     ref={ref}
     className={cn(
-      "glass-surface glass-fade z-50 min-w-[10rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+      "glass-surface glass-fade ui-menu-motion z-50 min-w-[10rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
       className,
     )}
     {...props}
@@ -59,7 +59,7 @@ const ContextMenuContent = React.forwardRef<
       ref={ref}
       collisionPadding={12}
       className={cn(
-        "glass-surface glass-fade z-50 min-w-[10rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+        "glass-surface glass-fade ui-menu-motion z-50 min-w-[10rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
         className,
       )}
       {...props}

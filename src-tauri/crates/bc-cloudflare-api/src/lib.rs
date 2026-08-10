@@ -817,6 +817,144 @@ mod transport_retry_tests {
     }
 }
 
+#[cfg(test)]
+mod status_retry_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Serve one scripted status per connection, counting every request that
+    /// actually reached the server. `retry-after: 0` keeps backoff instant.
+    fn spawn_scripted_server(statuses: Vec<u16>) -> (SocketAddr, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test server should bind");
+        let address = listener
+            .local_addr()
+            .expect("test server should have address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&requests);
+
+        std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().enumerate() {
+                let Ok(mut stream) = stream else { break };
+                let mut buffer = [0_u8; 4096];
+                let _ = stream.read(&mut buffer);
+                counter.fetch_add(1, Ordering::SeqCst);
+
+                let status = statuses
+                    .get(index)
+                    .or_else(|| statuses.last())
+                    .copied()
+                    .unwrap_or(200);
+                let body = if status == 200 {
+                    r#"{"success":true,"result":{}}"#
+                } else {
+                    r#"{"success":false,"errors":[]}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} SCRIPTED\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        (address, requests)
+    }
+
+    fn scripted_client(address: SocketAddr, max_retries: u32) -> CloudflareClient {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test HTTP client should build");
+        CloudflareClient::with_client(client, "super-secret-token", None)
+            .with_max_retries(max_retries)
+            .with_api_base(format!("http://{address}/client/v4"))
+    }
+
+    fn dns_records_url(client: &CloudflareClient) -> String {
+        format!("{}/zones/zone-sensitive-id/dns_records", client.api_base)
+    }
+
+    #[tokio::test]
+    async fn server_errors_are_not_retried_for_posts() {
+        // A 502 returned after Cloudflare committed the record is
+        // indistinguishable from one returned before it, so re-sending the
+        // POST risks duplicate DNS records.
+        let (address, requests) = spawn_scripted_server(vec![502]);
+        let client = scripted_client(address, 3);
+        let url = dns_records_url(&client);
+
+        let response = client
+            .request_with_retry(move |state| state.apply_auth(state.client.post(&url)))
+            .await
+            .expect("the server error response should be surfaced, not retried");
+
+        assert_eq!(response.status().as_u16(), 502);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "a POST must be sent exactly once on a server error"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_errors_are_still_retried_for_reads() {
+        let (address, requests) = spawn_scripted_server(vec![503, 503, 200]);
+        let client = scripted_client(address, 3);
+        let url = dns_records_url(&client);
+
+        let response = client
+            .request_with_retry(move |state| state.apply_auth(state.client.get(&url)))
+            .await
+            .expect("the third read attempt should succeed");
+
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            3,
+            "an idempotent read must still recover from transient server errors"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limits_are_still_retried_for_posts() {
+        // A 429 is refused before the request is processed, so re-sending it
+        // cannot duplicate a write.
+        let (address, requests) = spawn_scripted_server(vec![429, 429, 200]);
+        let client = scripted_client(address, 3);
+        let url = dns_records_url(&client);
+
+        let response = client
+            .request_with_retry(move |state| state.apply_auth(state.client.post(&url)))
+            .await
+            .expect("the third write attempt should succeed");
+
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            3,
+            "a rate-limited POST must still be retried"
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_post_rate_limits_still_report_a_rate_limit() {
+        let (address, requests) = spawn_scripted_server(vec![429]);
+        let client = scripted_client(address, 2);
+        let url = format!("{}/zones/zone-sensitive-id/purge_cache", client.api_base);
+
+        let error = client
+            .request_with_retry(move |state| state.apply_auth(state.client.post(&url)))
+            .await
+            .expect_err("exhausted rate limits should be an error");
+
+        assert!(matches!(error, CloudflareError::RateLimited(_)));
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudflareHttpError {
     Transport(CloudflareTransportError),
@@ -1536,8 +1674,16 @@ impl CloudflareClient {
 
             let status = response.status();
 
-            // Retry only rate limits and server failures.
-            if status.is_success() || (status.as_u16() != 429 && !status.is_server_error()) {
+            // Retry rate limits for every method: a 429 is refused before the
+            // request is processed, so re-sending it cannot duplicate a write.
+            //
+            // Retry server errors for idempotent reads only. Cloudflare's DNS
+            // create endpoint has no idempotency key, so a 502 returned after
+            // the record was committed is indistinguishable from one returned
+            // before it. Re-sending the POST would create duplicate records.
+            let retryable_status =
+                status.as_u16() == 429 || (status.is_server_error() && context.is_idempotent_read);
+            if status.is_success() || !retryable_status {
                 return Ok(response);
             }
 
