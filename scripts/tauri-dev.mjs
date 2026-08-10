@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import {
   REPO_ROOT,
   clearDevServerState,
+  isOurDevServer,
   writeDevServerState,
 } from "./dev-port.mjs";
 import { startNextDev, terminateChild } from "./dev-server.mjs";
@@ -91,6 +92,20 @@ export function buildTauriConfigOverride(existing, devUrl) {
 
 async function main() {
   const dev = await startNextDev();
+
+  // The desktop shell is about to load this URL with the application's native
+  // command surface attached to it. Confirm the server on that port is this
+  // frontend before handing it over: a port can be inherited by an unrelated
+  // process, and loading someone else's page here would give it the window.
+  if (!(await isOurDevServer(dev.port))) {
+    terminateChild(dev.child);
+    throw new Error(
+      `Refusing to start: ${dev.url} did not respond as this application's ` +
+        `dev server. Something else is on port ${dev.port}. Stop it, or set ` +
+        `PORT to a free port, then try again.`,
+    );
+  }
+
   writeDevServerState({ port: dev.port, url: dev.url, pid: dev.child.pid });
   process.stdout.write(
     `\n[tauri-dev] Next.js is serving ${dev.url}; pointing the desktop window at it.\n`,

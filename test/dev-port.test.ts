@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createServer, type Server } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { createServer, type AddressInfo, type Server } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
@@ -11,13 +12,19 @@ import {
   NoFreePortError,
   basePortFrom,
   bindPort,
+  clearDevServerState,
+  devServerUrl,
   findFreePort,
+  isOurDevServer,
   isPinnedPort,
   isPortListening,
   parseCliArguments,
   parsePort,
   reservePort,
+  readDevServerState,
+  readRunningDevServer,
   resolveDevPort,
+  writeDevServerState,
 } from "../scripts/dev-port.mjs";
 
 const repoRoot = path.resolve(
@@ -239,5 +246,66 @@ test("the resolver command prints a climbed port to stdout", async () => {
     assert.equal(Number.parseInt(printed, 10), base + 1);
   } finally {
     await closeServer(blocker);
+  }
+});
+
+test("a foreign server on the recorded port is not reused as our dev server", async () => {
+  // A recorded port can be inherited by an unrelated process after the dev
+  // server exits. Pointing the desktop shell at that would load someone else's
+  // page with this application's native command surface attached, so a TCP
+  // connect is not sufficient evidence — the response has to be ours.
+  const decoy = createHttpServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<html><head><title>Some Other App</title></head></html>");
+  });
+  const port = await new Promise<number>((resolve) => {
+    decoy.listen(0, "127.0.0.1", () => {
+      resolve((decoy.address() as AddressInfo).port);
+    });
+  });
+
+  try {
+    assert.equal(await isPortListening(port), true, "the decoy is listening");
+    assert.equal(
+      await isOurDevServer(port),
+      false,
+      "a foreign response must not be accepted as ours",
+    );
+
+    writeDevServerState({ port, url: devServerUrl(port), pid: process.pid });
+    assert.equal(
+      await readRunningDevServer(),
+      null,
+      "reuse must refuse a port held by something else",
+    );
+    assert.equal(
+      readDevServerState(),
+      null,
+      "the stale record must be cleared so the next run climbs instead",
+    );
+  } finally {
+    decoy.close();
+    clearDevServerState();
+  }
+});
+
+test("a response carrying our markers is accepted", async () => {
+  const server = createHttpServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      "<html><head><title>Better Cloudflare</title>" +
+        '<script src="/_next/static/chunks/main.js"></script></head></html>',
+    );
+  });
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve((server.address() as AddressInfo).port);
+    });
+  });
+
+  try {
+    assert.equal(await isOurDevServer(port), true);
+  } finally {
+    server.close();
   }
 });

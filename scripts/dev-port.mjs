@@ -308,14 +308,67 @@ export function devServerUrl(port, host = "localhost") {
 }
 
 /**
- * Returns a live recorded dev server, if one is genuinely still listening.
+ * Markers that identify a response as this application's dev server rather
+ * than whatever else happens to hold the port. `_next/` covers every Next.js
+ * dev response; the application name covers the document title. Either alone
+ * is enough, because a Next error page still carries the first.
+ */
+const APP_IDENTITY_MARKERS = ["/_next/", "Better Cloudflare"];
+
+/**
+ * Confirms the process on a port is this application, not merely *a* process.
+ *
+ * A TCP connect proves only that something accepted a socket. A recorded port
+ * can be inherited by an unrelated server after the dev server exits, and
+ * pointing the desktop shell at that would load someone else's application
+ * inside this one's window — with this application's native command surface
+ * exposed to it. So the reuse path fetches the port and looks for a marker
+ * only this frontend emits.
+ *
+ * @param {number} port
+ * @param {string} [host]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>}
+ */
+export async function isOurDevServer(
+  port,
+  host = "localhost",
+  timeoutMs = 2000,
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(devServerUrl(port, host), {
+      signal: controller.signal,
+      headers: { accept: "text/html" },
+    });
+    if (!response.ok) return false;
+    const body = await response.text();
+    return APP_IDENTITY_MARKERS.some((marker) => body.includes(marker));
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Returns a live recorded dev server, if one is genuinely still listening
+ * *and* is genuinely this application.
  *
  * @returns {Promise<DevServerState | null>}
  */
 export async function readRunningDevServer() {
   const state = readDevServerState();
   if (state === null) return null;
-  return (await isPortListening(state.port)) ? state : null;
+  if (!(await isPortListening(state.port))) return null;
+  if (!(await isOurDevServer(state.port))) {
+    // Someone else holds the recorded port. Drop the record so the next
+    // resolution climbs to a free port instead of reusing a stranger's.
+    clearDevServerState();
+    return null;
+  }
+  return state;
 }
 
 /**
