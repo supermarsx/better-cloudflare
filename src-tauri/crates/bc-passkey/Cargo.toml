@@ -5,11 +5,11 @@ edition = "2021"
 description = "WebAuthn passkey registration, authentication, and token management"
 
 [dependencies]
-base64 = "0.22"
-rand = "0.8"
+base64 = "0.23"
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
 bc-storage = { path = "../bc-storage" }
 
 [dev-dependencies]
