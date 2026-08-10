@@ -84,11 +84,63 @@ export function parseCSVRecords(text: string): Partial<DNSRecord>[] {
   return records;
 }
 
+/** DNS classes that may appear between the owner name and the record type. */
+const BIND_CLASSES = new Set(["IN", "CH", "CS", "HS"]);
+
+/** `3600`, or a BIND duration such as `1h` / `2d`. */
+const BIND_TTL_PATTERN = /^\d+[smhdwSMHDW]?$/u;
+
+/**
+ * Remove a trailing BIND comment from `line`.
+ *
+ * `;` only starts a comment *outside* a quoted `<character-string>`: inside one
+ * it is ordinary data, and it is the field separator used by DMARC and DKIM
+ * TXT values. A backslash escapes the following character (including a quote),
+ * so it must not flip the quote state.
+ */
+function stripBINDComment(line: string): string {
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (character === "\\") {
+      index++;
+      continue;
+    }
+    if (character === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (character === ";" && !inQuotes) return line.slice(0, index);
+  }
+  return line;
+}
+
+/** A whitespace-separated field plus the offset just past it. */
+type BINDField = { value: string; end: number };
+
+/** Split `line` on whitespace, keeping each field's end offset. */
+function splitBINDFields(line: string): BINDField[] {
+  const fields: BINDField[] = [];
+  const pattern = /\S+/gu;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line)) !== null) {
+    fields.push({ value: match[0], end: match.index + match[0].length });
+  }
+  return fields;
+}
+
 /**
  * Parse a BIND zone file snippet into a list of DNS records. This parser is a
  * lightweight convenience parser that expects simplified zone lines with the
- * format: <name> <ttl> IN <type> <content>. Lines beginning with `;` or the
- * empty line are ignored.
+ * format: `<name> [ttl] [class] <type> <content>`. The TTL and the class are
+ * both optional, in either order. Lines beginning with `;` or the empty line
+ * are ignored, as are lines with fewer than four whitespace-separated fields.
+ *
+ * RDATA is kept verbatim, so quoted `<character-string>` values (TXT, SPF,
+ * DKIM, DMARC) survive with their internal semicolons, spacing and escapes
+ * intact. This is deliberately not a full RFC 1035 zone parser: `$` directives,
+ * parenthesised multi-line records and `@`/blank-owner inheritance are not
+ * interpreted.
  */
 export function parseBINDZone(text: string): Partial<DNSRecord>[] {
   const lines = text.trim().split(/\r?\n/);
@@ -97,22 +149,47 @@ export function parseBINDZone(text: string): Partial<DNSRecord>[] {
   for (const raw of lines) {
     const line = raw.trim();
     if (!line || line.startsWith(";")) continue;
-    const noComment = line.split(";")[0].trim();
-    const parts = noComment.split(/\s+/);
-    if (parts.length < 4) continue;
-    const [name, ttlStr, , type, ...rest] = parts;
-    const ttl = Number(ttlStr) || 300;
-    let priority: number | undefined;
-    let contentParts = rest;
-    if (type.toUpperCase() === "MX" && rest.length >= 2) {
-      priority = Number(rest[0]);
-      contentParts = rest.slice(1);
+    const noComment = stripBINDComment(line).trim();
+    const fields = splitBINDFields(noComment);
+    if (fields.length < 4) continue;
+
+    const name = fields[0].value;
+    let cursor = 1;
+    let ttl = 300;
+    let sawTTL = false;
+    let sawClass = false;
+    // TTL and class are both optional and may appear in either order.
+    while (cursor < fields.length - 1) {
+      const field = fields[cursor].value;
+      if (!sawTTL && BIND_TTL_PATTERN.test(field)) {
+        // A duration suffix (`1h`) is not resolved; it falls back to the
+        // default rather than being mistaken for the record type.
+        ttl = Number(field) || 300;
+        sawTTL = true;
+        cursor++;
+        continue;
+      }
+      if (!sawClass && BIND_CLASSES.has(field.toUpperCase())) {
+        sawClass = true;
+        cursor++;
+        continue;
+      }
+      break;
     }
+
+    const type = fields[cursor].value;
+    let contentStart = cursor;
+    let priority: number | undefined;
+    if (type.toUpperCase() === "MX" && fields.length - cursor - 1 >= 2) {
+      priority = Number(fields[cursor + 1].value);
+      contentStart = cursor + 1;
+    }
+
     const record: Partial<DNSRecord> = {
       name,
       ttl,
       type,
-      content: contentParts.join(" "),
+      content: noComment.slice(fields[contentStart].end).trim(),
     };
     if (priority !== undefined) record.priority = priority;
     records.push(record);
