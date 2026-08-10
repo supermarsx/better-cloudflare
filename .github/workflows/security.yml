@@ -145,3 +145,73 @@ jobs:
             ${{ runner.temp }}/codeql-results/rust.sarif
           if-no-files-found: warn
           retention-days: 7
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Immutably pinned the same way every action and container image is: the
+      # release archive is fetched by version and rejected unless it hashes to
+      # the reviewed digest.
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate fail-closed secret scanning policy
+        run: >-
+          python3 .github/scripts/validate-secret-policy.py
+          --config=./.github/gitleaks.toml
+          --workflow=./.github/workflows/security.yml
+      - name: Install pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+      - name: Scan pull request commits for secrets
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PR_BASE_SHA^{commit}"
+          git cat-file -e "$PR_HEAD_SHA^{commit}"
+          "$RUNNER_TEMP/gitleaks" git . \
+            --config=.github/gitleaks.toml \
+            --log-opts="--no-merges $PR_BASE_SHA..$PR_HEAD_SHA" \
+            --redact \
+            --no-banner \
+            --report-format=sarif \
+            --report-path="$RUNNER_TEMP/gitleaks-report.sarif"
+      - name: Scan full history for secrets
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks" git . \
+            --config=.github/gitleaks.toml \
+            --redact \
+            --no-banner \
+            --report-format=sarif \
+            --report-path="$RUNNER_TEMP/gitleaks-report.sarif"
+      - name: Upload redacted secret scan report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gitleaks-report.sarif
+          if-no-files-found: warn
+          retention-days: 7

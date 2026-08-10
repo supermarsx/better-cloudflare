@@ -90,6 +90,100 @@ expiry date for every entry: 2026-10-30.
 | `RUSTSEC-2025-0100` | `unic-ucd-ident@0.9.0`     | unmaintained | Maintenance-only `tauri-utils -> urlpattern` dependency; no compatible `urlpattern 0.3` removal. [Advisory](https://rustsec.org/advisories/RUSTSEC-2025-0100.html)                                                                                         |
 | `RUSTSEC-2025-0098` | `unic-ucd-version@0.9.0`   | unmaintained | Maintenance-only `tauri-utils -> urlpattern` dependency; no compatible `urlpattern 0.3` removal. [Advisory](https://rustsec.org/advisories/RUSTSEC-2025-0098.html)                                                                                         |
 
+## Secret scanning gate
+
+GitHub's native secret scanning and push protection are enabled on this public
+repository. Native scanning is an alert stream and a push-time block, not a
+pull-request status check, its non-provider (generic) patterns are disabled, and
+its partner pattern set does not cover Porkbun, Namecheap, Name.com or this
+application's own MCP bearer tokens. The `secrets` job in
+`.github/workflows/security.yml` therefore adds a merge-blocking check with a
+repository-specific rule set rather than replacing the native control.
+
+The job runs Gitleaks 8.30.1, fetched by version from the upstream release and
+rejected unless the archive hashes to
+`551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`. Pull
+requests scan only the commits the pull request adds
+(`--log-opts="--no-merges $PR_BASE_SHA..$PR_HEAD_SHA"`); every other event
+scans the full history. Neither invocation uses a baseline, a rule filter or a
+softened exit code, and the job needs no repository secrets, so it behaves
+identically for pull requests from forks.
+
+Before scanning, `.github/scripts/validate-secret-policy.py` fails closed
+unless:
+
+- the policy lives at `.github/gitleaks.toml` and extends, rather than
+  replaces, the upstream Gitleaks ruleset;
+- the rule identifiers are exactly the reviewed set below, each with a
+  description, a compiling regex and lowercase keywords;
+- global allowlists suppress by path only, so no value-shaped or entropy-shaped
+  blanket suppression can be introduced;
+- the allowlist path set is exactly the reviewed set below and no entry matches
+  any protected canary path under `src/`, `src-tauri/`, `test/`, `docs/`,
+  `app/`, `scripts/`, `.github/workflows/` or a dotenv file;
+- the register below still names its owner and its unexpired review date and
+  documents every rule and every allowlist path;
+- the workflow retains the pinned version, the pinned digest, the digest
+  verification, the diff/history split and no `continue-on-error`.
+
+### Secret scanning rule register
+
+Owner for every entry: Better Cloudflare security maintainers. Review and
+expiry date for every entry: 2026-10-30.
+
+The upstream Gitleaks ruleset already covers `cloudflare-api-key`,
+`cloudflare-global-api-key`, `cloudflare-origin-ca-key`, `anthropic-api-key`,
+`anthropic-admin-api-key`, `openai-api-key`, `gcp-api-key` and the generic
+high-entropy rules. Each rule below closes a gap that ruleset leaves for the
+credentials this application handles.
+
+| Rule                           | Credential                                                                | Gap it closes                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `bc-cloudflare-api-token`      | Cloudflare scoped API token (40 URL-safe base64 characters)               | Upstream needs the literal word "cloudflare" beside the value, so `CF_API_TOKEN=` in a dotenv or CI file is missed. |
+| `bc-cloudflare-global-api-key` | Cloudflare Global API key (37 lowercase hex characters)                   | Same keyword limitation; this rule keys on the `X-Auth-Key` header the registrar client actually sends.             |
+| `bc-cloudflare-auth-email`     | Cloudflare account e-mail paired with a Global API key                    | The paired `X-Auth-Email` value is half of the credential and has no upstream rule at all.                          |
+| `bc-porkbun-api-key`           | Porkbun `pk1_<64 hex>` API key and `sk1_<64 hex>` secret key              | No upstream Porkbun rule exists.                                                                                    |
+| `bc-godaddy-sso-key`           | GoDaddy `sso-key <key>:<secret>` authorization pair                       | No upstream GoDaddy rule exists.                                                                                    |
+| `bc-namecheap-api-key`         | Namecheap `ApiKey` (32 hex) presented with its `ApiUser`                  | No upstream Namecheap rule exists.                                                                                  |
+| `bc-name-com-api-token`        | Name.com API token                                                        | No upstream Name.com rule exists.                                                                                   |
+| `bc-mcp-bearer-token`          | Bearer token protecting this application's MCP server                     | An application-specific credential with no vendor rule anywhere.                                                    |
+| `bc-ai-provider-api-key`       | Anthropic `sk-ant-<prefix>-` variants and legacy 48-character OpenAI keys | Upstream pins `api03`/`admin01` and the modern `T3BlbkFJ` shapes only.                                              |
+
+`bc-cloudflare-auth-email` carries the only value-shaped allowlist in the
+policy: addresses in the RFC 2606 / RFC 6761 reserved domains (`example.com`,
+`example.net`, `example.org`, `.test`, `.invalid`, `.localhost`, `.local`)
+cannot identify a real Cloudflare account.
+
+### Secret scanning allowlist register
+
+Owner for every entry: Better Cloudflare security maintainers. Review and
+expiry date for every entry: 2026-10-30.
+
+Every entry is path-scoped to a named file or to a git-ignored generated tree.
+There is deliberately no entry that suppresses "anything under `test/`" or
+"anything that looks like a fixture": the repository's fixture credentials
+(`e2e/auth-errors.spec.ts`, `e2e/login-key-management.spec.ts`, the Rust test
+tokens and the documentation examples) are written as obviously fake strings
+and are expected to survive a scan unsuppressed.
+
+| Path pattern                        | Class              | Rationale                                                                                                                                                                                                               |
+| ----------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `(^\|/)node_modules/`               | generated          | Installed dependencies; git-ignored, so nothing here can reach a commit. Excluding it keeps a local `gitleaks dir` run equivalent to the CI git scan.                                                                   |
+| `(^\|/)target/`                     | generated          | Cargo build output; git-ignored.                                                                                                                                                                                        |
+| `^\.next/`                          | generated          | Next.js build cache; git-ignored.                                                                                                                                                                                       |
+| `^out/`                             | generated          | Static export output; git-ignored.                                                                                                                                                                                      |
+| `^dist(-ssr)?/`                     | generated          | Legacy bundler output; git-ignored.                                                                                                                                                                                     |
+| `^test-results/`                    | generated          | Playwright evidence; git-ignored.                                                                                                                                                                                       |
+| `^data/`                            | generated          | Local application state, which is the one place a real credential legitimately exists on a developer machine; git-ignored.                                                                                              |
+| `^package-lock\.json$`              | integrity digest   | Every high-entropy string is a published npm integrity hash. Contents are fully determined by `package.json`.                                                                                                           |
+| `^Cargo\.lock$`                     | integrity digest   | Every high-entropy string is a published crate checksum. Contents are fully determined by `Cargo.toml`.                                                                                                                 |
+| `^e2e/fixtures/demo-workspace\.ts$` | screenshot fixture | Fictional by construction: RFC 2606 `.test` domains, RFC 5737/3849 documentation IP blocks, and literal placeholders (`demo-ciphertext`, `demo-token-not-a-real-credential`). Scoped to this exact file, not to `e2e/`. |
+| `^e2e/fixtures/demo-panels\.ts$`    | screenshot fixture | Same harness, same construction. Scoped to this exact file.                                                                                                                                                             |
+| `^\.github/gitleaks\.toml$`         | policy             | The policy necessarily spells out the credential shapes it detects.                                                                                                                                                     |
+
+Verified before the gate was wired in: Gitleaks 8.30.1 with this policy reports
+zero findings against both the full commit history and the working tree.
+
 ## Explicit residual controls
 
 The generated executables are not Authenticode-signed, Apple Developer

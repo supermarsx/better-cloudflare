@@ -1,0 +1,210 @@
+# Better Cloudflare secret-scanning policy.
+#
+# Reviewed register and allowlist rationale:
+#   .github/RELEASE_SECURITY.md#secret-scanning-allowlist-register
+# Fail-closed validator:
+#   .github/scripts/validate-secret-policy.py
+#
+# The upstream Gitleaks ruleset is extended, never replaced. The rules below
+# only cover credential shapes this application actually handles and that the
+# upstream ruleset either misses entirely or detects only when the vendor name
+# happens to sit next to the value.
+#
+# Every rule is anchored to an identifier or wire format rather than to raw
+# entropy, because entropy-only rules both miss structured tokens and fire on
+# checksums, base64 icons and fixture strings.
+
+title = "Better Cloudflare secret scanning policy"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Cloudflare
+# ---------------------------------------------------------------------------
+
+# Upstream `cloudflare-api-key` requires the literal string "cloudflare" within
+# 50 characters of the value, so `CF_API_TOKEN=<40 chars>` in a committed .env,
+# shell script or CI file is missed. Cloudflare scoped API tokens are 40
+# URL-safe base64 characters.
+[[rules]]
+id = "bc-cloudflare-api-token"
+description = "Cloudflare API token bound to a CF_-style identifier that the upstream Cloudflare rules do not key on."
+regex = '''(?im)(?:^|[^A-Za-z0-9])cf[_.-]?(?:api[_.-]?)?(?:token|key)["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([A-Za-z0-9_-]{40})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3.5
+keywords = [
+    "cf_api",
+    "cf-api",
+    "cf.api",
+    "cfapi",
+    "cf_token",
+    "cf-token",
+    "cf.token",
+    "cftoken",
+    "cf_key",
+    "cf-key",
+    "cf.key",
+    "cfkey",
+]
+
+# Global API keys are 37 lowercase hex characters and travel in the X-Auth-Key
+# header (src-tauri/crates/bc-registrar/src/cloudflare.rs). Upstream only
+# detects them next to the word "cloudflare".
+[[rules]]
+id = "bc-cloudflare-global-api-key"
+description = "Cloudflare Global API key presented through X-Auth-Key or an auth-key identifier."
+regex = '''(?im)(?:^|[^A-Za-z0-9])(?:x[_.-]?auth[_.-]?key|global[_.-]?api[_.-]?key|auth[_.-]?key)["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([a-f0-9]{37})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3
+keywords = [
+    "x-auth-key",
+    "x_auth_key",
+    "xauthkey",
+    "auth_key",
+    "auth-key",
+    "auth.key",
+    "authkey",
+    "global_api_key",
+    "global-api-key",
+    "globalapikey",
+]
+
+# A Global API key is only usable together with the account e-mail, so the
+# paired X-Auth-Email value is itself part of the credential.
+[[rules]]
+id = "bc-cloudflare-auth-email"
+description = "Cloudflare account e-mail paired with a Global API key through X-Auth-Email."
+regex = '''(?im)(?:^|[^A-Za-z0-9])x[_.-]?auth[_.-]?email["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24})'''
+keywords = [
+    "x-auth-email",
+    "x_auth_email",
+    "xauthemail",
+    "auth_email",
+    "auth-email",
+    "authemail",
+]
+
+[[rules.allowlists]]
+description = "RFC 2606 / RFC 6761 reserved domains cannot identify a real Cloudflare account."
+regexTarget = "match"
+regexes = [
+    '''(?i)@(?:[\w-]+\.)*(?:example\.(?:com|net|org)|test|invalid|localhost|local)\b''',
+]
+
+# ---------------------------------------------------------------------------
+# Registrar credentials (src-tauri/crates/bc-registrar)
+# ---------------------------------------------------------------------------
+
+# Porkbun issues `pk1_<64 hex>` API keys and `sk1_<64 hex>` secret API keys.
+[[rules]]
+id = "bc-porkbun-api-key"
+description = "Porkbun API key or secret API key."
+regex = '''\b((?:pk|sk)1_[a-f0-9]{64})\b'''
+entropy = 3
+keywords = ["pk1_", "sk1_"]
+
+# GoDaddy authenticates with `Authorization: sso-key <key>:<secret>`
+# (src-tauri/crates/bc-registrar/src/godaddy.rs).
+[[rules]]
+id = "bc-godaddy-sso-key"
+description = "GoDaddy sso-key credential pair (API key and API secret)."
+regex = '''(?i)sso-key\s+([A-Za-z0-9_]{8,64}:[A-Za-z0-9_]{8,64})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3
+keywords = ["sso-key"]
+
+# Namecheap sends `ApiUser=<user>&ApiKey=<32 hex>` to api.namecheap.com
+# (src-tauri/crates/bc-registrar/src/namecheap.rs).
+[[rules]]
+id = "bc-namecheap-api-key"
+description = "Namecheap API key presented alongside its ApiUser."
+regex = '''(?im)(?:namecheap|api[_.-]?user)[^\r\n]{0,120}?api[_.-]?key["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([a-f0-9]{32})(?:["'`\s;,&]|\\[nr]|$)'''
+entropy = 3
+keywords = ["namecheap", "apiuser", "api_user", "api-user"]
+
+# Name.com authenticates with a username and a long alphanumeric API token
+# (src-tauri/crates/bc-registrar/src/namecom.rs).
+[[rules]]
+id = "bc-name-com-api-token"
+description = "Name.com API token paired with a Name.com account username."
+regex = '''(?im)name[_.-]?com[^\r\n]{0,120}?(?:api[_.-]?)?token["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([A-Za-z0-9]{20,64})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3.5
+keywords = ["name.com", "name_com", "name-com", "namecom"]
+
+# ---------------------------------------------------------------------------
+# MCP server and AI providers
+# ---------------------------------------------------------------------------
+
+# The embedded MCP server is protected by a generated bearer token
+# (src-tauri/crates/bc-mcp/src/transport.rs).
+[[rules]]
+id = "bc-mcp-bearer-token"
+description = "Better Cloudflare MCP server bearer token."
+regex = '''(?im)(?:^|[^A-Za-z0-9])mcp[_.-]?(?:server[_.-]?)?(?:bearer[_.-]?|auth[_.-]?)?(?:token|secret)["'`\s]{0,3}(?:=|:=|=>|:|,)["'`\s=]{0,5}([A-Za-z0-9+/_=-]{16,128})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3.5
+keywords = [
+    "mcp_token",
+    "mcp-token",
+    "mcp.token",
+    "mcptoken",
+    "mcp_secret",
+    "mcp-secret",
+    "mcpsecret",
+    "mcp_auth",
+    "mcp-auth",
+    "mcpauth",
+    "mcp_bearer",
+    "mcp-bearer",
+    "mcpbearer",
+    "mcp_server_token",
+    "mcpservertoken",
+]
+
+# Upstream covers `sk-ant-api03-`/`sk-ant-admin01-` and the modern OpenAI
+# `T3BlbkFJ` shapes only. Cover any other `sk-ant-<prefix>-` variant and the
+# legacy 48-character OpenAI key.
+[[rules]]
+id = "bc-ai-provider-api-key"
+description = "Anthropic or OpenAI API key in a shape the upstream provider rules do not cover."
+regex = '''(?m)(?:^|[^A-Za-z0-9])(sk-ant-[a-z0-9]{3,20}-[A-Za-z0-9_-]{80,120}|sk-[A-Za-z0-9]{48})(?:["'`\s;,]|\\[nr]|$)'''
+entropy = 3.5
+keywords = ["sk-ant-", "sk-"]
+
+# ---------------------------------------------------------------------------
+# Allowlists
+#
+# Every entry below is path-scoped to named files or to git-ignored generated
+# trees. There is deliberately no rule that suppresses "anything under test/"
+# or "anything that looks like a fixture": the repository's fixture tokens are
+# written as obviously fake strings and are expected to survive a scan.
+# ---------------------------------------------------------------------------
+
+[[allowlists]]
+description = "Generated, vendored and build-output trees. All are listed in .gitignore, so nothing here can reach a commit; excluding them keeps a local `gitleaks dir` run equivalent to the CI git scan."
+paths = [
+    '''(^|/)node_modules/''',
+    '''(^|/)target/''',
+    '''^\.next/''',
+    '''^out/''',
+    '''^dist(-ssr)?/''',
+    '''^test-results/''',
+    '''^data/''',
+]
+
+[[allowlists]]
+description = "Dependency lockfiles. Every high-entropy string in them is a published integrity digest, not a credential, and their contents are fully determined by package.json and Cargo.toml."
+paths = [
+    '''^package-lock\.json$''',
+    '''^Cargo\.lock$''',
+]
+
+[[allowlists]]
+description = "Documentation screenshot harness fixtures. Both files are fictional by construction: RFC 2606 `.test` domains, RFC 5737/3849 documentation IP blocks, and literal placeholders such as `demo-ciphertext` and `demo-token-not-a-real-credential`. Scoped to these two exact files, not to e2e/ as a whole."
+paths = [
+    '''^e2e/fixtures/demo-workspace\.ts$''',
+    '''^e2e/fixtures/demo-panels\.ts$''',
+]
+
+[[allowlists]]
+description = "This policy file, which necessarily spells out the credential shapes it detects."
+paths = [
+    '''^\.github/gitleaks\.toml$''',
+]
