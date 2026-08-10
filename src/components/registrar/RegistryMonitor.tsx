@@ -446,9 +446,9 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
         {shouldRenderStatusBadge(domain.status) ? (
           <Tag
             variant={statusVariant(domain.status)}
-            className="text-[10px] shrink-0"
+            className="text-[10px] min-w-0 max-w-[10rem] overflow-hidden"
           >
-            {domain.status}
+            <span className="truncate">{domain.status}</span>
           </Tag>
         ) : null}
 
@@ -547,7 +547,7 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
             </Button>
           </div>
           {/* Quick info grid */}
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 md:grid-cols-6">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-2 md:grid-cols-3 xl:grid-cols-6">
             <div>
               <span className="text-muted-foreground block">Registrar</span>
               <span>{REGISTRAR_LABELS[domain.registrar]}</span>
@@ -586,7 +586,7 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
                   : t("Disabled", "Disabled")}
               </span>
             </div>
-            <div className="md:col-span-1">
+            <div>
               <span className="text-muted-foreground block">
                 {t("Privacy", "Privacy")}
               </span>

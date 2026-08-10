@@ -456,8 +456,8 @@ function FirewallPanelInner({
                     </div>
                   ) : (
                     <div className="flex items-center justify-between">
-                      <div className="flex-1 space-y-0.5">
-                        <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <span
                             className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
                               rule.action === "block"
@@ -470,7 +470,7 @@ function FirewallPanelInner({
                             {rule.action}
                           </span>
                           {rule.description && (
-                            <span className="text-xs text-muted-foreground">
+                            <span className="min-w-0 truncate text-xs text-muted-foreground">
                               {rule.description}
                             </span>
                           )}
@@ -484,7 +484,7 @@ function FirewallPanelInner({
                           {rule.filter.expression}
                         </p>
                       </div>
-                      <div className="flex gap-1">
+                      <div className="flex shrink-0 gap-1">
                         {updateFirewallRule && (
                           <Button
                             size="sm"

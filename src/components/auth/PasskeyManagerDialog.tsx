@@ -203,7 +203,10 @@ export function PasskeyManagerDialog({
           )}
           <div>
             <Label className="text-base">Legacy credentials</Label>
-            <div className="space-y-3 mt-3" aria-busy={isLoading}>
+            <div
+              className="mt-3 max-h-[50vh] space-y-3 overflow-y-auto pr-1"
+              aria-busy={isLoading}
+            >
               {isLoading ? (
                 <div
                   className="py-8 text-center text-sm text-muted-foreground"

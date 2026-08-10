@@ -82,11 +82,11 @@ export function BulkEditBar({
   };
 
   return (
-    <div className="sticky bottom-0 z-20 flex items-center justify-between gap-3 rounded-t-lg border-t bg-card/95 px-4 py-2 shadow-lg backdrop-blur-sm">
-      <span className="text-sm font-medium">
+    <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-between gap-3 rounded-t-lg border-t bg-card/95 px-4 py-2 shadow-lg backdrop-blur-sm">
+      <span className="min-w-0 truncate text-sm font-medium">
         {selectedCount} record{selectedCount !== 1 ? "s" : ""} selected
       </span>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {onBulkSetTTL && (
           <Select
             value={ttlSelection}

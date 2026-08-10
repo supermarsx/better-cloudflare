@@ -700,6 +700,33 @@ const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
 ];
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
+const NODE_CONTEXT_MENU_WIDTH = 220;
+const NODE_CONTEXT_MENU_HEIGHT = 120;
+const NODE_CONTEXT_MENU_MARGIN = 8;
+
+/**
+ * Keeps the node context menu inside the window. Raw cursor coordinates place a
+ * 220px panel off-screen near the right/bottom edge, and the app shell clips
+ * horizontal overflow without a scrollbar, so an unclamped menu is unreachable.
+ */
+export function clampContextMenuPosition(
+  x: number,
+  y: number,
+  viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth,
+  viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight,
+): { left: number; top: number } {
+  const clampAxis = (value: number, viewport: number, size: number) => {
+    const min = NODE_CONTEXT_MENU_MARGIN;
+    if (!Number.isFinite(viewport) || viewport <= 0)
+      return Math.max(min, value);
+    const max = Math.max(min, viewport - size - NODE_CONTEXT_MENU_MARGIN);
+    return Math.min(Math.max(min, value), max);
+  };
+  return {
+    left: clampAxis(x, viewportWidth, NODE_CONTEXT_MENU_WIDTH),
+    top: clampAxis(y, viewportHeight, NODE_CONTEXT_MENU_HEIGHT),
+  };
+}
 export const TOPOLOGY_MODEL_NODE_LIMIT = 10_000;
 export const TOPOLOGY_GRAPH_DOM_NODE_LIMIT = 80;
 export const TOPOLOGY_GRAPH_DOM_EDGE_LIMIT = 160;
@@ -4197,15 +4224,15 @@ export function ZoneTopologyTab({
               className="absolute inset-0 bg-black/45 backdrop-blur-sm"
               onClick={closeExpandGraph}
             />
-            <div className="absolute inset-0 bg-background/96 p-3">
-              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+            <div className="absolute inset-0 flex flex-col bg-background/96 p-3">
+              <div className="mb-2 flex shrink-0 items-center justify-between text-xs text-muted-foreground">
                 <div>Topology graph - full window mode</div>
               </div>
-              <div className="mb-2">{renderGraphControls(true)}</div>
+              <div className="mb-2 shrink-0">{renderGraphControls(true)}</div>
               <div
                 ref={expandGraph ? viewportRef : undefined}
                 className={cn(
-                  "relative h-[calc(100dvh-4rem)] overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
+                  "relative min-h-0 flex-1 overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
                   graphBackgroundClass,
                   cursorClass,
                 )}
@@ -4361,11 +4388,11 @@ export function ZoneTopologyTab({
       ? createPortal(
           <div
             ref={nodeContextMenuRef}
-            className="fixed z-[260] min-w-[220px] rounded-md border border-border/70 bg-card/95 p-1 shadow-2xl backdrop-blur pointer-events-auto"
-            style={{
-              left: Math.max(8, nodeContextMenu.x),
-              top: Math.max(8, nodeContextMenu.y),
-            }}
+            className="fixed z-[260] min-w-[220px] max-w-[calc(100vw-1rem)] rounded-md border border-border/70 bg-card/95 p-1 shadow-2xl backdrop-blur pointer-events-auto"
+            style={clampContextMenuPosition(
+              nodeContextMenu.x,
+              nodeContextMenu.y,
+            )}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
@@ -4651,7 +4678,7 @@ export function ZoneTopologyTab({
               of {topologyModel.nodes.length}. Selecting any search result
               reveals and focuses its node here.
             </div>
-            <div className="h-[560px] overflow-auto rounded-md border border-border/50 bg-background/40">
+            <div className="h-[min(560px,55dvh)] overflow-auto rounded-md border border-border/50 bg-background/40">
               <div className="relative h-[660px] min-w-[944px]">
                 <svg
                   aria-hidden="true"
@@ -4719,7 +4746,7 @@ export function ZoneTopologyTab({
               className={cn(
                 "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
                 graphBackgroundClass,
-                "h-[560px]",
+                "h-[min(560px,55dvh)]",
                 cursorClass,
               )}
               onMouseDown={handleMouseDown}

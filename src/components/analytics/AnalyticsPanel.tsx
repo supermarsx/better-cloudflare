@@ -275,11 +275,17 @@ function Sparkline({
   const polylinePoints = coordinates.join(" ");
   const areaPoints = `0,${height} ${polylinePoints} ${width},${height}`;
   return (
-    <svg width={width} height={height} className="overflow-visible">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      style={{ height }}
+      className="block w-full overflow-visible"
+    >
       <polyline
         fill="none"
         stroke={color}
         strokeWidth="1.5"
+        vectorEffect="non-scaling-stroke"
         points={polylinePoints}
       />
       <polygon fill={color} fillOpacity="0.1" points={areaPoints} />
@@ -432,7 +438,7 @@ function AnalyticsPanelInner({
             </div>
           )}
           {/* Summary cards */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle className="text-xs font-medium text-muted-foreground">

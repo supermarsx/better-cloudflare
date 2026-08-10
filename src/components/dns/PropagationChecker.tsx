@@ -828,10 +828,12 @@ function PropagationCheckerInner({
                       data-testid="propagation-resolver-row"
                       className="flex items-start justify-between rounded-md border px-3 py-2"
                     >
-                      <div className="flex-1 space-y-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium">{r.label}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="min-w-0 truncate text-xs font-medium">
+                            {r.label}
+                          </span>
+                          <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
                             {r.resolver}
                           </span>
                           <span
@@ -851,7 +853,7 @@ function PropagationCheckerInner({
                                 <span
                                   key={j}
                                   data-testid="propagation-answer"
-                                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                                  className="min-w-0 break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
                                 >
                                   {rec}
                                 </span>
@@ -876,7 +878,7 @@ function PropagationCheckerInner({
                           </p>
                         )}
                       </div>
-                      <span className="ml-2 text-[10px] text-muted-foreground">
+                      <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
                         {r.latency_ms}ms
                       </span>
                     </div>

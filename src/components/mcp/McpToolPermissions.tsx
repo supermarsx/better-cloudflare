@@ -1785,13 +1785,13 @@ export function McpToolPermissions({
         modalPortalHost &&
         createPortal(
           <div
-            className="fixed inset-0 z-[1000] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
+            className="fixed bottom-0 left-0 right-0 top-[var(--app-top-inset)] z-[1000] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
             data-testid="mcp-permission-modal-backdrop"
             role="presentation"
           >
             <div
               ref={dialogRef}
-              className="max-h-[min(80vh,44rem)] w-full max-w-xl space-y-3 overflow-y-auto rounded-lg border border-destructive/50 bg-background px-4 py-3 shadow-2xl"
+              className="max-h-[min(100%,44rem)] w-full max-w-xl space-y-3 overflow-y-auto rounded-lg border border-destructive/50 bg-background px-4 py-3 shadow-2xl"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="mcp-permission-confirmation-heading"

@@ -89,14 +89,14 @@ export function EncryptionSettingsDialog({
     safeAlgorithm === settings.algorithm;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-var(--app-top-inset)-2rem)] flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Encryption Settings</DialogTitle>
           <DialogDescription>
             Configure encryption parameters for security and performance
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <div className="space-y-2">
             <Label htmlFor="iterations">PBKDF2 Iterations</Label>
             <Input

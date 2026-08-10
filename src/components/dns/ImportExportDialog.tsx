@@ -422,7 +422,7 @@ export function ImportExportDialog({
               />
               {importDiagnostic && (
                 <p
-                  className="text-sm text-destructive"
+                  className="max-h-24 overflow-y-auto break-words [overflow-wrap:anywhere] text-sm text-destructive"
                   data-testid="import-limit-diagnostic"
                   role="alert"
                 >

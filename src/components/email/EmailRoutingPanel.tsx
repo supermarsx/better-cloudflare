@@ -271,10 +271,12 @@ function EmailRoutingPanelInner({
                 key={ruleId}
                 className="flex items-center justify-between rounded-md border px-3 py-2"
               >
-                <div className="flex-1 space-y-0.5">
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
                     {rule.name && (
-                      <span className="text-xs font-medium">{rule.name}</span>
+                      <span className="min-w-0 truncate text-xs font-medium">
+                        {rule.name}
+                      </span>
                     )}
                     <span
                       className={`text-[10px] ${rule.enabled ? "text-green-600" : "text-muted-foreground"}`}
@@ -284,15 +286,15 @@ function EmailRoutingPanelInner({
                         : t("Disabled", "Disabled")}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                     {rule.matchers.map((m, i) => (
-                      <span key={i} className="font-mono">
+                      <span key={i} className="max-w-full truncate font-mono">
                         {m.value || m.field || m.type}
                       </span>
                     ))}
-                    <span>→</span>
+                    <span className="shrink-0">→</span>
                     {rule.actions.map((a, i) => (
-                      <span key={i} className="font-mono">
+                      <span key={i} className="max-w-full truncate font-mono">
                         {a.value?.join(", ") || a.type}
                       </span>
                     ))}
@@ -301,7 +303,7 @@ function EmailRoutingPanelInner({
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="text-destructive hover:text-destructive"
+                  className="shrink-0 text-destructive hover:text-destructive"
                   onClick={() => handleDeleteRule(ruleId)}
                 >
                   {t("Delete", "Delete")}

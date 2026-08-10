@@ -169,16 +169,16 @@ function WorkersPanelInner({
               key={route.id}
               className="flex items-center justify-between rounded-md border px-3 py-2"
             >
-              <div className="space-y-0.5">
-                <p className="font-mono text-xs">{route.pattern}</p>
-                <p className="text-[11px] text-muted-foreground">
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="truncate font-mono text-xs">{route.pattern}</p>
+                <p className="truncate text-[11px] text-muted-foreground">
                   → {route.script}
                 </p>
               </div>
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-destructive hover:text-destructive"
+                className="shrink-0 text-destructive hover:text-destructive"
                 onClick={() => handleDelete(route.id)}
               >
                 {t("Delete", "Delete")}
