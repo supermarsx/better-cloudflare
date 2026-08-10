@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -12,7 +11,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 const SMIMEA_USAGES = [
   { value: "0", label: "0 (PKIX-TA)" },
@@ -68,6 +76,116 @@ function isHex(value: string) {
   return /^[0-9a-fA-F]+$/.test(value);
 }
 
+export type SmimeaFields = {
+  usage: number | undefined;
+  selector: number | undefined;
+  matchingType: number | undefined;
+  data: string;
+};
+
+/**
+ * What each certificate usage asks an S/MIME client to do. RFC 8162 §2.3 reuses
+ * the TLSA registry: 0 and 1 constrain a chain that must still pass ordinary
+ * PKIX validation, while 2 and 3 let the record itself supply the trust.
+ */
+const SMIMEA_USAGE_EFFECTS: Record<number, string> = {
+  0: "only accept a certificate for this one mailbox when the certificate passes ordinary public CA validation and the certification authority given here appears in its chain",
+  1: "only accept the exact certificate given here for this one mailbox, and only when that certificate also passes ordinary public CA validation",
+  2: "accept a certificate for this one mailbox when it chains to the trust anchor given here, even if no public CA vouches for that anchor",
+  3: "accept exactly the certificate given here for this one mailbox, with no certificate authority involved at all",
+};
+
+const SMIMEA_SELECTOR_EFFECTS: Record<number, string> = {
+  0: "The association covers the whole certificate, so the record has to be republished whenever the certificate is reissued, even if the key stays the same.",
+  1: "The association covers only the certificate's public key (SubjectPublicKeyInfo), so it survives a reissue that keeps the same key.",
+};
+
+const SMIMEA_MATCHING_EFFECTS: Record<number, string> = {
+  0: "The record carries the selected data in full rather than a digest, which makes it considerably larger.",
+  1: "The record carries a SHA-256 digest of the selected data, which is the usual choice.",
+  2: "The record carries a SHA-512 digest of the selected data.",
+};
+
+/**
+ * Plain-English description of the SMIMEA record the builder is assembling.
+ *
+ * SMIMEA (RFC 8162) binds a certificate to a single mailbox rather than to a
+ * service: the owner name is a truncated SHA-256 hash of the local-part under
+ * `_smimecert`, which is why the covered address cannot be checked from here.
+ */
+export function describeSMIMEA(fields: SmimeaFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const data = (fields.data ?? "").trim().replace(/\s+/g, "");
+  const usageEffect =
+    fields.usage === undefined ? undefined : SMIMEA_USAGE_EFFECTS[fields.usage];
+
+  let headline: string;
+  if (usageEffect) {
+    headline = `Tells mail clients that support SMIMEA to ${usageEffect}.`;
+  } else if (fields.usage === undefined) {
+    headline =
+      "Binds an S/MIME certificate to a single email address in DNS, so mail clients can check that address's certificate without relying only on public certificate authorities.";
+  } else {
+    headline = `Publishes an S/MIME certificate association for a single email address using certificate usage ${fields.usage}.`;
+  }
+
+  if (fields.selector !== undefined) {
+    const selectorEffect = SMIMEA_SELECTOR_EFFECTS[fields.selector];
+    if (selectorEffect) details.push(selectorEffect);
+  }
+  if (fields.matchingType !== undefined) {
+    const matchingEffect = SMIMEA_MATCHING_EFFECTS[fields.matchingType];
+    if (matchingEffect) details.push(matchingEffect);
+  }
+
+  if (!data) {
+    details.push(
+      "No certificate association data has been entered yet, so the record does not identify a certificate.",
+    );
+  }
+
+  details.push(
+    "SMIMEA is only consulted by clients that implement it, and deployment is sparse, so most mail software will ignore this record entirely.",
+  );
+  details.push(
+    "The association is only meaningful if the zone is signed with DNSSEC and the client validates the answer; without DNSSEC anyone able to spoof DNS can substitute their own certificate.",
+  );
+
+  unknowns.push(
+    "The owner name is a truncated SHA-256 hash of the mailbox local-part, so whether this record covers the intended email address cannot be verified from here.",
+  );
+  if (fields.usage !== undefined && !usageEffect) {
+    unknowns.push(
+      `Certificate usage ${fields.usage} is not one of the values defined for SMIMEA, so how a client would treat this record cannot be determined here.`,
+    );
+  }
+  if (
+    fields.selector !== undefined &&
+    !SMIMEA_SELECTOR_EFFECTS[fields.selector]
+  ) {
+    unknowns.push(
+      `Selector ${fields.selector} is not one of the values defined for SMIMEA, so which part of the certificate is being matched cannot be determined here.`,
+    );
+  }
+  if (
+    fields.matchingType !== undefined &&
+    !SMIMEA_MATCHING_EFFECTS[fields.matchingType]
+  ) {
+    unknowns.push(
+      `Matching type ${fields.matchingType} is not one of the values defined for SMIMEA, so how the data would be compared cannot be determined here.`,
+    );
+  }
+  if (data) {
+    unknowns.push(
+      "Whether this data matches the certificate the mailbox actually presents cannot be checked from this form.",
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function SmimeaBuilder({
   record,
   onRecordChange,
@@ -90,6 +208,20 @@ export function SmimeaBuilder({
   );
   const [matchingMode, setMatchingMode] = useState<"preset" | "custom">(
     "preset",
+  );
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "usage",
+    "usageCustom",
+    "selector",
+    "selectorCustom",
+    "matching",
+    "matchingCustom",
+    "data",
+  ] as const);
+
+  const summary = useMemo(
+    () => describeSMIMEA({ usage, selector, matchingType, data }),
+    [data, matchingType, selector, usage],
   );
 
   const usageSelectValue = useMemo(() => {
@@ -265,9 +397,16 @@ export function SmimeaBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Usage</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.usage}
+              descriptionId={helpIds.usage}
+              label="Usage"
+              help="How the client should use this certificate: 0 and 1 add a constraint on top of ordinary public CA validation, while 2 and 3 let this record supply the trust on its own. 3 (DANE-EE), naming the mailbox's own certificate, is the usual choice."
+            />
             <Select
               value={usageSelectValue}
               onValueChange={(value: string) => {
@@ -290,7 +429,11 @@ export function SmimeaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.usage}
+                aria-describedby={helpIds.usage}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -303,31 +446,45 @@ export function SmimeaBuilder({
               </SelectContent>
             </Select>
             {usageMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 3"
-                value={usage ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setUsage(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeSmimea(
-                      val,
-                      selector,
-                      matchingType,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <div className="space-y-1 pt-2">
+                <BuilderFieldLabel
+                  controlId={fieldIds.usageCustom}
+                  descriptionId={helpIds.usageCustom}
+                  label="Custom usage"
+                  help="A numeric certificate usage for a value outside the list. Only 0 to 3 are defined, so clients are unlikely to act on anything else."
+                />
+                <Input
+                  id={fieldIds.usageCustom}
+                  aria-describedby={helpIds.usageCustom}
+                  type="number"
+                  placeholder="e.g., 3"
+                  value={usage ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setUsage(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeSmimea(
+                        val,
+                        selector,
+                        matchingType,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </div>
             )}
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Selector</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.selector}
+              descriptionId={helpIds.selector}
+              label="Selector"
+              help="Which part of the certificate the record matches: 0 the whole certificate, 1 only its public key (SubjectPublicKeyInfo). 1 is usually preferred because it survives certificate reissue with the same key."
+            />
             <Select
               value={selectorSelectValue}
               onValueChange={(value: string) => {
@@ -350,7 +507,11 @@ export function SmimeaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.selector}
+                aria-describedby={helpIds.selector}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -363,31 +524,45 @@ export function SmimeaBuilder({
               </SelectContent>
             </Select>
             {selectorMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={selector ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setSelector(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeSmimea(
-                      usage,
-                      val,
-                      matchingType,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <div className="space-y-1 pt-2">
+                <BuilderFieldLabel
+                  controlId={fieldIds.selectorCustom}
+                  descriptionId={helpIds.selectorCustom}
+                  label="Custom selector"
+                  help="A numeric selector for a value outside the list. Only 0 and 1 are defined, so clients are unlikely to act on anything else."
+                />
+                <Input
+                  id={fieldIds.selectorCustom}
+                  aria-describedby={helpIds.selectorCustom}
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={selector ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setSelector(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeSmimea(
+                        usage,
+                        val,
+                        matchingType,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </div>
             )}
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Matching type</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.matching}
+              descriptionId={helpIds.matching}
+              label="Matching type"
+              help="How the selected data is presented: 0 the data in full, 1 a SHA-256 digest, 2 a SHA-512 digest. 1 is the usual choice and keeps the record small."
+            />
             <Select
               value={matchingSelectValue}
               onValueChange={(value: string) => {
@@ -410,7 +585,11 @@ export function SmimeaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.matching}
+                aria-describedby={helpIds.matching}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -423,32 +602,48 @@ export function SmimeaBuilder({
               </SelectContent>
             </Select>
             {matchingMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={matchingType ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setMatchingType(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeSmimea(
-                      usage,
-                      selector,
-                      val,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <div className="space-y-1 pt-2">
+                <BuilderFieldLabel
+                  controlId={fieldIds.matchingCustom}
+                  descriptionId={helpIds.matchingCustom}
+                  label="Custom matching type"
+                  help="A numeric matching type for a value outside the list. Only 0, 1 and 2 are defined, so clients are unlikely to act on anything else."
+                />
+                <Input
+                  id={fieldIds.matchingCustom}
+                  aria-describedby={helpIds.matchingCustom}
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={matchingType ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setMatchingType(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeSmimea(
+                        usage,
+                        selector,
+                        val,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </div>
             )}
           </div>
 
           <div className="space-y-1 sm:col-span-6">
-            <Label className="text-xs">Data (hex)</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.data}
+              descriptionId={helpIds.data}
+              label="Data (hex)"
+              help="The certificate association data, in hex. With matching type 1 this is a 64-character SHA-256 digest, with 2 a 128-character SHA-512 digest, and with 0 the full DER-encoded certificate or public key."
+            />
             <Input
+              id={fieldIds.data}
+              aria-describedby={helpIds.data}
               placeholder="hex…"
               value={data}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

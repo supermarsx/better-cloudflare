@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,7 +12,16 @@ import {
 } from "@/components/ui/select";
 import { composeTLSA, parseTLSA } from "@/lib/dns/dns-parsers";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 const TLSA_USAGES = [
   {
@@ -57,6 +65,144 @@ function isHex(value: string) {
   return /^[0-9a-fA-F]+$/.test(value);
 }
 
+export type TlsaFields = {
+  usage: number | undefined;
+  selector: number | undefined;
+  matchingType: number | undefined;
+  data: string;
+  /** The record's owner name, conventionally `_port._proto.host`. */
+  name?: string;
+};
+
+/**
+ * What a validating client is asked to do, per RFC 6698 §2.1.1 and the usage
+ * refinements in RFC 7671 §4.
+ */
+const TLSA_USAGE_ACTIONS: Record<number, string> = {
+  0: "require the presented certificate to chain to the certificate authority identified by this record, on top of the normal public-CA (PKIX) validation the client already performs",
+  1: "require the server to present exactly the certificate identified by this record, on top of the normal public-CA (PKIX) validation the client already performs",
+  2: "trust the certificate authority identified by this record as a trust anchor for this service, accepting its certificates with no public CA involved",
+  3: "accept the certificate identified by this record directly, without public-CA (PKIX) validation",
+};
+
+const TLSA_SELECTOR_PHRASES: Record<number, string> = {
+  0: "the whole certificate",
+  1: "the certificate's SubjectPublicKeyInfo, which is its public key",
+};
+
+const TLSA_MATCHING_PHRASES: Record<number, string> = {
+  0: "the exact bytes, with no hashing",
+  1: "a SHA-256 hash",
+  2: "a SHA-512 hash",
+};
+
+/** Turn a `_port._proto.host` owner name into the service it designates. */
+function describeTlsaTarget(name: string | undefined) {
+  const raw = (name ?? "").trim().replace(/\.$/, "");
+  if (!raw) return "this service";
+  const match = /^_(\d{1,5})\._(tcp|udp|sctp)(?:\.(.+))?$/i.exec(raw);
+  if (!match) return `the service at ${raw}`;
+  const port = match[1] ?? "";
+  const proto = (match[2] ?? "").toUpperCase();
+  const host = match[3];
+  return host
+    ? `${host} on ${proto} port ${port}`
+    : `this zone on ${proto} port ${port}`;
+}
+
+/**
+ * Plain-English description of the DANE association the builder is assembling.
+ *
+ * The two `unknowns` are always present because they are the two ways a
+ * syntactically perfect TLSA record still fails in production: an unsigned zone
+ * makes it inert, and a stale association breaks TLS outright.
+ */
+export function describeTLSA(fields: TlsaFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const target = describeTlsaTarget(fields.name);
+  const action =
+    fields.usage !== undefined ? TLSA_USAGE_ACTIONS[fields.usage] : undefined;
+
+  const headline = action
+    ? `Tells DANE-aware clients connecting to ${target} to ${action}.`
+    : `Builds a DANE record naming the certificate ${target} is allowed to present; choose a usage to say how strictly clients should enforce it.`;
+
+  if (fields.usage !== undefined && !action) {
+    unknowns.push(
+      `Usage ${fields.usage} is not one of the values defined by RFC 6698 (0–3), so what a client will do with this record cannot be determined here.`,
+    );
+  }
+
+  const selectorPhrase =
+    fields.selector !== undefined
+      ? TLSA_SELECTOR_PHRASES[fields.selector]
+      : undefined;
+  const matchingPhrase =
+    fields.matchingType !== undefined
+      ? TLSA_MATCHING_PHRASES[fields.matchingType]
+      : undefined;
+
+  if (selectorPhrase && matchingPhrase) {
+    details.push(
+      `The certificate is identified by ${selectorPhrase}, compared as ${matchingPhrase}.`,
+    );
+  }
+  if (fields.selector === 1) {
+    details.push(
+      "Because only the public key is matched, the record stays correct when the certificate is renewed with the same key.",
+    );
+  } else if (fields.selector === 0) {
+    details.push(
+      "Because the whole certificate is matched, the record must be replaced every time the certificate is renewed.",
+    );
+  } else if (fields.selector !== undefined && !selectorPhrase) {
+    unknowns.push(
+      `Selector ${fields.selector} is not defined by RFC 6698 (0 or 1), so which part of the certificate is matched cannot be determined here.`,
+    );
+  }
+
+  if (fields.matchingType === 0) {
+    details.push(
+      "No hash is used, so the data must be the full selected bytes in hex, which makes the record large.",
+    );
+  } else if (fields.matchingType !== undefined && !matchingPhrase) {
+    unknowns.push(
+      `Matching type ${fields.matchingType} is not defined by RFC 6698 (0–2), so how the data is compared cannot be determined here.`,
+    );
+  }
+
+  if (fields.usage === 3) {
+    details.push(
+      "Most implementations skip expiry and hostname checks for usage 3, so this record alone decides which certificate is accepted.",
+    );
+  } else if (fields.usage === 0 || fields.usage === 1) {
+    details.push(
+      "Public-CA validation still applies, so a certificate that fails normal chain validation is rejected even when it matches this record.",
+    );
+  } else if (fields.usage === 2) {
+    details.push(
+      "The named authority is trusted only for this service, and the server must still send the chain up to it.",
+    );
+  }
+
+  if (!fields.data.trim()) {
+    details.push(
+      "No association data is entered yet, so the record does not identify a certificate.",
+    );
+  }
+
+  unknowns.push(
+    "TLSA is only honoured by clients that validate DNSSEC; in an unsigned zone the record is ignored entirely.",
+  );
+  unknowns.push(
+    "Whether this association matches the certificate the service actually presents cannot be checked from this form, and a mismatch silently breaks TLS for validating clients.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function TlsaBuilder({
   record,
   onRecordChange,
@@ -79,6 +225,28 @@ export function TlsaBuilder({
   );
   const [matchingMode, setMatchingMode] = useState<"preset" | "custom">(
     "preset",
+  );
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "usage",
+    "usageCustom",
+    "selector",
+    "selectorCustom",
+    "matchingType",
+    "matchingTypeCustom",
+    "data",
+  ] as const);
+
+  const summary = useMemo(
+    () =>
+      describeTLSA({
+        usage,
+        selector,
+        matchingType,
+        data,
+        name: record.name,
+      }),
+    [data, matchingType, record.name, selector, usage],
   );
 
   const usageSelectValue = useMemo(() => {
@@ -244,9 +412,16 @@ export function TlsaBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Usage</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.usage}
+              descriptionId={helpIds.usage}
+              label="Usage"
+              help="How strictly clients enforce this association: 0 (PKIX-TA) and 1 (PKIX-EE) add a constraint on top of normal public-CA validation, while 2 (DANE-TA) and 3 (DANE-EE) replace it with DNSSEC-based trust. 3 is the usual choice for mail servers."
+            />
             <Select
               value={usageSelectValue}
               onValueChange={(value: string) => {
@@ -269,7 +444,11 @@ export function TlsaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.usage}
+                aria-describedby={helpIds.usage}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -282,26 +461,36 @@ export function TlsaBuilder({
               </SelectContent>
             </Select>
             {usageMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 3"
-                value={usage ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setUsage(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeTLSA(
-                      val,
-                      selector,
-                      matchingType,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.usageCustom}
+                  descriptionId={helpIds.usageCustom}
+                  label="Custom usage value"
+                  help="A usage number outside 0–3. RFC 6698 defines only 0–3, and clients ignore associations whose usage they do not recognise."
+                />
+                <Input
+                  id={fieldIds.usageCustom}
+                  aria-describedby={helpIds.usageCustom}
+                  className="mt-2"
+                  type="number"
+                  placeholder="e.g., 3"
+                  value={usage ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setUsage(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeTLSA(
+                        val,
+                        selector,
+                        matchingType,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               {TLSA_USAGES.find((u) => Number(u.value) === usage)?.desc ??
@@ -310,7 +499,12 @@ export function TlsaBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Selector</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.selector}
+              descriptionId={helpIds.selector}
+              label="Selector"
+              help="Which part of the certificate the association covers: 0 matches the full certificate, 1 matches only its SubjectPublicKeyInfo. 1 is usually preferred because the record survives a certificate renewal that reuses the same key."
+            />
             <Select
               value={selectorSelectValue}
               onValueChange={(value: string) => {
@@ -333,7 +527,11 @@ export function TlsaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.selector}
+                aria-describedby={helpIds.selector}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -346,26 +544,36 @@ export function TlsaBuilder({
               </SelectContent>
             </Select>
             {selectorMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={selector ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setSelector(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeTLSA(
-                      usage,
-                      val,
-                      matchingType,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.selectorCustom}
+                  descriptionId={helpIds.selectorCustom}
+                  label="Custom selector value"
+                  help="A selector number outside 0–1. RFC 6698 defines only 0 (full certificate) and 1 (SubjectPublicKeyInfo); clients ignore selectors they do not recognise."
+                />
+                <Input
+                  id={fieldIds.selectorCustom}
+                  aria-describedby={helpIds.selectorCustom}
+                  className="mt-2"
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={selector ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setSelector(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeTLSA(
+                        usage,
+                        val,
+                        matchingType,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               {TLSA_SELECTORS.find((s) => Number(s.value) === selector)?.desc ??
@@ -374,7 +582,12 @@ export function TlsaBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Matching type</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.matchingType}
+              descriptionId={helpIds.matchingType}
+              label="Matching type"
+              help="How the selected certificate data is compared: 0 stores the exact bytes, 1 stores a SHA-256 hash, 2 stores a SHA-512 hash. 1 is the standard choice and keeps the record small."
+            />
             <Select
               value={matchingSelectValue}
               onValueChange={(value: string) => {
@@ -397,7 +610,11 @@ export function TlsaBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.matchingType}
+                aria-describedby={helpIds.matchingType}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -410,26 +627,36 @@ export function TlsaBuilder({
               </SelectContent>
             </Select>
             {matchingMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={matchingType ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setMatchingType(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeTLSA(
-                      usage,
-                      selector,
-                      val,
-                      data.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.matchingTypeCustom}
+                  descriptionId={helpIds.matchingTypeCustom}
+                  label="Custom matching type value"
+                  help="A matching type outside 0–2. RFC 6698 defines only 0 (exact data), 1 (SHA-256) and 2 (SHA-512); clients ignore matching types they do not recognise."
+                />
+                <Input
+                  id={fieldIds.matchingTypeCustom}
+                  aria-describedby={helpIds.matchingTypeCustom}
+                  className="mt-2"
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={matchingType ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setMatchingType(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeTLSA(
+                        usage,
+                        selector,
+                        val,
+                        data.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               {TLSA_MATCHING.find((m) => Number(m.value) === matchingType)
@@ -438,8 +665,15 @@ export function TlsaBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-6">
-            <Label className="text-xs">Data</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.data}
+              descriptionId={helpIds.data}
+              label="Data"
+              help="The certificate association itself, written as hex. With matching type 1 that is 64 hex characters (SHA-256) and with type 2 it is 128 (SHA-512); with type 0 it is the full DER bytes of the selected data."
+            />
             <Input
+              id={fieldIds.data}
+              aria-describedby={helpIds.data}
               placeholder="hex"
               value={data}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

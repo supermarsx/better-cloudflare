@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -12,7 +11,17 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { joinList, pluralize } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 type AplEntry = {
   id: string;
@@ -153,6 +162,75 @@ function composeApl(entries: AplEntry[]) {
     .trim();
 }
 
+export type AplPrefix = {
+  negated: boolean;
+  family: number | undefined;
+  address: string;
+  prefix: number | undefined;
+};
+
+/** Render one prefix for prose: `192.0.2.0/24`, or `not 192.0.2.0/24`. */
+function formatAplPrefix(entry: AplPrefix) {
+  const address = entry.address.trim() || "an unset address";
+  const prefix = entry.prefix === undefined ? "" : `/${entry.prefix}`;
+  const family =
+    entry.family === undefined || entry.family === 1 || entry.family === 2
+      ? ""
+      : ` in address family ${entry.family}`;
+  const text = `${address}${prefix}${family}`;
+  return entry.negated ? `not ${text}` : text;
+}
+
+/**
+ * Plain-English description of the address-prefix list an APL record publishes.
+ *
+ * RFC 3123 is experimental and deliberately defines no semantics: it specifies
+ * how to write a list of prefixes and leaves what the list *means* to whichever
+ * application reads it. The summary must not claim the record permits or blocks
+ * anything.
+ */
+export function describeAPL(entries: readonly AplPrefix[]): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const headline = entries.length
+    ? `Publishes ${pluralize(entries.length, "address prefix", "address prefixes")} at this name — ${joinList(entries.map(formatAplPrefix))} — as a list whose meaning is decided entirely by whatever application reads it.`
+    : "Publishes a list of IP address prefixes at this name, as data whose meaning is decided entirely by whatever application reads it.";
+
+  details.push(
+    "Every entry is an address family (1 for IPv4, 2 for IPv6), a base address and a prefix length; the record is nothing more than that ordered list.",
+  );
+  if (entries.some((entry) => entry.negated)) {
+    details.push(
+      "Entries written with a leading ! are negations. RFC 3123 defines how to spell them but not what excluding a prefix does, so how they combine with the rest of the list is up to the reader.",
+    );
+  }
+  const unusual = Array.from(
+    new Set(
+      entries
+        .map((entry) => entry.family)
+        .filter(
+          (family): family is number =>
+            family !== undefined && family !== 1 && family !== 2,
+        ),
+    ),
+  );
+  if (unusual.length) {
+    details.push(
+      `Address ${pluralize(unusual.length, "family", "families")} ${joinList(unusual.map(String))} ${unusual.length === 1 ? "is" : "are"} neither IPv4 (1) nor IPv6 (2), so those entries are unlikely to be understood by anything.`,
+    );
+  }
+  details.push(
+    "APL is an experimental record type. Publishing it changes nothing about how names in this zone resolve, and it does not by itself permit or block any traffic.",
+  );
+
+  unknowns.push(
+    "What this list actually does depends on the application that reads it; RFC 3123 defines the syntax but no standard semantics, so nothing here can say what effect it will have.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function AplBuilder({
   record,
   onRecordChange,
@@ -163,6 +241,15 @@ export function AplBuilder({
   onWarningsChange?: BuilderWarningsChange;
 }) {
   const [entries, setEntries] = useState<AplEntry[]>([]);
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "negated",
+    "family",
+    "familyCustom",
+    "address",
+    "prefix",
+  ] as const);
+
+  const summary = useMemo(() => describeAPL(entries), [entries]);
 
   useEffect(() => {
     if (record.type !== "APL") return;
@@ -317,6 +404,8 @@ export function AplBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 space-y-3">
           {entries.length === 0 && (
             <div className="text-xs text-muted-foreground">
@@ -347,8 +436,16 @@ export function AplBuilder({
               </div>
 
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-12">
-                <div className="flex items-center gap-2 sm:col-span-2">
+                <div className="space-y-1 sm:col-span-2">
+                  <BuilderFieldLabel
+                    controlId={`${fieldIds.negated}-${e.id}`}
+                    descriptionId={`${helpIds.negated}-${e.id}`}
+                    label="Negate"
+                    help="Writes this prefix with a leading ! to mark it as a negation. RFC 3123 defines the notation but not what excluding a prefix means, so its effect is up to the application reading the list."
+                  />
                   <Switch
+                    id={`${fieldIds.negated}-${e.id}`}
+                    aria-describedby={`${helpIds.negated}-${e.id}`}
                     checked={e.negated}
                     onCheckedChange={(checked: boolean) => {
                       const next: AplEntry[] = entries.map((x) =>
@@ -358,11 +455,15 @@ export function AplBuilder({
                       onRecordChange({ ...record, content: composeApl(next) });
                     }}
                   />
-                  <div className="text-xs text-muted-foreground">Negate</div>
                 </div>
 
                 <div className="space-y-1 sm:col-span-3">
-                  <Label className="text-xs">Family</Label>
+                  <BuilderFieldLabel
+                    controlId={`${fieldIds.family}-${e.id}`}
+                    descriptionId={`${helpIds.family}-${e.id}`}
+                    label="Family"
+                    help="The address family this prefix belongs to: 1 for IPv4, 2 for IPv6. Other numbers are syntactically legal but have no assigned meaning."
+                  />
                   <Select
                     value={
                       e.familyMode === "custom"
@@ -393,7 +494,11 @@ export function AplBuilder({
                       onRecordChange({ ...record, content: composeApl(next) });
                     }}
                   >
-                    <SelectTrigger className="h-9">
+                    <SelectTrigger
+                      id={`${fieldIds.family}-${e.id}`}
+                      aria-describedby={`${helpIds.family}-${e.id}`}
+                      className="h-9"
+                    >
                       <SelectValue placeholder="Select…" />
                     </SelectTrigger>
                     <SelectContent>
@@ -403,30 +508,46 @@ export function AplBuilder({
                     </SelectContent>
                   </Select>
                   {e.familyMode === "custom" && (
-                    <Input
-                      className="mt-2"
-                      type="number"
-                      placeholder="e.g., 1"
-                      value={e.family ?? ""}
-                      onChange={(ev) => {
-                        const n = Number.parseInt(ev.target.value, 10);
-                        const fam = Number.isNaN(n) ? undefined : n;
-                        const next: AplEntry[] = entries.map((x) =>
-                          x.id === e.id ? { ...x, family: fam } : x,
-                        );
-                        setEntries(next);
-                        onRecordChange({
-                          ...record,
-                          content: composeApl(next),
-                        });
-                      }}
-                    />
+                    <div className="mt-2 space-y-1">
+                      <BuilderFieldLabel
+                        controlId={`${fieldIds.familyCustom}-${e.id}`}
+                        descriptionId={`${helpIds.familyCustom}-${e.id}`}
+                        label="Custom family number"
+                        help="An IANA address family number other than 1 (IPv4) or 2 (IPv6). Only those two are used in practice, so this is rarely what you want."
+                      />
+                      <Input
+                        id={`${fieldIds.familyCustom}-${e.id}`}
+                        aria-describedby={`${helpIds.familyCustom}-${e.id}`}
+                        type="number"
+                        placeholder="e.g., 1"
+                        value={e.family ?? ""}
+                        onChange={(ev) => {
+                          const n = Number.parseInt(ev.target.value, 10);
+                          const fam = Number.isNaN(n) ? undefined : n;
+                          const next: AplEntry[] = entries.map((x) =>
+                            x.id === e.id ? { ...x, family: fam } : x,
+                          );
+                          setEntries(next);
+                          onRecordChange({
+                            ...record,
+                            content: composeApl(next),
+                          });
+                        }}
+                      />
+                    </div>
                   )}
                 </div>
 
                 <div className="space-y-1 sm:col-span-5">
-                  <Label className="text-xs">Address</Label>
+                  <BuilderFieldLabel
+                    controlId={`${fieldIds.address}-${e.id}`}
+                    descriptionId={`${helpIds.address}-${e.id}`}
+                    label="Address"
+                    help="The base address of the prefix, such as 192.0.2.0 for IPv4 or 2001:db8:: for IPv6. Bits below the prefix length should be zero."
+                  />
                   <Input
+                    id={`${fieldIds.address}-${e.id}`}
+                    aria-describedby={`${helpIds.address}-${e.id}`}
                     placeholder={
                       e.family === 2 ? "e.g., 2001:db8::" : "e.g., 192.0.2.0"
                     }
@@ -442,8 +563,15 @@ export function AplBuilder({
                 </div>
 
                 <div className="space-y-1 sm:col-span-2">
-                  <Label className="text-xs">Prefix</Label>
+                  <BuilderFieldLabel
+                    controlId={`${fieldIds.prefix}-${e.id}`}
+                    descriptionId={`${helpIds.prefix}-${e.id}`}
+                    label="Prefix"
+                    help="The prefix length in bits: 0 to 32 for IPv4, 0 to 128 for IPv6. Use 32 or 128 to name a single address."
+                  />
                   <Input
+                    id={`${fieldIds.prefix}-${e.id}`}
+                    aria-describedby={`${helpIds.prefix}-${e.id}`}
                     type="number"
                     placeholder={e.family === 2 ? "128" : "32"}
                     value={e.prefix ?? ""}

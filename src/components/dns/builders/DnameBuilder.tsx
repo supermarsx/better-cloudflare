@@ -3,10 +3,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   const v = value.trim();
@@ -35,6 +43,55 @@ function looksLikeHostname(value: string) {
   return labels.every(isValidDnsLabel);
 }
 
+export type DnameFields = {
+  target: string;
+  /** The record's own name, used only to phrase the rewrite concretely. */
+  owner?: string;
+};
+
+/**
+ * Plain-English description of the subtree rewrite a DNAME performs.
+ *
+ * RFC 6672: a DNAME redirects everything *below* its owner name and never the
+ * owner name itself, which is the difference from CNAME that catches people
+ * out, so the summary states it every time.
+ */
+export function describeDNAME(fields: DnameFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const target = normalizeDnsName(fields.target);
+  const owner = normalizeDnsName(fields.owner ?? "");
+  const isApex = !owner || owner === "@";
+  const ownerLabel = isApex ? "this zone's apex" : owner;
+  const exampleName = isApex ? "www" : `www.${owner}`;
+
+  const headline = target
+    ? `Rewrites every name below ${ownerLabel} onto the matching name under ${target}, so a lookup of ${exampleName} is answered with whatever www.${target} resolves to.`
+    : `Rewrites every name below ${ownerLabel} onto the matching name under another domain, so that whole branch of the zone mirrors the target's names.`;
+
+  details.push(
+    `The owner name itself is not rewritten. Unlike a CNAME, a DNAME covers only the names below ${ownerLabel}, so ${ownerLabel} still needs records of its own if it has to resolve.`,
+  );
+  details.push(
+    "Resolvers synthesise a CNAME next to the DNAME in the answer they return, so clients that do not understand DNAME still follow the redirection.",
+  );
+  details.push(
+    "Any records that already exist below the owner name are occluded by the DNAME: the rewrite takes precedence and those names stop being answered from this zone.",
+  );
+  details.push(
+    "A DNAME may share its owner name with other record types — that is how one works at a zone apex alongside SOA and NS — but it must never share it with a CNAME.",
+  );
+
+  if (target) {
+    unknowns.push(
+      `Whether the rewritten names actually resolve depends on what exists under ${target}, which cannot be checked from here.`,
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function DnameBuilder({
   record,
   onRecordChange,
@@ -45,6 +102,12 @@ export function DnameBuilder({
   onWarningsChange?: BuilderWarningsChange;
 }) {
   const [target, setTarget] = useState("");
+  const { fieldIds, helpIds } = useBuilderFieldIds(["target"] as const);
+
+  const summary = useMemo(
+    () => describeDNAME({ target, owner: record.name }),
+    [record.name, target],
+  );
 
   useEffect(() => {
     if (record.type !== "DNAME") return;
@@ -131,10 +194,19 @@ export function DnameBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-6">
-            <Label className="text-xs">Target</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.target}
+              descriptionId={helpIds.target}
+              label="Target"
+              help="The domain name that names below this record are rewritten onto: a lookup of x.y.owner is answered as x.y.target. Give the target's own name, not a name beneath it, and do not point it at a name below the owner or lookups will loop."
+            />
             <Input
+              id={fieldIds.target}
+              aria-describedby={helpIds.target}
               placeholder="e.g., target.example.com"
               value={target}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

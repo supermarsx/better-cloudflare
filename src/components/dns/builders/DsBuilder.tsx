@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,7 +12,16 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function parseDSContent(value: string | undefined) {
   const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
@@ -56,6 +64,126 @@ function composeDS(fields: {
     .trim();
 }
 
+export type DsFields = {
+  keyTag: number | undefined;
+  algorithm: number | undefined;
+  digestType: number | undefined;
+  digest: string;
+  /** The record's owner name: the delegated child label in this zone. */
+  name?: string;
+};
+
+/** DNSSEC signing algorithms, mirroring the table used by the validator below. */
+const DS_ALGORITHM_NAMES: Record<number, string> = {
+  5: "RSA/SHA-1",
+  7: "RSA/SHA-1 with NSEC3",
+  8: "RSA/SHA-256",
+  10: "RSA/SHA-512",
+  13: "ECDSA P-256/SHA-256",
+  14: "ECDSA P-384/SHA-384",
+  15: "Ed25519",
+  16: "Ed448",
+};
+
+/** Algorithms retired by RFC 8624 that validators are dropping support for. */
+const DS_DEPRECATED_ALGORITHMS = new Set([5, 7]);
+
+const DS_DIGEST_NAMES: Record<number, string> = {
+  1: "SHA-1",
+  2: "SHA-256",
+  4: "SHA-384",
+};
+
+function describeDelegatedChild(name: string | undefined) {
+  const raw = (name ?? "").trim().replace(/\.$/, "");
+  if (!raw) return "the delegated child zone";
+  if (raw === "@") return "this zone itself";
+  return raw;
+}
+
+/**
+ * Plain-English description of the delegation being signed.
+ *
+ * A DS record is the one place in DNS where a typo takes a whole zone offline
+ * for validating resolvers, so the summary leads with where the record lives and
+ * what happens when the digest is wrong.
+ */
+export function describeDS(fields: DsFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const child = describeDelegatedChild(fields.name);
+
+  const headline =
+    fields.keyTag !== undefined
+      ? `Tells validating resolvers that ${child} is signed and that its DNSKEY with key tag ${fields.keyTag} is the key they should trust, completing the DNSSEC chain of trust across this delegation.`
+      : `Builds the record that links a delegated child zone into the DNSSEC chain of trust; enter the child's key tag, algorithm and digest to say which DNSKEY resolvers should trust.`;
+
+  if (fields.keyTag !== undefined) {
+    details.push(
+      "The key tag is a 16-bit checksum, not a unique identifier: two DNSKEYs in one zone may legally share a tag, so the algorithm and digest are what actually pick the key out.",
+    );
+  }
+
+  const algorithmName =
+    fields.algorithm !== undefined
+      ? DS_ALGORITHM_NAMES[fields.algorithm]
+      : undefined;
+  if (algorithmName) {
+    details.push(
+      `The referenced key signs with algorithm ${fields.algorithm} (${algorithmName}), which must match the algorithm of the DNSKEY in the child zone.`,
+    );
+  } else if (fields.algorithm !== undefined) {
+    unknowns.push(
+      `Algorithm ${fields.algorithm} is not one this builder recognises, so whether resolvers can validate with it cannot be determined here.`,
+    );
+  }
+  if (
+    fields.algorithm !== undefined &&
+    DS_DEPRECATED_ALGORITHMS.has(fields.algorithm)
+  ) {
+    details.push(
+      "This algorithm is based on SHA-1 and is deprecated by RFC 8624; validators are dropping support for it, so plan a rollover to algorithm 13 or 15.",
+    );
+  }
+
+  const digestName =
+    fields.digestType !== undefined
+      ? DS_DIGEST_NAMES[fields.digestType]
+      : undefined;
+  if (digestName) {
+    details.push(`The digest below is a ${digestName} hash of that DNSKEY.`);
+  } else if (fields.digestType !== undefined) {
+    unknowns.push(
+      `Digest type ${fields.digestType} is not one of the defined types (1 SHA-1, 2 SHA-256, 4 SHA-384), so how the digest is computed cannot be determined here.`,
+    );
+  }
+  if (fields.digestType === 1) {
+    details.push(
+      "SHA-1 digests are deprecated; digest type 2 (SHA-256) is the required baseline that every validator supports.",
+    );
+  }
+
+  details.push(
+    "A DS record lives in the parent zone, at the label of the delegated child, so it only takes effect if this zone is that child's parent.",
+  );
+  details.push(
+    "If the digest does not match a DNSKEY the child publishes, validating resolvers answer SERVFAIL for the whole child zone rather than falling back to unsigned answers.",
+  );
+
+  if (!fields.digest.trim()) {
+    details.push(
+      "No digest is entered yet, so the record does not identify a key.",
+    );
+  }
+
+  unknowns.push(
+    "Whether this digest matches the DNSKEY currently published in the child zone cannot be verified here.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function DsBuilder({
   record,
   onRecordChange,
@@ -81,6 +209,27 @@ export function DsBuilder({
   const [dsDigestTypeCustomValue, setDsDigestTypeCustomValue] = useState<
     number | undefined
   >(undefined);
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "keyTag",
+    "algorithm",
+    "algorithmCustom",
+    "digestType",
+    "digestTypeCustom",
+    "digest",
+  ] as const);
+
+  const summary = useMemo(
+    () =>
+      describeDS({
+        keyTag: dsKeyTag,
+        algorithm: dsAlgorithm,
+        digestType: dsDigestType,
+        digest: dsDigest,
+        name: record.name,
+      }),
+    [dsAlgorithm, dsDigest, dsDigestType, dsKeyTag, record.name],
+  );
 
   useEffect(() => {
     if (record.type !== "DS") return;
@@ -275,10 +424,19 @@ export function DsBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Key tag</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.keyTag}
+              descriptionId={helpIds.keyTag}
+              label="Key tag"
+              help="A 16-bit checksum (0–65535) that points at the child zone's DNSKEY. It is not unique — two keys may legally share a tag — so copy it exactly from the child's DNSSEC provider rather than deriving it."
+            />
             <Input
+              id={fieldIds.keyTag}
+              aria-describedby={helpIds.keyTag}
               type="number"
               value={dsKeyTag ?? ""}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -292,7 +450,12 @@ export function DsBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Algorithm</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.algorithm}
+              descriptionId={helpIds.algorithm}
+              label="Algorithm"
+              help="The signing algorithm of the DNSKEY this record refers to, and it must match that key exactly. 13 (ECDSA P-256/SHA-256), 15 (Ed25519) and 8 (RSA/SHA-256) are current; 5 and 7 are deprecated SHA-1 algorithms."
+            />
             <Select
               value={dsAlgorithmSelectValue}
               onValueChange={(value: string) => {
@@ -308,7 +471,11 @@ export function DsBuilder({
                 setDsAlgorithmMode("preset");
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.algorithm}
+                aria-describedby={helpIds.algorithm}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -321,22 +488,37 @@ export function DsBuilder({
               </SelectContent>
             </Select>
             {dsAlgorithmMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                value={dsAlgorithmCustomValue ?? dsAlgorithm ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setDsAlgorithmCustomValue(val);
-                  setDsAlgorithm(val);
-                }}
-                placeholder="e.g., 13"
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.algorithmCustom}
+                  descriptionId={helpIds.algorithmCustom}
+                  label="Custom algorithm value"
+                  help="A DNSSEC algorithm number outside the presets, from 0 to 255. Only use one that the child zone's DNSKEY actually uses; resolvers treat an unsupported algorithm as an unsigned delegation."
+                />
+                <Input
+                  id={fieldIds.algorithmCustom}
+                  aria-describedby={helpIds.algorithmCustom}
+                  className="mt-2"
+                  type="number"
+                  value={dsAlgorithmCustomValue ?? dsAlgorithm ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setDsAlgorithmCustomValue(val);
+                    setDsAlgorithm(val);
+                  }}
+                  placeholder="e.g., 13"
+                />
+              </>
             )}
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Digest type</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.digestType}
+              descriptionId={helpIds.digestType}
+              label="Digest type"
+              help="Which hash of the child's DNSKEY the digest holds: 1 is SHA-1, 2 is SHA-256 and 4 is SHA-384. Use 2 — it is the mandatory baseline every validator supports, while SHA-1 is deprecated."
+            />
             <Select
               value={dsDigestTypeSelectValue}
               onValueChange={(value: string) => {
@@ -352,7 +534,11 @@ export function DsBuilder({
                 setDsDigestTypeMode("preset");
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.digestType}
+                aria-describedby={helpIds.digestType}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -363,25 +549,42 @@ export function DsBuilder({
               </SelectContent>
             </Select>
             {dsDigestTypeMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                value={dsDigestTypeCustomValue ?? dsDigestType ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setDsDigestTypeCustomValue(val);
-                  setDsDigestType(val);
-                }}
-                placeholder="e.g., 2"
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.digestTypeCustom}
+                  descriptionId={helpIds.digestTypeCustom}
+                  label="Custom digest type value"
+                  help="A digest type outside the presets, from 0 to 255. Only 1, 2 and 4 are assigned; a resolver that does not know the digest type treats the delegation as unsigned."
+                />
+                <Input
+                  id={fieldIds.digestTypeCustom}
+                  aria-describedby={helpIds.digestTypeCustom}
+                  className="mt-2"
+                  type="number"
+                  value={dsDigestTypeCustomValue ?? dsDigestType ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setDsDigestTypeCustomValue(val);
+                    setDsDigestType(val);
+                  }}
+                  placeholder="e.g., 2"
+                />
+              </>
             )}
           </div>
         </div>
 
         <div className="mt-2 space-y-1">
-          <Label className="text-xs">Digest (hex)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.digest}
+            descriptionId={helpIds.digest}
+            label="Digest (hex)"
+            help="The hex hash of the child zone's DNSKEY record, taken verbatim from the child's DNSSEC provider. SHA-256 digests are 64 hex characters, SHA-384 are 96 and SHA-1 are 40."
+          />
           <Textarea
+            id={fieldIds.digest}
+            aria-describedby={helpIds.digest}
             className="scrollbar-themed min-h-20 resize-y"
             value={dsDigest}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>

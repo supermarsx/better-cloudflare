@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -14,7 +13,19 @@ import {
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 import { composeSRV, parseSRV } from "@/lib/dns/dns-parsers";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { joinList } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
+
+type SrvProto = "tcp" | "udp" | "tls" | "other";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -65,6 +76,127 @@ function composeSrvName(fields: {
   return parts.join(".");
 }
 
+export type SrvFields = {
+  service: string;
+  proto: SrvProto;
+  protoOther: string;
+  host: string;
+  priority: number | undefined;
+  weight: number | undefined;
+  port: number | undefined;
+  target: string;
+};
+
+/** The protocol label that will be published as `_<proto>` in the name. */
+function srvProtoLabel(fields: Pick<SrvFields, "proto" | "protoOther">) {
+  const raw = fields.proto === "other" ? fields.protoOther : fields.proto;
+  return raw.trim().replace(/^_+/, "").toLowerCase();
+}
+
+/**
+ * Plain-English description of the SRV record the builder is assembling.
+ *
+ * The semantics come from RFC 2782: priority is tried lowest-first and a client
+ * only falls back once every host at the lower priority is unreachable; weight
+ * only distributes load between targets that share a priority; and a target of
+ * "." positively asserts that the service is not available at this domain.
+ */
+export function describeSRV(fields: SrvFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const service = fields.service.trim().replace(/^_+/, "");
+  const proto = srvProtoLabel(fields);
+  const target = fields.target.trim();
+  const port = fields.port;
+  const priority = fields.priority;
+  const weight = fields.weight;
+  const name = composeSrvName(fields);
+
+  const clients = service
+    ? `clients looking up the ${service} service`
+    : "clients looking up this service";
+  const over = proto ? ` over ${proto}` : "";
+
+  let headline: string;
+  if (target === ".") {
+    headline = `Tells ${clients}${over} that this domain deliberately does not offer the service, so they should stop looking rather than fall back to a default host.`;
+  } else if (!target || port === undefined) {
+    const missing = [
+      target ? "" : "a target host",
+      port === undefined ? "a port" : "",
+    ].filter(Boolean);
+    headline = `Will send ${clients}${over} to a specific host and port; ${joinList(
+      missing,
+    )} still ${missing.length === 1 ? "needs" : "need"} filling in.`;
+  } else {
+    headline = `Sends ${clients}${over} to ${target} on port ${port}.`;
+  }
+
+  details.push(
+    `The record is published at ${name}, so only clients that know to query that exact name find it; nothing else on the domain is affected.`,
+  );
+
+  if (target === ".") {
+    details.push(
+      'A target of "." is an explicit "not available" answer, and RFC 2782 expects it to be the only SRV record at this name. Priority, weight and port carry no meaning alongside it.',
+    );
+    return { headline, details, unknowns };
+  }
+
+  if (priority === undefined) {
+    details.push(
+      "Priority is not set yet. It fixes the order clients try targets in, lowest number first.",
+    );
+  } else {
+    details.push(
+      `Priority ${priority} is tried before any target at this name with a higher priority number; clients move on to a higher number only when every host at ${priority} is unreachable.`,
+    );
+  }
+
+  if (weight === undefined) {
+    details.push(
+      "Weight is not set yet. It splits traffic between the targets that share a priority.",
+    );
+  } else if (weight === 0) {
+    details.push(
+      "Weight 0 gives this target only a very small chance of being picked whenever another target at the same priority has a non-zero weight; it is the conventional value when there is no load to balance.",
+    );
+  } else {
+    details.push(
+      `Weight ${weight} is this target's share of connections among the targets that share its priority — clients choose between them in proportion to their weights, so weight matters only if such records exist.`,
+    );
+  }
+
+  if (port === 0) {
+    details.push(
+      "Port 0 is not a usable TCP or UDP port, so a client cannot connect with this record as written.",
+    );
+  } else if (port !== undefined) {
+    details.push(
+      `SRV has no default port, so clients connect to exactly port ${port} on the target rather than to the service's usual port.`,
+    );
+  }
+
+  if (target) {
+    details.push(
+      `${target} must have its own A or AAAA records: an SRV record carries no address, and RFC 2782 requires the target to be a real hostname rather than an alias.`,
+    );
+  }
+
+  unknowns.push(
+    `Any other SRV records published at ${name} take part in the same priority and weight comparison, so which target a client actually picks cannot be determined from this form.`,
+  );
+
+  if (proto && proto !== "tcp" && proto !== "udp") {
+    unknowns.push(
+      `_${proto} is not one of the transports RFC 2782 defines, so the transport clients will use is defined by whatever registered that label and cannot be determined here.`,
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function SrvBuilder({
   record,
   onRecordChange,
@@ -85,6 +217,16 @@ export function SrvBuilder({
   );
   const [srvProtoOther, setSrvProtoOther] = useState<string>("");
   const [srvHost, setSrvHost] = useState<string>("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "priority",
+    "weight",
+    "port",
+    "target",
+    "service",
+    "proto",
+    "protoOther",
+    "host",
+  ] as const);
 
   useEffect(() => {
     if (record.type !== "SRV") return;
@@ -184,6 +326,30 @@ export function SrvBuilder({
     srvWeight,
   ]);
 
+  const summary = useMemo(
+    () =>
+      describeSRV({
+        service: srvService,
+        proto: srvProto,
+        protoOther: srvProtoOther,
+        host: srvHost,
+        priority: srvPriority,
+        weight: srvWeight,
+        port: srvPort,
+        target: srvTarget,
+      }),
+    [
+      srvHost,
+      srvPort,
+      srvPriority,
+      srvProto,
+      srvProtoOther,
+      srvService,
+      srvTarget,
+      srvWeight,
+    ],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     if (record.type !== "SRV") {
@@ -215,10 +381,19 @@ export function SrvBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Priority</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.priority}
+              descriptionId={helpIds.priority}
+              label="Priority"
+              help="Which targets clients try first, from 0 to 65535, lowest first. Clients fall back to a higher priority only when every host at the lower one is unreachable. 10 is a common starting value."
+            />
             <Input
+              id={fieldIds.priority}
+              aria-describedby={helpIds.priority}
               type="number"
               placeholder="10"
               value={srvPriority ?? ""}
@@ -237,8 +412,15 @@ export function SrvBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Weight</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.weight}
+              descriptionId={helpIds.weight}
+              label="Weight"
+              help="This target's relative share of traffic among the targets that share its priority, from 0 to 65535; clients pick between them in proportion. Use 0 when there is nothing to balance, and equal weights such as 5 to split traffic evenly."
+            />
             <Input
+              id={fieldIds.weight}
+              aria-describedby={helpIds.weight}
               type="number"
               placeholder="5"
               value={srvWeight ?? ""}
@@ -257,8 +439,15 @@ export function SrvBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Port</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.port}
+              descriptionId={helpIds.port}
+              label="Port"
+              help="The TCP or UDP port the service listens on at the target, from 1 to 65535. SRV has no default port, so clients use exactly this number; use the service's registered port, such as 5060 for SIP."
+            />
             <Input
+              id={fieldIds.port}
+              aria-describedby={helpIds.port}
               type="number"
               placeholder="5060"
               value={srvPort ?? ""}
@@ -277,8 +466,15 @@ export function SrvBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">Target</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.target}
+              descriptionId={helpIds.target}
+              label="Target"
+              help="The hostname running the service, which must have its own A or AAAA records and must not be an alias. A single dot means the service is deliberately not available at this domain."
+            />
             <Input
+              id={fieldIds.target}
+              aria-describedby={helpIds.target}
               placeholder="e.g., sipserver.example.com"
               value={srvTarget}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -302,8 +498,15 @@ export function SrvBuilder({
 
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Service</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.service}
+              descriptionId={helpIds.service}
+              label="Service"
+              help="The symbolic service name clients look up, written without its leading underscore, such as sip or xmpp-client. It must match the name the client is coded to query, so use the registered name for the protocol."
+            />
             <Input
+              id={fieldIds.service}
+              aria-describedby={helpIds.service}
               value={srvService}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 setSrvService(e.target.value)
@@ -315,14 +518,23 @@ export function SrvBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Protocol</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.proto}
+              descriptionId={helpIds.proto}
+              label="Protocol"
+              help="The transport label published as _proto in the name. RFC 2782 defines tcp and udp; other labels are used by specific services and mean whatever those services define. Pick the transport the client will actually connect over."
+            />
             <Select
               value={srvProto}
               onValueChange={(value: string) =>
                 setSrvProto(value as typeof srvProto)
               }
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.proto}
+                aria-describedby={helpIds.proto}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -333,19 +545,35 @@ export function SrvBuilder({
               </SelectContent>
             </Select>
             {srvProto === "other" && (
-              <Input
-                className="mt-2"
-                value={srvProtoOther}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSrvProtoOther(e.target.value)
-                }
-                placeholder="e.g., sctp"
-              />
+              <div className="mt-2 space-y-1">
+                <BuilderFieldLabel
+                  controlId={fieldIds.protoOther}
+                  descriptionId={helpIds.protoOther}
+                  label="Custom protocol"
+                  help="The protocol label to publish instead of tcp or udp, written without its leading underscore, such as sctp. Use this only when the service you are publishing defines its own label."
+                />
+                <Input
+                  id={fieldIds.protoOther}
+                  aria-describedby={helpIds.protoOther}
+                  value={srvProtoOther}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    setSrvProtoOther(e.target.value)
+                  }
+                  placeholder="e.g., sctp"
+                />
+              </div>
             )}
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Host (optional)</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.host}
+              descriptionId={helpIds.host}
+              label="Host (optional)"
+              help="An extra name placed after _service._proto, so the record covers a subdomain rather than the zone apex. Leave it empty for the apex, which is what most services expect."
+            />
             <Input
+              id={fieldIds.host}
+              aria-describedby={helpIds.host}
               value={srvHost}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 setSrvHost(e.target.value)

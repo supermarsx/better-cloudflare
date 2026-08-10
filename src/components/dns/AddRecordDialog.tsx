@@ -3,7 +3,14 @@
  * record via the API.
  */
 import type { ChangeEvent } from "react";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +50,7 @@ import {
 } from "@/types/dns";
 import { Plus } from "lucide-react";
 import type { BuilderWarnings } from "@/components/dns/builders/types";
+import { RecordFormatHint } from "@/components/dns/builders/BuilderField";
 import { DsBuilder } from "@/components/dns/builders/DsBuilder";
 import { DnskeyBuilder } from "@/components/dns/builders/DnskeyBuilder";
 import { SrvBuilder } from "@/components/dns/builders/SrvBuilder";
@@ -138,6 +146,7 @@ export function AddRecordDialog({
   const [typeSelectOpen, setTypeSelectOpen] = useState(false);
   const [typeFilter, setTypeFilter] = useState("");
   const typeFilterInputRef = useRef<HTMLInputElement | null>(null);
+  const contentFormatId = `${useId()}-content-format`;
   const [activeBuilderWarnings, setActiveBuilderWarnings] =
     useState<BuilderWarnings>({
       issues: [],
@@ -1062,6 +1071,10 @@ export function AddRecordDialog({
                   {recordGuide}
                 </div>
               )}
+              <RecordFormatHint
+                type={record.type}
+                descriptionId={contentFormatId}
+              />
               {(() => {
                 switch (record.type) {
                   case "TXT":
@@ -1255,6 +1268,7 @@ export function AddRecordDialog({
                     return (
                       <Input
                         aria-label={t("Default content input", "Content")}
+                        aria-describedby={contentFormatId}
                         value={record.content}
                         onChange={(e: ChangeEvent<HTMLInputElement>) =>
                           onRecordChange({

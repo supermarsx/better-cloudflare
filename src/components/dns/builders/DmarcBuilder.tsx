@@ -1,11 +1,8 @@
 import type { ChangeEvent } from "react";
-import { useEffect, useId, useMemo, useState } from "react";
-import { CircleHelp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tooltip } from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -16,7 +13,21 @@ import {
 import { unquoteCharacterString } from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import {
+  describeReportUris,
+  humanizeSeconds,
+  joinList,
+} from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -37,38 +48,181 @@ function uniquePush(list: string[], msg: string) {
   if (!list.includes(msg)) list.push(msg);
 }
 
-function DmarcFieldLabel({
-  controlId,
-  descriptionId,
-  label,
-  help,
-}: {
-  controlId: string;
-  descriptionId: string;
-  label: string;
-  help: string;
-}) {
-  return (
-    <>
-      <div className="flex items-center gap-1.5">
-        <Label htmlFor={controlId} className="text-xs">
-          {label}
-        </Label>
-        <Tooltip tip={help}>
-          <button
-            type="button"
-            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={`Help for ${label}`}
-          >
-            <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      </div>
-      <span id={descriptionId} className="sr-only">
-        {help}
-      </span>
-    </>
+export type DmarcFields = {
+  policy: DmarcPolicy;
+  subdomainPolicy: "" | DmarcPolicy;
+  adkim: DmarcAlignment;
+  aspf: DmarcAlignment;
+  pct: number | undefined;
+  rua: string;
+  ruf: string;
+  fo: string;
+  rf: string;
+  ri: number | undefined;
+};
+
+/** Human phrase for the delivery action a DMARC policy asks receivers to take. */
+function dmarcActionVerb(policy: DmarcPolicy) {
+  if (policy === "reject") return "reject";
+  if (policy === "quarantine") return "quarantine";
+  return "deliver";
+}
+
+/**
+ * RFC 7489 §6.6.4: when `pct` is below 100 the remaining failing messages are
+ * handled with the next lower action, not left untouched.
+ */
+function dmarcFallbackAction(policy: DmarcPolicy) {
+  if (policy === "reject") return "quarantined";
+  if (policy === "quarantine") return "delivered normally";
+  return "delivered normally";
+}
+
+function describeDmarcPortion(pct: number | undefined) {
+  if (pct === undefined || pct === 100) return "all";
+  if (pct === 50) return "half of";
+  if (pct === 0) return "none of";
+  return `${pct}% of`;
+}
+
+function describeAlignment(mode: DmarcAlignment, kind: "DKIM" | "SPF") {
+  const domain =
+    kind === "DKIM"
+      ? "the DKIM signing domain"
+      : "the SPF-authenticated domain";
+  return mode === "s"
+    ? `${kind} alignment is strict: ${domain} must match the From: domain exactly.`
+    : `${kind} alignment is relaxed: ${domain} may be any subdomain sharing the same organizational domain.`;
+}
+
+const DMARC_FO_MEANINGS: Record<string, string> = {
+  "0": "report when every authentication method fails",
+  "1": "report when any authentication method fails to produce an aligned pass",
+  d: "report when a DKIM signature fails to verify",
+  s: "report when SPF fails",
+};
+
+function reportDomainsOf(value: string) {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.toLowerCase().startsWith("mailto:"))
+    .map((part) => part.slice("mailto:".length).split("?")[0] ?? "")
+    .map((address) => address.split("@")[1] ?? "")
+    .map((domain) => normalizeDnsName(domain).toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Plain-English description of the DMARC policy the builder is assembling.
+ *
+ * `publishedDomain` is the domain the record will live under (without the
+ * `_dmarc` label); it is used only to spot report addresses that live on a
+ * different domain, which need that domain's permission to receive them.
+ */
+export function describeDMARC(
+  fields: DmarcFields,
+  publishedDomain?: string,
+): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const portion = describeDmarcPortion(fields.pct);
+  const rua = fields.rua.trim();
+  const ruf = fields.ruf.trim();
+  const reportClause = rua
+    ? `, and to send aggregate reports to ${describeReportUris(rua)}`
+    : "";
+
+  let headline: string;
+  if (fields.policy === "none") {
+    headline = `Tells receiving mail servers to make no delivery change for messages claiming to be from this domain that fail authentication — monitoring only${reportClause}.`;
+  } else {
+    headline = `Tells receiving mail servers to ${dmarcActionVerb(
+      fields.policy,
+    )} ${portion} the messages claiming to be from this domain that fail authentication${reportClause}.`;
+  }
+
+  if (
+    fields.policy !== "none" &&
+    fields.pct !== undefined &&
+    fields.pct < 100
+  ) {
+    details.push(
+      `The remaining failing messages are ${dmarcFallbackAction(fields.policy)} instead, so this is a partial rollout.`,
+    );
+  }
+
+  if (fields.subdomainPolicy) {
+    const sub = fields.subdomainPolicy;
+    details.push(
+      sub === "none"
+        ? "Subdomains are exempt: failing mail from them is delivered normally."
+        : `Subdomains use their own policy: failing mail from them is ${sub === "reject" ? "rejected" : "quarantined"}.`,
+    );
+  } else {
+    details.push(
+      "Subdomains inherit this same policy, because sp= is omitted.",
+    );
+  }
+
+  details.push(describeAlignment(fields.adkim, "DKIM"));
+  details.push(describeAlignment(fields.aspf, "SPF"));
+
+  if (!rua) {
+    details.push(
+      "No aggregate report address is set, so you will not see who is sending as this domain or whether the policy is safe to tighten.",
+    );
+  }
+
+  if (ruf) {
+    const foParts = fields.fo
+      .split(":")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean);
+    const known = foParts
+      .map((part) => DMARC_FO_MEANINGS[part])
+      .filter((text): text is string => Boolean(text));
+    const foClause = known.length
+      ? ` Receivers are asked to ${joinList(known)}.`
+      : "";
+    details.push(
+      `Per-message failure reports go to ${describeReportUris(ruf)}.${foClause} These reports can contain message content, and most receivers do not send them.`,
+    );
+  } else if (fields.fo.trim()) {
+    details.push(
+      "fo= only affects failure reports, and no ruf= address is set, so it has no effect.",
+    );
+  }
+
+  if (fields.rf.trim()) {
+    details.push(
+      `Failure reports are requested in ${fields.rf.trim().toUpperCase()} format.`,
+    );
+  }
+
+  if (fields.ri !== undefined) {
+    details.push(
+      `Aggregate reports are requested every ${humanizeSeconds(fields.ri)}; receivers commonly send them daily regardless.`,
+    );
+  }
+
+  const owner = normalizeDnsName(publishedDomain ?? "").toLowerCase();
+  const externalDomains = Array.from(
+    new Set(
+      [...reportDomainsOf(rua), ...reportDomainsOf(ruf)].filter(
+        (domain) =>
+          !owner || (domain !== owner && !domain.endsWith(`.${owner}`)),
+      ),
+    ),
   );
+  if (externalDomains.length) {
+    unknowns.push(
+      `Reports sent to ${joinList(externalDomains)} only arrive if that domain publishes a DMARC authorization record; that cannot be checked from here.`,
+    );
+  }
+
+  return { headline, details, unknowns };
 }
 
 /**
@@ -364,22 +518,18 @@ export function DmarcBuilder({
   const [fo, setFo] = useState<string>("");
   const [rf, setRf] = useState<string>("");
   const [ri, setRi] = useState<number | undefined>(undefined);
-  const fieldIdPrefix = useId();
-  const fieldIds = {
-    policy: `${fieldIdPrefix}-policy`,
-    rua: `${fieldIdPrefix}-rua`,
-    ruf: `${fieldIdPrefix}-ruf`,
-    adkim: `${fieldIdPrefix}-adkim`,
-    aspf: `${fieldIdPrefix}-aspf`,
-    pct: `${fieldIdPrefix}-pct`,
-    subdomainPolicy: `${fieldIdPrefix}-subdomain-policy`,
-    fo: `${fieldIdPrefix}-fo`,
-    ri: `${fieldIdPrefix}-ri`,
-    rf: `${fieldIdPrefix}-rf`,
-  };
-  const helpIds = Object.fromEntries(
-    Object.entries(fieldIds).map(([key, value]) => [key, `${value}-help`]),
-  ) as Record<keyof typeof fieldIds, string>;
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "policy",
+    "rua",
+    "ruf",
+    "adkim",
+    "aspf",
+    "pct",
+    "subdomainPolicy",
+    "fo",
+    "ri",
+    "rf",
+  ] as const);
 
   useEffect(() => {
     if (record.type !== "TXT") return;
@@ -465,6 +615,26 @@ export function DmarcBuilder({
     zoneName,
   ]);
 
+  const summary = useMemo(
+    () =>
+      describeDMARC(
+        {
+          policy,
+          subdomainPolicy,
+          adkim,
+          aspf,
+          pct,
+          rua,
+          ruf,
+          fo,
+          rf,
+          ri,
+        },
+        zoneName,
+      ),
+    [adkim, aspf, fo, pct, policy, rf, ri, rua, ruf, subdomainPolicy, zoneName],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     onWarningsChange({
@@ -485,9 +655,11 @@ export function DmarcBuilder({
         DMARC builder
       </div>
 
+      <RecordSummary summary={summary} className="mt-2" />
+
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.policy}
             descriptionId={helpIds.policy}
             label="p= (policy)"
@@ -515,7 +687,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.rua}
             descriptionId={helpIds.rua}
             label="rua= (aggregate reports)"
@@ -533,7 +705,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.ruf}
             descriptionId={helpIds.ruf}
             label="ruf= (forensic reports)"
@@ -551,7 +723,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.adkim}
             descriptionId={helpIds.adkim}
             label="adkim="
@@ -578,7 +750,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.aspf}
             descriptionId={helpIds.aspf}
             label="aspf="
@@ -605,7 +777,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.pct}
             descriptionId={helpIds.pct}
             label="pct="
@@ -629,7 +801,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.subdomainPolicy}
             descriptionId={helpIds.subdomainPolicy}
             label="sp= (subdomain policy)"
@@ -659,7 +831,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.fo}
             descriptionId={helpIds.fo}
             label="fo= (optional)"
@@ -677,7 +849,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-1">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.ri}
             descriptionId={helpIds.ri}
             label="ri= (optional)"
@@ -700,7 +872,7 @@ export function DmarcBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-1">
-          <DmarcFieldLabel
+          <BuilderFieldLabel
             controlId={fieldIds.rf}
             descriptionId={helpIds.rf}
             label="rf= (optional)"

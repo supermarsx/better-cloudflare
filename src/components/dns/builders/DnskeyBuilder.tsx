@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,7 +12,16 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function parseDNSKEYContent(value: string | undefined) {
   const raw = (value ?? "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
@@ -53,6 +61,142 @@ function composeDNSKEY(fields: {
     .trim();
 }
 
+export type DnskeyFields = {
+  flags: number | undefined;
+  protocol: number | undefined;
+  algorithm: number | undefined;
+  publicKey: string;
+  /** `DNSKEY` or `CDNSKEY`; the two records carry the same wire format. */
+  recordType?: string;
+};
+
+/** DNSKEY flag bits from RFC 4034 §2.1.1 and the REVOKE bit from RFC 5011. */
+const DNSKEY_ZONE_KEY_BIT = 0x0100;
+const DNSKEY_SEP_BIT = 0x0001;
+const DNSKEY_REVOKE_BIT = 0x0080;
+
+const DNSKEY_ALGORITHM_NAMES: Record<number, string> = {
+  5: "RSA/SHA-1",
+  7: "RSA/SHA-1 with NSEC3",
+  8: "RSA/SHA-256",
+  10: "RSA/SHA-512",
+  13: "ECDSA P-256/SHA-256",
+  14: "ECDSA P-384/SHA-384",
+  15: "Ed25519",
+  16: "Ed448",
+};
+
+/** Algorithms retired by RFC 8624 that validators are dropping support for. */
+const DNSKEY_DEPRECATED_ALGORITHMS = new Set([5, 7]);
+
+/**
+ * Plain-English description of the DNSSEC public key being published.
+ *
+ * The distinction that matters operationally is the SEP bit: a key-signing key
+ * is the one the parent's DS record has to point at, while a zone-signing key is
+ * only referenced from within the zone's own signatures.
+ */
+export function describeDNSKEY(fields: DnskeyFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const isCdnskey = (fields.recordType ?? "").toUpperCase() === "CDNSKEY";
+  const flags = fields.flags;
+  const zoneKey = flags !== undefined && (flags & DNSKEY_ZONE_KEY_BIT) !== 0;
+  const sep = flags !== undefined && (flags & DNSKEY_SEP_BIT) !== 0;
+  const revoke = flags !== undefined && (flags & DNSKEY_REVOKE_BIT) !== 0;
+
+  let headline: string;
+  if (isCdnskey) {
+    headline =
+      "Asks the parent zone to publish a DS record for this key, so the delegation's chain of trust can be updated without a manual change at the registrar.";
+  } else if (flags === undefined) {
+    headline =
+      "Builds the record that publishes a zone's public DNSSEC key; set the flags to say whether it is the zone-signing key or the key-signing key the parent points at.";
+  } else if (zoneKey && sep) {
+    headline =
+      "Publishes this zone's key-signing key: the public key validating resolvers use to check the zone's signatures, and the key the parent's DS record must point at.";
+  } else if (zoneKey) {
+    headline =
+      "Publishes this zone's zone-signing key: the public key validating resolvers use to check the signatures covering this zone's records.";
+  } else {
+    headline = `Publishes a public key with flags ${flags}, which does not set the Zone Key bit, so validating resolvers will not use it to verify this zone's signatures.`;
+  }
+
+  if (flags !== undefined && !zoneKey && !isCdnskey) {
+    details.push(
+      "The standard values are 256 (zone-signing key) and 257 (zone-signing key plus the secure entry point bit); anything without the Zone Key bit is unusual.",
+    );
+  }
+  if (zoneKey && sep) {
+    details.push(
+      "The secure entry point bit is what marks this as the key a DS record refers to; RFC 4034 treats it as a hint for tooling rather than something resolvers enforce.",
+    );
+  }
+  if (revoke) {
+    details.push(
+      "The REVOKE bit is set, so resolvers that follow RFC 5011 stop trusting this key once they see it signed by itself.",
+    );
+  }
+
+  if (fields.protocol === undefined) {
+    details.push("Protocol is not set; RFC 4034 requires it to be 3.");
+  } else if (fields.protocol !== 3) {
+    details.push(
+      `Protocol is ${fields.protocol}, but RFC 4034 requires 3, so resolvers treat this record as invalid.`,
+    );
+  }
+
+  const algorithmName =
+    fields.algorithm !== undefined
+      ? DNSKEY_ALGORITHM_NAMES[fields.algorithm]
+      : undefined;
+  if (algorithmName) {
+    details.push(
+      `The key is an ${algorithmName} key (algorithm ${fields.algorithm}), and every signature made with it carries that same algorithm number.`,
+    );
+  } else if (fields.algorithm !== undefined) {
+    unknowns.push(
+      `Algorithm ${fields.algorithm} is not one this builder recognises, so whether resolvers can validate with it cannot be determined here.`,
+    );
+  }
+  if (
+    fields.algorithm !== undefined &&
+    DNSKEY_DEPRECATED_ALGORITHMS.has(fields.algorithm)
+  ) {
+    details.push(
+      "This algorithm is based on SHA-1 and is deprecated by RFC 8624; plan a rollover to algorithm 13 or 15.",
+    );
+  }
+
+  if (!fields.publicKey.trim()) {
+    details.push(
+      "No public key is entered yet, so the record does not publish anything usable.",
+    );
+  }
+
+  if (!isCdnskey) {
+    details.push(
+      "Publishing a key on its own changes nothing: resolvers only use it once the zone's records carry RRSIG signatures made with the matching private key.",
+    );
+  }
+
+  if (isCdnskey) {
+    unknowns.push(
+      "Whether the parent zone or registry acts on this record depends on their support for RFC 8078 automation, which cannot be determined here.",
+    );
+  } else if (zoneKey && sep) {
+    unknowns.push(
+      "Whether the parent's DS record points at this exact key cannot be seen from this form, and a mismatch makes the whole zone fail validation.",
+    );
+  }
+  unknowns.push(
+    "Whether the zone is signed with the private half of this key cannot be checked from this form.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function DnskeyBuilder({
   record,
   onRecordChange,
@@ -81,6 +225,33 @@ export function DnskeyBuilder({
   const [dnskeyAlgorithmCustomValue, setDnskeyAlgorithmCustomValue] = useState<
     number | undefined
   >(undefined);
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "flags",
+    "flagsCustom",
+    "protocol",
+    "algorithm",
+    "algorithmCustom",
+    "publicKey",
+  ] as const);
+
+  const summary = useMemo(
+    () =>
+      describeDNSKEY({
+        flags: dnskeyFlags,
+        protocol: dnskeyProtocol,
+        algorithm: dnskeyAlgorithm,
+        publicKey: dnskeyPublicKey,
+        recordType: record.type,
+      }),
+    [
+      dnskeyAlgorithm,
+      dnskeyFlags,
+      dnskeyProtocol,
+      dnskeyPublicKey,
+      record.type,
+    ],
+  );
 
   useEffect(() => {
     if (record.type !== "DNSKEY" && record.type !== "CDNSKEY") return;
@@ -272,9 +443,16 @@ export function DnskeyBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Flags</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.flags}
+              descriptionId={helpIds.flags}
+              label="Flags"
+              help="What role the key plays: 256 is a zone-signing key, and 257 additionally sets the secure entry point bit that marks a key-signing key, the one the parent's DS record points at. Values without the Zone Key bit, such as 0, are not used for signing a zone."
+            />
             <Select
               value={dnskeyFlagsSelectValue}
               onValueChange={(value: string) => {
@@ -290,7 +468,11 @@ export function DnskeyBuilder({
                 setDnskeyFlagsMode("preset");
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.flags}
+                aria-describedby={helpIds.flags}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -300,18 +482,28 @@ export function DnskeyBuilder({
               </SelectContent>
             </Select>
             {dnskeyFlagsMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                value={dnskeyFlagsCustomValue ?? dnskeyFlags ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setDnskeyFlagsCustomValue(val);
-                  setDnskeyFlags(val);
-                }}
-                placeholder="e.g., 257"
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.flagsCustom}
+                  descriptionId={helpIds.flagsCustom}
+                  label="Custom flags value"
+                  help="A raw 16-bit flags field, 0 to 65535. Bit 7 (128) is the RFC 5011 REVOKE bit, bit 8 (256) is the Zone Key bit and bit 15 (1) is the secure entry point bit; all other bits are reserved and must be zero."
+                />
+                <Input
+                  id={fieldIds.flagsCustom}
+                  aria-describedby={helpIds.flagsCustom}
+                  className="mt-2"
+                  type="number"
+                  value={dnskeyFlagsCustomValue ?? dnskeyFlags ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setDnskeyFlagsCustomValue(val);
+                    setDnskeyFlags(val);
+                  }}
+                  placeholder="e.g., 257"
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               Common presets:
@@ -354,8 +546,15 @@ export function DnskeyBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Protocol</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.protocol}
+              descriptionId={helpIds.protocol}
+              label="Protocol"
+              help="A fixed field that RFC 4034 requires to be 3. Any other value makes the record invalid, and resolvers ignore the key, so leave this at 3."
+            />
             <Input
+              id={fieldIds.protocol}
+              aria-describedby={helpIds.protocol}
               type="number"
               value={dnskeyProtocol ?? ""}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -369,7 +568,12 @@ export function DnskeyBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Algorithm</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.algorithm}
+              descriptionId={helpIds.algorithm}
+              label="Algorithm"
+              help="The public key algorithm, which must match the key material pasted below and the algorithm used to sign the zone. 13 (ECDSA P-256/SHA-256), 15 (Ed25519) and 8 (RSA/SHA-256) are current; 5 and 7 are deprecated SHA-1 algorithms."
+            />
             <Select
               value={dnskeyAlgorithmSelectValue}
               onValueChange={(value: string) => {
@@ -385,7 +589,11 @@ export function DnskeyBuilder({
                 setDnskeyAlgorithmMode("preset");
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.algorithm}
+                aria-describedby={helpIds.algorithm}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -398,25 +606,42 @@ export function DnskeyBuilder({
               </SelectContent>
             </Select>
             {dnskeyAlgorithmMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                value={dnskeyAlgorithmCustomValue ?? dnskeyAlgorithm ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setDnskeyAlgorithmCustomValue(val);
-                  setDnskeyAlgorithm(val);
-                }}
-                placeholder="e.g., 13"
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.algorithmCustom}
+                  descriptionId={helpIds.algorithmCustom}
+                  label="Custom algorithm value"
+                  help="A DNSSEC algorithm number outside the presets, from 0 to 255. A resolver that does not implement the algorithm cannot validate the zone and treats it as unsigned."
+                />
+                <Input
+                  id={fieldIds.algorithmCustom}
+                  aria-describedby={helpIds.algorithmCustom}
+                  className="mt-2"
+                  type="number"
+                  value={dnskeyAlgorithmCustomValue ?? dnskeyAlgorithm ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setDnskeyAlgorithmCustomValue(val);
+                    setDnskeyAlgorithm(val);
+                  }}
+                  placeholder="e.g., 13"
+                />
+              </>
             )}
           </div>
         </div>
 
         <div className="mt-2 space-y-1">
-          <Label className="text-xs">Public key (base64)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.publicKey}
+            descriptionId={helpIds.publicKey}
+            label="Public key (base64)"
+            help="The public key material in base64, exactly as your DNSSEC provider supplies it, with no PEM header or footer. Its length and encoding are determined by the algorithm above."
+          />
           <Textarea
+            id={fieldIds.publicKey}
+            aria-describedby={helpIds.publicKey}
             className="scrollbar-themed min-h-24 resize-y"
             value={dnskeyPublicKey}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>

@@ -3,9 +3,17 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function escapeDnsQuotedString(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -74,6 +82,89 @@ function composeURI(fields: {
   return parts.join(" ").trim();
 }
 
+export type UriFields = {
+  priority: number | undefined;
+  weight: number | undefined;
+  target: string;
+};
+
+/** The scheme of a URI, if it has a well-formed one. */
+function uriScheme(target: string) {
+  const match = target.trim().match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  return match ? (match[1] as string).toLowerCase() : "";
+}
+
+/**
+ * Plain-English description of the URI record the builder is assembling.
+ *
+ * RFC 7553 borrows SRV's selection rules: the lowest priority is used first,
+ * and weight distributes load between records that share a priority. The URI
+ * itself is a character-string that DNS never interprets.
+ */
+export function describeURI(fields: UriFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const target = fields.target.trim();
+  const priority = fields.priority;
+  const weight = fields.weight;
+  const scheme = uriScheme(target);
+
+  const headline = target
+    ? `Hands clients that look up this name the URI ${target} to use for the service, instead of a host and port they have to assemble themselves.`
+    : "Will hand clients that look up this name a single URI to use for the service, once a target URI is filled in.";
+
+  details.push(
+    "Like SRV, a URI record is published under a _service._proto name, so only clients coded to query that exact name ever see it.",
+  );
+
+  if (priority === undefined) {
+    details.push(
+      "Priority is not set yet. It fixes which URI clients use first, lowest number first.",
+    );
+  } else {
+    details.push(
+      `Priority ${priority} is used before any URI record at this name with a higher priority number; a higher number is only tried when this one does not work.`,
+    );
+  }
+
+  if (weight === undefined) {
+    details.push(
+      "Weight is not set yet. It splits traffic between the URI records that share a priority.",
+    );
+  } else if (weight === 0) {
+    details.push(
+      "Weight 0 gives this record only a very small chance of being picked whenever another record at the same priority has a non-zero weight; it is the conventional value when there is no load to balance.",
+    );
+  } else {
+    details.push(
+      `Weight ${weight} is this record's share among the URI records that share its priority — clients choose between them in proportion to their weights, so weight matters only if such records exist.`,
+    );
+  }
+
+  details.push(
+    "The URI is stored as a quoted character-string. DNS treats it as opaque text and does not follow, validate or resolve it.",
+  );
+
+  if (target && !scheme) {
+    details.push(
+      "The target has no scheme, so clients have nothing to tell them what kind of endpoint this is; RFC 7553 expects an absolute URI.",
+    );
+  }
+
+  unknowns.push(
+    "Any other URI records at this name take part in the same priority and weight comparison, so which URI a client actually uses cannot be determined from this form.",
+  );
+
+  unknowns.push(
+    scheme
+      ? `What a client does with a ${scheme}: URI is defined by the service that publishes it, not by DNS, so the effect of this record depends on that service.`
+      : "What a client does with the URI is defined by the service that publishes it, not by DNS, so the effect of this record depends on that service.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function UriBuilder({
   record,
   onRecordChange,
@@ -87,6 +178,11 @@ export function UriBuilder({
   const [weight, setWeight] = useState<number | undefined>(undefined);
   const [target, setTarget] = useState<string>("");
   const [spaceConvertedWarning, setSpaceConvertedWarning] = useState(false);
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "priority",
+    "weight",
+    "target",
+  ] as const);
 
   useEffect(() => {
     if (record.type !== "URI") return;
@@ -174,6 +270,11 @@ export function UriBuilder({
     return { issues, fieldIssues, canonical };
   }, [priority, record.content, spaceConvertedWarning, target, weight]);
 
+  const summary = useMemo(
+    () => describeURI({ priority, weight, target }),
+    [priority, target, weight],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     if (record.type !== "URI") {
@@ -217,10 +318,19 @@ export function UriBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Priority</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.priority}
+              descriptionId={helpIds.priority}
+              label="Priority"
+              help="Which URI clients use first, from 0 to 65535, lowest first. A higher priority is only tried when the lower one fails. 10 is a common starting value, leaving room to add a preferred record later."
+            />
             <Input
+              id={fieldIds.priority}
+              aria-describedby={helpIds.priority}
               type="number"
               value={priority ?? ""}
               placeholder="10"
@@ -238,8 +348,15 @@ export function UriBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Weight</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.weight}
+              descriptionId={helpIds.weight}
+              label="Weight"
+              help="This record's relative share among the URI records that share its priority, from 0 to 65535; clients pick between them in proportion. Use 1 when there is only one record, or 0 when you never want this one chosen while another is available."
+            />
             <Input
+              id={fieldIds.weight}
+              aria-describedby={helpIds.weight}
               type="number"
               value={weight ?? ""}
               placeholder="1"
@@ -257,8 +374,15 @@ export function UriBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-4">
-            <Label className="text-xs">Target URI</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.target}
+              descriptionId={helpIds.target}
+              label="Target URI"
+              help="The absolute URI clients should use, including its scheme, such as https://example.com/path or mailto:admin@example.com. It is published as a quoted string and must not contain spaces; percent-encode them as %20."
+            />
             <Input
+              id={fieldIds.target}
+              aria-describedby={helpIds.target}
               value={target}
               placeholder="e.g., https://example.com/path"
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

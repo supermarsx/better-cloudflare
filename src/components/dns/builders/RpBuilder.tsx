@@ -3,10 +3,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   const v = value.trim();
@@ -50,6 +58,84 @@ function composeRp(mailbox: string, text: string) {
   return `${normalizeDnsName(mailbox)} ${normalizeDnsName(text)}`.trim();
 }
 
+/**
+ * Read an RP mailbox back as an email address: as in SOA's RNAME, the first dot
+ * stands in for the `@`.
+ */
+function mailboxToEmail(value: string) {
+  const v = normalizeDnsName(value);
+  if (!v || v === ".") return "";
+  const dot = v.indexOf(".");
+  if (dot <= 0) return v;
+  return `${v.slice(0, dot)}@${v.slice(dot + 1)}`;
+}
+
+export type RpFields = {
+  mailbox: string;
+  text: string;
+};
+
+/**
+ * Plain-English description of the contact information an RP record publishes.
+ *
+ * RFC 1183 §2.2: both fields are domain names, and a single `.` in either one
+ * means "not given" rather than "the root".
+ */
+export function describeRP(fields: RpFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const mailbox = normalizeDnsName(fields.mailbox);
+  const text = normalizeDnsName(fields.text);
+  const email = mailboxToEmail(mailbox);
+  const hasMailbox = Boolean(mailbox) && mailbox !== ".";
+  const hasText = Boolean(text) && text !== ".";
+
+  let headline: string;
+  if (hasMailbox) {
+    headline = `Publishes ${email} as the person responsible for this name, as documentation that nothing acts on automatically.`;
+  } else if (hasText) {
+    headline = `Publishes no responsible-person mailbox for this name and points to the TXT records at ${text} for contact detail instead.`;
+  } else if (mailbox === "." || text === ".") {
+    headline =
+      "Publishes an empty responsible-person entry for this name: no mailbox and no further contact records.";
+  } else {
+    headline =
+      "Publishes who is responsible for this name and where to find more contact detail, as documentation that nothing acts on automatically.";
+  }
+
+  if (hasMailbox && mailbox.includes(".")) {
+    details.push(
+      `The mailbox is stored as ${mailbox}: an RP record holds a domain name, so the first dot stands in for the @ and this means ${email}.`,
+    );
+  }
+  if (mailbox === ".") {
+    details.push(
+      "A single dot in the mailbox field is how RFC 1183 says that no mailbox is being given.",
+    );
+  }
+  if (hasText) {
+    details.push(
+      `${text} is a name whose TXT records are meant to hold further contact detail; this record only points at that name and does not carry the text itself.`,
+    );
+  } else if (text === ".") {
+    details.push(
+      "A single dot in the TXT field says there is no such name, so no further detail is published.",
+    );
+  }
+  details.push(
+    "RP is purely informational: no resolver, mail server or client changes what it does because of it, and the address it publishes is readable by anyone.",
+  );
+
+  if (hasText) {
+    unknowns.push(
+      `Whether ${text} actually has TXT records with contact detail cannot be checked from here.`,
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function RpBuilder({
   record,
   onRecordChange,
@@ -61,6 +147,12 @@ export function RpBuilder({
 }) {
   const [mailbox, setMailbox] = useState("");
   const [text, setText] = useState("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "mailbox",
+    "text",
+  ] as const);
+
+  const summary = useMemo(() => describeRP({ mailbox, text }), [mailbox, text]);
 
   useEffect(() => {
     if (record.type !== "RP") return;
@@ -169,10 +261,19 @@ export function RpBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">Mailbox</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.mailbox}
+              descriptionId={helpIds.mailbox}
+              label="Mailbox"
+              help="The responsible person's email address written as a domain name, with the @ replaced by a dot: admin@example.com becomes admin.example.com. A single dot means no mailbox is given."
+            />
             <Input
+              id={fieldIds.mailbox}
+              aria-describedby={helpIds.mailbox}
               placeholder="e.g., hostmaster.example.com"
               value={mailbox}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -190,8 +291,15 @@ export function RpBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">Text</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.text}
+              descriptionId={helpIds.text}
+              label="Text"
+              help="The domain name whose TXT records hold further contact detail, such as info.example.com. This is the name to look up, not the text itself. A single dot means none."
+            />
             <Input
+              id={fieldIds.text}
+              aria-describedby={helpIds.text}
               placeholder="e.g., info.example.com"
               value={text}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

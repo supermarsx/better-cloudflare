@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -14,7 +13,16 @@ import {
 import { composeNAPTR, parseNAPTR } from "@/lib/dns/dns-parsers";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -181,6 +189,171 @@ function validateNaptrRegexp(value: string): string[] {
   return issues;
 }
 
+export type NaptrFields = {
+  order: number | undefined;
+  preference: number | undefined;
+  flags: string;
+  service: string;
+  regexp: string;
+  replacement: string;
+};
+
+/** Split a NAPTR substitution into its pattern and replacement halves. */
+function parseNaptrSubstitution(value: string) {
+  const v = value.trim();
+  if (!v) return null;
+  const delimiter = v[0] ?? "";
+  if (!delimiter || /^[A-Za-z0-9]$/.test(delimiter)) return null;
+  const { parts } = splitByUnescapedDelimiter(v.slice(1), delimiter);
+  if (parts.length < 2) return null;
+  return { pattern: parts[0] ?? "", replacement: parts[1] ?? "" };
+}
+
+/**
+ * Patterns that consume the whole input string. A substitution using one of
+ * these, with no backreferences in its replacement, produces the same output
+ * whatever the client feeds in — the one case where the result of a rewrite is
+ * knowable without knowing the input.
+ */
+const NAPTR_MATCH_ALL_PATTERNS = new Set(["^.*$", "^.*", ".*$", ".*"]);
+
+function naptrConstantOutput(value: string) {
+  const substitution = parseNaptrSubstitution(value);
+  if (!substitution) return null;
+  if (!NAPTR_MATCH_ALL_PATTERNS.has(substitution.pattern)) return null;
+  if (/\\[1-9]/.test(substitution.replacement)) return null;
+  return substitution.replacement || null;
+}
+
+/**
+ * Plain-English description of the NAPTR rewriting rule being assembled.
+ *
+ * The semantics are RFC 3403's: order is a mandatory processing sequence,
+ * preference only breaks ties within an order, any non-empty flag makes the
+ * rule terminal, and `regexp` and `replacement` are mutually exclusive. What a
+ * substitution actually yields depends on the string being rewritten, so that
+ * lands in `unknowns` unless the pattern provably consumes the whole input.
+ */
+export function describeNAPTR(fields: NaptrFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const order = fields.order;
+  const preference = fields.preference;
+  const flags = fields.flags.trim();
+  const flag = flags.toUpperCase();
+  const service = fields.service.trim();
+  const regexp = fields.regexp.trim();
+  const replacement = fields.replacement.trim();
+
+  const usesReplacement = Boolean(replacement) && replacement !== ".";
+  const serviceText = service ? `the ${service} service` : "this service";
+  const target = usesReplacement ? replacement : "";
+
+  let headline: string;
+  if (!flags && !service && !regexp && !replacement) {
+    headline =
+      "Will define one rewriting rule that turns a lookup of this name into another name or into a URI for a particular service; the flags field decides which of the two happens.";
+  } else if (!flags) {
+    headline = target
+      ? `Continues the lookup at ${target}: an empty flags field makes this rule non-terminal, so a client resolving ${serviceText} fetches that name's own NAPTR records and keeps rewriting.`
+      : `Continues the lookup at another name whose NAPTR records carry the next rule for ${serviceText}; an empty flags field makes this rule non-terminal, and the replacement naming that next name is not filled in yet.`;
+  } else if (flag === "U") {
+    headline = `Rewrites the string being looked up into a final URI for ${serviceText}, using the substitution in the regexp field, and ends the lookup there.`;
+  } else if (flag === "S") {
+    headline = target
+      ? `Sends clients resolving ${serviceText} to the SRV records at ${target}, which then supply the host and port to connect to.`
+      : `Sends clients resolving ${serviceText} to an SRV record for the host and port, once the replacement naming that record is filled in.`;
+  } else if (flag === "A") {
+    headline = target
+      ? `Sends clients resolving ${serviceText} to ${target}, whose A or AAAA records supply the address to connect to.`
+      : `Sends clients resolving ${serviceText} to a host whose address records they connect to, once the replacement naming that host is filled in.`;
+  } else if (flag === "P") {
+    headline = `Ends the lookup for ${serviceText} and hands the result to protocol-specific processing, which that service defines rather than DNS.`;
+  } else {
+    headline = `Applies a rewriting rule for ${serviceText} marked with flag "${flags}", whose handling is defined by the application rather than by DNS.`;
+  }
+
+  if (order === undefined) {
+    details.push(
+      "Order is not set yet. It fixes the sequence rules are processed in, lowest first, and a client must respect it.",
+    );
+  } else {
+    details.push(
+      `Order ${order} means every rule at this name with a lower order number must be tried first; this ordering is mandatory, not a hint.`,
+    );
+  }
+
+  if (preference === undefined) {
+    details.push(
+      "Preference is not set yet. It only breaks ties between rules that share the same order.",
+    );
+  } else {
+    details.push(
+      `Preference ${preference} only ranks this rule against others that share ${
+        order === undefined ? "its order" : `order ${order}`
+      }; lower is preferred, and it is advice to the client rather than a requirement.`,
+    );
+  }
+
+  if (flags) {
+    details.push(
+      "Because the flags field is not empty, this rule is terminal: the client stops rewriting here and uses the result directly.",
+    );
+  }
+
+  if (regexp && usesReplacement) {
+    details.push(
+      "Regexp and replacement are both filled in. Exactly one of them may be used, so the record is malformed as written.",
+    );
+  } else if (regexp && replacement === ".") {
+    details.push(
+      'The result comes entirely from the substitution: the rule rewrites the input rather than pointing at another name, which is what the replacement of "." says.',
+    );
+  } else if (regexp) {
+    details.push(
+      'The result comes entirely from the substitution, so the replacement field should hold "." to say that no other name is being pointed at.',
+    );
+  } else if (usesReplacement) {
+    details.push(
+      `The regexp field is empty, so nothing is rewritten: the rule simply points at ${replacement}.`,
+    );
+  } else {
+    details.push(
+      "Neither the regexp nor the replacement is filled in, so this rule does not yet produce a result.",
+    );
+  }
+
+  const constant = regexp ? naptrConstantOutput(regexp) : null;
+  if (constant) {
+    details.push(
+      `The pattern consumes the whole input and the replacement uses no backreferences, so every input rewrites to exactly ${constant}.`,
+    );
+  } else if (regexp) {
+    unknowns.push(
+      "What the substitution produces depends on the string being rewritten, which the client supplies — for ENUM it is the dialled number — so the result cannot be shown here.",
+    );
+  }
+
+  if (service) {
+    unknowns.push(
+      `The meaning of the service field "${service}" is defined by the application that registers it; DNS attaches none, so what a client does on matching this rule depends on that application.`,
+    );
+  }
+
+  if (flags && !["U", "S", "A", "P"].includes(flag)) {
+    unknowns.push(
+      `"${flags}" is not one of the flags RFC 3403 lists for this use (S, A, U or P, or empty for a non-terminal rule), so how a client treats it cannot be determined here.`,
+    );
+  }
+
+  unknowns.push(
+    "Other NAPTR records at this name take part in the same order and preference comparison, so which rule a client ends up applying cannot be determined from this form.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function NaptrBuilder({
   record,
   onRecordChange,
@@ -196,6 +369,16 @@ export function NaptrBuilder({
   const [service, setService] = useState<string>("");
   const [regexp, setRegexp] = useState<string>("");
   const [replacement, setReplacement] = useState<string>("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "order",
+    "preference",
+    "flagsPreset",
+    "flags",
+    "servicePreset",
+    "service",
+    "regexp",
+    "replacement",
+  ] as const);
 
   const flagsSelectValue = useMemo(() => {
     const v = (flags ?? "").trim();
@@ -333,6 +516,19 @@ export function NaptrBuilder({
     service,
   ]);
 
+  const summary = useMemo(
+    () =>
+      describeNAPTR({
+        order,
+        preference,
+        flags,
+        service,
+        regexp,
+        replacement,
+      }),
+    [flags, order, preference, regexp, replacement, service],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     if (record.type !== "NAPTR") {
@@ -367,10 +563,19 @@ export function NaptrBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Order</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.order}
+              descriptionId={helpIds.order}
+              label="Order"
+              help="The processing sequence for the rules at this name, from 0 to 65535. Clients must try every lower order before this one, so leave gaps such as 100 and 200 to keep room for rules in between."
+            />
             <Input
+              id={fieldIds.order}
+              aria-describedby={helpIds.order}
               type="number"
               placeholder="100"
               value={order ?? ""}
@@ -397,8 +602,15 @@ export function NaptrBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Preference</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.preference}
+              descriptionId={helpIds.preference}
+              label="Preference"
+              help="The tie-break between rules that share the same order, from 0 to 65535, lowest preferred. Unlike order it is advisory, so a client may pick another rule at the same order. 10 is a common starting value."
+            />
             <Input
+              id={fieldIds.preference}
+              aria-describedby={helpIds.preference}
               type="number"
               placeholder="10"
               value={preference ?? ""}
@@ -425,7 +637,12 @@ export function NaptrBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-1">
-            <Label className="text-xs">Flags</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.flagsPreset}
+              descriptionId={helpIds.flagsPreset}
+              label="Flags preset"
+              help="Fills the flags field below with one of the four common values. Pick S or A when the replacement names an SRV record or a host, and U when the regexp produces a URI."
+            />
             <Select
               value={flagsSelectValue}
               onValueChange={(value: string) => {
@@ -444,7 +661,11 @@ export function NaptrBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.flagsPreset}
+                aria-describedby={helpIds.flagsPreset}
+                className="h-9"
+              >
                 <SelectValue placeholder="Custom…" />
               </SelectTrigger>
               <SelectContent>
@@ -456,32 +677,46 @@ export function NaptrBuilder({
                 <SelectItem value="custom">Custom…</SelectItem>
               </SelectContent>
             </Select>
-            <Input
-              className="mt-2"
-              placeholder="e.g., U (or custom flags)"
-              value={flags}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                setFlags(e.target.value);
-                onRecordChange({
-                  ...record,
-                  content: composeNAPTR(
-                    order,
-                    preference,
-                    e.target.value,
-                    service,
-                    regexp,
-                    replacement,
-                  ),
-                });
-              }}
-            />
-            <div className="text-[11px] text-muted-foreground">
-              {flagsDescriptor ?? "Common: U/S/P/A (depends on use case)."}
+            <div className="mt-2 space-y-1">
+              <BuilderFieldLabel
+                controlId={fieldIds.flags}
+                descriptionId={helpIds.flags}
+                label="Flags"
+                help="S means the replacement is an SRV name, A means it is a host with address records, U means the regexp output is a final URI, and P means protocol-specific handling. Any of these ends the lookup; leaving it empty means the replacement is another NAPTR to follow."
+              />
+              <Input
+                id={fieldIds.flags}
+                aria-describedby={helpIds.flags}
+                placeholder="e.g., U (or custom flags)"
+                value={flags}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  setFlags(e.target.value);
+                  onRecordChange({
+                    ...record,
+                    content: composeNAPTR(
+                      order,
+                      preference,
+                      e.target.value,
+                      service,
+                      regexp,
+                      replacement,
+                    ),
+                  });
+                }}
+              />
+              <div className="text-[11px] text-muted-foreground">
+                {flagsDescriptor ?? "Common: U/S/P/A (depends on use case)."}
+              </div>
             </div>
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Service</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.servicePreset}
+              descriptionId={helpIds.servicePreset}
+              label="Service preset"
+              help="Fills the service field below with one of the ENUM services, which map a telephone number onto SIP, email, SMS and similar. Choose Custom to type a service defined elsewhere, such as SIP+D2U."
+            />
             <Select
               value={serviceSelectValue}
               onValueChange={(value: string) => {
@@ -500,7 +735,11 @@ export function NaptrBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.servicePreset}
+                aria-describedby={helpIds.servicePreset}
+                className="h-9"
+              >
                 <SelectValue placeholder="Custom…" />
               </SelectTrigger>
               <SelectContent>
@@ -512,37 +751,53 @@ export function NaptrBuilder({
                 <SelectItem value="custom">Custom…</SelectItem>
               </SelectContent>
             </Select>
-            <Input
-              className="mt-2"
-              placeholder="e.g., E2U+sip"
-              value={service}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                setService(e.target.value);
-                onRecordChange({
-                  ...record,
-                  content: composeNAPTR(
-                    order,
-                    preference,
-                    flags,
-                    e.target.value,
-                    regexp,
-                    replacement,
-                  ),
-                });
-              }}
-            />
-            <div className="text-[11px] text-muted-foreground">
-              {serviceDescriptor ?? (
-                <>
-                  Service parameters, often like <code>E2U+sip</code>.
-                </>
-              )}
+            <div className="mt-2 space-y-1">
+              <BuilderFieldLabel
+                controlId={fieldIds.service}
+                descriptionId={helpIds.service}
+                label="Service"
+                help="The resolution service this rule offers, such as E2U+sip for an ENUM lookup or SIP+D2U for SIP over UDP. It must be spelled exactly as the application expects, because a client only applies rules whose service it recognises."
+              />
+              <Input
+                id={fieldIds.service}
+                aria-describedby={helpIds.service}
+                placeholder="e.g., E2U+sip"
+                value={service}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  setService(e.target.value);
+                  onRecordChange({
+                    ...record,
+                    content: composeNAPTR(
+                      order,
+                      preference,
+                      flags,
+                      e.target.value,
+                      regexp,
+                      replacement,
+                    ),
+                  });
+                }}
+              />
+              <div className="text-[11px] text-muted-foreground">
+                {serviceDescriptor ?? (
+                  <>
+                    Service parameters, often like <code>E2U+sip</code>.
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">Regexp</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.regexp}
+              descriptionId={helpIds.regexp}
+              label="Regexp"
+              help="A substitution applied to the string being looked up, written as delimiter, pattern, delimiter, replacement, delimiter — for example !^.*$!sip:info@example.com!. Use it instead of a replacement, never alongside one, and leave it empty when the replacement names the next target."
+            />
             <Input
+              id={fieldIds.regexp}
+              aria-describedby={helpIds.regexp}
               placeholder='e.g., "!^.*$!sip:info@example.com!"'
               value={regexp}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -566,8 +821,15 @@ export function NaptrBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">Replacement</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.replacement}
+              descriptionId={helpIds.replacement}
+              label="Replacement"
+              help="The name to query next: an SRV name with flag S, a host with flag A, or another NAPTR when the flags are empty. It is mutually exclusive with the regexp field, so use a single dot here whenever a regexp is set."
+            />
             <Input
+              id={fieldIds.replacement}
+              aria-describedby={helpIds.replacement}
               placeholder="e.g., . or target.example.com"
               value={replacement}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

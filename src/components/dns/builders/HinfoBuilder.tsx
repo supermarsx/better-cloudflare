@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -19,7 +18,16 @@ import {
   quoteCharacterString,
 } from "@/lib/dns/character-string";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 const HINFO_CPU_PRESETS: Array<{ value: string; label: string; desc: string }> =
   [
@@ -67,6 +75,54 @@ function parseHinfoContent(value?: string) {
   };
 }
 
+export type HinfoFields = {
+  cpu: string;
+  os: string;
+};
+
+/**
+ * Plain-English description of what an HINFO record publishes.
+ *
+ * Both fields are free-form `<character-string>`s (RFC 1035 §3.3.2) with no
+ * registry behind them, so the summary is careful not to imply that anything
+ * interprets the values.
+ */
+export function describeHINFO(fields: HinfoFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const cpu = fields.cpu.trim();
+  const os = fields.os.trim();
+
+  let headline: string;
+  if (cpu && os) {
+    headline = `Tells anyone who queries this name that the host runs ${os} on ${cpu} hardware.`;
+  } else if (cpu) {
+    headline = `Tells anyone who queries this name that the host runs on ${cpu} hardware, once an operating system is filled in too.`;
+  } else if (os) {
+    headline = `Tells anyone who queries this name that the host runs ${os}, once a CPU is filled in too.`;
+  } else {
+    headline =
+      "Publishes this host's hardware type and operating system as plain text that anyone querying the name can read.";
+  }
+
+  details.push(
+    "Both values are free-form DNS character-strings of up to 255 bytes each; nothing validates them and no software changes its behaviour based on what they say.",
+  );
+  details.push(
+    "HINFO dates from the original DNS specification and is almost never published today, so treat it as documentation rather than something clients consume.",
+  );
+  details.push(
+    "Naming the hardware and operating system narrows down which exploits are worth trying against the host, which is the usual reason not to publish it.",
+  );
+
+  unknowns.push(
+    "Some resolvers answer ANY queries with a synthetic HINFO record (RFC 8482); that is unrelated to this record and cannot be controlled from here.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function HinfoBuilder({
   record,
   onRecordChange,
@@ -78,6 +134,14 @@ export function HinfoBuilder({
 }) {
   const [cpu, setCpu] = useState("");
   const [os, setOs] = useState("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "cpuPreset",
+    "cpu",
+    "osPreset",
+    "os",
+  ] as const);
+
+  const summary = useMemo(() => describeHINFO({ cpu, os }), [cpu, os]);
 
   const cpuSelectValue = useMemo(() => {
     const v = cpu.trim();
@@ -234,9 +298,16 @@ export function HinfoBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">CPU</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.cpuPreset}
+              descriptionId={helpIds.cpuPreset}
+              label="CPU preset"
+              help="Fills the CPU field with a common architecture name. There is no registry of accepted values, so a preset is only a convenient spelling."
+            />
             <Select
               value={cpuSelectValue}
               onValueChange={(value: string) => {
@@ -248,7 +319,11 @@ export function HinfoBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.cpuPreset}
+                aria-describedby={helpIds.cpuPreset}
+                className="h-9"
+              >
                 <SelectValue placeholder="Custom…" />
               </SelectTrigger>
               <SelectContent>
@@ -260,8 +335,15 @@ export function HinfoBuilder({
                 <SelectItem value="custom">Custom…</SelectItem>
               </SelectContent>
             </Select>
+            <BuilderFieldLabel
+              controlId={fieldIds.cpu}
+              descriptionId={helpIds.cpu}
+              label="CPU"
+              help="Free text describing the host's hardware, up to 255 bytes. Anything is accepted; short architecture names such as x86_64 or arm64 are the convention."
+            />
             <Input
-              className="mt-2"
+              id={fieldIds.cpu}
+              aria-describedby={helpIds.cpu}
               placeholder='e.g., "Intel" or "ARM64"'
               value={cpu}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -279,7 +361,12 @@ export function HinfoBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-3">
-            <Label className="text-xs">OS</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.osPreset}
+              descriptionId={helpIds.osPreset}
+              label="OS preset"
+              help="Fills the OS field with a common operating system name. There is no registry of accepted values, so a preset is only a convenient spelling."
+            />
             <Select
               value={osSelectValue}
               onValueChange={(value: string) => {
@@ -291,7 +378,11 @@ export function HinfoBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.osPreset}
+                aria-describedby={helpIds.osPreset}
+                className="h-9"
+              >
                 <SelectValue placeholder="Custom…" />
               </SelectTrigger>
               <SelectContent>
@@ -303,8 +394,15 @@ export function HinfoBuilder({
                 <SelectItem value="custom">Custom…</SelectItem>
               </SelectContent>
             </Select>
+            <BuilderFieldLabel
+              controlId={fieldIds.os}
+              descriptionId={helpIds.os}
+              label="OS"
+              help="Free text describing the host's operating system, up to 255 bytes. Keep it generic — a version number tells an attacker which patches are missing."
+            />
             <Input
-              className="mt-2"
+              id={fieldIds.os}
+              aria-describedby={helpIds.os}
               placeholder='e.g., "Linux" or "Windows"'
               value={os}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

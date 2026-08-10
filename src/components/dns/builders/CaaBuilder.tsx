@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -18,10 +17,124 @@ import {
 } from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
+}
+
+export type CaaFields = {
+  flags: number | undefined;
+  /** The effective property tag, already resolved from the custom input. */
+  tag: string;
+  value: string;
+};
+
+/** The critical bit of the CAA flags byte (RFC 8659 §4.1). */
+const CAA_CRITICAL_FLAG = 128;
+
+/** Strip a `mailto:` prefix so an iodef destination reads as prose. */
+function describeIodefTarget(value: string) {
+  return value.toLowerCase().startsWith("mailto:")
+    ? value.slice("mailto:".length)
+    : value;
+}
+
+/**
+ * Plain-English description of the CAA property being assembled.
+ *
+ * A CA evaluates every CAA record at the relevant name as one set (RFC 8659
+ * §3), so the wording never claims this single record decides issuance on its
+ * own; the rest of the set is reported as an unknown instead.
+ */
+export function describeCAA(
+  fields: CaaFields,
+  options?: { recordName?: string },
+): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const tag = fields.tag.trim().toLowerCase();
+  const value = fields.value.trim();
+  const flags = fields.flags ?? 0;
+  const critical = (flags & CAA_CRITICAL_FLAG) !== 0;
+  const [issuerRaw, ...parameterParts] = value.split(";");
+  const issuer = (issuerRaw ?? "").trim();
+  const parameters = parameterParts.join(";").trim();
+
+  let headline: string;
+  if (!tag) {
+    headline =
+      "Will tell certificate authorities which of them may issue certificates for this name. Choose a property tag and name the CA.";
+  } else if (tag === "issue") {
+    headline = issuer
+      ? `Allows the certificate authority identified by ${issuer} to issue certificates for this name; any CA not named by the CAA records here must refuse. It covers wildcard certificates too, unless an issuewild record also exists at this name.`
+      : "Grants no certificate authority permission to issue for this name: an issue value with no CA domain matches nobody, so unless another CAA record here names a CA, issuance is forbidden outright.";
+  } else if (tag === "issuewild") {
+    headline = issuer
+      ? `Allows the certificate authority identified by ${issuer} to issue wildcard certificates for this name.`
+      : "Forbids wildcard certificates for this name: an issuewild value with no CA domain matches nobody, so unless another issuewild record here names a CA, no CA may issue one.";
+    details.push(
+      "While any issuewild record exists at this name it replaces the issue records for wildcard certificates; issue still governs ordinary ones.",
+    );
+  } else if (tag === "iodef") {
+    headline = value
+      ? `Asks certificate authorities to report to ${describeIodefTarget(value)} any certificate request for this name that they refuse under its CAA policy.`
+      : "Will name a destination where certificate authorities can report certificate requests they refuse under this name's CAA policy.";
+    details.push(
+      "Reporting is optional in RFC 8659, so a CA may use this address or ignore it; it never blocks or allows issuance by itself.",
+    );
+  } else {
+    headline = `Publishes a CAA property tagged ${tag} for this name.`;
+  }
+
+  if (critical) {
+    details.push(
+      `The critical flag is set (128), so a certificate authority that does not understand the ${tag || "property"} tag must refuse to issue any certificate for this name instead of ignoring this record.`,
+    );
+  }
+  const reservedBits = flags & ~CAA_CRITICAL_FLAG;
+  if (reservedBits !== 0) {
+    details.push(
+      `flags=${flags} sets bits beyond the critical bit; RFC 8659 defines only bit 128 and requires the rest to be zero.`,
+    );
+  }
+
+  details.push(
+    "CAA is checked by the certificate authority at the moment a certificate is requested. Browsers never check it, so it has no effect on certificates that have already been issued.",
+  );
+
+  const recordName = (options?.recordName ?? "").trim();
+  if (recordName && recordName !== "@") {
+    details.push(
+      `Published at ${recordName}, so it governs that name and anything below it; a CA only climbs to the parent domain for names that have no CAA records of their own.`,
+    );
+  }
+
+  unknowns.push(
+    "The other CAA records at this name are not visible here, and a certificate authority reads the whole set together, so this record alone does not settle what may be issued.",
+  );
+  if (parameters && (tag === "issue" || tag === "issuewild")) {
+    unknowns.push(
+      `The parameters after the semicolon (${parameters}) are defined by ${issuer || "the named CA"} itself, so what they restrict cannot be determined here.`,
+    );
+  }
+  if (tag && tag !== "issue" && tag !== "issuewild" && tag !== "iodef") {
+    unknowns.push(
+      `${tag} is not a property tag defined by RFC 8659, so what a certificate authority does with it depends on the specification that introduced it.`,
+    );
+  }
+
+  return { headline, details, unknowns };
 }
 
 /**
@@ -83,6 +196,13 @@ export function CaaBuilder({
   >("issue");
   const [caaTagCustom, setCaaTagCustom] = useState<string>("");
   const [caaValue, setCaaValue] = useState<string>("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "tag",
+    "tagCustom",
+    "flags",
+    "critical",
+    "value",
+  ] as const);
 
   useEffect(() => {
     if (record.type !== "CAA") return;
@@ -155,7 +275,7 @@ export function CaaBuilder({
         ? caaTagCustom.trim().toLowerCase()
         : (caaTag as string);
     const flags = caaFlags ?? 0;
-    const critical = (flags & 128) !== 0;
+    const critical = (flags & CAA_CRITICAL_FLAG) !== 0;
     const value = (caaValue ?? "").trim();
 
     if (caaFlags !== undefined) {
@@ -290,13 +410,27 @@ export function CaaBuilder({
     caaTag === "custom"
       ? caaTagCustom.trim().toLowerCase()
       : (caaTag as string);
-  const critical = ((caaFlags ?? 0) & 128) !== 0;
+  const critical = ((caaFlags ?? 0) & CAA_CRITICAL_FLAG) !== 0;
+  const summary = useMemo(
+    () =>
+      describeCAA(
+        { flags: caaFlags, tag: effectiveTag, value: caaValue },
+        { recordName: record.name },
+      ),
+    [caaFlags, caaValue, effectiveTag, record.name],
+  );
   const valuePlaceholder =
     effectiveTag === "iodef"
       ? `mailto:security@${zoneName ?? "example.com"}`
       : effectiveTag === "issuewild"
         ? "letsencrypt.org (for wildcard certs)"
         : "letsencrypt.org";
+  const valueHelp =
+    effectiveTag === "iodef"
+      ? "Where a certificate authority should report a request it refuses under this policy: a mailto: address or an http(s) URL. Reporting is optional, so treat it as a courtesy channel."
+      : effectiveTag === "issuewild"
+        ? "The CAA identifier domain of the CA allowed to issue wildcard certificates, such as letsencrypt.org, optionally followed by ';' and CA-specific parameters. Leaving it empty names no CA and so forbids wildcard issuance."
+        : "The CAA identifier domain of the CA allowed to issue certificates, such as letsencrypt.org, optionally followed by ';' and CA-specific parameters. Leaving it empty names no CA and so forbids issuance.";
 
   return (
     <div className="space-y-2">
@@ -310,14 +444,25 @@ export function CaaBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Tag</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.tag}
+              descriptionId={helpIds.tag}
+              label="Tag"
+              help="Which property this record carries. issue names a CA allowed to issue certificates for this name, issuewild does the same for wildcard certificates only, and iodef gives CAs an address for reporting refused requests."
+            />
             <Select
               value={caaTag}
               onValueChange={(v: string) => setCaaTag(v as typeof caaTag)}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.tag}
+                aria-describedby={helpIds.tag}
+                className="h-9"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -328,19 +473,35 @@ export function CaaBuilder({
               </SelectContent>
             </Select>
             {caaTag === "custom" && (
-              <Input
-                className="mt-2"
-                value={caaTagCustom}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setCaaTagCustom(e.target.value)
-                }
-                placeholder="e.g., issue"
-              />
+              <div className="mt-2 space-y-1">
+                <BuilderFieldLabel
+                  controlId={fieldIds.tagCustom}
+                  descriptionId={helpIds.tagCustom}
+                  label="Custom tag"
+                  help="A property tag other than issue, issuewild or iodef, written in lowercase letters, digits and hyphens. Only use one a certificate authority documents, because a tag nobody recognizes is either ignored or, with the critical flag set, blocks issuance."
+                />
+                <Input
+                  id={fieldIds.tagCustom}
+                  aria-describedby={helpIds.tagCustom}
+                  value={caaTagCustom}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    setCaaTagCustom(e.target.value)
+                  }
+                  placeholder="e.g., issue"
+                />
+              </div>
             )}
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Flags</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.flags}
+              descriptionId={helpIds.flags}
+              label="Flags"
+              help="The CAA flags byte, from 0 to 255. Only bit 128 (critical) is defined; every other bit is reserved and should stay 0, so 0 is the usual value."
+            />
             <Input
+              id={fieldIds.flags}
+              aria-describedby={helpIds.flags}
               type="number"
               value={caaFlags ?? ""}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -354,13 +515,22 @@ export function CaaBuilder({
             </div>
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Critical</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.critical}
+              descriptionId={helpIds.critical}
+              label="Critical"
+              help="Sets flag bit 128. A certificate authority that does not understand this record's tag must then refuse to issue any certificate for this name, rather than ignoring the record."
+            />
             <div className="flex h-9 items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3">
               <Switch
+                id={fieldIds.critical}
+                aria-describedby={helpIds.critical}
                 checked={critical}
                 onCheckedChange={(checked: boolean) => {
                   const base = caaFlags ?? 0;
-                  const next = checked ? base | 128 : base & ~128;
+                  const next = checked
+                    ? base | CAA_CRITICAL_FLAG
+                    : base & ~CAA_CRITICAL_FLAG;
                   setCaaFlags(next);
                 }}
               />
@@ -375,8 +545,15 @@ export function CaaBuilder({
         </div>
 
         <div className="mt-2 space-y-1">
-          <Label className="text-xs">Value</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.value}
+            descriptionId={helpIds.value}
+            label="Value"
+            help={valueHelp}
+          />
           <Input
+            id={fieldIds.value}
+            aria-describedby={helpIds.value}
             value={caaValue}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setCaaValue(e.target.value)

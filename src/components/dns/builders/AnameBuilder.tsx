@@ -3,10 +3,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -33,6 +41,54 @@ function looksLikeHostname(value: string) {
   return labels.every(isValidDnsLabel);
 }
 
+export type AnameFields = {
+  target: string;
+  /** ANAME and ALIAS are the same feature under two vendor names. */
+  kind: "ANAME" | "ALIAS";
+};
+
+/**
+ * Plain-English description of a provider-flattened apex alias.
+ *
+ * ANAME/ALIAS is not an IETF record type: the provider resolves the target and
+ * serves its addresses at the owner name. Everything about how often that
+ * happens is provider policy, so it stays in `unknowns`.
+ */
+export function describeANAME(fields: AnameFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const target = normalizeDnsName(fields.target);
+
+  const headline = target
+    ? `Has the DNS provider look up ${target}'s A and AAAA records and serve those addresses at this name, giving CNAME-like aliasing at a name where a CNAME is not allowed.`
+    : "Has the DNS provider look up another hostname's A and AAAA records and serve those addresses at this name, giving CNAME-like aliasing at a name where a CNAME is not allowed.";
+
+  details.push(
+    `${fields.kind} is a provider feature rather than an IETF record type: the provider resolves the target and flattens the result, so clients only ever receive ordinary A and AAAA answers.`,
+  );
+  details.push(
+    "That flattening is what makes apex aliasing possible — a CNAME may not exist at a zone apex, which has to hold SOA and NS records.",
+  );
+  details.push(
+    "The addresses served are whatever the provider last resolved, so a change at the target only shows up here after the provider re-resolves it.",
+  );
+  details.push(
+    "Cloudflare has no ANAME or ALIAS type; it reaches the same result by flattening an ordinary CNAME record at the apex.",
+  );
+
+  unknowns.push(
+    `Whether this zone's provider supports ${fields.kind} at all, and how often it re-resolves the target, cannot be determined here.`,
+  );
+  if (target) {
+    unknowns.push(
+      `Which addresses end up being served depends on the A and AAAA records published at ${target}, which cannot be checked from here.`,
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function AnameBuilder({
   record,
   onRecordChange,
@@ -43,6 +99,16 @@ export function AnameBuilder({
   onWarningsChange?: BuilderWarningsChange;
 }) {
   const [target, setTarget] = useState("");
+  const { fieldIds, helpIds } = useBuilderFieldIds(["target"] as const);
+
+  const summary = useMemo(
+    () =>
+      describeANAME({
+        target,
+        kind: record.type === "ALIAS" ? "ALIAS" : "ANAME",
+      }),
+    [record.type, target],
+  );
 
   useEffect(() => {
     if (record.type !== "ANAME" && record.type !== "ALIAS") return;
@@ -140,10 +206,19 @@ export function AnameBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-6">
-            <Label className="text-xs">Target</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.target}
+              descriptionId={helpIds.target}
+              label="Target"
+              help="The hostname whose A and AAAA records should be served at this name, such as app.example.net. Give a hostname only — no scheme, port or path — and make sure it publishes address records of its own."
+            />
             <Input
+              id={fieldIds.target}
+              aria-describedby={helpIds.target}
               placeholder="e.g., target.example.com"
               value={target}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

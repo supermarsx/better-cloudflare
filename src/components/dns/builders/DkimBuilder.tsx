@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,10 +12,166 @@ import {
 } from "@/components/ui/select";
 import { unquoteCharacterString } from "@/lib/dns/character-string";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { joinList } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function uniquePush(list: string[], msg: string) {
   if (!list.includes(msg)) list.push(msg);
+}
+
+export type DkimKeyType = "rsa" | "ed25519";
+
+export type DkimFields = {
+  keyType: DkimKeyType;
+  selector: string;
+  publicKey: string;
+  testMode: boolean;
+  strictMode: boolean;
+  serviceType: string;
+  hashAlgs: string;
+  granularity: string;
+  notes: string;
+};
+
+const DKIM_KEY_TYPE_LABEL: Record<DkimKeyType, string> = {
+  rsa: "RSA",
+  ed25519: "Ed25519",
+};
+
+/** Split a colon-separated DKIM list tag (`t=`, `h=`) into its lowercase parts. */
+function splitDkimList(value: string) {
+  return value
+    .split(":")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Plain-English description of the DKIM key record being assembled.
+ *
+ * `hasDkimContent` distinguishes the two meanings of an empty `p=`: on a blank
+ * form it is simply unfinished, but in a record that already reads `v=DKIM1`
+ * it is a deliberate revocation (RFC 6376 §3.6.1).
+ */
+export function describeDKIM(
+  fields: DkimFields,
+  options?: { hasDkimContent?: boolean },
+): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const selector = fields.selector.trim();
+  const selectorClause = selector ? ` made with selector ${selector}` : "";
+  const key = fields.publicKey.trim().replace(/\s+/g, "");
+
+  let headline: string;
+  if (!key && !options?.hasDkimContent) {
+    headline = `Will publish the public key that receiving mail servers use to verify DKIM signatures${selectorClause} for this domain. Paste in the base64 key your sending service issued.`;
+  } else if (!key) {
+    headline = `Revokes the DKIM key for ${selector ? `selector ${selector}` : "this selector"}: p= is empty, so receivers must treat every signature made with it as failing.`;
+    details.push(
+      "Mail already in flight that was signed with this selector stops verifying as soon as receivers pick the change up.",
+    );
+  } else {
+    headline = `Publishes the ${DKIM_KEY_TYPE_LABEL[fields.keyType]} public key that receiving mail servers use to verify DKIM signatures${selectorClause} for this domain.`;
+    details.push(
+      "Only verification is published here; the matching private key has to be installed at whatever service sends the mail.",
+    );
+  }
+
+  if (!selector) {
+    details.push(
+      "No selector is set yet, so the name this record has to be published at, <selector>._domainkey, is still undecided.",
+    );
+  }
+
+  if (fields.keyType === "ed25519" && key) {
+    details.push(
+      "Ed25519 signatures (RFC 8463) are only checked by receivers that support them, so an RSA selector is usually published alongside.",
+    );
+  }
+
+  if (fields.testMode) {
+    details.push(
+      "Testing mode is on (t=y): receivers must not treat mail that fails this key any differently from unsigned mail, so the key protects nothing until testing mode is switched off.",
+    );
+  }
+  if (fields.strictMode) {
+    details.push(
+      "Strict mode is on (t=s): a signature's i= identity must be this exact domain, so signatures claiming a subdomain of it are not accepted.",
+    );
+  }
+
+  // Tags left at their default only deserve a mention while there is a key for
+  // them to qualify; on a revoked selector they describe nothing.
+  const serviceType = fields.serviceType.trim().toLowerCase();
+  if (!serviceType || serviceType === "*") {
+    if (key) {
+      details.push(
+        "Every service type may use this key, which is the s= default.",
+      );
+    }
+  } else if (serviceType === "email") {
+    details.push("This key may only be used to sign email (s=email).");
+  } else {
+    unknowns.push(
+      `s=${fields.serviceType.trim()} restricts the key to a service type RFC 6376 does not define; what it permits is decided by whatever specification introduced that name.`,
+    );
+  }
+
+  const hashes = splitDkimList(fields.hashAlgs);
+  if (!hashes.length) {
+    if (key) {
+      details.push(
+        "Signatures may use any hash algorithm the receiver supports, because h= is omitted.",
+      );
+    }
+  } else {
+    details.push(
+      `Signatures must use ${joinList(hashes, "or")}; a signature using any other hash is rejected.`,
+    );
+    if (hashes.includes("sha1")) {
+      details.push(
+        "sha1 is listed as acceptable, and RFC 8301 deprecates SHA-1 for DKIM, so many receivers will not verify those signatures anyway.",
+      );
+    }
+    const unrecognised = hashes.filter(
+      (hash) => hash !== "sha1" && hash !== "sha256",
+    );
+    if (unrecognised.length) {
+      details.push(
+        `Receivers ignore the ${joinList(unrecognised)} ${unrecognised.length === 1 ? "entry" : "entries"}, because unrecognized h= algorithms must be skipped rather than rejected.`,
+      );
+    }
+  }
+
+  if (fields.granularity.trim()) {
+    details.push(
+      "g= was removed in RFC 6376 and current verifiers ignore it; only older RFC 4871 implementations still use it to restrict which local-part may sign.",
+    );
+  }
+  if (fields.notes.trim()) {
+    details.push(
+      "n= is a note for whoever reads this record; verifiers must not base any decision on it.",
+    );
+  }
+
+  if (key) {
+    unknowns.push(
+      "The key material is opaque base64 here, so its strength — for RSA, the modulus size — cannot be determined from this form.",
+    );
+  }
+
+  return { headline, details, unknowns };
 }
 
 /**
@@ -213,6 +368,17 @@ export function DkimBuilder({
   const [hashAlgs, setHashAlgs] = useState<string>("");
   const [granularity, setGranularity] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "keyType",
+    "selector",
+    "mode",
+    "publicKey",
+    "hashAlgs",
+    "hashAlgsCustom",
+    "serviceType",
+    "granularity",
+    "notes",
+  ] as const);
 
   useEffect(() => {
     if (record.type !== "TXT") return;
@@ -323,6 +489,41 @@ export function DkimBuilder({
     testMode,
   ]);
 
+  const summary = useMemo(
+    () =>
+      describeDKIM(
+        {
+          keyType,
+          selector,
+          publicKey,
+          testMode,
+          strictMode,
+          serviceType,
+          hashAlgs,
+          granularity,
+          notes,
+        },
+        {
+          hasDkimContent: unquoteCharacterString(record.content)
+            .trim()
+            .toLowerCase()
+            .startsWith("v=dkim1"),
+        },
+      ),
+    [
+      granularity,
+      hashAlgs,
+      keyType,
+      notes,
+      publicKey,
+      record.content,
+      selector,
+      serviceType,
+      strictMode,
+      testMode,
+    ],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     onWarningsChange({
@@ -343,16 +544,27 @@ export function DkimBuilder({
         DKIM builder
       </div>
 
+      <RecordSummary summary={summary} className="mt-2" />
+
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Key type</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.keyType}
+            descriptionId={helpIds.keyType}
+            label="Key type"
+            help="Algorithm of the key in p=, published as k=. RSA is the default and every receiver verifies it; Ed25519 (RFC 8463) keys are much shorter but only newer receivers check them."
+          />
           <Select
             value={keyType}
             onValueChange={(value: string) =>
               setKeyType(value as "rsa" | "ed25519")
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.keyType}
+              aria-describedby={helpIds.keyType}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -363,8 +575,15 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Selector</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.selector}
+            descriptionId={helpIds.selector}
+            label="Selector"
+            help="Names this key so one domain can publish several. It becomes part of the record name and must match the selector the sending service signs with; letters, digits, hyphens and underscores only."
+          />
           <Input
+            id={fieldIds.selector}
+            aria-describedby={helpIds.selector}
             value={selector}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setSelector(e.target.value)
@@ -377,7 +596,12 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Mode</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.mode}
+            descriptionId={helpIds.mode}
+            label="Mode"
+            help="Sets the t= flags. Test (t=y) tells receivers to treat failures from this key exactly like unsigned mail, and strict (t=s) forbids a signature identity that is a subdomain of this domain. Production omits t= and is the normal choice."
+          />
           <Select
             value={
               testMode && strictMode
@@ -404,7 +628,11 @@ export function DkimBuilder({
               }
             }}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.mode}
+              aria-describedby={helpIds.mode}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -417,8 +645,15 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-6">
-          <Label className="text-xs">Public key (p=)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.publicKey}
+            descriptionId={helpIds.publicKey}
+            label="Public key (p=)"
+            help="The base64 public key your sending service issued, with the PEM header, footer and line breaks stripped out. Leaving it empty publishes a revocation, telling receivers that signatures made with this selector are no longer valid."
+          />
           <Input
+            id={fieldIds.publicKey}
+            aria-describedby={helpIds.publicKey}
             value={publicKey}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setPublicKey(e.target.value)
@@ -428,7 +663,12 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">h= (hash algorithms)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.hashAlgs}
+            descriptionId={helpIds.hashAlgs}
+            label="h= (hash algorithms)"
+            help="Restricts which hash algorithms a signature made with this key may use. Omitting it accepts every algorithm the receiver supports; sha256 is the modern choice and RFC 8301 deprecates sha1."
+          />
           <Select
             value={hashPreset}
             onValueChange={(value: string) => {
@@ -437,7 +677,11 @@ export function DkimBuilder({
               else setHashAlgs(value);
             }}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id={fieldIds.hashAlgs}
+              aria-describedby={helpIds.hashAlgs}
+              className="h-9"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -450,20 +694,36 @@ export function DkimBuilder({
             </SelectContent>
           </Select>
           {hashPreset === "custom" && (
-            <Input
-              className="mt-2"
-              value={hashAlgs}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                setHashAlgs(e.target.value)
-              }
-              placeholder="e.g., sha256"
-            />
+            <div className="mt-2 space-y-1">
+              <BuilderFieldLabel
+                controlId={fieldIds.hashAlgsCustom}
+                descriptionId={helpIds.hashAlgsCustom}
+                label="h= (custom list)"
+                help="Colon-separated list of the hash algorithms to accept, for example sha256 or sha1:sha256. Receivers ignore any entry they do not recognize rather than failing the signature."
+              />
+              <Input
+                id={fieldIds.hashAlgsCustom}
+                aria-describedby={helpIds.hashAlgsCustom}
+                value={hashAlgs}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setHashAlgs(e.target.value)
+                }
+                placeholder="e.g., sha256"
+              />
+            </div>
           )}
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">s= (service type)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.serviceType}
+            descriptionId={helpIds.serviceType}
+            label="s= (service type)"
+            help="Restricts which service types may use this key. The defined values are * (every service, and the default when omitted) and email; leave it empty unless your provider asks for it."
+          />
           <Input
+            id={fieldIds.serviceType}
+            aria-describedby={helpIds.serviceType}
             value={serviceType}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setServiceType(e.target.value)
@@ -473,8 +733,15 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">g= (granularity)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.granularity}
+            descriptionId={helpIds.granularity}
+            label="g= (granularity)"
+            help="A local-part pattern from the older DKIM spec that limited which address could sign. RFC 6376 removed the tag and current verifiers ignore it, so leave it empty."
+          />
           <Input
+            id={fieldIds.granularity}
+            aria-describedby={helpIds.granularity}
             value={granularity}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setGranularity(e.target.value)
@@ -484,8 +751,15 @@ export function DkimBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-6">
-          <Label className="text-xs">n= (notes)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.notes}
+            descriptionId={helpIds.notes}
+            label="n= (notes)"
+            help="Free text for whoever reads this record, such as which service the key belongs to. Verifiers must ignore it, so it changes nothing about how mail is handled."
+          />
           <Input
+            id={fieldIds.notes}
+            aria-describedby={helpIds.notes}
             value={notes}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
               setNotes(e.target.value)

@@ -3,9 +3,17 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function isBase64Like(value: string) {
   if (!value) return false;
@@ -15,6 +23,69 @@ function isBase64Like(value: string) {
 
 function canonicalizeBase64(value: string) {
   return (value ?? "").trim().replace(/\s+/g, "");
+}
+
+/** Decoded size of a base64 string, used only for rough "how big is this" prose. */
+function approximateDecodedBytes(base64: string) {
+  const padding = /=*$/.exec(base64)?.[0].length ?? 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+export type OpenpgpkeyFields = {
+  keyData: string;
+};
+
+/**
+ * Plain-English description of the OPENPGPKEY record the builder is assembling.
+ *
+ * RFC 7929: the RDATA is a binary OpenPGP Transferable Public Key (shown here
+ * in base64) published under a hash of the mailbox local-part, so a
+ * correspondent can find the key for one address without using a keyserver.
+ * The record only carries authority when the zone is DNSSEC-signed.
+ */
+export function describeOPENPGPKEY(fields: OpenpgpkeyFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const key = canonicalizeBase64(fields.keyData);
+
+  const headline = key
+    ? "Lets mail software that supports OpenPGP key discovery fetch the public key for the single email address this record is published under, instead of looking it up on a keyserver."
+    : "Publishes the OpenPGP public key for a single email address so correspondents can find it in DNS instead of on a keyserver.";
+
+  if (!key) {
+    details.push(
+      "No key data has been entered yet, so the record is incomplete.",
+    );
+  } else {
+    details.push(
+      "The record holds an OpenPGP Transferable Public Key: binary data in DNS, written as base64 here.",
+    );
+    const bytes = approximateDecodedBytes(key);
+    if (isBase64Like(key) && bytes > 1000) {
+      details.push(
+        `The key decodes to roughly ${bytes} bytes, which is larger than a typical UDP DNS answer, so resolvers may need EDNS or a TCP retry to fetch it.`,
+      );
+    }
+  }
+
+  details.push(
+    "The key is only trustworthy if the zone is signed with DNSSEC and the client validates the answer; without DNSSEC anyone able to spoof DNS can substitute their own key.",
+  );
+  details.push(
+    "Only mail software that implements RFC 7929 discovery looks for this record, and many clients do not.",
+  );
+
+  unknowns.push(
+    "The owner name is a truncated SHA-256 hash of the mailbox local-part, so whether this record covers the intended email address cannot be verified from here.",
+  );
+  if (key) {
+    unknowns.push(
+      "The key material is opaque in this form: which key it is, and which user IDs or expiry it carries, cannot be read here.",
+    );
+  }
+
+  return { headline, details, unknowns };
 }
 
 export function OpenpgpkeyBuilder({
@@ -27,6 +98,9 @@ export function OpenpgpkeyBuilder({
   onWarningsChange?: BuilderWarningsChange;
 }) {
   const [keyData, setKeyData] = useState("");
+  const { fieldIds, helpIds } = useBuilderFieldIds(["keyData"] as const);
+
+  const summary = useMemo(() => describeOPENPGPKEY({ keyData }), [keyData]);
 
   useEffect(() => {
     if (record.type !== "OPENPGPKEY") return;
@@ -126,9 +200,18 @@ export function OpenpgpkeyBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 space-y-1">
-          <Label className="text-xs">Public key (base64)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.keyData}
+            descriptionId={helpIds.keyData}
+            label="Public key (base64)"
+            help="The OpenPGP Transferable Public Key for this mailbox, base64-encoded. Export the public key in binary form (for example gpg --export) and base64 it; do not paste the ASCII-armoured block with its BEGIN and END lines."
+          />
           <Input
+            id={fieldIds.keyData}
+            aria-describedby={helpIds.keyData}
             placeholder="base64…"
             value={keyData}
             onChange={(e: ChangeEvent<HTMLInputElement>) => {

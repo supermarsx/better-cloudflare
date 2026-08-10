@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,7 +12,16 @@ import {
 } from "@/components/ui/select";
 import { composeSSHFP, parseSSHFP } from "@/lib/dns/dns-parsers";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 const SSHFP_ALGORITHMS = [
   { value: "1", label: "1 (RSA)", desc: "RSA public key fingerprint." },
@@ -29,6 +37,104 @@ const SSHFP_FPTYPES = [
 
 function isHex(value: string) {
   return /^[0-9a-fA-F]+$/.test(value);
+}
+
+export type SshfpFields = {
+  algorithm: number | undefined;
+  fptype: number | undefined;
+  fingerprint: string;
+  /** The record's owner name: the host whose key is being published. */
+  name?: string;
+};
+
+/** Host key algorithms registered for SSHFP (RFC 4255 and later additions). */
+const SSHFP_ALGORITHM_NAMES: Record<number, string> = {
+  1: "RSA",
+  2: "DSA",
+  3: "ECDSA",
+  4: "Ed25519",
+};
+
+const SSHFP_FPTYPE_NAMES: Record<number, string> = {
+  1: "SHA-1",
+  2: "SHA-256",
+};
+
+function describeSshfpHost(name: string | undefined) {
+  const raw = (name ?? "").trim().replace(/\.$/, "");
+  if (!raw || raw === "@") return "this host";
+  return raw;
+}
+
+/**
+ * Plain-English description of the SSH host key fingerprint being published.
+ *
+ * The two prerequisites in `unknowns` are the reason SSHFP so often looks
+ * installed but does nothing: without a signed zone and a client configured to
+ * consult DNS, the record is never consulted at all.
+ */
+export function describeSSHFP(fields: SshfpFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const host = describeSshfpHost(fields.name);
+  const algorithmName =
+    fields.algorithm !== undefined
+      ? SSHFP_ALGORITHM_NAMES[fields.algorithm]
+      : undefined;
+  const fptypeName =
+    fields.fptype !== undefined ? SSHFP_FPTYPE_NAMES[fields.fptype] : undefined;
+
+  const headline = algorithmName
+    ? `Lets SSH clients verify the ${algorithmName} host key of ${host} from DNS, instead of asking the user to accept an unknown key on first connection.`
+    : `Publishes a fingerprint of an SSH host key so clients can verify ${host} from DNS instead of trusting it on first connection; choose the key algorithm to continue.`;
+
+  if (fields.algorithm !== undefined && !algorithmName) {
+    unknowns.push(
+      `Algorithm ${fields.algorithm} is not one of the SSHFP host key algorithms this builder knows (1 RSA, 2 DSA, 3 ECDSA, 4 Ed25519), so which key this record covers cannot be determined here.`,
+    );
+  }
+
+  if (fptypeName) {
+    details.push(
+      `The value below is a ${fptypeName} hash of that host's public key.`,
+    );
+  } else if (fields.fptype !== undefined) {
+    unknowns.push(
+      `Fingerprint type ${fields.fptype} is not one of the defined types (1 SHA-1, 2 SHA-256), so how the fingerprint is computed cannot be determined here.`,
+    );
+  }
+
+  if (fields.fptype === 1) {
+    details.push(
+      "SHA-1 fingerprints are deprecated and are not accepted by current OpenSSH; publish a SHA-256 (type 2) record instead.",
+    );
+  }
+
+  if (fields.algorithm === 2) {
+    details.push(
+      "DSA host keys are disabled by default in current OpenSSH, so a record for one is unlikely to be used.",
+    );
+  }
+
+  details.push(
+    "A host publishes one SSHFP record per host key algorithm it offers, so a server with both RSA and Ed25519 keys needs a record for each.",
+  );
+
+  if (!fields.fingerprint.trim()) {
+    details.push(
+      "No fingerprint is entered yet, so the record does not identify a key.",
+    );
+  }
+
+  unknowns.push(
+    "Clients only consult this record when the zone is DNSSEC-signed and the client has VerifyHostKeyDNS enabled; otherwise it is ignored and the user is still prompted.",
+  );
+  unknowns.push(
+    "Whether this fingerprint matches the key the host actually presents cannot be checked from this form.",
+  );
+
+  return { headline, details, unknowns };
 }
 
 export function SshfpBuilder({
@@ -48,6 +154,25 @@ export function SshfpBuilder({
     "preset",
   );
   const [fptypeMode, setFptypeMode] = useState<"preset" | "custom">("preset");
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "algorithm",
+    "algorithmCustom",
+    "fptype",
+    "fptypeCustom",
+    "fingerprint",
+  ] as const);
+
+  const summary = useMemo(
+    () =>
+      describeSSHFP({
+        algorithm,
+        fptype,
+        fingerprint,
+        name: record.name,
+      }),
+    [algorithm, fingerprint, fptype, record.name],
+  );
 
   const algorithmSelectValue = useMemo(() => {
     const val = algorithm;
@@ -192,9 +317,16 @@ export function SshfpBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Algorithm</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.algorithm}
+              descriptionId={helpIds.algorithm}
+              label="Algorithm"
+              help="Which of the host's key algorithms this fingerprint belongs to: 1 is RSA, 2 is DSA, 3 is ECDSA and 4 is Ed25519. Publish one record per algorithm the host actually offers."
+            />
             <Select
               value={algorithmSelectValue}
               onValueChange={(value: string) => {
@@ -216,7 +348,11 @@ export function SshfpBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.algorithm}
+                aria-describedby={helpIds.algorithm}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -229,25 +365,35 @@ export function SshfpBuilder({
               </SelectContent>
             </Select>
             {algorithmMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={algorithm ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setAlgorithm(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeSSHFP(
-                      val,
-                      fptype,
-                      fingerprint.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.algorithmCustom}
+                  descriptionId={helpIds.algorithmCustom}
+                  label="Custom algorithm value"
+                  help="An algorithm number outside 1–4. Clients skip SSHFP records whose algorithm they do not recognise, so a custom value normally means the record is never used."
+                />
+                <Input
+                  id={fieldIds.algorithmCustom}
+                  aria-describedby={helpIds.algorithmCustom}
+                  className="mt-2"
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={algorithm ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setAlgorithm(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeSSHFP(
+                        val,
+                        fptype,
+                        fingerprint.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               {SSHFP_ALGORITHMS.find((a) => Number(a.value) === algorithm)
@@ -256,7 +402,12 @@ export function SshfpBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Fingerprint type</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.fptype}
+              descriptionId={helpIds.fptype}
+              label="Fingerprint type"
+              help="How the key fingerprint is hashed: 1 is SHA-1 and 2 is SHA-256. Use 2; SHA-1 is deprecated and current OpenSSH will not accept it."
+            />
             <Select
               value={fptypeSelectValue}
               onValueChange={(value: string) => {
@@ -278,7 +429,11 @@ export function SshfpBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.fptype}
+                aria-describedby={helpIds.fptype}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -291,25 +446,35 @@ export function SshfpBuilder({
               </SelectContent>
             </Select>
             {fptypeMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 2"
-                value={fptype ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setFptype(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeSSHFP(
-                      algorithm,
-                      val,
-                      fingerprint.trim().replace(/\s+/g, ""),
-                    ),
-                  });
-                }}
-              />
+              <>
+                <BuilderFieldLabel
+                  controlId={fieldIds.fptypeCustom}
+                  descriptionId={helpIds.fptypeCustom}
+                  label="Custom fingerprint type value"
+                  help="A fingerprint type outside 1–2. Only 1 (SHA-1) and 2 (SHA-256) are defined for SSHFP; clients ignore types they do not recognise."
+                />
+                <Input
+                  id={fieldIds.fptypeCustom}
+                  aria-describedby={helpIds.fptypeCustom}
+                  className="mt-2"
+                  type="number"
+                  placeholder="e.g., 2"
+                  value={fptype ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setFptype(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeSSHFP(
+                        algorithm,
+                        val,
+                        fingerprint.trim().replace(/\s+/g, ""),
+                      ),
+                    });
+                  }}
+                />
+              </>
             )}
             <div className="text-[11px] text-muted-foreground">
               {SSHFP_FPTYPES.find((f) => Number(f.value) === fptype)?.desc ??
@@ -318,8 +483,15 @@ export function SshfpBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Fingerprint</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.fingerprint}
+              descriptionId={helpIds.fingerprint}
+              label="Fingerprint"
+              help="The hex digest of the host's public key, as printed by ssh-keygen -r for that host. SHA-256 fingerprints are 64 hex characters and SHA-1 fingerprints are 40."
+            />
             <Input
+              id={fieldIds.fingerprint}
+              aria-describedby={helpIds.fingerprint}
               placeholder="e.g., <hex>"
               value={fingerprint}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

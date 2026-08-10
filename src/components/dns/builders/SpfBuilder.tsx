@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -16,7 +15,17 @@ import type { SPFGraph, SPFMechanism, SPFRecord } from "@/lib/dns/spf";
 import { composeSPF, parseSPF, validateSPF } from "@/lib/dns/spf";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { joinList } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 /** Fallback used when the draft content is not parseable as SPF. */
 function emptySpfRecord(): SPFRecord {
@@ -92,6 +101,170 @@ function tldOf(hostname: string) {
   return tld;
 }
 
+/** Plain-English phrase for the senders a single SPF mechanism matches. */
+function describeSpfMechanism(mech: SPFMechanism): string {
+  const value = (mech.value ?? "").trim();
+  switch (mech.mechanism) {
+    case "ip4":
+      return value.includes("/")
+        ? `the IPv4 range ${value}`
+        : `the IPv4 address ${value}`;
+    case "ip6":
+      return value.includes("/")
+        ? `the IPv6 range ${value}`
+        : `the IPv6 address ${value}`;
+    case "a":
+      return value
+        ? `any host with an A or AAAA record for ${value}`
+        : "any host with an A or AAAA record for this domain";
+    case "mx":
+      return value
+        ? `the mail servers listed in ${value}'s MX records`
+        : "the mail servers listed in this domain's MX records";
+    case "include":
+      return `any sender authorized by ${value || "another domain"}'s own SPF record`;
+    case "exists":
+      return `any sender for which a lookup of ${value || "a domain"} resolves`;
+    case "ptr":
+      return value
+        ? `any host whose reverse DNS name lies under ${value}`
+        : "any host whose reverse DNS name lies under this domain";
+    case "all":
+      return "every sender";
+    default:
+      return `${mech.mechanism}${value ? `:${value}` : ""}`;
+  }
+}
+
+const SPF_QUALIFIER_RESULT: Record<string, string> = {
+  "-": "rejected as a forgery (fail)",
+  "~": "marked suspicious but usually still delivered (softfail)",
+  "?": "given no verdict either way (neutral)",
+};
+
+/**
+ * Plain-English description of the SPF policy being assembled.
+ *
+ * Mechanisms are evaluated left to right and the first match wins (RFC 7208
+ * §4.6.2), so the summary reports the pass list first and then what happens to
+ * everything that matched nothing.
+ */
+export function describeSPF(
+  spf: SPFRecord | null,
+  options?: { hasContent?: boolean; lookupEstimate?: number },
+): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  if (!spf) {
+    return {
+      headline: options?.hasContent
+        ? "This content is not a readable SPF record, so nothing can be described yet. An SPF record must begin with v=spf1."
+        : "Will list the servers allowed to send mail using addresses at this domain. Add an entry for each sending service, then finish with ~all or -all.",
+    };
+  }
+
+  const mechanisms = spf.mechanisms ?? [];
+  const nonAll = mechanisms.filter((m) => m.mechanism !== "all");
+  const allMech = mechanisms.find((m) => m.mechanism === "all");
+  const passes = nonAll.filter((m) => !m.qualifier || m.qualifier === "+");
+  const excluded = nonAll.filter((m) => m.qualifier && m.qualifier !== "+");
+  const redirect =
+    spf.modifiers?.find((m) => m.key === "redirect")?.value?.trim() ?? "";
+  const exp = spf.modifiers?.find((m) => m.key === "exp")?.value?.trim() ?? "";
+
+  let headline: string;
+  if (passes.length) {
+    headline = `Authorizes mail for this domain from ${joinList(
+      passes.map(describeSpfMechanism),
+    )}.`;
+  } else if (mechanisms.length || redirect) {
+    headline =
+      "Authorizes no senders directly for this domain — no mechanism grants a pass.";
+  } else {
+    headline =
+      "Declares an SPF record with no rules yet, which gives every sender a neutral result and provides no protection.";
+  }
+
+  if (allMech) {
+    const qualifier = allMech.qualifier ?? "+";
+    if (qualifier === "+") {
+      headline += ` The trailing +all then authorizes every other server on the internet, which disables SPF protection entirely.`;
+    } else {
+      headline += ` Mail from any other server is ${
+        SPF_QUALIFIER_RESULT[qualifier] ??
+        "handled by the trailing all mechanism"
+      }.`;
+    }
+    const allIndex = mechanisms.indexOf(allMech);
+    if (allIndex !== mechanisms.length - 1) {
+      details.push(
+        `${mechanisms.length - 1 - allIndex} entr${
+          mechanisms.length - 1 - allIndex === 1 ? "y is" : "ies are"
+        } listed after all and will never be evaluated, because all matches every sender.`,
+      );
+    }
+    if (redirect) {
+      details.push(
+        `redirect=${redirect} is ignored while an all mechanism is present, because all always matches first.`,
+      );
+    }
+  } else if (redirect) {
+    headline += ` If nothing above matches, the SPF policy published at ${redirect} is used in place of this one.`;
+  } else {
+    headline +=
+      " Senders that match nothing get a neutral result, because there is no all mechanism or redirect=.";
+  }
+
+  for (const mech of excluded) {
+    const qualifier = mech.qualifier ?? "";
+    details.push(
+      `Mail from ${describeSpfMechanism(mech)} is ${
+        SPF_QUALIFIER_RESULT[qualifier] ?? "handled by its qualifier"
+      }, and that is decided before any later entry is considered.`,
+    );
+  }
+
+  const lookups = options?.lookupEstimate;
+  if (typeof lookups === "number") {
+    details.push(
+      lookups > 10
+        ? `Needs about ${lookups} DNS lookups, over the limit of 10; receivers will return permerror and SPF will fail outright.`
+        : `Needs about ${lookups} of the 10 DNS lookups SPF allows.`,
+    );
+  }
+
+  if (nonAll.some((m) => m.mechanism === "ptr")) {
+    details.push(
+      "ptr is deprecated (RFC 7208 §5.5): it is slow, unreliable, and some receivers ignore it.",
+    );
+  }
+
+  if (exp) {
+    details.push(
+      `On a fail, receivers may fetch an explanation string from ${exp} to include in the bounce.`,
+    );
+  }
+
+  const includes = nonAll
+    .filter((m) => m.mechanism === "include" && (m.value ?? "").trim())
+    .map((m) => (m.value ?? "").trim());
+  if (includes.length) {
+    unknowns.push(
+      `The senders allowed via ${joinList(
+        includes,
+      )} are whatever those domains publish today, and can change without notice.`,
+    );
+  }
+  if (nonAll.some((m) => m.mechanism === "exists")) {
+    unknowns.push(
+      "exists: targets are macro-expanded per message, so which senders they match depends on the sending IP and envelope sender.",
+    );
+  }
+
+  return { headline, details, unknowns };
+}
+
 export function SpfBuilder({
   record,
   onRecordChange,
@@ -127,6 +300,14 @@ export function SpfBuilder({
   } | null>(null);
   const [graph, setGraph] = useState<SPFGraph | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "qualifier",
+    "mechanism",
+    "value",
+    "redirect",
+    "simIp",
+  ] as const);
 
   const parsed = useMemo(() => parseSPF(record.content), [record.content]);
 
@@ -273,6 +454,15 @@ export function SpfBuilder({
     };
   }, [parsed, record.content]);
 
+  const summary = useMemo(
+    () =>
+      describeSPF(parsed, {
+        hasContent: Boolean((record.content ?? "").trim()),
+        lookupEstimate: diagnostics.lookupEstimate,
+      }),
+    [diagnostics.lookupEstimate, parsed, record.content],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     onWarningsChange({
@@ -373,16 +563,27 @@ export function SpfBuilder({
         </div>
       </div>
 
+      <RecordSummary summary={summary} className="mt-2" />
+
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
         <div className="space-y-1 sm:col-span-1">
-          <Label className="text-xs">Qualifier</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.qualifier}
+            descriptionId={helpIds.qualifier}
+            label="Qualifier"
+            help="Result when this entry matches the sending server: + authorizes it, - marks it a forgery, ~ marks it suspicious but still deliverable, ? gives no verdict. Most entries use +."
+          />
           <Select
             value={newQualifier || "+"}
             onValueChange={(value: string) =>
               setNewQualifier(value === "+" ? "" : value)
             }
           >
-            <SelectTrigger className="h-8">
+            <SelectTrigger
+              id={fieldIds.qualifier}
+              aria-describedby={helpIds.qualifier}
+              className="h-8"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -395,12 +596,21 @@ export function SpfBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Mechanism</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.mechanism}
+            descriptionId={helpIds.mechanism}
+            label="Mechanism"
+            help="How senders are matched. ip4/ip6 name addresses directly and cost no DNS lookup; include defers to another provider's SPF record; a and mx match this domain's own hosts; all matches everything and belongs last. a, mx, include, exists and ptr each consume one of the 10 permitted lookups."
+          />
           <Select
             value={newMechanism}
             onValueChange={(value: string) => setNewMechanism(value)}
           >
-            <SelectTrigger className="h-8">
+            <SelectTrigger
+              id={fieldIds.mechanism}
+              aria-describedby={helpIds.mechanism}
+              className="h-8"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -417,8 +627,15 @@ export function SpfBuilder({
         </div>
 
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Value</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.value}
+            descriptionId={helpIds.value}
+            label="Value"
+            help="What the mechanism matches: a CIDR for ip4/ip6 (192.0.2.0/24), a domain for include and exists, and an optional domain for a, mx and ptr — leaving those blank means this domain. The all mechanism takes no value."
+          />
           <Input
+            id={fieldIds.value}
+            aria-describedby={helpIds.value}
             className="h-8"
             value={newMechanism === "all" ? "" : newValue}
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
@@ -548,12 +765,17 @@ export function SpfBuilder({
       </div>
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
-        <div className="text-xs font-semibold text-muted-foreground">
-          Redirect (optional)
-        </div>
+        <BuilderFieldLabel
+          controlId={fieldIds.redirect}
+          descriptionId={helpIds.redirect}
+          label="Redirect (optional)"
+          help="Hands the whole policy decision to another domain's SPF record when no mechanism above matches. It replaces this record's result rather than adding to it, is ignored whenever an all mechanism is present, and costs one DNS lookup."
+        />
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-5">
           <div className="sm:col-span-4">
             <Input
+              id={fieldIds.redirect}
+              aria-describedby={helpIds.redirect}
               className="h-8"
               value={redirect}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
@@ -627,8 +849,16 @@ export function SpfBuilder({
           <div className="text-xs font-semibold text-muted-foreground">
             Test
           </div>
+          <BuilderFieldLabel
+            controlId={fieldIds.simIp}
+            descriptionId={helpIds.simIp}
+            label="Simulate sending IP"
+            help="A sending server address to evaluate against the live SPF record for this name, showing the result a receiver would reach and how many DNS lookups it took."
+          />
           <div className="mt-2 flex flex-wrap gap-2">
             <Input
+              id={fieldIds.simIp}
+              aria-describedby={helpIds.simIp}
               className="h-8 flex-1 min-w-48"
               placeholder="simulate IP e.g., 203.0.113.10"
               value={simIp}

@@ -1,9 +1,8 @@
 import type { ChangeEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -12,7 +11,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { joinList, pluralize } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 type SvcParam = {
   id: string;
@@ -251,6 +260,249 @@ const PARAM_PRESETS = [
   { value: "custom", label: "Custom…", mode: "keyValue" as const },
 ] as const;
 
+const KNOWN_SVC_PARAMS = new Set([
+  "alpn",
+  "no-default-alpn",
+  "port",
+  "ipv4hint",
+  "ipv6hint",
+  "ech",
+  "dohpath",
+  "mandatory",
+]);
+
+/** Application protocols an `alpn` token can name, for readable prose. */
+const ALPN_PROTOCOL_NAMES: Record<string, string> = {
+  h3: "HTTP/3",
+  h2: "HTTP/2",
+  "http/1.1": "HTTP/1.1",
+  "http/1.0": "HTTP/1.0",
+  dot: "DNS over TLS",
+  doq: "DNS over QUIC",
+};
+
+export type SvcbFields = {
+  kind: "SVCB" | "HTTPS";
+  priority: number | undefined;
+  target: string;
+  params: SvcParam[];
+};
+
+/** Per-parameter help, so the value box explains the value it wants. */
+export function svcbParamHelp(key: string) {
+  switch (key.trim().toLowerCase()) {
+    case "alpn":
+      return "Comma-separated application protocols the endpoint speaks, such as h2,h3. Clients use it to choose a protocol before connecting instead of negotiating one.";
+    case "no-default-alpn":
+      return "Withdraws the protocol a client would otherwise assume by default, leaving only the protocols named in alpn. It takes no value, and it needs an alpn parameter alongside it.";
+    case "port":
+      return "The TCP or UDP port clients should connect to, from 1 to 65535. Omit it to use the default port for the service, which is 443 for HTTPS.";
+    case "ipv4hint":
+      return "Comma-separated IPv4 addresses a client may start connecting to before its A lookup finishes. These are hints only and are never authoritative, so keep them in step with the target's A records.";
+    case "ipv6hint":
+      return "Comma-separated IPv6 addresses a client may start connecting to before its AAAA lookup finishes. These are hints only and are never authoritative, so keep them in step with the target's AAAA records.";
+    case "ech":
+      return "The base64 Encrypted ClientHello configuration list published by the server. It lets clients encrypt the server name during the TLS handshake, and it must match what the server is actually configured with.";
+    case "dohpath":
+      return "The URI template for DNS-over-HTTPS queries to this resolver, such as /dns-query{?dns}. It starts with a slash and is relative to the target name.";
+    case "mandatory":
+      return "Comma-separated parameter keys a client must understand. A client that does not support every key listed here has to ignore the whole record, so list only what is genuinely essential.";
+    default:
+      return "The value for this parameter. Anything outside the registered keys is passed through as written, so its meaning is defined by whatever consumes the record.";
+  }
+}
+
+function alpnProtocolNames(value: string) {
+  return value
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => ALPN_PROTOCOL_NAMES[token.toLowerCase()] ?? token);
+}
+
+/**
+ * Plain-English description of the SVCB or HTTPS record being assembled.
+ *
+ * The split that matters is RFC 9460's two modes: SvcPriority 0 is AliasMode,
+ * which delegates the name and ignores every parameter, while any higher value
+ * is ServiceMode, where the parameters apply and lower numbers are preferred.
+ */
+export function describeSVCB(fields: SvcbFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const kind = fields.kind;
+  const priority = fields.priority;
+  const target = fields.target.trim();
+  const params = fields.params.filter((p) => (p.key ?? "").trim().length > 0);
+  const service = kind === "HTTPS" ? "this website" : "this service";
+
+  const valueOf = (key: string) => {
+    const match = params.find(
+      (p) => p.key.trim().toLowerCase() === key && p.mode === "keyValue",
+    );
+    const value = match?.value.trim();
+    return value ? value : undefined;
+  };
+  const hasFlag = (key: string) =>
+    params.some((p) => p.key.trim().toLowerCase() === key && p.mode === "flag");
+
+  if (priority === undefined) {
+    return {
+      headline: `Will tell clients how to reach ${service}: a priority of 0 hands the name off to another one, and a priority of 1 or more publishes the connection parameters here.`,
+      details: [
+        "Priority 0 is alias mode: the target name supplies the whole configuration and any parameters here are ignored.",
+        "A priority above 0 is service mode: the parameters below apply, and clients prefer the lowest-numbered record at this name.",
+      ],
+    };
+  }
+
+  if (priority === 0) {
+    let headline: string;
+    if (target === ".") {
+      headline = `Alias mode with a target of ".", which states that ${service} is not available at all rather than pointing anywhere.`;
+    } else if (!target) {
+      headline = `Alias mode: will hand this name off to another name that supplies the configuration for ${service}, once a target name is filled in.`;
+    } else {
+      headline = `Alias mode: sends clients on to ${target} to find out how to reach ${service}, so everything about the connection comes from the records published there.`;
+    }
+
+    if (target && target !== ".") {
+      details.push(
+        `Alias mode carries no connection parameters of its own: a client resolves ${kind} records at ${target} and uses whatever it finds.`,
+      );
+      details.push(
+        `Unlike a CNAME this delegation covers only ${kind} lookups, so it is legal at the zone apex and leaves the other record types at this name alone.`,
+      );
+      details.push(
+        "The address a client finally connects to still comes from A and AAAA records, not from this record.",
+      );
+      unknowns.push(
+        `What clients end up doing depends on the ${kind} and address records published at ${target}, which this form cannot see.`,
+      );
+    }
+
+    if (params.length) {
+      details.push(
+        `Alias mode ignores service parameters, so the ${pluralize(
+          params.length,
+          "parameter",
+        )} listed here ${params.length === 1 ? "has" : "have"} no effect.`,
+      );
+    }
+
+    return { headline, details, unknowns };
+  }
+
+  const targetText = target === "." ? "this same name" : target;
+  const port = valueOf("port");
+  const alpn = valueOf("alpn");
+  const alpnNames = alpn ? alpnProtocolNames(alpn) : [];
+
+  let headline: string;
+  if (!target) {
+    headline = `Service mode: will publish how clients should connect to ${service}, once a target name is filled in — use "." to mean this same name.`;
+  } else {
+    const portClause = port ? ` on port ${port}` : "";
+    const alpnClause = alpnNames.length
+      ? `, speaking ${joinList(alpnNames, "or")}`
+      : "";
+    headline = `Service mode: tells clients they can reach ${service} at ${targetText}${portClause}${alpnClause}.`;
+  }
+
+  details.push(
+    `Priority ${priority} ranks this record against the other service-mode records at this name; clients try the lowest number first.`,
+  );
+
+  if (target === ".") {
+    details.push(
+      'In service mode a target of "." means the owner name itself, so clients keep using this name and simply apply the parameters below.',
+    );
+  }
+
+  if (alpn) {
+    details.push(
+      `alpn advertises ${joinList(
+        alpnNames,
+      )}, so a client can pick a protocol before it connects instead of discovering one during the handshake.`,
+    );
+  }
+
+  if (hasFlag("no-default-alpn")) {
+    details.push(
+      alpn
+        ? "no-default-alpn withdraws the protocol clients would otherwise assume, so only the protocols listed in alpn may be used."
+        : "no-default-alpn withdraws the protocol clients would otherwise assume, but no alpn list is present, which leaves a client with no protocol it is allowed to use.",
+    );
+  }
+
+  if (port) {
+    details.push(
+      `port sends clients to port ${port} instead of the default port for ${
+        kind === "HTTPS" ? "HTTPS" : "this service"
+      }.`,
+    );
+  }
+
+  const hints = [
+    valueOf("ipv4hint") ? "ipv4hint" : "",
+    valueOf("ipv6hint") ? "ipv6hint" : "",
+  ].filter(Boolean);
+  if (hints.length) {
+    details.push(
+      `${joinList(hints)} ${
+        hints.length === 1 ? "is a performance hint" : "are performance hints"
+      } only: a client may start connecting sooner, but the addresses are not authoritative and it still resolves the target's A and AAAA records.`,
+    );
+  }
+
+  if (valueOf("ech")) {
+    details.push(
+      "ech publishes an Encrypted ClientHello configuration, which lets clients encrypt the server name in the TLS handshake instead of sending it in the clear.",
+    );
+    unknowns.push(
+      "Whether this ech value still matches the configuration the server is running cannot be checked from here, and a stale value makes clients retry the handshake.",
+    );
+  }
+
+  if (valueOf("dohpath")) {
+    details.push(
+      "dohpath gives the URI template clients use to send DNS-over-HTTPS queries to this endpoint.",
+    );
+  }
+
+  const mandatory = valueOf("mandatory");
+  if (mandatory) {
+    const keys = mandatory
+      .split(",")
+      .map((key) => key.trim())
+      .filter(Boolean);
+    if (keys.length) {
+      details.push(
+        `mandatory marks ${joinList(keys)} as required: a client that does not understand ${
+          keys.length === 1 ? "it" : "all of them"
+        } must ignore this record entirely rather than connect without ${
+          keys.length === 1 ? "it" : "them"
+        }.`,
+      );
+    }
+  }
+
+  for (const param of params) {
+    const key = param.key.trim().toLowerCase();
+    if (KNOWN_SVC_PARAMS.has(key)) continue;
+    unknowns.push(
+      `Parameter "${param.key.trim()}" is not one of the keys defined in RFC 9460, so what a client does with it is defined by whatever consumes the record.`,
+    );
+  }
+
+  unknowns.push(
+    `Any other ${kind} records at this name compete on priority, so which one a client uses cannot be determined from this form.`,
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function SvcbBuilder({
   record,
   onRecordChange,
@@ -263,6 +515,18 @@ export function SvcbBuilder({
   const [priority, setPriority] = useState<number | undefined>(undefined);
   const [target, setTarget] = useState<string>("");
   const [params, setParams] = useState<SvcParam[]>([]);
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "priority",
+    "target",
+    "addParam",
+  ] as const);
+  // Parameter rows come and go, so their ids are derived per row rather than
+  // from the fixed key list above.
+  const paramPrefix = useId();
+  const paramFieldId = (id: string, part: "key" | "value" | "mode") =>
+    `${paramPrefix}-${id}-${part}`;
+  const paramHelpId = (id: string, part: "key" | "value" | "mode") =>
+    `${paramPrefix}-${id}-${part}-help`;
 
   const kind = record.type === "HTTPS" ? "HTTPS" : "SVCB";
 
@@ -510,6 +774,11 @@ export function SvcbBuilder({
     target,
   ]);
 
+  const summary = useMemo(
+    () => describeSVCB({ kind, priority, target, params }),
+    [kind, params, priority, target],
+  );
+
   useEffect(() => {
     if (!onWarningsChange) return;
     if (record.type !== "SVCB" && record.type !== "HTTPS") {
@@ -565,10 +834,19 @@ export function SvcbBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Priority</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.priority}
+              descriptionId={helpIds.priority}
+              label="Priority"
+              help="0 selects alias mode, which delegates the whole name to the target and ignores every parameter. Any value from 1 to 65535 selects service mode, where the parameters apply and clients prefer the lowest number. Use 1 for a single service-mode record."
+            />
             <Input
+              id={fieldIds.priority}
+              aria-describedby={helpIds.priority}
               type="number"
               placeholder="1"
               value={priority ?? ""}
@@ -586,8 +864,15 @@ export function SvcbBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-4">
-            <Label className="text-xs">Target name</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.target}
+              descriptionId={helpIds.target}
+              label="Target name"
+              help="The hostname clients should connect to, with no scheme or path. In service mode a single dot means this same name; in alias mode a single dot instead states that the service does not exist."
+            />
             <Input
+              id={fieldIds.target}
+              aria-describedby={helpIds.target}
               placeholder='e.g., svc.example.com or "."'
               value={target}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -606,30 +891,42 @@ export function SvcbBuilder({
             <div className="text-xs font-semibold text-muted-foreground">
               Parameters
             </div>
-            <Select
-              value=""
-              onValueChange={(value: string) => {
-                if (!value) return;
-                const preset = PARAM_PRESETS.find((p) => p.value === value);
-                if (!preset) return;
-                if (preset.value === "custom") {
-                  addParam("", "keyValue");
-                  return;
-                }
-                addParam(preset.value, preset.mode);
-              }}
-            >
-              <SelectTrigger className="h-9 w-48">
-                <SelectValue placeholder="Add param…" />
-              </SelectTrigger>
-              <SelectContent>
-                {PARAM_PRESETS.map((p) => (
-                  <SelectItem key={p.value} value={p.value}>
-                    {p.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-2">
+              <BuilderFieldLabel
+                controlId={fieldIds.addParam}
+                descriptionId={helpIds.addParam}
+                label="Add parameter"
+                help="Adds one service parameter row. Parameters describe how to connect and apply only in service mode, so a record with priority 0 ignores every one of them."
+              />
+              <Select
+                value=""
+                onValueChange={(value: string) => {
+                  if (!value) return;
+                  const preset = PARAM_PRESETS.find((p) => p.value === value);
+                  if (!preset) return;
+                  if (preset.value === "custom") {
+                    addParam("", "keyValue");
+                    return;
+                  }
+                  addParam(preset.value, preset.mode);
+                }}
+              >
+                <SelectTrigger
+                  id={fieldIds.addParam}
+                  aria-describedby={helpIds.addParam}
+                  className="h-9 w-48"
+                >
+                  <SelectValue placeholder="Add param…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PARAM_PRESETS.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {params.length === 0 && (
@@ -646,8 +943,16 @@ export function SvcbBuilder({
                 key={p.id}
                 className="grid grid-cols-1 gap-2 sm:grid-cols-12"
               >
-                <div className="sm:col-span-3">
+                <div className="space-y-1 sm:col-span-3">
+                  <BuilderFieldLabel
+                    controlId={paramFieldId(p.id, "key")}
+                    descriptionId={paramHelpId(p.id, "key")}
+                    label="Parameter key"
+                    help="The name of the service parameter, such as alpn, port, ipv4hint, ipv6hint, ech or mandatory. Keys outside that registered set are published as written and mean whatever the consuming client defines."
+                  />
                   <Input
+                    id={paramFieldId(p.id, "key")}
+                    aria-describedby={paramHelpId(p.id, "key")}
                     placeholder="key"
                     value={p.key}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -660,68 +965,94 @@ export function SvcbBuilder({
                   />
                 </div>
 
-                <div className="sm:col-span-7">
+                <div className="space-y-1 sm:col-span-7">
                   {p.mode === "flag" ? (
                     <div className="flex h-9 items-center text-[11px] text-muted-foreground">
                       Flag parameter (no value).
                     </div>
                   ) : (
-                    <Input
-                      placeholder={
-                        p.key === "alpn"
-                          ? "e.g., h2,h3"
-                          : p.key === "port"
-                            ? "e.g., 443"
-                            : p.key === "ipv4hint"
-                              ? "e.g., 203.0.113.10,203.0.113.11"
-                              : p.key === "ipv6hint"
-                                ? "e.g., 2001:db8::1,2001:db8::2"
-                                : p.key === "ech"
-                                  ? "base64…"
-                                  : p.key === "dohpath"
-                                    ? "/dns-query{?dns}"
-                                    : p.key === "mandatory"
-                                      ? "e.g., alpn,port"
-                                      : "value"
-                      }
-                      value={p.value}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    <>
+                      <BuilderFieldLabel
+                        controlId={paramFieldId(p.id, "value")}
+                        descriptionId={paramHelpId(p.id, "value")}
+                        label={
+                          p.key.trim()
+                            ? `${p.key.trim()} value`
+                            : "Parameter value"
+                        }
+                        help={svcbParamHelp(p.key)}
+                      />
+                      <Input
+                        id={paramFieldId(p.id, "value")}
+                        aria-describedby={paramHelpId(p.id, "value")}
+                        placeholder={
+                          p.key === "alpn"
+                            ? "e.g., h2,h3"
+                            : p.key === "port"
+                              ? "e.g., 443"
+                              : p.key === "ipv4hint"
+                                ? "e.g., 203.0.113.10,203.0.113.11"
+                                : p.key === "ipv6hint"
+                                  ? "e.g., 2001:db8::1,2001:db8::2"
+                                  : p.key === "ech"
+                                    ? "base64…"
+                                    : p.key === "dohpath"
+                                      ? "/dns-query{?dns}"
+                                      : p.key === "mandatory"
+                                        ? "e.g., alpn,port"
+                                        : "value"
+                        }
+                        value={p.value}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                          const next: SvcParam[] = params.map((x) =>
+                            x.id === p.id ? { ...x, value: e.target.value } : x,
+                          );
+                          setParams(next);
+                          apply({ params: next });
+                        }}
+                      />
+                    </>
+                  )}
+                </div>
+
+                <div className="sm:col-span-2 flex items-end justify-end gap-2">
+                  <div className="space-y-1">
+                    <BuilderFieldLabel
+                      controlId={paramFieldId(p.id, "mode")}
+                      descriptionId={paramHelpId(p.id, "mode")}
+                      label="Format"
+                      help="key=value parameters carry a value, while flag parameters such as no-default-alpn are simply present or absent and take none. Switching to flag drops any value already typed."
+                    />
+                    <Select
+                      value={p.mode}
+                      onValueChange={(value: string) => {
+                        const mode = value === "flag" ? "flag" : "keyValue";
                         const next: SvcParam[] = params.map((x) =>
-                          x.id === p.id ? { ...x, value: e.target.value } : x,
+                          x.id === p.id
+                            ? {
+                                ...x,
+                                mode,
+                                value: mode === "flag" ? "" : x.value,
+                              }
+                            : x,
                         );
                         setParams(next);
                         apply({ params: next });
                       }}
-                    />
-                  )}
-                </div>
-
-                <div className="sm:col-span-2 flex items-center justify-end gap-2">
-                  <Select
-                    value={p.mode}
-                    onValueChange={(value: string) => {
-                      const mode = value === "flag" ? "flag" : "keyValue";
-                      const next: SvcParam[] = params.map((x) =>
-                        x.id === p.id
-                          ? {
-                              ...x,
-                              mode,
-                              value: mode === "flag" ? "" : x.value,
-                            }
-                          : x,
-                      );
-                      setParams(next);
-                      apply({ params: next });
-                    }}
-                  >
-                    <SelectTrigger className="h-9 w-24">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="keyValue">key=value</SelectItem>
-                      <SelectItem value="flag">flag</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    >
+                      <SelectTrigger
+                        id={paramFieldId(p.id, "mode")}
+                        aria-describedby={paramHelpId(p.id, "mode")}
+                        className="h-9 w-24"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="keyValue">key=value</SelectItem>
+                        <SelectItem value="flag">flag</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <Button
                     size="sm"
                     variant="ghost"

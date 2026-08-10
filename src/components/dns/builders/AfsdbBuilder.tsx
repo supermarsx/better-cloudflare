@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -13,7 +12,17 @@ import {
 } from "@/components/ui/select";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { orPlaceholder } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -62,6 +71,72 @@ function composeAfsdb(subtype?: number, host?: string) {
   return `${subtype ?? 0} ${h}`.trim();
 }
 
+export type AfsdbFields = {
+  subtype: number | undefined;
+  host: string;
+};
+
+/**
+ * Plain-English description of the AFSDB record the builder is assembling.
+ *
+ * RFC 1183 §1 defines exactly two subtypes: 1 names a host running an AFS
+ * volume location server for the cell named by the owner name, and 2 names an
+ * authenticated name server holding that cell's root directory node. Nothing
+ * else is defined, so any other subtype goes in `unknowns`.
+ */
+export function describeAFSDB(fields: AfsdbFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const host = normalizeDnsName(fields.host ?? "");
+  const hostText = orPlaceholder(host, "the named host");
+
+  let headline: string;
+  if (fields.subtype === 1) {
+    headline = `Tells AFS clients that ${hostText} runs a volume location server for the AFS cell named by this record's owner name.`;
+  } else if (fields.subtype === 2) {
+    headline = `Tells DCE/NCA clients that ${hostText} runs an authenticated name server holding the root directory node of the cell named by this record's owner name.`;
+  } else if (fields.subtype === undefined) {
+    headline =
+      "Points clients of an AFS or DCE/NCA cell at the server that holds the cell's directory information.";
+  } else {
+    headline = `Publishes ${hostText} as a subtype ${fields.subtype} server for the cell named by this record's owner name.`;
+  }
+
+  if (!host) {
+    details.push(
+      "No hostname has been entered yet, so the record does not point anywhere.",
+    );
+  } else {
+    details.push(
+      "The hostname should be a host with its own A or AAAA records; like an MX or NS target, it must not be an alias.",
+    );
+  }
+
+  details.push(
+    "AFSDB is a legacy record type from RFC 1183. AFS and DCE/NCA deployments are rare today, and RFC 5864 replaced AFSDB for AFS with _afs3-vlserver SRV records.",
+  );
+  details.push(
+    "Only AFS or DCE/NCA client software reads this record; it has no effect on web, mail or any other ordinary traffic.",
+  );
+
+  if (fields.subtype !== undefined && ![1, 2].includes(fields.subtype)) {
+    unknowns.push(
+      `Subtype ${fields.subtype} is not defined in RFC 1183, so what a client would do with this record cannot be determined here.`,
+    );
+  }
+  if (host) {
+    unknowns.push(
+      `Whether ${hostText} actually runs that service, and whether it has address records of its own, cannot be checked from this form.`,
+    );
+  }
+  unknowns.push(
+    "Whether anything in this environment still consults AFSDB cannot be determined here.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function AfsdbBuilder({
   record,
   onRecordChange,
@@ -74,6 +149,16 @@ export function AfsdbBuilder({
   const [subtype, setSubtype] = useState<number | undefined>(undefined);
   const [host, setHost] = useState<string>("");
   const [subtypeMode, setSubtypeMode] = useState<"preset" | "custom">("preset");
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "subtype",
+    "subtypeCustom",
+    "host",
+  ] as const);
+
+  const summary = useMemo(
+    () => describeAFSDB({ subtype, host }),
+    [host, subtype],
+  );
 
   const subtypeSelectValue = useMemo(() => {
     if (subtypeMode === "custom") return "custom";
@@ -182,9 +267,16 @@ export function AfsdbBuilder({
           </div>
         </div>
 
+        <RecordSummary summary={summary} className="mt-2" />
+
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="space-y-1 sm:col-span-2">
-            <Label className="text-xs">Subtype</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.subtype}
+              descriptionId={helpIds.subtype}
+              label="Subtype"
+              help="Which cell service the host provides: 1 is an AFS volume location server for this cell, 2 is a DCE/NCA authenticated name server. RFC 1183 defines no other values, and 1 is the usual choice."
+            />
             <Select
               value={subtypeSelectValue}
               onValueChange={(value: string) => {
@@ -202,7 +294,11 @@ export function AfsdbBuilder({
                 });
               }}
             >
-              <SelectTrigger className="h-9">
+              <SelectTrigger
+                id={fieldIds.subtype}
+                aria-describedby={helpIds.subtype}
+                className="h-9"
+              >
                 <SelectValue placeholder="Select…" />
               </SelectTrigger>
               <SelectContent>
@@ -215,21 +311,30 @@ export function AfsdbBuilder({
               </SelectContent>
             </Select>
             {subtypeMode === "custom" && (
-              <Input
-                className="mt-2"
-                type="number"
-                placeholder="e.g., 1"
-                value={subtype ?? ""}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  const val = Number.isNaN(n) ? undefined : n;
-                  setSubtype(val);
-                  onRecordChange({
-                    ...record,
-                    content: composeAfsdb(val, host),
-                  });
-                }}
-              />
+              <div className="space-y-1 pt-2">
+                <BuilderFieldLabel
+                  controlId={fieldIds.subtypeCustom}
+                  descriptionId={helpIds.subtypeCustom}
+                  label="Custom subtype"
+                  help="A numeric subtype from 0 to 65535 for a value outside the list. Only 1 and 2 have a defined meaning, so clients are unlikely to act on anything else."
+                />
+                <Input
+                  id={fieldIds.subtypeCustom}
+                  aria-describedby={helpIds.subtypeCustom}
+                  type="number"
+                  placeholder="e.g., 1"
+                  value={subtype ?? ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const val = Number.isNaN(n) ? undefined : n;
+                    setSubtype(val);
+                    onRecordChange({
+                      ...record,
+                      content: composeAfsdb(val, host),
+                    });
+                  }}
+                />
+              </div>
             )}
             <div className="text-[11px] text-muted-foreground">
               {AFSDB_SUBTYPE_PRESETS.find((p) => Number(p.value) === subtype)
@@ -238,8 +343,15 @@ export function AfsdbBuilder({
           </div>
 
           <div className="space-y-1 sm:col-span-4">
-            <Label className="text-xs">Hostname</Label>
+            <BuilderFieldLabel
+              controlId={fieldIds.host}
+              descriptionId={helpIds.host}
+              label="Hostname"
+              help="The server that provides this service for the cell, as a fully qualified name such as afsdb.example.com. It should have its own A or AAAA records rather than being an alias."
+            />
             <Input
+              id={fieldIds.host}
+              aria-describedby={helpIds.host}
               placeholder="e.g., afsdb.example.com"
               value={host}
               onChange={(e: ChangeEvent<HTMLInputElement>) => {

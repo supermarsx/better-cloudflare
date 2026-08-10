@@ -3,9 +3,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
-import type { BuilderWarningsChange, RecordDraft } from "./types";
+import {
+  BuilderFieldLabel,
+  RecordSummary,
+  useBuilderFieldIds,
+} from "./BuilderField";
+import { humanizeSeconds } from "./describe-utils";
+import type {
+  BuilderSummary,
+  BuilderWarningsChange,
+  RecordDraft,
+} from "./types";
 
 function normalizeDnsName(value: string) {
   return value.trim().replace(/\.$/, "");
@@ -65,6 +74,92 @@ function composeSOA(fields: {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Read an SOA RNAME back as an email address: the first dot stands in for the
+ * `@`, so `hostmaster.example.com` is `hostmaster@example.com`.
+ */
+function rnameToEmail(value: string) {
+  const v = normalizeDnsName(value);
+  if (!v) return "";
+  if (v.includes("@")) return v;
+  const dot = v.indexOf(".");
+  if (dot <= 0) return v;
+  return `${v.slice(0, dot)}@${v.slice(dot + 1)}`;
+}
+
+export type SoaFields = {
+  mname: string;
+  /** Either an email address or the DNS-name (RNAME) form of one. */
+  admin: string;
+  serial: number | undefined;
+  refresh: number | undefined;
+  retry: number | undefined;
+  expire: number | undefined;
+  minimum: number | undefined;
+};
+
+/**
+ * Plain-English description of the zone parameters this SOA sets.
+ *
+ * The timer wording follows RFC 1035 §3.3.13 and RFC 2308: `minimum` is the
+ * negative caching TTL, not a default TTL for the zone's records, and saying so
+ * is the main thing this summary is for.
+ */
+export function describeSOA(fields: SoaFields): BuilderSummary {
+  const details: string[] = [];
+  const unknowns: string[] = [];
+
+  const mname = normalizeDnsName(fields.mname);
+  const rname = emailToRname(fields.admin);
+  const email = rnameToEmail(rname);
+
+  const headline =
+    mname || email
+      ? `Declares ${mname || "the nameserver named here"} to be the primary nameserver holding the master copy of this zone and ${email || "the contact named here"} to be its administrative contact, and sets the timers secondary nameservers follow when copying the zone.`
+      : "Declares which nameserver holds the master copy of this zone, who administers it, and the timers secondary nameservers follow when copying it.";
+
+  if (rname.includes(".")) {
+    details.push(
+      `The contact is stored as ${rname}: an SOA has no room for an @, so the first dot stands in for it and this means ${email}.`,
+    );
+  }
+
+  if (fields.serial !== undefined) {
+    details.push(
+      `Serial ${fields.serial} is the version number a secondary compares against its own copy; it only transfers the zone again once this number increases, so it has to be raised on every change.`,
+    );
+  }
+  if (fields.refresh !== undefined) {
+    details.push(
+      `A secondary checks the primary for a higher serial every ${humanizeSeconds(fields.refresh)}.`,
+    );
+  }
+  if (fields.retry !== undefined) {
+    details.push(
+      `When that check fails, the secondary retries every ${humanizeSeconds(fields.retry)} rather than waiting for the next refresh.`,
+    );
+  }
+  if (fields.expire !== undefined) {
+    details.push(
+      `A secondary that has been unable to reach the primary for ${humanizeSeconds(fields.expire)} stops answering for the zone entirely, instead of serving data it can no longer confirm.`,
+    );
+  }
+  if (fields.minimum !== undefined) {
+    details.push(
+      `Minimum is the negative caching TTL: resolvers remember a “this name does not exist” answer for up to ${humanizeSeconds(fields.minimum)}, capped by this record's own TTL. Despite the name it is not a default TTL for the zone's records.`,
+    );
+  }
+  details.push(
+    "Secondaries are normally also told about changes by NOTIFY, so a raised serial usually propagates well before the refresh timer next expires.",
+  );
+
+  unknowns.push(
+    "Whether these values take effect depends on the DNS provider; many generate and manage the SOA themselves and ignore or reject edits to it.",
+  );
+
+  return { headline, details, unknowns };
+}
+
 export function SoaBuilder({
   record,
   onRecordChange,
@@ -83,6 +178,22 @@ export function SoaBuilder({
   const [retry, setRetry] = useState<number | undefined>(undefined);
   const [expire, setExpire] = useState<number | undefined>(undefined);
   const [minimum, setMinimum] = useState<number | undefined>(undefined);
+
+  const { fieldIds, helpIds } = useBuilderFieldIds([
+    "mname",
+    "rname",
+    "serial",
+    "refresh",
+    "retry",
+    "expire",
+    "minimum",
+  ] as const);
+
+  const summary = useMemo(
+    () =>
+      describeSOA({ mname, admin, serial, refresh, retry, expire, minimum }),
+    [admin, expire, minimum, mname, refresh, retry, serial],
+  );
 
   const didAutoDefaults = useRef(false);
 
@@ -401,10 +512,19 @@ export function SoaBuilder({
 
   return (
     <div className="space-y-3">
+      <RecordSummary summary={summary} />
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <Label className="text-xs">Primary NS (mname)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.mname}
+            descriptionId={helpIds.mname}
+            label="Primary NS (mname)"
+            help="Hostname of the nameserver that holds the master copy of this zone and that secondaries transfer it from. Use a fully qualified hostname such as ns1.example.com."
+          />
           <Input
+            id={fieldIds.mname}
+            aria-describedby={helpIds.mname}
             value={mname}
             placeholder="e.g., ns1.example.com"
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -421,8 +541,15 @@ export function SoaBuilder({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">Admin email (rname)</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.rname}
+            descriptionId={helpIds.rname}
+            label="Admin email (rname)"
+            help="Email address of the zone administrator. SOA stores it with the @ replaced by a dot, so hostmaster@example.com is written hostmaster.example.com; you can paste either form here."
+          />
           <Input
+            id={fieldIds.rname}
+            aria-describedby={helpIds.rname}
             value={admin}
             placeholder="e.g., hostmaster@example.com"
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -445,9 +572,16 @@ export function SoaBuilder({
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="space-y-1 sm:col-span-2">
-          <Label className="text-xs">Serial</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.serial}
+            descriptionId={helpIds.serial}
+            label="Serial"
+            help="Version number of the zone. A secondary only transfers the zone again once this increases, so raise it on every change; ten digits in YYYYMMDDnn form is the usual convention."
+          />
           <div className="flex gap-2">
             <Input
+              id={fieldIds.serial}
+              aria-describedby={helpIds.serial}
               type="number"
               value={serial ?? ""}
               placeholder="YYYYMMDDnn (e.g., 2026012601)"
@@ -493,8 +627,15 @@ export function SoaBuilder({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">Refresh</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.refresh}
+            descriptionId={helpIds.refresh}
+            label="Refresh"
+            help="How often, in seconds, a secondary checks the primary for a higher serial. Anything from 900 to 86400 is normal; 7200 is a sensible default."
+          />
           <Input
+            id={fieldIds.refresh}
+            aria-describedby={helpIds.refresh}
             type="number"
             value={refresh ?? ""}
             placeholder="7200"
@@ -514,8 +655,15 @@ export function SoaBuilder({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">Retry</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.retry}
+            descriptionId={helpIds.retry}
+            label="Retry"
+            help="How long, in seconds, a secondary waits before retrying after a failed refresh check. It should be shorter than refresh; 3600 is typical."
+          />
           <Input
+            id={fieldIds.retry}
+            aria-describedby={helpIds.retry}
             type="number"
             value={retry ?? ""}
             placeholder="3600"
@@ -535,8 +683,15 @@ export function SoaBuilder({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">Expire</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.expire}
+            descriptionId={helpIds.expire}
+            label="Expire"
+            help="How long, in seconds, a secondary keeps serving the zone while it cannot reach the primary, after which it stops answering for the zone entirely. One to four weeks is typical; 1209600 is two weeks."
+          />
           <Input
+            id={fieldIds.expire}
+            aria-describedby={helpIds.expire}
             type="number"
             value={expire ?? ""}
             placeholder="1209600"
@@ -556,8 +711,15 @@ export function SoaBuilder({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">Minimum</Label>
+          <BuilderFieldLabel
+            controlId={fieldIds.minimum}
+            descriptionId={helpIds.minimum}
+            label="Minimum"
+            help="The negative caching TTL in seconds: how long resolvers remember that a name in this zone does not exist. It is not a default TTL for records. 300 to 86400 is normal; 3600 is a sensible default."
+          />
           <Input
+            id={fieldIds.minimum}
+            aria-describedby={helpIds.minimum}
             type="number"
             value={minimum ?? ""}
             placeholder="3600"
