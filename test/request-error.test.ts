@@ -594,6 +594,123 @@ test("decodes HTML diagnostic entities exactly once without losing metadata", ()
   assert.match(formatted, /retry after 30/);
 });
 
+/**
+ * The exact payload `ensure_record_is_valid` in `src-tauri/src/commands/dns.rs`
+ * serialises for a rejected A record, as it arrives over the Tauri IPC
+ * boundary: a serialised `AppError::Validation`.
+ */
+const rejectedARecordPayload = JSON.stringify({
+  code: "VALIDATION",
+  message:
+    "DNS record validation failed: A record content must be a valid IPv4 address.",
+  issues: [{ message: "A record content must be a valid IPv4 address." }],
+});
+
+test("a rejected DNS record reads as invalid input, not a network failure", () => {
+  const error = normalizeRequestError(rejectedARecordPayload, {
+    source: "tauri",
+    command: "create_dns_record",
+    operation: "Tauri invoke",
+  });
+
+  // The whole point of the shape: this sentence, verbatim.
+  assert.equal(
+    error.message,
+    "Invalid input: A record content must be a valid IPv4 address.",
+  );
+  assert.equal(error.kind, "validation");
+  assert.equal(error.retryable, false);
+
+  // Nothing left the machine, so nothing may blame Cloudflare, the network, or
+  // the user's VPN, DNS, or firewall.
+  assert.doesNotMatch(error.message, /cloudflare|server detail/i);
+  assert.doesNotMatch(
+    error.message,
+    /vpn|firewall|proxy|connectivity|resolve/i,
+  );
+  assert.doesNotMatch(error.message, /retry|try again/i);
+});
+
+test("record-level DNS failures are never diagnosed as name resolution", () => {
+  const recordProse = [
+    "DNS record validation failed: A record content must be a valid IPv4 address.",
+    "Authoritative DNS lookup failed closed for record ID 'abc': zone mismatch.",
+    "DNS export format must be json, csv, or bind",
+    'TLSA content must be: "usage selector matching-type data"',
+    "CERT: certificate data does not look like base64.",
+    "CAA is checked by the certificate authority when a certificate is requested.",
+  ];
+
+  for (const detail of recordProse) {
+    const error = normalizeRequestError(detail, {
+      source: "tauri",
+      command: "create_dns_record",
+    });
+    assert.notEqual(
+      error.kind,
+      "network",
+      `misclassified as a network failure: ${detail}`,
+    );
+    assert.doesNotMatch(
+      error.message,
+      /could not resolve|TLS or certificate error|VPN/i,
+      `replaced with connectivity advice: ${detail}`,
+    );
+    assert.match(error.message, new RegExp(detail.slice(0, 24), "i"));
+  }
+});
+
+test("real name-resolution and TLS failures stay classified", () => {
+  const resolutionFailures = [
+    { code: "EAI_AGAIN", message: "getaddrinfo EAI_AGAIN api.cloudflare.com" },
+    "getaddrinfo ENOTFOUND api.cloudflare.com",
+    "Temporary failure in name resolution",
+    "error trying to connect: dns error: failed to lookup address information: No such host is known. (os error 11001)",
+    "HTTP error: dns failure contacting api.cloudflare.com for dns:create (attempt 1/4): Check Windows DNS, VPN, and proxy connectivity, then retry.",
+    "Could not resolve host: api.cloudflare.com",
+    "nodename nor servname provided, or not known",
+    "DNS_PROBE_FINISHED_NXDOMAIN",
+    { code: "ERR_NAME_NOT_RESOLVED", message: "navigation failed" },
+  ];
+
+  for (const failure of resolutionFailures) {
+    const error = normalizeRequestError(failure, {
+      source: "tauri",
+      command: "get_dns_records",
+    });
+    assert.equal(error.kind, "network", `not classified: ${String(failure)}`);
+    assert.match(
+      error.message,
+      /could not resolve a required service or Cloudflare upstream hostname/i,
+      `not a resolution diagnosis: ${String(failure)}`,
+    );
+  }
+
+  const tlsFailures = [
+    "self-signed certificate in certificate chain",
+    "unable to get local issuer certificate",
+    "certificate has expired",
+    "certificate verify failed",
+    "invalid peer certificate: Expired",
+    "SSL routines: unexpected eof while reading",
+    "error trying to connect: tls handshake eof",
+    "ERR_CERT_AUTHORITY_INVALID",
+  ];
+
+  for (const failure of tlsFailures) {
+    const error = normalizeRequestError(failure, {
+      source: "tauri",
+      command: "get_dns_records",
+    });
+    assert.equal(error.kind, "network", `not classified: ${failure}`);
+    assert.match(
+      error.message,
+      /TLS or certificate error/i,
+      `not a TLS diagnosis: ${failure}`,
+    );
+  }
+});
+
 test("normalizes validation and backend configuration errors", () => {
   const result = z.object({ email: z.string().email() }).safeParse({
     email: "invalid",

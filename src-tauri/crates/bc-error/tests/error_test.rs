@@ -61,9 +61,7 @@ fn all_variants_have_unique_codes() {
         ),
         AppError::SessionExpired,
         AppError::NoSession,
-        AppError::Validation {
-            message: "b".into(),
-        },
+        AppError::validation("b"),
         AppError::MissingField { field: "c".into() },
         AppError::CloudflareApi {
             message: "d".into(),
@@ -130,22 +128,66 @@ fn session_expired_serialises_without_details() {
 
 #[test]
 fn round_trip_serde() {
-    let original = AppError::Validation {
-        message: "TTL must be > 0".into(),
-    };
+    let original = AppError::validation("TTL must be > 0");
     let json = serde_json::to_string(&original).unwrap();
     let restored: AppError = serde_json::from_str(&json).unwrap();
     assert_eq!(original.code(), restored.code());
     assert_eq!(original.to_string(), restored.to_string());
 }
 
+#[test]
+fn validation_without_issues_omits_the_issue_array() {
+    let json = serde_json::to_value(AppError::validation("TTL must be > 0")).unwrap();
+    assert_eq!(json["code"], "VALIDATION");
+    assert!(json.get("issues").is_none());
+}
+
+/// The renderer keys on `issues[].message`; that contract is what keeps the
+/// failure classified as validation instead of being re-diagnosed from prose.
+#[test]
+fn validation_issues_serialise_as_message_records() {
+    let error = AppError::validation_with_issues(
+        "DNS record validation failed: A record content must be a valid IPv4 address.",
+        ["A record content must be a valid IPv4 address."],
+    );
+
+    assert_eq!(error.code(), "VALIDATION");
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(json["code"], "VALIDATION");
+    assert_eq!(
+        json["message"],
+        "DNS record validation failed: A record content must be a valid IPv4 address."
+    );
+    let issues = json["issues"].as_array().expect("issues must be an array");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(
+        issues[0]["message"],
+        "A record content must be a valid IPv4 address."
+    );
+    assert_eq!(issues[0].as_object().unwrap().len(), 1);
+
+    let restored: AppError = serde_json::from_value(json).unwrap();
+    assert_eq!(restored.to_string(), error.to_string());
+}
+
+#[test]
+fn validation_issues_are_bounded_and_redacted() {
+    let error = AppError::validation_with_issues(
+        "too many issues",
+        (0..9).map(|index| format!("issue {index} api_token=issue-secret")),
+    );
+    let serialized = serde_json::to_string(&error).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+
+    assert_eq!(json["issues"].as_array().unwrap().len(), 5);
+    assert!(!serialized.contains("issue-secret"));
+}
+
 // ── Display impl ───────────────────────────────────────────────────────────
 
 #[test]
 fn display_impl_validation() {
-    let err = AppError::Validation {
-        message: "bad TTL".into(),
-    };
+    let err = AppError::validation("bad TTL");
     assert_eq!(err.to_string(), "Validation error: bad TTL");
 }
 

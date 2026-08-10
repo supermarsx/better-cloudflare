@@ -184,6 +184,51 @@ function sourceFor(kind: RequestErrorKind): RequestErrorSource {
   return "unknown";
 }
 
+/**
+ * Signals that a hostname genuinely failed to resolve.
+ *
+ * This deliberately does not match the bare substring `dns`. Better Cloudflare
+ * manages DNS, so every legitimate record-level failure it reports contains
+ * that substring — "DNS record validation failed…", "Authoritative DNS lookup
+ * failed closed…", "DNS export format must be json, csv, or bind". Matching on
+ * `dns` alone re-diagnosed all of them as name-resolution failures and replaced
+ * the actionable text with "check your system DNS, VPN, firewall".
+ *
+ * Every alternative below is a resolver error code, a resolver API name, or a
+ * fixed phrase a resolver emits — never a description of a DNS record:
+ * libc/Node (`getaddrinfo`, `EAI_*`, `ENOTFOUND`, "Temporary failure in name
+ * resolution", "nodename nor servname provided"), hyper/reqwest ("failed to
+ * lookup address information"), Windows ("No such host is known"), curl
+ * ("Could not resolve host"), Chromium (`ERR_NAME_NOT_RESOLVED`,
+ * `DNS_PROBE_FINISHED_NXDOMAIN`), and this app's own transport error, whose
+ * text is "dns failure contacting <host>…".
+ */
+const DNS_RESOLUTION_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EAI_NONAME",
+  "EAI_NODATA",
+  "EAI_FAIL",
+  "ERR_NAME_NOT_RESOLVED",
+  "ERR_NAME_RESOLUTION_FAILED",
+]);
+
+const DNS_RESOLUTION_DETAIL =
+  /\b(?:enotfound|eai_again|eai_noname|eai_nodata|eai_fail|nxdomain)\b|getaddrinfo|err_name_not_resolved|err_name_resolution_failed|dns_probe_finished|\bname resolution\b|\bdns resolution\b|\bdns (?:failure|failed)\b|lookup address information|nodename nor servname|\bno such host\b|\bhost(?:name)? not found\b|(?:could not|couldn't|cannot|can't|unable to|failed to) resolve (?:the )?(?:host|hostname|host name|domain|name|address)/;
+
+/**
+ * Signals that TLS itself failed, rather than prose that mentions TLS.
+ *
+ * Same trap as the resolution heuristic: `TLSA`, `CERT`, and `CAA` are DNS
+ * record types this app builds and validates, so their help and validation
+ * text is full of "TLSA content must be…", "CERT: certificate data is
+ * required", and "checked by the certificate authority". Bare `tls`, `ssl`,
+ * and `certificate` matched all of those. Word boundaries exclude `TLSA`, and
+ * `certificate` now has to appear with an actual failure.
+ */
+const TLS_FAILURE_DETAIL =
+  /\b(?:tls|ssl)\b|\bcert_[a-z_]+|\berr_cert[a-z_]*|self[- ]signed|secure connection|certificate (?:chain|verif\w+|expired|has expired|is not trusted|common name)|(?:invalid|untrusted|expired|unknown|bad|revoked)(?: [a-z]+){0,3} certificate|unable to (?:get|verify)(?: [a-z]+){0,4} certificate/;
+
 function createDiagnosticId(): string {
   const random = Math.random().toString(36).slice(2, 8).padEnd(6, "0");
   return `REQ-${Date.now().toString(36).toUpperCase()}-${random.toUpperCase()}`;
@@ -694,7 +739,13 @@ export function normalizeRequestError(
     );
   }
 
-  const invalid = validationDetail(error);
+  // A backend `AppError::Validation` serialises as `code: "VALIDATION"` plus,
+  // when the caller knows what is wrong, an `issues` array. Either way the
+  // input was rejected before anything left the machine, so classify it here —
+  // ahead of the status and prose rules — rather than letting it fall through
+  // to a Cloudflare or connectivity diagnosis.
+  const invalid =
+    validationDetail(error) ?? (code === "VALIDATION" ? detail : undefined);
   if (invalid) {
     return new RequestError(
       "validation",
@@ -808,9 +859,8 @@ export function normalizeRequestError(
     );
   }
   if (
-    code === "ENOTFOUND" ||
-    code === "EAI_AGAIN" ||
-    /(?:dns|name resolution|getaddrinfo|host not found)/.test(normalizedDetail)
+    DNS_RESOLUTION_CODES.has(code.toUpperCase()) ||
+    DNS_RESOLUTION_DETAIL.test(normalizedDetail)
   ) {
     const remediation = nativeOperation
       ? "Check system DNS, internet connectivity, proxy or VPN settings, and firewall policy, then retry."
@@ -831,11 +881,7 @@ export function normalizeRequestError(
       { cause: error },
     );
   }
-  if (
-    /(?:certificate|cert_|tls|ssl|self[- ]signed|secure connection)/.test(
-      normalizedDetail,
-    )
-  ) {
+  if (TLS_FAILURE_DETAIL.test(normalizedDetail)) {
     const remediation = nativeOperation
       ? "Check the system clock, trust store, TLS interception, proxy or VPN settings, and firewall policy, then retry."
       : "Check NEXT_PUBLIC_SERVER_API_BASE, the backend certificate chain, TLS interception, and the system clock.";
@@ -855,7 +901,9 @@ export function normalizeRequestError(
       { cause: error },
     );
   }
-  if (/cors|cross-origin|access-control-allow-origin/.test(normalizedDetail)) {
+  if (
+    /\bcors\b|cross-origin|access-control-allow-origin/.test(normalizedDetail)
+  ) {
     return new RequestError(
       "network",
       `The browser blocked the request because of CORS policy. Allow this app origin on the configured backend.${endpointSuffix(endpoint)}`,

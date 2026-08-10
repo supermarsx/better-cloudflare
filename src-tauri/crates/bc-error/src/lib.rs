@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_ERROR_TEXT_LENGTH: usize = 512;
 const MAX_PROVIDER_ERRORS: usize = 5;
+const MAX_VALIDATION_ISSUES: usize = 5;
 
 /// High-level failure class for a structured authentication request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +40,27 @@ pub struct ProviderErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub message: String,
+}
+
+/// One thing that is wrong with the submitted input.
+///
+/// The field name is deliberate: the renderer's `normalizeRequestError`
+/// recognises an `issues` array of `{ message }` records and renders it as
+/// `Invalid input: <message>` with `kind = "validation"`, before any of its
+/// text-matching heuristics run. Carrying the issues here is therefore what
+/// keeps a local validation failure from being re-diagnosed as a network or
+/// provider failure on the way to the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationIssue {
+    pub message: String,
+}
+
+impl ValidationIssue {
+    pub fn new(message: impl AsRef<str>) -> Self {
+        Self {
+            message: sanitize_error_text(message.as_ref()),
+        }
+    }
 }
 
 /// Additional structured context for a request failure.
@@ -70,8 +92,14 @@ pub enum AppError {
     NoSession,
 
     // ── Validation ──────────────────────────────────────────────────────
+    /// Input the app rejected locally, before any request left the machine.
+    ///
+    /// `message` is the log/`Display` form. `issues` is the user-facing form:
+    /// one entry per thing that is wrong, each stating what to correct.
     Validation {
         message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        issues: Vec<ValidationIssue>,
     },
 
     MissingField {
@@ -157,7 +185,7 @@ impl std::fmt::Display for AppError {
             Self::AuthFailed { message } => write!(formatter, "Authentication failed: {message}"),
             Self::SessionExpired => formatter.write_str("Session expired"),
             Self::NoSession => formatter.write_str("No active session"),
-            Self::Validation { message } => write!(formatter, "Validation error: {message}"),
+            Self::Validation { message, .. } => write!(formatter, "Validation error: {message}"),
             Self::MissingField { field } => {
                 write!(formatter, "Missing required field: {field}")
             }
@@ -223,6 +251,25 @@ impl AppError {
     pub fn validation(msg: impl Into<String>) -> Self {
         Self::Validation {
             message: msg.into(),
+            issues: Vec::new(),
+        }
+    }
+
+    /// Reject input and say, item by item, what has to change.
+    ///
+    /// Prefer this over [`Self::validation`] whenever the caller knows the
+    /// individual problems: the issue list is what the user actually reads.
+    pub fn validation_with_issues(
+        msg: impl Into<String>,
+        issues: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Self {
+        Self::Validation {
+            message: msg.into(),
+            issues: issues
+                .into_iter()
+                .take(MAX_VALIDATION_ISSUES)
+                .map(ValidationIssue::new)
+                .collect(),
         }
     }
 

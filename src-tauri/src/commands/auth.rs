@@ -279,9 +279,10 @@ fn map_verification_error(error: CloudflareError) -> AppError {
         }
         CloudflareError::Request(context) => map_structured_auth_request(*context),
         CloudflareError::ResourceLimit(context) => map_structured_auth_resource_limit(*context),
-        CloudflareError::Validation(_) => AppError::Validation {
-            message: "Token verification request parameters failed local validation.".to_string(),
-        },
+        CloudflareError::Validation(_) => AppError::validation_with_issues(
+            "Token verification request parameters failed local validation.",
+            ["The token verification request parameters are not valid."],
+        ),
         CloudflareError::AuthFailed => AppError::auth_request_failed(
             RequestFailureKind::Authentication,
             "Cloudflare rejected the supplied credentials.",

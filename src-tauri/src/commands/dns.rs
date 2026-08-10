@@ -575,25 +575,41 @@ mod structured_request_tests {
 
 // ─── DNS record validation gate ─────────────────────────────────────────────
 
+/// Close one issue with a full stop unless it already ends a sentence.
+fn terminate(issue: &str) -> String {
+    let issue = issue.trim();
+    if issue.ends_with(['.', '!', '?']) {
+        issue.to_string()
+    } else {
+        format!("{issue}.")
+    }
+}
+
 /// Render validation issues as one sentence-terminated message.
 fn validation_detail(issues: &[String]) -> String {
     issues
         .iter()
-        .map(|issue| {
-            let issue = issue.trim();
-            if issue.ends_with(['.', '!', '?']) {
-                issue.to_string()
-            } else {
-                format!("{issue}.")
-            }
-        })
+        .map(String::as_str)
+        .map(terminate)
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-const DNS_VALIDATE_OPERATION: &str = "dns:validate";
-const DNS_VALIDATE_REMEDIATION: &str =
-    "Correct the highlighted record fields, then submit the record again.";
+/// Terminate one issue as a sentence, optionally naming the record it belongs
+/// to. The locator matters for bulk writes: the renderer shows the issue list,
+/// not the summary message, so "record 2" has to travel with the issue itself.
+fn validation_issue(issue: &str, record: &DNSRecordInput, position: Option<usize>) -> String {
+    let sentence = terminate(issue);
+    match position {
+        Some(index) => format!(
+            "Record {} ({} {}): {sentence}",
+            index + 1,
+            record.r#type,
+            record.name
+        ),
+        None => sentence,
+    }
+}
 
 /// Reject a record that cannot be a valid DNS record before any HTTP call.
 ///
@@ -601,15 +617,10 @@ const DNS_VALIDATE_REMEDIATION: &str =
 /// funnels through the three commands below, so this is the one gate that
 /// cannot be bypassed by a frontend path added later.
 ///
-/// The failure uses the same structured shape [`map_validation_error`] already
-/// gives a client-side validation failure: `Provider` kind with a `Client`
-/// source. That choice is load-bearing rather than cosmetic. The renderer's
-/// `normalizeRequestError` classifies an unstructured payload by pattern
-/// matching its text, and its DNS-resolution heuristic matches the substring
-/// `dns` — so a bare `AppError::Validation` carrying "DNS record validation
-/// failed…" is reclassified as a name-resolution network failure and the
-/// actionable text is replaced with connectivity advice. The structured shape
-/// is classified before those heuristics run, so the message survives intact.
+/// Nothing here has left the machine, so the failure must not read as a
+/// Cloudflare or connectivity problem. [`AppError::validation_with_issues`]
+/// carries the issue list in the shape the renderer classifies first, which
+/// puts the record's actual defect in front of the user unchanged.
 fn ensure_record_is_valid(record: &DNSRecordInput, position: Option<usize>) -> Result<(), String> {
     let result = bc_dns_tools::validate_record_input(record);
     if result.ok {
@@ -625,26 +636,13 @@ fn ensure_record_is_valid(record: &DNSRecordInput, position: Option<usize>) -> R
         ),
         None => format!("DNS record validation failed: {detail}"),
     };
-    let provider_errors = result
-        .issues
-        .iter()
-        .map(|issue| ProviderErrorDetail {
-            code: Some("validation".to_string()),
-            message: issue.clone(),
-        })
-        .collect();
 
-    Err(AppError::request_failed(
-        RequestFailureKind::Provider,
+    Err(AppError::validation_with_issues(
         message,
-        None,
-        RequestErrorSource::Client,
-        DNS_VALIDATE_OPERATION,
-        false,
-        provider_errors,
-        None,
-        DNS_VALIDATE_REMEDIATION,
-        None,
+        result
+            .issues
+            .iter()
+            .map(|issue| validation_issue(issue, record, position)),
     )
     .into())
 }
@@ -705,43 +703,48 @@ mod validation_gate_tests {
             .expect_err("an invalid record must be rejected");
         let value = parse(&error);
 
-        assert_eq!(value["code"], "REQUEST_FAILED");
-        assert_eq!(value["source"], "client");
-        assert_eq!(value["operation"], DNS_VALIDATE_OPERATION);
-        assert_eq!(value["retryable"], false);
+        assert_eq!(value["code"], "VALIDATION");
         assert!(value.get("status").is_none());
         assert_eq!(
             value["message"],
             "DNS record validation failed: A record content must be a valid IPv4 address."
         );
-        assert_eq!(value["details"]["remediation"], DNS_VALIDATE_REMEDIATION);
         assert_eq!(
-            value["details"]["provider_messages"][0],
-            "A record content must be a valid IPv4 address"
+            value["issues"][0]["message"],
+            "A record content must be a valid IPv4 address."
         );
     }
 
-    /// The renderer classifies an unstructured payload by pattern matching its
-    /// text, and its DNS-resolution heuristic matches the substring `dns`. The
-    /// structured shape must keep the failure out of that path, or the message
-    /// is replaced by connectivity advice before the user ever sees it.
+    /// The renderer decides what the user reads. `VALIDATION` plus an `issues`
+    /// array is the one shape it classifies as validation before it starts
+    /// matching prose — the shape that keeps this failure from being reported
+    /// as a Cloudflare failure or a name-resolution failure. `test/`
+    /// `request-error.test.ts` asserts the resulting sentence end to end; this
+    /// test guards the payload those assertions depend on.
     #[test]
-    fn the_validation_failure_is_not_mistakable_for_a_network_failure() {
+    fn the_validation_failure_carries_the_shape_the_renderer_classifies_first() {
         let error = ensure_record_is_valid(&invalid_record(), None)
             .expect_err("an invalid record must be rejected");
         let value = parse(&error);
 
-        assert_eq!(value["kind"], "provider");
-        assert_ne!(value["kind"], "network");
-        assert_ne!(value["kind"], "timeout");
-        assert_ne!(value["source"], "network");
+        assert_eq!(value["code"], "VALIDATION");
+        assert!(value.get("kind").is_none());
+        assert!(value.get("source").is_none());
+        let issues = value["issues"]
+            .as_array()
+            .expect("the renderer requires an issues array");
+        assert!(!issues.is_empty());
+        assert!(issues
+            .iter()
+            .all(|issue| issue["message"].as_str().is_some_and(|m| !m.is_empty())));
     }
 
     #[test]
     fn bulk_rejection_identifies_the_offending_record() {
         let error = ensure_records_are_valid(&[valid_record(), invalid_record()])
             .expect_err("an invalid record must fail the batch");
-        let message = parse(&error)["message"]
+        let value = parse(&error);
+        let message = value["message"]
             .as_str()
             .expect("the validation error must carry a message")
             .to_string();
@@ -751,6 +754,13 @@ mod validation_gate_tests {
             "unexpected message: {message}"
         );
         assert!(message.contains("valid IPv4 address"));
+
+        // The renderer shows the issues, not the summary, so the locator has
+        // to be inside the issue for the user to know which record failed.
+        assert_eq!(
+            value["issues"][0]["message"],
+            "Record 2 (A www.example.com): A record content must be a valid IPv4 address."
+        );
     }
 
     #[tokio::test]
@@ -765,7 +775,8 @@ mod validation_gate_tests {
         .await
         .expect_err("create must reject an invalid record");
 
-        assert_eq!(parse(&error)["operation"], DNS_VALIDATE_OPERATION);
+        // A request that reached Cloudflare could not produce `VALIDATION`.
+        assert_eq!(parse(&error)["code"], "VALIDATION");
     }
 
     #[tokio::test]
@@ -782,11 +793,15 @@ mod validation_gate_tests {
         .expect_err("update must reject a record with no MX priority");
 
         let value = parse(&error);
-        assert_eq!(value["operation"], DNS_VALIDATE_OPERATION);
+        assert_eq!(value["code"], "VALIDATION");
         assert!(value["message"]
             .as_str()
             .expect("message")
             .contains("MX records must include an integer priority"));
+        assert_eq!(
+            value["issues"][0]["message"],
+            "MX records must include an integer priority."
+        );
     }
 
     #[tokio::test]
@@ -803,11 +818,7 @@ mod validation_gate_tests {
             .await
             .expect_err("bulk create must reject a batch containing an invalid record");
 
-            assert_eq!(
-                parse(&error)["operation"],
-                DNS_VALIDATE_OPERATION,
-                "dryrun {dryrun:?}"
-            );
+            assert_eq!(parse(&error)["code"], "VALIDATION", "dryrun {dryrun:?}");
         }
     }
 
