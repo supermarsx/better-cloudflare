@@ -165,9 +165,10 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             desktop={desktop}
           />
 
-          {vaultEnabled && (
-            <LoginVaultSection onRemoveVaultSecret={handleRemoveVaultSecret} />
-          )}
+          <LoginVaultSection
+            vaultEnabled={vaultEnabled}
+            onRemoveVaultSecret={handleRemoveVaultSecret}
+          />
 
           <LoginDialogs
             showAddKey={showAddKey}

@@ -430,6 +430,20 @@ export function useLoginForm(
       return;
     }
 
+    // Passkey login works only by reading this key back out of the OS vault.
+    // Registering while the vault is off would write the very secret the user
+    // asked us not to keep, and produce a passkey that cannot log in.
+    if (!vaultEnabled) {
+      toast({
+        title: "OS vault is turned off",
+        description:
+          "Passkey login stores this API key in the OS vault, which is disabled in Encryption Settings. Turn the OS vault on before registering a passkey.",
+        variant: "destructive",
+        persistent: true,
+      });
+      return;
+    }
+
     setPasskeyRegisterLoading(true);
 
     // Show initial guidance toast
@@ -538,6 +552,19 @@ export function useLoginForm(
         title: "Error",
         description: "Select a key to authenticate",
         variant: "destructive",
+      });
+      return;
+    }
+
+    // The stored secret must stay untouched while the vault is off, so refuse
+    // before any vault read rather than after the device prompt.
+    if (!vaultEnabled) {
+      toast({
+        title: "OS vault is turned off",
+        description:
+          "Passkey login reads this API key from the OS vault, which is disabled in Encryption Settings. Turn the OS vault on, or sign in with your password.",
+        variant: "destructive",
+        persistent: true,
       });
       return;
     }
@@ -1043,6 +1070,18 @@ export function useLoginForm(
           storageManager.setVaultEnabled(enabled);
         }
         setVaultEnabled(enabled);
+        if (!enabled) {
+          // Turning the vault off stops this app using it. It does not erase
+          // what is already in the OS keychain, and no command reports whether
+          // a secret is there, so say so plainly instead of implying it is gone.
+          toast({
+            title: "OS vault turned off",
+            description:
+              'Passkey login is now disabled. Any API key already saved to the OS vault stays in the system keychain until you delete it with "Remove Vault Secret" below.',
+            variant: "destructive",
+            persistent: true,
+          });
+        }
       } catch (error) {
         toast({
           title: "Vault preference was not saved",

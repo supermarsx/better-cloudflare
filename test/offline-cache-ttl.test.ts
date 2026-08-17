@@ -16,6 +16,7 @@ import {
   getCacheAge,
   getCachedZoneRecords,
   getCacheIndex,
+  getCacheIndexEntries,
   hasCachedRecords,
 } from "../src/lib/storage/offline-cache";
 import { resetRuntimeReportingForTests } from "../src/lib/errors/runtime-reporting";
@@ -147,6 +148,107 @@ test("expiring one zone leaves every other cached zone intact", () => {
       "the index must stop claiming a zone whose entry expiry deleted",
     );
     assert.deepEqual(ownedEntryKeys(), [`${CACHE_KEY_PREFIX}zone-live`]);
+  });
+});
+
+test("the index never advertises a zone the read would refuse to serve", () => {
+  // The defect this pins: the seven-day limit lived only in the read path, so
+  // an index built after eight days offline still listed the zone. Callers were
+  // offered a zone that resolved to null the moment they opened it.
+  seedAgedEntry("zone-expired", FROZEN_NOW - (MAX_CACHE_AGE_MS + DAY_MS));
+  seedAgedEntry("zone-usable", FROZEN_NOW - DAY_MS);
+
+  atFrozenNow(() => {
+    assert.deepEqual(
+      getCacheIndex(),
+      ["zone-usable"],
+      "the index must exclude the expired zone before anything reads it",
+    );
+    // The agreement, asserted in the order a user would hit it: whatever the
+    // index listed must open, and whatever it omitted must be the only null.
+    for (const zoneId of getCacheIndex()) {
+      assert.ok(
+        getCachedZoneRecords(zoneId),
+        `${zoneId} was advertised, so it must be readable`,
+      );
+    }
+    assert.equal(getCachedZoneRecords("zone-expired"), null);
+    assert.equal(hasCachedRecords("zone-expired"), false);
+  });
+});
+
+test("inspecting the index reports an expired zone instead of silently dropping it", () => {
+  seedAgedEntry("zone-lapsed", FROZEN_NOW - (MAX_CACHE_AGE_MS + 2 * DAY_MS));
+  seedAgedEntry("zone-fresh", FROZEN_NOW - HOUR_MS);
+
+  atFrozenNow(() => {
+    const entries = getCacheIndexEntries();
+    assert.deepEqual(
+      entries.map((entry) => entry.zoneId),
+      ["zone-lapsed", "zone-fresh"],
+      "inspection keeps every stored zone, oldest first",
+    );
+
+    const lapsed = entries[0]!;
+    assert.equal(lapsed.expired, true);
+    assert.equal(lapsed.zoneName, "Zone zone-lapsed");
+    assert.equal(lapsed.ageMs, MAX_CACHE_AGE_MS + 2 * DAY_MS);
+    assert.equal(formatCacheAge(lapsed.ageMs), "9d ago");
+    assert.equal(entries[1]!.expired, false);
+
+    // Inspection must not be a read: the entry survives so the user can be told
+    // it is stale, and only getCachedZoneRecords performs the durable purge.
+    assert.deepEqual(ownedEntryKeys(), [
+      `${CACHE_KEY_PREFIX}zone-fresh`,
+      `${CACHE_KEY_PREFIX}zone-lapsed`,
+    ]);
+
+    assert.equal(getCachedZoneRecords("zone-lapsed"), null);
+    assert.deepEqual(ownedEntryKeys(), [`${CACHE_KEY_PREFIX}zone-fresh`]);
+    assert.deepEqual(
+      getCacheIndexEntries().map((entry) => entry.zoneId),
+      ["zone-fresh"],
+    );
+  });
+});
+
+test("index and read agree on both sides of the seven-day boundary", () => {
+  for (const [age, servable] of [
+    [MAX_CACHE_AGE_MS, true],
+    [MAX_CACHE_AGE_MS + 1, false],
+  ] as const) {
+    localStorage.clear();
+    clearOfflineCache();
+    seedAgedEntry("zone-edge", FROZEN_NOW - age);
+
+    atFrozenNow(() => {
+      const listed = getCacheIndex().includes("zone-edge");
+      assert.equal(listed, servable, `index at age ${age}ms`);
+      assert.equal(
+        getCachedZoneRecords("zone-edge") !== null,
+        servable,
+        `read at age ${age}ms`,
+      );
+      assert.equal(
+        getCacheIndexEntries()[0]?.expired ?? true,
+        !servable,
+        `expired flag at age ${age}ms`,
+      );
+    });
+  }
+});
+
+test("a future-stamped entry stays listed as well as readable", () => {
+  // The read deliberately tolerates a backwards clock jump. The index has to
+  // apply the identical rule or the two disagree in the opposite direction.
+  seedAgedEntry("zone-ahead", FROZEN_NOW + DAY_MS);
+
+  atFrozenNow(() => {
+    assert.deepEqual(getCacheIndex(), ["zone-ahead"]);
+    const entry = getCacheIndexEntries()[0]!;
+    assert.equal(entry.expired, false);
+    assert.equal(entry.ageMs, -DAY_MS);
+    assert.ok(getCachedZoneRecords("zone-ahead"));
   });
 });
 

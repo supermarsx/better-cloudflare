@@ -293,6 +293,149 @@ test("useLoginForm keeps settings open when native persistence rejects", async (
   assert.equal(view.result.current.showSettings, true);
 });
 
+/**
+ * The `vault_enabled` preference used to gate nothing but the rendering of the
+ * vault button, so a user who switched the OS vault off still had their key
+ * written to and read from the system keychain. These tests pin the preference
+ * to the behaviour it names.
+ */
+async function mountedDesktopLoginForm() {
+  const view = renderHook(() => useLoginForm(() => {}, true));
+  await waitFor(() => {
+    assert.equal(view.result.current.apiKeys.length, 1);
+    assert.equal(view.result.current.vaultEnabled, false);
+  });
+  act(() => {
+    view.result.current.setSelectedKeyId("desktop-key");
+    view.result.current.setPassword("password");
+  });
+  return view;
+}
+
+test("useLoginForm writes nothing to the vault while the preference is off", async () => {
+  mockDesktopLoginBootstrap();
+  let vaultWrites = 0;
+  let decryptions = 0;
+  mock.method(ServerClient.prototype, "storeVaultSecret", async () => {
+    vaultWrites += 1;
+  });
+  mock.method(TauriClient, "decryptApiKey", async () => {
+    decryptions += 1;
+    return "desktop-secret";
+  });
+
+  const view = await mountedDesktopLoginForm();
+  await act(async () => {
+    await view.result.current.handleRegisterPasskey();
+  });
+  render(<Toaster />);
+
+  assert.equal(vaultWrites, 0, "a disabled vault must not be written to");
+  assert.equal(
+    decryptions,
+    0,
+    "the key must not even be decrypted for a vault that is off",
+  );
+  assert.match(document.body.textContent ?? "", /OS vault is turned off/);
+  assert.match(document.body.textContent ?? "", /Encryption Settings/);
+});
+
+test("useLoginForm reads nothing from the vault while the preference is off", async () => {
+  mockDesktopLoginBootstrap();
+  let vaultReads = 0;
+  let authChallenges = 0;
+  mock.method(ServerClient.prototype, "getVaultSecret", async () => {
+    vaultReads += 1;
+    return "desktop-secret";
+  });
+  mock.method(ServerClient.prototype, "getPasskeyAuthOptions", async () => {
+    authChallenges += 1;
+    return {};
+  });
+
+  const view = await mountedDesktopLoginForm();
+  await act(async () => {
+    await view.result.current.handleUsePasskey();
+  });
+  render(<Toaster />);
+
+  assert.equal(vaultReads, 0, "a disabled vault must not be read");
+  assert.equal(
+    authChallenges,
+    0,
+    "the refusal must precede the device prompt, not follow it",
+  );
+  assert.match(document.body.textContent ?? "", /OS vault is turned off/);
+});
+
+test("useLoginForm still uses the vault when the preference is on", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(TauriClient, "getPreferences", async () => ({
+    vault_enabled: true,
+  }));
+  mock.method(TauriClient, "decryptApiKey", async () => "desktop-secret");
+  const storedSecrets: Array<[string, string]> = [];
+  mock.method(
+    ServerClient.prototype,
+    "storeVaultSecret",
+    async (id: string, secret: string) => {
+      storedSecrets.push([id, secret]);
+    },
+  );
+  mock.method(ServerClient.prototype, "getPasskeyRegistrationOptions", () =>
+    Promise.reject(new Error("registration options unavailable")),
+  );
+
+  const view = renderHook(() => useLoginForm(() => {}, true));
+  await waitFor(() => assert.equal(view.result.current.vaultEnabled, true));
+  act(() => {
+    view.result.current.setSelectedKeyId("desktop-key");
+    view.result.current.setPassword("password");
+  });
+  await act(async () => {
+    await view.result.current.handleRegisterPasskey();
+  });
+
+  assert.deepEqual(storedSecrets, [["desktop-key", "desktop-secret"]]);
+});
+
+test("useLoginForm warns that turning the vault off leaves the stored secret behind", async () => {
+  mockDesktopLoginBootstrap();
+  mock.method(TauriClient, "getPreferences", async () => ({
+    vault_enabled: true,
+  }));
+  mock.method(TauriClient, "updatePreferences", async () => {});
+
+  const view = renderHook(() => useLoginForm(() => {}, true));
+  await waitFor(() => assert.equal(view.result.current.vaultEnabled, true));
+  await act(async () => {
+    await view.result.current.setVaultEnabled(false);
+  });
+  render(<Toaster />);
+
+  assert.equal(view.result.current.vaultEnabled, false);
+  const message = document.body.textContent ?? "";
+  assert.match(message, /OS vault turned off/);
+  assert.match(message, /stays in the system keychain/);
+  assert.match(message, /Remove Vault Secret/);
+});
+
+test("LoginForm keeps the vault removal control reachable once the vault is off", async () => {
+  mockDesktopLoginBootstrap();
+  render(<LoginForm onLogin={() => {}} desktop />);
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("Desktop key"));
+    // Hiding this button when the preference is off was the trap: it is the
+    // only control that deletes a secret the app already wrote.
+    assert.ok(screen.getByRole("button", { name: /remove vault secret/i }));
+    assert.match(
+      screen.getByTestId("vault-disabled-notice").textContent ?? "",
+      /remains in the system keychain/,
+    );
+  });
+});
+
 test("useLoginForm does not report a vault preference as enabled before persistence succeeds", async () => {
   mockDesktopLoginBootstrap();
   mock.method(storageManager, "getVaultEnabled", () => false);

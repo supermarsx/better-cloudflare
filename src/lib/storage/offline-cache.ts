@@ -17,6 +17,22 @@ export interface CachedZoneRecords {
   cachedAt: number;
 }
 
+/**
+ * A zone the cache still holds on disk, with the age the reads judge it by.
+ *
+ * `expired` is the single authority both the index and the read consult, so a
+ * zone can never be advertised as available and then refused when opened.
+ */
+export interface CacheIndexEntry {
+  zoneId: string;
+  zoneName: string;
+  cachedAt: number;
+  /** Age at the moment of the call. Negative when the clock moved backwards. */
+  ageMs: number;
+  /** True once the entry is past the seven-day limit and will not be served. */
+  expired: boolean;
+}
+
 interface IndexedCacheEntry {
   zoneId: string;
   key: string;
@@ -173,6 +189,15 @@ function reportCacheFailure(
     source: "runtime",
     label: `${operation}: ${storageFailureCategory(error, corruption)}`,
   });
+}
+
+/**
+ * The one expiry rule. A `cachedAt` ahead of `now` yields a negative age and is
+ * deliberately not expired: a backwards clock jump must not delete a user's
+ * only offline copy.
+ */
+function cacheEntryIsExpired(cachedAt: number, now: number): boolean {
+  return now - cachedAt > MAX_CACHE_AGE_MS;
 }
 
 function isCachedZoneRecords(value: unknown): value is CachedZoneRecords {
@@ -1230,7 +1255,7 @@ export function getCachedZoneRecords(zoneId: string): CachedZoneRecords | null {
       (entry) => entry.zoneId === zoneId,
     );
     if (!cached) return null;
-    if (Date.now() - cached.value.cachedAt > MAX_CACHE_AGE_MS) {
+    if (cacheEntryIsExpired(cached.value.cachedAt, Date.now())) {
       removeCachedZone(zoneId);
       return null;
     }
@@ -1419,11 +1444,23 @@ export function clearOfflineCache(): void {
 }
 
 /**
- * Get cached zone IDs in deterministic oldest-to-newest write order.
+ * Get every zone still held on disk — expired ones included — in deterministic
+ * oldest-to-newest write order.
+ *
+ * This is an inspection, not a read: it never deletes an expired entry, so a
+ * caller can tell the user "cached eight days ago, expired" rather than let the
+ * zone disappear with no explanation. Only `getCachedZoneRecords` purges.
  */
-export function getCacheIndex(): string[] {
+export function getCacheIndexEntries(): CacheIndexEntry[] {
   try {
-    return reconcileCacheState().map((entry) => entry.zoneId);
+    const now = Date.now();
+    return reconcileCacheState().map((entry) => ({
+      zoneId: entry.zoneId,
+      zoneName: entry.value.zoneName,
+      cachedAt: entry.value.cachedAt,
+      ageMs: now - entry.value.cachedAt,
+      expired: cacheEntryIsExpired(entry.value.cachedAt, now),
+    }));
   } catch (error) {
     reportCacheFailure(
       error,
@@ -1432,6 +1469,20 @@ export function getCacheIndex(): string[] {
     );
     return [];
   }
+}
+
+/**
+ * Get the zone IDs the cache will actually serve, in deterministic
+ * oldest-to-newest write order.
+ *
+ * Expired zones are excluded so this list never promises data that
+ * `getCachedZoneRecords` would refuse. Use `getCacheIndexEntries` when the
+ * expired zones themselves need to be shown.
+ */
+export function getCacheIndex(): string[] {
+  return getCacheIndexEntries()
+    .filter((entry) => !entry.expired)
+    .map((entry) => entry.zoneId);
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   formatCacheAge,
   getCachedZoneRecords,
   getCacheIndex,
+  getCacheIndexEntries,
   hasCachedRecords,
 } from "../src/lib/storage/offline-cache";
 import { RESOURCE_LIMITS } from "../src/lib/resource-limits";
@@ -79,6 +80,20 @@ function rawIndexZoneIds(): string[] {
   const parsed: unknown = JSON.parse(raw);
   if (Array.isArray(parsed)) return parsed as string[];
   return (parsed as { zoneIds: string[] }).zoneIds;
+}
+
+/**
+ * Every zone recovery reconstructed, expiry included.
+ *
+ * The recovery, limit and coordination suites below seed epoch-era `cachedAt`
+ * values (0, 1, 2, an array index) because what they pin is ordering, capping
+ * and orphan purging — not the seven-day TTL, which `offline-cache-ttl.test.ts`
+ * owns. `getCacheIndex` reports only what the cache will actually serve, so
+ * those fixtures read as long expired; this probe keeps the durable view those
+ * assertions were written against.
+ */
+function storedZoneIds(): string[] {
+  return getCacheIndexEntries().map((entry) => entry.zoneId);
 }
 
 function namedStorageError(name: string, message: string): Error {
@@ -292,7 +307,7 @@ test("recovers a missing index, enforces the exact count limit, and purges orpha
     );
   }
 
-  const recovered = getCacheIndex();
+  const recovered = storedZoneIds();
   assert.equal(recovered.length, hardLimit);
   assert.equal(recovered[0], "recovery-1");
   assert.equal(recovered.at(-1), `recovery-${hardLimit}`);
@@ -317,7 +332,7 @@ test("recovers a malformed index within byte limits and removes corrupt owned ke
   }
   localStorage.setItem(`${CACHE_KEY_PREFIX}corrupt`, "{not-json");
 
-  const recovered = getCacheIndex();
+  const recovered = storedZoneIds();
   assert.deepEqual(recovered, ["byte-recovery-2", "byte-recovery-3"]);
   assert.equal(localStorage.getItem(`${CACHE_KEY_PREFIX}corrupt`), null);
   assert.deepEqual(
@@ -431,10 +446,10 @@ test("recovery yields between bounded batches and resumes past 650 unrelated key
   );
 
   try {
-    assert.deepEqual(getCacheIndex(), []);
+    assert.deepEqual(storedZoneIds(), []);
     await waitFor(
       () =>
-        JSON.stringify(getCacheIndex()) ===
+        JSON.stringify(storedZoneIds()) ===
         JSON.stringify(["after-unrelated-a", "after-unrelated-b"]),
     );
     assert.deepEqual(rawIndexZoneIds(), [
@@ -470,9 +485,9 @@ test("completed recovery is reused without rescanning an unchanged origin", asyn
   );
 
   try {
-    assert.deepEqual(getCacheIndex(), []);
+    assert.deepEqual(storedZoneIds(), []);
     await waitFor(
-      () => JSON.stringify(getCacheIndex()) === '["stable-recovery"]',
+      () => JSON.stringify(storedZoneIds()) === '["stable-recovery"]',
     );
 
     const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
@@ -486,8 +501,8 @@ test("completed recovery is reused without rescanning an unchanged origin", asyn
       return originalKey.call(this, index);
     };
     try {
-      assert.deepEqual(getCacheIndex(), ["stable-recovery"]);
-      assert.deepEqual(getCacheIndex(), ["stable-recovery"]);
+      assert.deepEqual(storedZoneIds(), ["stable-recovery"]);
+      assert.deepEqual(storedZoneIds(), ["stable-recovery"]);
     } finally {
       storagePrototype.key = originalKey;
     }
@@ -560,15 +575,15 @@ test("over-cap recovery retains the newest valid timestamps from 1,000 entries",
     );
   }
 
-  assert.deepEqual(getCacheIndex(), []);
-  await waitFor(() => getCacheIndex().length === hardLimit);
+  assert.deepEqual(storedZoneIds(), []);
+  await waitFor(() => storedZoneIds().length === hardLimit);
 
   const expected = Array.from(
     { length: hardLimit },
     (_, index) =>
       `top-k-${(entryCount - hardLimit + index).toString().padStart(4, "0")}`,
   );
-  assert.deepEqual(getCacheIndex(), expected);
+  assert.deepEqual(storedZoneIds(), expected);
   assert.deepEqual(ownedEntryZoneIds(), [...expected].sort());
 });
 
@@ -586,7 +601,7 @@ test("takes over a stale lease and reconciles a crashed data-only write without 
     rawCacheEntry("crash-recovery", 1),
   );
 
-  assert.deepEqual(getCacheIndex(), ["crash-recovery"]);
+  assert.deepEqual(storedZoneIds(), ["crash-recovery"]);
   assert.deepEqual(rawIndexZoneIds(), ["crash-recovery"]);
   assert.equal(localStorage.getItem(CACHE_COORDINATION_KEY), null);
 });
