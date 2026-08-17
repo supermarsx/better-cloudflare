@@ -50,13 +50,11 @@ APPROVED_EXCEPTIONS = {
     "RUSTSEC-2024-0419": ("gtk3-macros", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0420": ("gtk-sys", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0429": ("glib", "0.18.5", "unsound"),
-    "RUSTSEC-2025-0057": ("fxhash", "0.2.1", "unmaintained"),
     "RUSTSEC-2025-0075": ("unic-char-range", "0.9.0", "unmaintained"),
     "RUSTSEC-2025-0080": ("unic-common", "0.9.0", "unmaintained"),
     "RUSTSEC-2025-0081": ("unic-char-property", "0.9.0", "unmaintained"),
     "RUSTSEC-2025-0098": ("unic-ucd-version", "0.9.0", "unmaintained"),
     "RUSTSEC-2025-0100": ("unic-ucd-ident", "0.9.0", "unmaintained"),
-    "RUSTSEC-2026-0097": ("rand", "0.7.3", "unsound"),
 }
 
 GTK_BINDING_RATIONALE = (
@@ -130,11 +128,6 @@ APPROVED_JUSTIFICATIONS = {
         "patched version is solver-reachable without replacing the upstream GTK3 "
         "runtime",
     ),
-    "RUSTSEC-2025-0057": (
-        "transitive build dependency through Tauri utils, kuchikiki, and selectors",
-        "the advisory is maintenance-only and the current Tauri HTML processing "
-        "stack has no compatible release that removes fxhash",
-    ),
     "RUSTSEC-2025-0075": (
         "transitive through Tauri utils and urlpattern",
         UNIC_RATIONALE,
@@ -154,13 +147,6 @@ APPROVED_JUSTIFICATIONS = {
     "RUSTSEC-2025-0100": (
         "transitive through Tauri utils and urlpattern",
         UNIC_RATIONALE,
-    ),
-    "RUSTSEC-2026-0097": (
-        "transitive build dependency through Tauri utils, kuchikiki, selectors, "
-        "and phf_generator",
-        "the fix starts at rand 0.8.6 but phf_generator 0.8 requires rand 0.7, "
-        "and the custom-logger thread_rng reseed trigger is not used by the "
-        "application",
     ),
 }
 
@@ -186,6 +172,12 @@ MINIMUM_VERSIONS = {
     "tauri-build": "2.6.3",
     "tauri-codegen": "2.6.3",
     "tauri-macros": "2.6.3",
+    # tauri-plugin 2.5.x selects the tauri-utils "build" feature, which pulls the
+    # archived kuchikiki/selectors HTML stack back in and resurrects the retired
+    # RUSTSEC-2025-0057 (fxhash) and RUSTSEC-2026-0097 (rand 0.7.3) findings.
+    # 2.6.3 selects "build-2" (dom_query) instead, so this floor is what keeps
+    # those two exceptions retired.
+    "tauri-plugin": "2.6.3",
     "tauri-runtime": "2.11.3",
     "tauri-runtime-wry": "2.11.4",
     "tauri-utils": "2.9.3",
@@ -577,8 +569,8 @@ def main() -> int:
         print(f"OSV policy validation failed: {error}", file=sys.stderr)
         return 1
     print(
-        "OSV policy valid: 21 exact exceptions, 2 root lockfiles, "
-        "2 fail-closed workflows"
+        f"OSV policy valid: {len(APPROVED_EXCEPTIONS)} exact exceptions, "
+        "2 root lockfiles, 2 fail-closed workflows"
     )
     return 0
 

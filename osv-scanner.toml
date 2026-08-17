@@ -14,11 +14,6 @@ ignoreUntil = 2026-10-30
 reason = "classification=unmaintained; package=derivative@2.2.0; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive through keyring to secret-service and zbus; rationale=the advisory is maintenance-only and the current keyring stack has no compatible release that removes derivative"
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2025-0057"
-ignoreUntil = 2026-10-30
-reason = "classification=unmaintained; package=fxhash@0.2.1; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive build dependency through Tauri utils, kuchikiki, and selectors; rationale=the advisory is maintenance-only and the current Tauri HTML processing stack has no compatible release that removes fxhash"
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0412"
 ignoreUntil = 2026-10-30
 reason = "classification=unmaintained; package=gdk@0.18.2; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive through Tauri 2.11.1 GTK3 runtime; rationale=GTK3 bindings are archived and have no patched GTK3 release, while GTK4 requires an upstream Tauri runtime migration"
@@ -72,11 +67,6 @@ reason = "classification=unmaintained; package=instant@0.1.13; owner=Better Clou
 id = "RUSTSEC-2024-0370"
 ignoreUntil = 2026-10-30
 reason = "classification=unmaintained; package=proc-macro-error@1.0.4; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive build dependency through GTK3 macros; rationale=the advisory is maintenance-only and the current Tauri GTK3 stack has no compatible release that removes proc-macro-error"
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0097"
-ignoreUntil = 2026-10-30
-reason = "classification=unsound; package=rand@0.7.3; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive build dependency through Tauri utils, kuchikiki, selectors, and phf_generator; rationale=the fix starts at rand 0.8.6 but phf_generator 0.8 requires rand 0.7, and the custom-logger thread_rng reseed trigger is not used by the application"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2025-0081"

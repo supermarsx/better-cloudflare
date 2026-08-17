@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,50 @@ assert SPEC and SPEC.loader
 POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 ROOT = SCRIPT.resolve().parents[2]
+
+# Advisories retired by the tauri-plugin 2.6.3 upgrade, which moved tauri-utils
+# onto the "build-2" (dom_query) HTML backend and removed the archived
+# kuchikiki -> selectors -> phf_generator stack from the lockfile. They must stay
+# retired: the packages they name are gone, so re-listing either one would make
+# the validator fail closed as a stale exception.
+RETIRED_EXCEPTIONS = {
+    "RUSTSEC-2025-0057": ("fxhash", "0.2.1"),
+    "RUSTSEC-2026-0097": ("rand", "0.7.3"),
+}
+
+
+def _resolved_packages() -> set[tuple[str, str]]:
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    return {(entry["name"], entry["version"]) for entry in lock["package"]}
+
+
+def _synthetic_lock(
+    directory: Path,
+    *,
+    drop: set[tuple[str, str]] | None = None,
+    downgrade: tuple[str, str] | None = None,
+) -> Path:
+    """Write a name/version-only Cargo.lock so resolution can be mutated safely."""
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    lines = ["version = 4", ""]
+    for entry in lock["package"]:
+        name, version = entry["name"], entry["version"]
+        if drop and (name, version) in drop:
+            continue
+        if downgrade and name == downgrade[0]:
+            version = downgrade[1]
+        lines += ["[[package]]", f'name = "{name}"', f'version = "{version}"', ""]
+    path = directory / "Cargo.lock"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _config_without(advisory_id: str) -> str:
+    source = (ROOT / "osv-scanner.toml").read_text(encoding="utf-8")
+    blocks = source.split("[[IgnoredVulns]]\n")
+    kept = [block for block in blocks[1:] if f'id = "{advisory_id}"\n' not in block]
+    assert len(kept) == len(blocks) - 2, f"{advisory_id} is not in the config"
+    return "".join(f"[[IgnoredVulns]]\n{block}" for block in kept)
 
 
 class OsvPolicyContractTests(unittest.TestCase):
@@ -61,6 +106,76 @@ class OsvPolicyContractTests(unittest.TestCase):
                     )
             finally:
                 POLICY.REPOSITORY_ROOT = old_root
+
+    def test_stale_exception_fails(self) -> None:
+        """An exception naming an absent package must be removed, not tolerated."""
+        with tempfile.TemporaryDirectory() as directory:
+            lockfile = _synthetic_lock(Path(directory), drop={("atk", "0.18.2")})
+            with self.assertRaisesRegex(
+                POLICY.PolicyError, r"stale exception, atk@0\.18\.2 is absent"
+            ):
+                POLICY.validate_config(
+                    ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
+                )
+
+    def test_retired_exceptions_are_not_reintroduced(self) -> None:
+        config = (ROOT / "osv-scanner.toml").read_text(encoding="utf-8")
+        register = (ROOT / ".github/RELEASE_SECURITY.md").read_text(encoding="utf-8")
+        resolved = _resolved_packages()
+        for advisory_id, package in RETIRED_EXCEPTIONS.items():
+            with self.subTest(advisory=advisory_id):
+                self.assertNotIn(advisory_id, POLICY.APPROVED_EXCEPTIONS)
+                self.assertNotIn(advisory_id, POLICY.APPROVED_JUSTIFICATIONS)
+                self.assertNotIn(advisory_id, config)
+                self.assertNotIn(f"| `{advisory_id}` |", register)
+                self.assertNotIn(package, resolved)
+
+    def test_approved_tables_stay_in_lockstep(self) -> None:
+        self.assertEqual(
+            set(POLICY.APPROVED_EXCEPTIONS), set(POLICY.APPROVED_JUSTIFICATIONS)
+        )
+
+    def test_dropping_a_live_exception_fails(self) -> None:
+        """The ID set is exact in both directions, so silent removal fails too."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "osv-scanner.toml"
+            config.write_text(_config_without("RUSTSEC-2024-0413"), encoding="utf-8")
+            old_root = POLICY.REPOSITORY_ROOT
+            POLICY.REPOSITORY_ROOT = Path(directory)
+            try:
+                with self.assertRaisesRegex(
+                    POLICY.PolicyError,
+                    r"policy ID set drifted: missing=\['RUSTSEC-2024-0413'\]",
+                ):
+                    POLICY.validate_config(
+                        config, ROOT / "Cargo.lock", today=dt.date(2026, 7, 30)
+                    )
+            finally:
+                POLICY.REPOSITORY_ROOT = old_root
+
+    def test_security_floor_regression_fails(self) -> None:
+        """Downgrading tauri-plugin would resurrect the retired advisories."""
+        with tempfile.TemporaryDirectory() as directory:
+            lockfile = _synthetic_lock(
+                Path(directory), downgrade=("tauri-plugin", "2.5.2")
+            )
+            with self.assertRaisesRegex(
+                POLICY.PolicyError,
+                r"tauri-plugin resolved below security floor 2\.6\.3",
+            ):
+                POLICY.validate_config(
+                    ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
+                )
+
+    def test_required_package_absence_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lockfile = _synthetic_lock(Path(directory), drop={("tauri-plugin", "2.6.3")})
+            with self.assertRaisesRegex(
+                POLICY.PolicyError, r"required package is absent: tauri-plugin"
+            ):
+                POLICY.validate_config(
+                    ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
+                )
 
     def test_synthetic_new_vulnerability_fails(self) -> None:
         finding = {
