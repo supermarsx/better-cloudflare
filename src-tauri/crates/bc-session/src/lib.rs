@@ -183,7 +183,18 @@ impl SessionManager {
     }
 
     /// Get a `CloudflareClient` from the active session, or return an error.
+    ///
+    /// "Never logged in" and "logged in but idle too long" are different
+    /// situations to the user, so they must not collapse into one error.
+    /// `is_expired` reports `true` when there is no session at all, so the
+    /// absence of a session has to be checked first; otherwise a fresh launch
+    /// tells the user a session they never had has expired.
     pub async fn require_client(&self) -> Result<CloudflareClient, AppError> {
+        // Scoped so the read guard is released before `is_expired` locks again.
+        let has_session = self.session.read().await.is_some();
+        if !has_session {
+            return Err(AppError::NoSession);
+        }
         if self.is_expired().await {
             self.logout().await;
             return Err(AppError::SessionExpired);

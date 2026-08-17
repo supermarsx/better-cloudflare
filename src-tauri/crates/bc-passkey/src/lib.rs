@@ -1,4 +1,5 @@
-use base64::Engine;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::{alphabet, Engine};
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -19,6 +20,37 @@ const REGISTRATION_DISABLED: &str = "Passkey registration is disabled because th
 cryptographically verify WebAuthn attestation; no credential was stored";
 
 const PASSKEYS_UNAVAILABLE: &str = "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material. Remove legacy credentials and re-enroll after verified passkey registration is available.";
+
+/// Padding is a serialisation detail rather than a credential difference, so
+/// both engines below accept a padded or unpadded spelling of the same bytes.
+/// Non-canonical trailing bits stay rejected: such a spelling is not a Base64
+/// encoding of the bytes it nearly decodes to.
+const ANY_PADDING: GeneralPurposeConfig =
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent);
+const URL_SAFE_ANY_PAD: GeneralPurpose = GeneralPurpose::new(&alphabet::URL_SAFE, ANY_PADDING);
+const STANDARD_ANY_PAD: GeneralPurpose = GeneralPurpose::new(&alphabet::STANDARD, ANY_PADDING);
+
+/// The Base64 alphabet(s) a credential-id spelling is admissible in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialAlphabet {
+    UrlSafe,
+    Standard,
+    /// Contains no character that distinguishes the alphabets.
+    Either,
+    /// Mixes characters exclusive to both alphabets; not valid Base64 at all.
+    Neither,
+}
+
+impl CredentialAlphabet {
+    /// Could both spellings have come from one alphabet?
+    fn can_share_spelling_with(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Neither, _) | (_, Self::Neither) => false,
+            (Self::Either, _) | (_, Self::Either) => true,
+            (left, right) => left == right,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,18 +97,57 @@ impl PasskeyManager {
         }
     }
 
-    fn decode_credential_id(value: &str) -> Option<Vec<u8>> {
+    /// Which Base64 alphabet a stored credential-id spelling could have been
+    /// written in, inferred from the characters that distinguish the two
+    /// standard alphabets.
+    fn alphabet_of(value: &str) -> CredentialAlphabet {
+        let url_safe = value.contains(['-', '_']);
+        let standard = value.contains(['+', '/']);
+        match (url_safe, standard) {
+            // `-_` and `+/` in one string: no single alphabet spells this.
+            (true, true) => CredentialAlphabet::Neither,
+            (true, false) => CredentialAlphabet::UrlSafe,
+            (false, true) => CredentialAlphabet::Standard,
+            // No distinguishing character: both alphabets decode it identically.
+            (false, false) => CredentialAlphabet::Either,
+        }
+    }
+
+    /// Decode a credential id together with the alphabet it was spelled in.
+    ///
+    /// Padding is accepted or omitted on either side, because legacy records
+    /// were written with whichever spelling the browser happened to supply.
+    /// The alphabet, unlike the padding, is *not* normalised away: it is
+    /// returned so the caller can refuse to compare across alphabets.
+    fn decode_credential_id(value: &str) -> Option<(Vec<u8>, CredentialAlphabet)> {
         let value = value.trim();
         if value.is_empty() {
             return None;
         }
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(value)
-            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(value))
-            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(value))
-            .ok()
+        let alphabet = Self::alphabet_of(value);
+        let decoded = match alphabet {
+            CredentialAlphabet::UrlSafe | CredentialAlphabet::Either => {
+                URL_SAFE_ANY_PAD.decode(value)
+            }
+            CredentialAlphabet::Standard => STANDARD_ANY_PAD.decode(value),
+            CredentialAlphabet::Neither => return None,
+        };
+        decoded.ok().map(|bytes| (bytes, alphabet))
     }
 
+    /// Compare two credential ids.
+    ///
+    /// Matching stays deliberately lenient so that a record written by an older
+    /// build is still deletable, but the leniency is bounded to differences
+    /// that are *not* semantic: surrounding whitespace, and the presence or
+    /// absence of Base64 padding. Two spellings that decode to the same octets
+    /// through *different* alphabets are different credentials, and matching
+    /// them would let one delete remove another credential's record.
+    ///
+    /// Restricting this costs nothing for recovery: the delete path is always
+    /// reached from `list_passkeys`, which reports the stored spelling verbatim,
+    /// so the stored and requested ids agree on alphabet by construction and
+    /// usually match as exact strings before any decoding happens.
     fn credential_ids_match(left: &str, right: &str) -> bool {
         let left = left.trim();
         let right = right.trim();
@@ -90,8 +161,40 @@ impl PasskeyManager {
             Self::decode_credential_id(left),
             Self::decode_credential_id(right),
         ) {
-            (Some(left), Some(right)) => left == right,
+            (Some((left_bytes, left_alphabet)), Some((right_bytes, right_alphabet))) => {
+                left_alphabet.can_share_spelling_with(right_alphabet) && left_bytes == right_bytes
+            }
             _ => false,
+        }
+    }
+
+    /// The stored identifier for a record, or `None` when the record carries no
+    /// usable one. A present-but-blank `id` counts as unusable: it can never be
+    /// matched by a delete, so it must fall through to a synthetic handle.
+    fn stored_credential_id(credential: &Value) -> Option<&str> {
+        ["id", "rawId"]
+            .into_iter()
+            .filter_map(|field| credential.get(field).and_then(Value::as_str))
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+    }
+
+    /// Stable handle for a record that has no usable stored identifier, so the
+    /// manager can still address it.
+    fn synthetic_credential_id(index: usize) -> String {
+        format!("legacy_credential_{index}")
+    }
+
+    /// Does `requested` address the record at `index`?
+    ///
+    /// Records with a stored id are matched on that id; records without one are
+    /// matched only on the exact synthetic handle `list_passkeys` reported for
+    /// them. Synthetic handles are compared literally - they are app-generated
+    /// names, not Base64 payloads, so no decoding leniency applies to them.
+    fn credential_matches(credential: &Value, index: usize, requested: &str) -> bool {
+        match Self::stored_credential_id(credential) {
+            Some(stored) => Self::credential_ids_match(stored, requested),
+            None => requested.trim() == Self::synthetic_credential_id(index),
         }
     }
 
@@ -149,12 +252,9 @@ impl PasskeyManager {
             .enumerate()
             .map(|(index, credential)| {
                 serde_json::json!({
-                    "id": credential
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .or_else(|| credential.get("rawId").and_then(Value::as_str))
+                    "id": Self::stored_credential_id(&credential)
                         .map(str::to_string)
-                        .unwrap_or_else(|| format!("legacy_credential_{index}")),
+                        .unwrap_or_else(|| Self::synthetic_credential_id(index)),
                     "counter": credential
                         .get("counter")
                         .and_then(Value::as_u64)
@@ -171,19 +271,20 @@ impl PasskeyManager {
         id: &str,
         credential_id: &str,
     ) -> Result<(), PasskeyError> {
-        let mut list = storage
+        let list = storage
             .get_passkeys(id)
             .await
             .map_err(|e| PasskeyError::Storage(e.to_string()))?;
-        list.retain(|credential| {
-            let stored_id = credential
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| credential.get("rawId").and_then(Value::as_str));
-            !stored_id
-                .map(|stored| Self::credential_ids_match(stored, credential_id))
-                .unwrap_or(false)
-        });
+        // Indices must be the ones `list_passkeys` reported, so a record shown
+        // under a synthetic handle is removable by that handle.
+        let list: Vec<Value> = list
+            .into_iter()
+            .enumerate()
+            .filter(|(index, credential)| {
+                !Self::credential_matches(credential, *index, credential_id)
+            })
+            .map(|(_, credential)| credential)
+            .collect();
 
         if list.is_empty() {
             storage

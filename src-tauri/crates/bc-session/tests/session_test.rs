@@ -74,8 +74,11 @@ async fn http_client_is_accessible() {
 
 // ── require_client errors ──────────────────────────────────────────────────
 
+/// A fresh launch has no session to expire. Reporting `SessionExpired` there
+/// tells the user a session they never had has timed out, and points them at
+/// "sign in again" instead of "sign in".
 #[tokio::test]
-async fn require_client_without_session_returns_error() {
+async fn require_client_without_session_returns_no_session_not_expired() {
     let mgr = SessionManager::default();
     let result = mgr.require_client().await;
     assert!(result.is_err());
@@ -83,10 +86,33 @@ async fn require_client_without_session_returns_error() {
         Err(e) => e,
         Ok(_) => panic!("Expected error, got Ok"),
     };
-    match err {
-        AppError::SessionExpired | AppError::NoSession => {}
-        other => panic!("Expected session error, got: {other:?}"),
-    }
+    assert!(
+        matches!(err, AppError::NoSession),
+        "a launch with no session must report NoSession, got: {err:?}"
+    );
+    assert_eq!(err.code(), "NO_SESSION");
+}
+
+/// The expiry check reports "expired" for the absent session too, so it must
+/// not be consulted before the session's existence: with a zero idle timeout
+/// every branch ordering except the correct one yields `SessionExpired`.
+#[tokio::test]
+async fn require_client_without_session_reports_no_session_even_at_zero_timeout() {
+    let mgr = SessionManager::default();
+    mgr.set_idle_timeout(0).await;
+    let err = match mgr.require_client().await {
+        Err(e) => e,
+        Ok(_) => panic!("Expected error, got Ok"),
+    };
+    assert_eq!(err.code(), "NO_SESSION");
+
+    // Logging out of nothing must not manufacture an expiry either.
+    mgr.logout().await;
+    let err = match mgr.require_client().await {
+        Err(e) => e,
+        Ok(_) => panic!("Expected error, got Ok"),
+    };
+    assert_eq!(err.code(), "NO_SESSION");
 }
 
 #[tokio::test]
