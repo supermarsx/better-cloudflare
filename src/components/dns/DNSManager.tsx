@@ -6650,7 +6650,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }))
                         }
                       >
-                        <SelectTrigger className="w-[180px]">
+                        <SelectTrigger
+                          className="w-[180px]"
+                          // Nothing on screen names this control, so without a
+                          // label it announces only its current value ("A").
+                          aria-label={t(
+                            "Filter by record type",
+                            "Filter by record type",
+                          )}
+                        >
                           <SelectValue
                             placeholder={t("All types", "All types")}
                           />
@@ -6681,7 +6689,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }));
                         }}
                       >
-                        <SelectTrigger className="w-32">
+                        <SelectTrigger
+                          className="w-32"
+                          aria-label={t("Records per page", "Records per page")}
+                        >
                           <SelectValue
                             placeholder={t("Per page", "Per page")}
                           />
@@ -6707,6 +6718,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           title={t(
                             "Force refresh from Cloudflare",
                             "Force refresh from Cloudflare",
+                          )}
+                          // `title` is a hover-only hint; the icon carries no
+                          // text, so the button needs a name of its own.
+                          aria-label={t(
+                            "Refresh records from Cloudflare",
+                            "Refresh records from Cloudflare",
                           )}
                         >
                           <RefreshCw
@@ -7455,6 +7472,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             "Force refresh from Cloudflare",
                             "Force refresh from Cloudflare",
                           )}
+                          aria-label={t(
+                            "Refresh cache settings from Cloudflare",
+                            "Refresh cache settings from Cloudflare",
+                          )}
                         >
                           <RefreshCw
                             className={cn(
@@ -7665,6 +7686,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           title={t(
                             "Force refresh from Cloudflare",
                             "Force refresh from Cloudflare",
+                          )}
+                          aria-label={t(
+                            "Refresh SSL settings from Cloudflare",
+                            "Refresh SSL settings from Cloudflare",
                           )}
                         >
                           <RefreshCw
@@ -9185,6 +9210,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               className="h-8 px-2"
                               onClick={() => removeAuditFilter(rule.id)}
                               title={t("Remove filter", "Remove filter")}
+                              aria-label={t("Remove filter", "Remove filter")}
                             >
                               <X className="h-3.5 w-3.5" />
                             </Button>

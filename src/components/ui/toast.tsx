@@ -89,6 +89,9 @@ const ToastClose = React.forwardRef<
       className,
     )}
     toast-close=""
+    // The only content is an icon, so without this the dismiss control is an
+    // unnamed button. Callers may still override it for a specific toast.
+    aria-label="Dismiss notification"
     {...props}
   >
     <X className="h-4 w-4" />

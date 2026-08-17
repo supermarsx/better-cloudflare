@@ -207,7 +207,6 @@ export function ImportPreviewDialog({
                 type="checkbox"
                 checked={askAgain.checked}
                 onChange={(event) => askAgain.onChange(event.target.checked)}
-                aria-label={askAgain.label}
                 className="checkbox-themed"
               />
               <Label htmlFor="import-preview-ask-again">{askAgain.label}</Label>
@@ -216,8 +215,12 @@ export function ImportPreviewDialog({
 
           <div className="flex gap-2">
             <div className="flex items-center gap-2">
-              <Label>Dry Run</Label>
+              {/* Dry Run decides whether the import previews or actually writes
+                  to the zone, so the checkbox has to be identifiable and its
+                  state readable without sight of the tick. */}
+              <Label htmlFor="import-preview-dry-run">Dry Run</Label>
               <input
+                id="import-preview-dry-run"
                 type="checkbox"
                 checked={dryRun}
                 onChange={() => setDryRun(!dryRun)}

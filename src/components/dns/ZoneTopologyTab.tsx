@@ -3955,6 +3955,7 @@ export function ZoneTopologyTab({
         className="h-8 px-2"
         onClick={() => zoomBy(0.1)}
         disabled={controlsDisabled}
+        aria-label="Zoom in"
       >
         <Plus className="h-3.5 w-3.5" />
       </Button>
@@ -3964,6 +3965,7 @@ export function ZoneTopologyTab({
         className="h-8 px-2"
         onClick={() => zoomBy(-0.1)}
         disabled={controlsDisabled}
+        aria-label="Zoom out"
       >
         <Minus className="h-3.5 w-3.5" />
       </Button>
@@ -3973,6 +3975,7 @@ export function ZoneTopologyTab({
         className="h-8 px-2"
         onClick={resetView}
         disabled={controlsDisabled}
+        aria-label="Reset view"
       >
         <ZoomIn className="h-3.5 w-3.5 mr-1" />
         <span
@@ -3991,6 +3994,10 @@ export function ZoneTopologyTab({
             }
           }}
           title="Normalize zoom to 100%"
+          // The visible text is the current zoom level, which as a name says
+          // nothing about what activating it does; the label keeps the level
+          // audible while naming the action.
+          aria-label={`Normalize zoom to 100% (currently ${zoomPercent}%)`}
         >
           {zoomPercent}%
         </span>
@@ -4162,6 +4169,7 @@ export function ZoneTopologyTab({
           void runTopologyRefresh(onRefresh);
         }}
         disabled={isLoading}
+        aria-label="Refresh topology"
       >
         <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
       </Button>
