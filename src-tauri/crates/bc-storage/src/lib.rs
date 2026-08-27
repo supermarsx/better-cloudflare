@@ -431,7 +431,10 @@ impl SecretBackend for KeyringBackend {
     }
 
     fn delete(&self, key: &str) -> Result<(), BackendError> {
-        Self::entry(key)?.delete_password().map_err(Self::map_error)
+        // keyring 3 renamed delete_password to delete_credential; same semantics.
+        Self::entry(key)?
+            .delete_credential()
+            .map_err(Self::map_error)
     }
 }
 

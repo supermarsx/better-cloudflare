@@ -37,8 +37,6 @@ REQUIRED_REASON_KEYS = {
 # package/version/classification here makes policy drift and stale exceptions fail.
 APPROVED_EXCEPTIONS = {
     "RUSTSEC-2024-0370": ("proc-macro-error", "1.0.4", "unmaintained"),
-    "RUSTSEC-2024-0384": ("instant", "0.1.13", "unmaintained"),
-    "RUSTSEC-2024-0388": ("derivative", "2.2.0", "unmaintained"),
     "RUSTSEC-2024-0411": ("gdkwayland-sys", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0412": ("gdk", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0413": ("atk", "0.18.2", "unmaintained"),
@@ -70,16 +68,6 @@ APPROVED_JUSTIFICATIONS = {
         "transitive build dependency through GTK3 macros",
         "the advisory is maintenance-only and the current Tauri GTK3 stack has "
         "no compatible release that removes proc-macro-error",
-    ),
-    "RUSTSEC-2024-0384": (
-        "transitive through keyring, secret-service, zbus, and futures-lite",
-        "the advisory is maintenance-only and the current keyring stack has no "
-        "compatible release that removes instant",
-    ),
-    "RUSTSEC-2024-0388": (
-        "transitive through keyring to secret-service and zbus",
-        "the advisory is maintenance-only and the current keyring stack has no "
-        "compatible release that removes derivative",
     ),
     "RUSTSEC-2024-0411": (
         "transitive through Tauri 2.11.1 GTK3 runtime",
@@ -166,6 +154,12 @@ FIXABLE_IDS = {
 }
 
 MINIMUM_VERSIONS = {
+    # keyring 2.x reaches the credential store through secret-service and
+    # zbus 3, which is what kept derivative (RUSTSEC-2024-0388) and instant
+    # (RUSTSEC-2024-0384) in the graph. keyring 4 uses its own backend
+    # crates and drops both, so this floor is what keeps those two
+    # exceptions retired.
+    "keyring": "4.1.6",
     "openssl": "0.10.80",
     "serde_with": "3.21.0",
     "tauri": "2.11.1",

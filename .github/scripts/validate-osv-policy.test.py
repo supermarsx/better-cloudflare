@@ -23,6 +23,8 @@ ROOT = SCRIPT.resolve().parents[2]
 # retired: the packages they name are gone, so re-listing either one would make
 # the validator fail closed as a stale exception.
 RETIRED_EXCEPTIONS = {
+    "RUSTSEC-2024-0384": ("instant", "0.1.13"),
+    "RUSTSEC-2024-0388": ("derivative", "2.2.0"),
     "RUSTSEC-2025-0057": ("fxhash", "0.2.1"),
     "RUSTSEC-2026-0097": ("rand", "0.7.3"),
 }
