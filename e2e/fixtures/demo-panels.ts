@@ -996,3 +996,235 @@ export const DEMO_PARSED_IMPORT_RECORDS = [
     proxied: true,
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Notifications (t9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Seeded inbox for the `notifications_*` stub cases. Three items: one
+ * critical domain-expiry notice, one out-of-console record change with
+ * before/after values, and one archived service notice. Wire shape mirrors
+ * `bc_notify::Notification` (camelCase).
+ */
+export interface DemoNotification {
+  id: string;
+  kind: "domain_expiry" | "record_change" | "service";
+  severity: "info" | "warning" | "critical";
+  zoneId: string | null;
+  zoneName: string | null;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+  archivedAt: string | null;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+}
+
+export const DEMO_NOTIFICATIONS: DemoNotification[] = [
+  {
+    id: "ntf-expiry-labs",
+    kind: "domain_expiry",
+    severity: "critical",
+    zoneId: "zone-harborline-labs",
+    zoneName: "harborline-labs.test",
+    title: "harborline-labs.test expires in 3 days",
+    body: "Registration ends on 2026-08-10. Renew it with the registrar to keep the zone resolving.",
+    createdAt: "2026-08-07T08:00:12Z",
+    readAt: null,
+    archivedAt: null,
+    dedupeKey: "expiry:harborline-labs.test:2026-08-10:3",
+    payload: {
+      domain: "harborline-labs.test",
+      expiresAt: "2026-08-10T00:00:00Z",
+      daysLeft: 3,
+      milestone: 3,
+      source: "rdap",
+    },
+  },
+  {
+    id: "ntf-change-app",
+    kind: "record_change",
+    severity: "warning",
+    zoneId: "zone-harborline",
+    zoneName: "harborline.test",
+    title: "A app.harborline.test changed outside Better Cloudflare",
+    body: "203.0.113.20 → 203.0.113.99",
+    createdAt: "2026-08-07T07:41:00Z",
+    readAt: null,
+    archivedAt: null,
+    dedupeKey:
+      "change:zone-harborline:zone-harborline-rec-05:2026-08-07T07:39:51Z",
+    payload: {
+      change: "changed",
+      recordId: "zone-harborline-rec-05",
+      recordType: "A",
+      recordName: "app.harborline.test",
+      before: {
+        content: "203.0.113.20",
+        ttl: 1,
+        proxied: true,
+        comment: "Shipper console (blue/green)",
+      },
+      after: {
+        content: "203.0.113.99",
+        ttl: 1,
+        proxied: true,
+        comment: "Shipper console (blue/green)",
+      },
+    },
+  },
+  {
+    id: "ntf-service-baseline",
+    kind: "service",
+    severity: "info",
+    zoneId: null,
+    zoneName: null,
+    title: "Monitoring started",
+    body: "Baseline snapshots were taken for 4 zones. Changes made from now on will be reported here.",
+    createdAt: "2026-08-06T09:15:30Z",
+    readAt: "2026-08-06T09:20:00Z",
+    archivedAt: "2026-08-06T18:00:00Z",
+    dedupeKey: "service:baseline:2026-08-06",
+    payload: { event: "baseline", zones: 4 },
+  },
+];
+
+/** `notifications_status` / `notifications_start` / `notifications_check_now` */
+export const DEMO_NOTIFICATION_STATUS = {
+  running: true,
+  enabled: true,
+  paused: false,
+  quietHoursActive: false,
+  zonesTracked: 4,
+  unread: 2,
+  lastRecordCheckAt: "2026-08-07T10:30:00Z",
+  lastExpiryCheckAt: "2026-08-07T08:00:00Z",
+  nextRecordCheckAt: "2026-08-07T10:45:00Z",
+  nextExpiryCheckAt: "2026-08-07T14:00:00Z",
+  nextCheckAt: "2026-08-07T10:45:00Z",
+  backoffUntil: null,
+  lastError: null,
+  lastPass: {
+    kind: "records",
+    startedAt: "2026-08-07T10:30:00Z",
+    durationMs: 1840,
+    zonesChecked: 4,
+    notificationsCreated: 0,
+    errors: 0,
+  },
+};
+
+/** `notifications_get_settings` (already normalized — the TS/Rust defaults). */
+export const DEMO_NOTIFICATION_SETTINGS = {
+  version: 1,
+  service: {
+    enabled: true,
+    paused: false,
+    catchUpOnLaunch: true,
+    recordPollMinutes: 15,
+    expiryPollMinutes: 360,
+    rdapCacheHours: 24,
+    maxZonesPerPass: 200,
+    backoffMaxMinutes: 120,
+  },
+  kinds: {
+    domainExpiry: { enabled: true, severity: "auto", osNotify: true },
+    recordChange: {
+      enabled: true,
+      severity: "auto",
+      osNotify: true,
+      changes: { added: true, changed: true, removed: true },
+      fields: [
+        "content",
+        "ttl",
+        "proxied",
+        "priority",
+        "comment",
+        "name",
+        "type",
+      ],
+    },
+    service: { enabled: true, severity: "info", osNotify: false },
+  },
+  expiry: {
+    milestones: [90, 60, 30, 14, 7, 3, 1],
+    notifyExpired: true,
+    source: "auto",
+    severityByMilestone: { warningAtOrBelow: 14, criticalAtOrBelow: 3 },
+  },
+  zones: { mode: "all", include: [], exclude: [], overrides: {} },
+  quietHours: {
+    enabled: false,
+    start: "22:00",
+    end: "07:00",
+    days: [0, 1, 2, 3, 4, 5, 6],
+    timezone: "local",
+    behaviour: "silence",
+  },
+  osNotifications: { enabled: true, minSeverity: "warning" },
+  inApp: { toastMinSeverity: "critical", badge: true },
+  retention: {
+    autoArchiveReadAfterDays: 30,
+    purgeArchivedAfterDays: 90,
+    maxItems: 2000,
+    keepSnapshots: true,
+  },
+};
+
+/** `notifications_zone_summary` */
+export const DEMO_NOTIFICATION_ZONE_SUMMARY = [
+  {
+    zoneId: "zone-harborline",
+    zoneName: "harborline.test",
+    monitored: true,
+    muted: false,
+    mutedUntil: null,
+    lastCheckedAt: "2026-08-07T10:30:00Z",
+    snapshotRecords: 12,
+    expiresAt: "2027-03-14T00:00:00Z",
+    daysLeft: 219,
+    expirySource: "registrar",
+    lastError: null,
+  },
+  {
+    zoneId: "zone-harborline-cdn",
+    zoneName: "harborlinecdn.test",
+    monitored: true,
+    muted: false,
+    mutedUntil: null,
+    lastCheckedAt: "2026-08-07T10:30:01Z",
+    snapshotRecords: 5,
+    expiresAt: "2027-01-02T00:00:00Z",
+    daysLeft: 148,
+    expirySource: "rdap",
+    lastError: null,
+  },
+  {
+    zoneId: "zone-shipwright",
+    zoneName: "shipwright.test",
+    monitored: true,
+    muted: true,
+    mutedUntil: "2026-08-08T10:00:00Z",
+    lastCheckedAt: "2026-08-07T10:30:01Z",
+    snapshotRecords: 8,
+    expiresAt: null,
+    daysLeft: null,
+    expirySource: null,
+    lastError: "RDAP lookup failed: no RDAP server for .test",
+  },
+  {
+    zoneId: "zone-harborline-labs",
+    zoneName: "harborline-labs.test",
+    monitored: true,
+    muted: false,
+    mutedUntil: null,
+    lastCheckedAt: "2026-08-07T10:30:02Z",
+    snapshotRecords: 3,
+    expiresAt: "2026-08-10T00:00:00Z",
+    daysLeft: 3,
+    expirySource: "rdap",
+    lastError: null,
+  },
+];

@@ -6,11 +6,22 @@
  */
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isDesktop } from "@/lib/environment";
+import {
+  DEFAULT_PROPAGATION_RESOLVER_IDS,
+  PROPAGATION_SETTING_LIMITS,
+  type PropagationCheckOptions,
+} from "@/lib/dns/propagation-resolvers";
 import { normalizeRequestError, RequestError } from "@/lib/api/request-error";
+import {
+  clampNotificationSettings,
+  type NotificationSettings,
+} from "@/lib/notifications/notification-settings";
 
 const TAURI_UI_TIMEOUT_MS = 15_000;
 const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
+  check_dns_propagation: 60_000,
   create_bulk_dns_records: 60_000,
   export_dns_records: 60_000,
   get_dns_analytics: 60_000,
@@ -32,6 +43,51 @@ type TauriInvokeOptions = {
 
 export function getTauriInvokeTimeoutMs(command: string): number {
   return TAURI_COMMAND_TIMEOUT_OVERRIDES_MS[command] ?? TAURI_UI_TIMEOUT_MS;
+}
+
+/** Mirrors `bc_topology::limits::NETWORK_CONCURRENCY` (resolvers queried at once). */
+const PROPAGATION_NATIVE_CONCURRENCY = 8;
+/** Mirrors the fixed grace period in `ResolvedPropagationOptions::deadline`. */
+const PROPAGATION_NATIVE_GRACE_MS = 2_000;
+/** Slack for IPC, result normalisation and scheduling jitter. */
+const PROPAGATION_TIMEOUT_MARGIN_MS = 5_000;
+/** Hard ceiling; the native worst case (64 resolvers × 47 s / 8) is ~6.3 min. */
+const PROPAGATION_TIMEOUT_CAP_MS = 420_000;
+
+/**
+ * UI deadline for one `check_dns_propagation` call, derived from the same
+ * knobs the native checker uses: every resolver may take
+ * `timeoutMs × attempts + grace`, at most `NETWORK_CONCURRENCY` run at once,
+ * so the run lasts about `ceil(resolvers / concurrency)` rounds of that.
+ * Never shorter than the static override so a stale/odd option set cannot
+ * make the UI give up before the historical budget.
+ */
+export function getPropagationInvokeTimeoutMs(
+  resolverCount: number,
+  options?: PropagationCheckOptions,
+): number {
+  const limits = PROPAGATION_SETTING_LIMITS;
+  const clamp = (
+    value: number | undefined,
+    range: { min: number; max: number; default: number },
+  ) =>
+    Number.isFinite(value)
+      ? Math.min(range.max, Math.max(range.min, Math.round(value as number)))
+      : range.default;
+  const timeoutMs = clamp(options?.timeoutMs, limits.timeoutMs);
+  const attempts = clamp(options?.attempts, limits.attempts);
+  const resolvers = Math.min(
+    limits.maxResolvers,
+    Math.max(1, Math.round(resolverCount)),
+  );
+  const rounds = Math.ceil(resolvers / PROPAGATION_NATIVE_CONCURRENCY);
+  const derived =
+    rounds * (timeoutMs * attempts + PROPAGATION_NATIVE_GRACE_MS) +
+    PROPAGATION_TIMEOUT_MARGIN_MS;
+  return Math.min(
+    PROPAGATION_TIMEOUT_CAP_MS,
+    Math.max(getTauriInvokeTimeoutMs("check_dns_propagation"), derived),
+  );
 }
 
 function tauriAbortError(command: string): RequestError {
@@ -1412,15 +1468,188 @@ export class TauriClient {
     recordType: string,
     extraResolvers?: string[],
     signal?: AbortSignal,
+    options?: PropagationCheckOptions,
   ): Promise<PropagationResult> {
+    const resolverCount =
+      (options?.resolvers?.length ?? DEFAULT_PROPAGATION_RESOLVER_IDS.length) +
+      (extraResolvers?.length ?? 0);
     return invoke(
       "check_dns_propagation",
       {
         domain,
         recordType,
         extraResolvers,
+        options,
       },
-      { signal },
+      {
+        signal,
+        timeoutMs: getPropagationInvokeTimeoutMs(resolverCount, options),
+      },
+    );
+  }
+
+  /** Catalogue of public resolvers the native checker knows about. */
+  static async listPropagationResolvers(): Promise<
+    PropagationResolverCatalogueEntry[]
+  > {
+    return invoke("list_propagation_resolvers");
+  }
+
+  // ── Notifications (desktop-only background monitor) ─────────────────────
+  //
+  // Commands live in `src-tauri/src/notifications.rs`; wire shapes are the
+  // camelCase serde forms of the `bc-notify` crate (see the types at the end
+  // of this file). Every method throws `NOTIFICATIONS_DESKTOP_ONLY` off
+  // desktop so callers fail loudly instead of hanging on a missing bridge.
+
+  /** `tauri-plugin-notification` is installed; OS notifications are sent from Rust (`notifications.rs`). */
+  static readonly hasOsNotifications: boolean = true;
+
+  private static requireNotificationsDesktop(): void {
+    if (!isDesktop()) throw new Error(NOTIFICATIONS_DESKTOP_ONLY);
+  }
+
+  static async notificationsStart(
+    apiKey: string,
+    email?: string | null,
+  ): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_start", { apiKey, email: email ?? null });
+  }
+
+  static async notificationsStop(): Promise<void> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_stop");
+  }
+
+  static async notificationsStatus(): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_status");
+  }
+
+  static async notificationsCheckNow(
+    kind?: NotificationCheckKind,
+  ): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_check_now", { kind: kind ?? null });
+  }
+
+  static async notificationsList(
+    query: NotificationQuery = {},
+  ): Promise<AppNotification[]> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_list", {
+      query: { scope: "all", ...query },
+    });
+  }
+
+  static async notificationsUnreadCount(): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_unread_count");
+  }
+
+  static async notificationsMarkRead(
+    ids: string[],
+    read = true,
+  ): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_mark_read", { ids, read });
+  }
+
+  static async notificationsMarkAllRead(): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_mark_all_read");
+  }
+
+  static async notificationsArchive(ids: string[]): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_archive", { ids });
+  }
+
+  static async notificationsUnarchive(ids: string[]): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_unarchive", { ids });
+  }
+
+  static async notificationsArchiveAllRead(): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_archive_all_read");
+  }
+
+  static async notificationsDismiss(ids: string[]): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_dismiss", { ids });
+  }
+
+  static async notificationsClearArchived(): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_clear_archived");
+  }
+
+  static async notificationsReconfigure(): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_reconfigure");
+  }
+
+  static async notificationsPause(): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_pause");
+  }
+
+  static async notificationsResume(): Promise<NotificationServiceStatus> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_resume");
+  }
+
+  /** Normalized settings (defaults filled by Rust `normalize()`); re-clamped locally for safety. */
+  static async notificationsGetSettings(): Promise<NotificationSettings> {
+    TauriClient.requireNotificationsDesktop();
+    const raw = await invoke<unknown>("notifications_get_settings");
+    return clampNotificationSettings(raw);
+  }
+
+  /** Sends the full object (Rust `merge` replaces the whole pref); returns the persisted normalized form. */
+  static async notificationsUpdateSettings(
+    settings: NotificationSettings,
+  ): Promise<NotificationSettings> {
+    TauriClient.requireNotificationsDesktop();
+    const raw = await invoke<unknown>("notifications_update_settings", {
+      settings: clampNotificationSettings(settings),
+    });
+    return clampNotificationSettings(raw);
+  }
+
+  static async notificationsResetState(
+    what: NotificationResetRequest,
+  ): Promise<void> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_reset_state", { what });
+  }
+
+  static async notificationsZoneSummary(): Promise<NotificationZoneSummary[]> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_zone_summary");
+  }
+
+  /** Subscribe to `notifications://changed` (fires after every inbox mutation). */
+  static async onNotificationsChanged(
+    handler: (payload: NotificationsChangedPayload) => void,
+  ): Promise<UnlistenFn> {
+    TauriClient.requireNotificationsDesktop();
+    return listen<NotificationsChangedPayload>(
+      NOTIFICATIONS_CHANGED_EVENT,
+      (event) => handler(event.payload),
+    );
+  }
+
+  /** Subscribe to `notifications://status` (fires after every monitoring pass). */
+  static async onNotificationsStatus(
+    handler: (payload: NotificationServiceStatus) => void,
+  ): Promise<UnlistenFn> {
+    TauriClient.requireNotificationsDesktop();
+    return listen<NotificationServiceStatus>(
+      NOTIFICATIONS_STATUS_EVENT,
+      (event) => handler(event.payload),
     );
   }
 }
@@ -1645,6 +1874,22 @@ export interface PropagationResult {
   resolvers: PropagationResolverResult[];
   consistent: boolean;
   timestamp: string;
+  /** Threshold the native checker applied (percent of agreeing resolvers). */
+  consensus_percent?: number;
+  /** Resolvers that returned the majority answer set. */
+  agreeing?: number;
+}
+
+export type { PropagationCheckOptions } from "@/lib/dns/propagation-resolvers";
+
+/** Row of `list_propagation_resolvers` (serde snake_case). */
+export interface PropagationResolverCatalogueEntry {
+  id: string;
+  ip: string;
+  label: string;
+  provider: string;
+  region: string;
+  default_enabled: boolean;
 }
 
 // ── DNS Tools types ───────────────────────────────────────────────────────────
@@ -1761,3 +2006,120 @@ export interface BiometricStatus {
   biometricType: BiometricType;
   reason?: string;
 }
+
+// ── Notification types (mirror of `bc-notify`, serde camelCase) ─────────────
+
+export const NOTIFICATIONS_CHANGED_EVENT = "notifications://changed";
+export const NOTIFICATIONS_STATUS_EVENT = "notifications://status";
+export const NOTIFICATIONS_DESKTOP_ONLY =
+  "Notifications are only available in the desktop app.";
+
+export type NotificationKind = "domain_expiry" | "record_change" | "service";
+export type NotificationSeverityLevel = "info" | "warning" | "critical";
+export type NotificationScope = "all" | "unread" | "archived";
+export type NotificationCheckKind = "records" | "expiry" | "all";
+
+export interface RecordChangeSnapshot {
+  content?: string;
+  ttl?: number;
+  proxied?: boolean;
+  priority?: number;
+  comment?: string | null;
+}
+
+export interface RecordChangePayload {
+  change: "added" | "removed" | "changed";
+  recordId: string;
+  recordType: string;
+  recordName: string;
+  before?: RecordChangeSnapshot;
+  after?: RecordChangeSnapshot;
+}
+
+export interface DomainExpiryPayload {
+  domain: string;
+  expiresAt: string;
+  daysLeft: number;
+  milestone: number;
+  source: "rdap" | "registrar";
+}
+
+/** Named `AppNotification` to avoid clashing with the DOM `Notification` global. */
+export interface AppNotification {
+  id: string;
+  kind: NotificationKind;
+  severity: NotificationSeverityLevel;
+  zoneId: string | null;
+  zoneName: string | null;
+  title: string;
+  body: string;
+  /** RFC 3339 */
+  createdAt: string;
+  readAt: string | null;
+  archivedAt: string | null;
+  dedupeKey: string;
+  payload: RecordChangePayload | DomainExpiryPayload | Record<string, unknown>;
+}
+
+export interface NotificationQuery {
+  scope?: NotificationScope;
+  kind?: NotificationKind;
+  zoneId?: string;
+  /** ≤ 500, default 200 (enforced by Rust). */
+  limit?: number;
+  /** Cursor: only items created before this RFC 3339 instant. */
+  before?: string;
+}
+
+export interface NotificationPassSummary {
+  kind: NotificationCheckKind;
+  startedAt: string;
+  durationMs: number;
+  zonesChecked: number;
+  notificationsCreated: number;
+  errors: number;
+}
+
+export interface NotificationServiceStatus {
+  running: boolean;
+  enabled: boolean;
+  paused: boolean;
+  quietHoursActive: boolean;
+  zonesTracked: number;
+  unread: number;
+  lastRecordCheckAt?: string | null;
+  lastExpiryCheckAt?: string | null;
+  nextRecordCheckAt?: string | null;
+  nextExpiryCheckAt?: string | null;
+  /** Legacy alias of `nextRecordCheckAt` kept for the status line. */
+  nextCheckAt?: string | null;
+  backoffUntil?: string | null;
+  lastError?: string | null;
+  lastPass?: NotificationPassSummary | null;
+}
+
+export interface NotificationResetRequest {
+  expiryLedger?: boolean;
+  snapshots?: boolean;
+  inbox?: boolean;
+}
+
+export interface NotificationZoneSummary {
+  zoneId: string;
+  zoneName: string;
+  monitored: boolean;
+  muted: boolean;
+  mutedUntil?: string | null;
+  lastCheckedAt?: string | null;
+  snapshotRecords?: number | null;
+  expiresAt?: string | null;
+  daysLeft?: number | null;
+  expirySource?: "rdap" | "registrar" | null;
+  lastError?: string | null;
+}
+
+export interface NotificationsChangedPayload {
+  unread: number;
+}
+
+export type { NotificationSettings, UnlistenFn };
