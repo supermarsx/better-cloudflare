@@ -369,6 +369,11 @@ export interface RecordRowProps {
   columns?: DnsRecordColumnId[];
   /** Optional grid template columns string (keeps header/rows aligned). */
   gridTemplateColumns?: string;
+  /**
+   * Briefly true after "Go to record" navigation so the row flashes and the
+   * viewer can find it in the list.
+   */
+  isRevealed?: boolean;
   /** Whether the row is currently in edit mode */
   isEditing: boolean;
   /** Whether the record is selected for bulk actions */
@@ -409,6 +414,7 @@ export function RecordRow({
   record,
   columns,
   gridTemplateColumns,
+  isRevealed = false,
   isEditing,
   isSelected = false,
   onEdit,
@@ -1461,6 +1467,7 @@ export function RecordRow({
           tabIndex={0}
           data-selected={isSelected}
           data-record-row={record.id}
+          data-revealed={isRevealed ? "true" : undefined}
           data-context-open={contextMenuOpen ? "true" : "false"}
           aria-haspopup="menu"
           aria-keyshortcuts="Shift+F10 ContextMenu"

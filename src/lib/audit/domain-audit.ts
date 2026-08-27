@@ -148,6 +148,31 @@ function classifySpecialIp(ip: string): string | null {
   return null;
 }
 
+/** An A/AAAA record whose address falls in a special-use/bogon range. */
+export type SpecialIpFinding = {
+  record: DNSRecord;
+  ip: string;
+  issue: string;
+};
+
+/**
+ * The A or AAAA records whose address is private, reserved or otherwise
+ * special-use, so the UI can point at the exact record rather than a label.
+ */
+export function findSpecialIpRecords(
+  records: DNSRecord[],
+  type: "A" | "AAAA",
+): SpecialIpFinding[] {
+  const findings: SpecialIpFinding[] = [];
+  for (const record of records) {
+    if (record.type !== type) continue;
+    const ip = String(record.content ?? "").trim();
+    const issue = classifySpecialIp(ip);
+    if (issue) findings.push({ record, ip, issue });
+  }
+  return findings;
+}
+
 function isSpfRecord(txt: string): boolean {
   return txt.trim().toLowerCase().startsWith("v=spf1");
 }
@@ -534,11 +559,11 @@ export function runDomainAudit(
       });
     }
 
-    const badA = records
-      .filter((r) => r.type === "A")
-      .map((r) => ({ name: r.name, ip: String(r.content ?? "").trim() }))
-      .map(({ name, ip }) => ({ name, ip, issue: classifySpecialIp(ip) }))
-      .filter((x) => x.issue);
+    const badA = findSpecialIpRecords(records, "A").map((x) => ({
+      name: x.record.name,
+      ip: x.ip,
+      issue: x.issue,
+    }));
 
     items.push({
       id: "special-a",
@@ -553,11 +578,11 @@ export function runDomainAudit(
         : "No obvious special-use/bogon IPv4 addresses detected in A records.",
     });
 
-    const badAAAA = records
-      .filter((r) => r.type === "AAAA")
-      .map((r) => ({ name: r.name, ip: String(r.content ?? "").trim() }))
-      .map(({ name, ip }) => ({ name, ip, issue: classifySpecialIp(ip) }))
-      .filter((x) => x.issue);
+    const badAAAA = findSpecialIpRecords(records, "AAAA").map((x) => ({
+      name: x.record.name,
+      ip: x.ip,
+      issue: x.issue,
+    }));
 
     items.push({
       id: "special-aaaa",
