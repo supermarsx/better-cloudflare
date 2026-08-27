@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type WheelEvent,
 } from "react";
@@ -36,10 +37,37 @@ import {
 import type { DNSRecord } from "@/types/dns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { TauriClient } from "@/lib/api/tauri-client";
+import {
+  TauriClient,
+  type EmailRoutingRuleResponse,
+  type EmailRoutingSettingsResponse,
+  type WorkerRouteResponse,
+} from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 import { retainUtf8, utf8ByteLengthUpTo } from "./rendererSafety";
+import {
+  buildEmailTopologyMermaid,
+  buildServicesTopologyMermaid,
+  createTopologyNameResolver,
+  EMAIL_TOPOLOGY_EMPTY_MESSAGE,
+  SERVICES_TOPOLOGY_EMPTY_MESSAGE,
+} from "./topologyGraphBuilders";
+
+export type TopologyGraphMode = "full" | "email" | "services";
+export const TOPOLOGY_GRAPH_MODES: Array<{
+  id: TopologyGraphMode;
+  label: string;
+  title: string;
+}> = [
+  { id: "full", label: "Full", title: "Full DNS graph" },
+  { id: "email", label: "Email", title: "Email graph" },
+  { id: "services", label: "Services", title: "Services graph" },
+];
+export type TopologyEmailRoutingProp = {
+  settings?: Pick<EmailRoutingSettingsResponse, "enabled"> | null;
+  rules?: EmailRoutingRuleResponse[] | null;
+};
 
 type Annotation = {
   id: string;
@@ -110,15 +138,21 @@ type ZoneTopologyTabProps = {
   onRefresh: () => Promise<void> | void;
   onEditRecord?: (record: DNSRecord) => void;
   modelYieldControl?: (signal?: AbortSignal) => Promise<void>;
+  /** Cloudflare Email Routing state for the Email graph (undefined = not loaded / unavailable). */
+  emailRouting?: TopologyEmailRoutingProp | null;
+  /** Worker routes for the Services graph (undefined = not loaded / unavailable). */
+  workerRoutes?: WorkerRouteResponse[] | null;
+  /** Shown as a muted note in Email mode when the Email Routing fetch failed. */
+  emailRoutingUnavailable?: boolean;
 };
 
-type ServiceDiscoveryItem = {
+export type ServiceDiscoveryItem = {
   service: string;
   status: "up" | "down" | "inferred";
   details: string;
 };
 
-type ExternalDnsResolution = {
+export type ExternalDnsResolution = {
   requestedName?: string;
   chain: string[];
   terminal: string;
@@ -157,7 +191,30 @@ function SanitizedTopologySvg({ svgMarkup }: { svgMarkup: string }) {
         safeMarkup,
         "image/svg+xml",
       ).documentElement;
-      container.append(document.importNode(parsed, true));
+      const svgNode = document.importNode(parsed, true);
+      // Pin the DOM box to the viewBox so pan/zoom/fit maths (which use the
+      // viewBox size) match what is actually painted.
+      const viewBox = svgNode.getAttribute("viewBox");
+      if (viewBox) {
+        const parts = viewBox.split(/[\s,]+/).map((part) => Number(part));
+        const width = parts[2];
+        const height = parts[3];
+        if (
+          Number.isFinite(width) &&
+          width > 0 &&
+          !svgNode.getAttribute("width")
+        ) {
+          svgNode.setAttribute("width", String(width));
+        }
+        if (
+          Number.isFinite(height) &&
+          height > 0 &&
+          !svgNode.getAttribute("height")
+        ) {
+          svgNode.setAttribute("height", String(height));
+        }
+      }
+      container.append(svgNode);
     } catch (error) {
       reportTopologyFailure(error, "Insert sanitized DNS topology SVG");
       container.textContent = "Topology SVG could not be displayed safely.";
@@ -685,7 +742,7 @@ export function populateTopologyPrintDocument(
   doc.documentElement.replaceChildren(head, body);
 }
 
-const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
+export const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /cloudfront\.net$/i, service: "AWS CloudFront" },
   { pattern: /elb\.amazonaws\.com$/i, service: "AWS ELB" },
   { pattern: /azureedge\.net$/i, service: "Azure Edge/CDN" },
@@ -698,8 +755,13 @@ const SERVICE_PATTERNS: Array<{ pattern: RegExp; service: string }> = [
   { pattern: /netlify\.(app|global)$/i, service: "Netlify" },
   { pattern: /cloudflare\.com$/i, service: "Cloudflare" },
 ];
+// Default lower zoom bound; the effective minimum drops to the fit scale
+// when a graph needs to shrink further than this to fit the viewport.
 const ZOOM_MIN = 0.1;
+const ZOOM_MIN_ABSOLUTE = 0.01;
 const ZOOM_MAX = 8;
+// Breathing room (px) between the fitted graph and the viewport border.
+const TOPOLOGY_FIT_PADDING = 24;
 const NODE_CONTEXT_MENU_WIDTH = 220;
 const NODE_CONTEXT_MENU_HEIGHT = 120;
 const NODE_CONTEXT_MENU_MARGIN = 8;
@@ -816,7 +878,7 @@ function sanitizeId(value: string): string {
   );
 }
 
-function normalizeDomain(value: string): string {
+export function normalizeDomain(value: string): string {
   return String(value ?? "")
     .trim()
     .replace(/\.$/, "")
@@ -845,7 +907,7 @@ function buildBrowserUrl(address?: string): string | null {
   return null;
 }
 
-function extractTarget(record: DNSRecord): string | null {
+export function extractTarget(record: DNSRecord): string | null {
   if (record.type === "CNAME" || record.type === "NS") {
     const target = normalizeDomain(record.content);
     return target || null;
@@ -1269,7 +1331,7 @@ function buildAddressMaps(records: DNSRecord[]): {
   };
 }
 
-function resolveNameToTerminal(
+export function resolveNameToTerminal(
   startName: string,
   cnameMap: Map<string, string>,
   ipv4ByName: Map<string, string[]>,
@@ -1298,7 +1360,7 @@ function resolveNameToTerminal(
   };
 }
 
-function pickBestResolution(
+export function pickBestResolution(
   requestedName: string,
   local: { chain: string[]; terminal: string; ipv4: string[]; ipv6: string[] },
   externalByName: Record<string, ExternalDnsResolution>,
@@ -1334,17 +1396,35 @@ function pickBestResolution(
   return localFallback;
 }
 
-function buildNodeLabel(title: string, subtitle = ""): string {
+/**
+ * Single-line node label: `title — subtitle`, bounded to
+ * `TOPOLOGY_NODE_LABEL_MAX_CHARS`. Mermaid non-HTML labels cannot break on a
+ * literal newline (markdown-string labels autolink bare hostnames and drop the
+ * text), so the label stays short and the full detail lives in the node
+ * tooltip metadata instead.
+ */
+export function buildNodeLabel(title: string, subtitle = ""): string {
   const cleanTitle = String(title ?? "")
     .replace(/\s+/g, " ")
     .trim();
   const cleanSubtitle = String(subtitle ?? "")
     .replace(/\s+/g, " ")
     .trim();
-  return cleanSubtitle ? `${cleanTitle} — ${cleanSubtitle}` : cleanTitle;
+  const label = cleanSubtitle ? `${cleanTitle} — ${cleanSubtitle}` : cleanTitle;
+  if (label.length <= TOPOLOGY_NODE_LABEL_MAX_CHARS) return label;
+  return `${label.slice(0, TOPOLOGY_NODE_LABEL_MAX_CHARS - 1)}…`;
 }
 
-function classifyAreas(
+type TopologyArea = "email" | "web" | "infra" | "misc";
+const TOPOLOGY_AREA_ORDER: TopologyArea[] = ["web", "email", "infra", "misc"];
+const TOPOLOGY_AREA_TITLES: Record<TopologyArea, string> = {
+  email: "Email",
+  web: "Web",
+  infra: "Infra",
+  misc: "Other",
+};
+
+export function classifyAreas(
   name: string,
   records: DNSRecord[],
   emailPathNames: Set<string>,
@@ -1508,9 +1588,19 @@ function buildTopology(
   const zoneTitle = `Zone: ${zone || zoneName}`;
   lines.push(`  ${zoneNode}["${esc(buildNodeLabel(zoneTitle))}"]:::zone`);
   setNodeMeta(zoneNode, zoneTitle);
+  const zoneHeaderLength = lines.length;
 
   const usedNames = new Set<string>();
   const areaCounts = { email: 0, web: 0, infra: 0, misc: 0 };
+  // Record nodes are declared inside one `subgraph area_*` per area so dagre
+  // lays out compact groups with a single zone -> area edge each, instead of a
+  // hub fan-out of N zone -> record edges converging on one port.
+  const areaNodeLines: Record<TopologyArea, string[]> = {
+    email: [],
+    web: [],
+    infra: [],
+    misc: [],
+  };
   type GraphUnit = {
     key: string;
     type: DNSRecord["type"];
@@ -1575,8 +1665,7 @@ function buildTopology(
     const proxyValues = Array.from(
       new Set(unit.records.map((r) => (r.proxied ? "proxied" : "dns-only"))),
     );
-    const info = [
-      `type:${unit.type}${unit.aggregate ? ` x${unit.records.length}` : ""}`,
+    const mxPriority =
       unit.type === "MX"
         ? (() => {
             const parts = String(unit.records[0]?.content ?? "")
@@ -1587,20 +1676,35 @@ function buildTopology(
               ? `prio:${parsedPriority}`
               : "";
           })()
-        : "",
-      `ttl:${ttlValues.length === 1 ? ttlValues[0] : "mixed"}`,
-      proxyValues.length === 1 ? proxyValues[0] : "proxy:mixed",
+        : "";
+    const ttlInfo = ttlValues.length === 1 ? ttlValues[0] : "mixed";
+    const proxyInfo = proxyValues.length === 1 ? proxyValues[0] : "proxy:mixed";
+    const info = [
+      `type:${unit.type}${unit.aggregate ? ` x${unit.records.length}` : ""}`,
+      mxPriority,
+      `ttl:${ttlInfo}`,
+      proxyInfo,
       resolved.chain.length > 1 ? `resolves:${resolved.terminal}` : "",
       endpointInfo,
     ]
       .filter(Boolean)
       .join(" | ");
+    // Short on-canvas subtitle; the full `info` stays in the tooltip metadata.
+    const shortInfo = [
+      `${unit.type}${unit.aggregate ? ` ×${unit.records.length}` : ""}`,
+      mxPriority.replace("prio:", "prio "),
+      ttlInfo === "1" ? "auto" : ttlInfo,
+      proxyInfo,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     const editableRecordId =
       unit.records.length === 1 && unit.records[0]?.id
         ? String(unit.records[0].id)
         : undefined;
-    lines.push(
-      `  ${recordId}["${esc(buildNodeLabel(unit.name, info || "record"))}"]:::record`,
+    const primaryArea: TopologyArea = areas[0] ?? "misc";
+    areaNodeLines[primaryArea].push(
+      `    ${recordId}["${esc(buildNodeLabel(unit.name, shortInfo || "record"))}"]:::record`,
     );
     setNodeMeta(
       recordId,
@@ -1608,7 +1712,6 @@ function buildTopology(
       editableRecordId,
       unit.name,
     );
-    lines.push(`  ${zoneNode} --> ${recordId}`);
 
     const targetEntries =
       unit.type === "MX"
@@ -1817,6 +1920,28 @@ function buildTopology(
     }
   }
 
+  // Declare the area subgraphs (and their record nodes) right after the zone
+  // node, before any edge references them, and connect the zone to each
+  // non-empty area exactly once.
+  const areaLines: string[] = [];
+  const usedAreaIds: string[] = [];
+  for (const area of TOPOLOGY_AREA_ORDER) {
+    const nodeLines = areaNodeLines[area];
+    if (nodeLines.length === 0) continue;
+    const areaId = `area_${area}`;
+    usedAreaIds.push(areaId);
+    areaLines.push(
+      `  subgraph ${areaId}["${esc(TOPOLOGY_AREA_TITLES[area])}"]`,
+      "    direction LR",
+      ...nodeLines,
+      "  end",
+    );
+  }
+  for (const areaId of usedAreaIds) {
+    areaLines.push(`  ${zoneNode} --> ${areaId}`);
+  }
+  lines.splice(zoneHeaderLength, 0, ...areaLines);
+
   const sharedIps = Array.from(sharedIpMap.entries())
     .filter(([, names]) => names.size > 1)
     .map(([ip, names]) => ({ ip, names: Array.from(names).sort() }));
@@ -1855,6 +1980,13 @@ function buildTopology(
   lines.push(
     `  classDef service fill:#845ef722,stroke:#845ef7,stroke-width:1.2px,color:${serviceText};`,
   );
+  const areaText = isDarkTheme ? "#c7d2fe" : "#334155";
+  lines.push(
+    `  classDef area fill:#5b8cff0f,stroke:#5b8cff66,stroke-width:1px,stroke-dasharray:4 3,color:${areaText};`,
+  );
+  if (usedAreaIds.length > 0) {
+    lines.push(`  class ${usedAreaIds.join(",")} area`);
+  }
 
   return {
     code: lines.join("\n"),
@@ -2199,6 +2331,9 @@ export function ZoneTopologyTab({
   onRefresh,
   onEditRecord,
   modelYieldControl,
+  emailRouting,
+  workerRoutes,
+  emailRoutingUnavailable = false,
 }: ZoneTopologyTabProps) {
   const { toast } = useToast();
   const desktop = isDesktop();
@@ -2206,6 +2341,11 @@ export function ZoneTopologyTab({
   const [mermaidCode, setMermaidCode] = useState("");
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [graphMode, setGraphMode] = useState<TopologyGraphMode>("full");
+  const [graphEmptyMessage, setGraphEmptyMessage] = useState<string | null>(
+    null,
+  );
+  const graphModeTabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [handTool, setHandTool] = useState(true);
@@ -2216,7 +2356,17 @@ export function ZoneTopologyTab({
     string | null
   >(null);
   const [themeVersion, setThemeVersion] = useState(0);
+  // The viewport element is tracked as state (via a callback ref) so the
+  // resize observer attaches whenever the element mounts, including when the
+  // panel viewport appears only after the topology model resolves. The object
+  // ref is kept as a shim for the mouse/annotation handlers.
+  const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const attachViewport = useCallback((node: HTMLDivElement | null) => {
+    viewportRef.current = node;
+    setViewportEl(node);
+  }, []);
+  const minZoomRef = useRef(ZOOM_MIN);
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
   const dragRef = useRef<{
@@ -2682,15 +2832,55 @@ export function ZoneTopologyTab({
       isDarkThemeMode,
       externalResolutionByName,
     );
-    setMermaidCode(code);
     setSummary(nextSummary);
-    setNodeMetaById(nextNodeMetaById);
+    if (graphMode === "full") {
+      setGraphEmptyMessage(null);
+      setMermaidCode(code);
+      setNodeMetaById(nextNodeMetaById);
+      return;
+    }
+    const input = {
+      zoneName,
+      records: topologyRecords,
+      mxTrails: nextSummary.mxTrails,
+      resolveName: createTopologyNameResolver(
+        topologyRecords,
+        externalResolutionByName,
+        topologyMaxResolutionHops,
+      ),
+      detectedServices: nextSummary.detectedServices,
+      discovery,
+      emailRouting: emailRouting ?? null,
+      workerRoutes: workerRoutes ?? null,
+      isDarkTheme: isDarkThemeMode,
+    };
+    const focused =
+      graphMode === "email"
+        ? buildEmailTopologyMermaid(input)
+        : buildServicesTopologyMermaid(input);
+    setNodeMetaById(focused.nodeMetaById);
+    if (focused.isEmpty) {
+      setGraphEmptyMessage(
+        graphMode === "email"
+          ? EMAIL_TOPOLOGY_EMPTY_MESSAGE
+          : SERVICES_TOPOLOGY_EMPTY_MESSAGE,
+      );
+      setMermaidCode("");
+      setSvgMarkup("");
+      return;
+    }
+    setGraphEmptyMessage(null);
+    setMermaidCode(focused.code);
   }, [
+    discovery,
+    emailRouting,
     externalResolutionByName,
+    graphMode,
     isDarkThemeMode,
     topologyMaxResolutionHops,
     topologyRecords,
     topologyResolutionReady,
+    workerRoutes,
     zoneName,
   ]);
 
@@ -2975,12 +3165,16 @@ export function ZoneTopologyTab({
             ),
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           },
+          // Dagre is the only layout engine bundled; `defaultRenderer: "elk"`
+          // used to be set here but silently fell back to dagre because
+          // `@mermaid-js/layout-elk` is not a dependency.
           flowchart: {
-            curve: "basis",
-            defaultRenderer: "elk",
-            nodeSpacing: 70,
-            rankSpacing: 95,
-            diagramPadding: 10,
+            defaultRenderer: "dagre-wrapper",
+            curve: "monotoneX",
+            wrappingWidth: 340,
+            nodeSpacing: 28,
+            rankSpacing: 110,
+            diagramPadding: 16,
             useMaxWidth: false,
           },
         });
@@ -3026,16 +3220,28 @@ export function ZoneTopologyTab({
   }, [isDarkThemeMode, mermaidCode, themeVersion]);
 
   useEffect(() => {
-    if (!viewportRef.current || typeof ResizeObserver === "undefined") return;
-    const node = viewportRef.current;
+    if (!viewportEl) {
+      setViewportSize({ w: 0, h: 0 });
+      return;
+    }
+    const seed = viewportEl.getBoundingClientRect();
+    setViewportSize({ w: seed.width, h: seed.height });
+    if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
       setViewportSize({ w: rect.width, h: rect.height });
     });
-    ro.observe(node);
+    ro.observe(viewportEl);
     return () => ro.disconnect();
-  }, [expandGraph]);
+  }, [viewportEl]);
+
+  // A new diagram (after resolution, refresh, or theme change) should re-fit
+  // even if the user had panned/zoomed the previous one.
+  useEffect(() => {
+    autoFitDoneRef.current = "";
+    userAdjustedViewRef.current = false;
+  }, [mermaidCode]);
 
   useEffect(() => {
     if (!expandGraph || typeof document === "undefined") return;
@@ -3062,20 +3268,24 @@ export function ZoneTopologyTab({
   const computeFitScale = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h)
       return 1;
-    const padding = expandGraph ? 10 : 16;
+    const padding = TOPOLOGY_FIT_PADDING;
     const availW = Math.max(1, viewportSize.w - padding * 2);
     const availH = Math.max(1, viewportSize.h - padding * 2);
     const baseFit = Math.min(availW / graphSize.w, availH / graphSize.h);
-    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, baseFit));
-  }, [expandGraph, graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
+    // The minimum zoom is dynamic: tall graphs may need to fit below ZOOM_MIN.
+    return Math.max(ZOOM_MIN_ABSOLUTE, Math.min(ZOOM_MAX, baseFit));
+  }, [graphSize.h, graphSize.w, viewportSize.h, viewportSize.w]);
 
   const fitAndCenterGraph = useCallback(() => {
     if (!viewportSize.w || !viewportSize.h || !graphSize.w || !graphSize.h)
       return;
-    const fitScale = computeFitScale();
+    const fitScale = Math.max(
+      ZOOM_MIN_ABSOLUTE,
+      Number(computeFitScale().toFixed(2)),
+    );
     const x = (viewportSize.w - graphSize.w * fitScale) / 2;
     const y = (viewportSize.h - graphSize.h * fitScale) / 2;
-    setZoom(Number(fitScale.toFixed(2)));
+    setZoom(fitScale);
     setPan({ x, y });
     userAdjustedViewRef.current = false;
   }, [
@@ -3087,6 +3297,9 @@ export function ZoneTopologyTab({
   ]);
 
   const fitScaleReference = useMemo(() => computeFitScale(), [computeFitScale]);
+  useEffect(() => {
+    minZoomRef.current = Math.min(ZOOM_MIN, fitScaleReference);
+  }, [fitScaleReference]);
   const zoomPercent = useMemo(() => {
     if (!fitScaleReference || !Number.isFinite(fitScaleReference))
       return Math.round(zoom * 100);
@@ -3114,15 +3327,16 @@ export function ZoneTopologyTab({
   const zoomBy = useCallback((delta: number) => {
     userAdjustedViewRef.current = true;
     const viewport = viewportRef.current;
+    const minZoom = minZoomRef.current;
     if (!viewport) {
       setZoom((z) =>
-        Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number((z + delta).toFixed(2)))),
+        Math.max(minZoom, Math.min(ZOOM_MAX, Number((z + delta).toFixed(2)))),
       );
       return;
     }
     const oldZoom = zoomRef.current;
     const newZoom = Math.max(
-      ZOOM_MIN,
+      minZoom,
       Math.min(ZOOM_MAX, Number((oldZoom + delta).toFixed(2))),
     );
     if (newZoom === oldZoom) return;
@@ -3152,7 +3366,7 @@ export function ZoneTopologyTab({
       const cursorY = event.clientY - rect.top;
       const oldZoom = zoomRef.current;
       const newZoom = Math.max(
-        ZOOM_MIN,
+        minZoomRef.current,
         Math.min(ZOOM_MAX, Number((oldZoom + delta).toFixed(2))),
       );
       if (newZoom === oldZoom) return;
@@ -3947,8 +4161,105 @@ export function ZoneTopologyTab({
     scanResolutionChain,
   ]);
 
+  const activeGraphTitle =
+    TOPOLOGY_GRAPH_MODES.find((mode) => mode.id === graphMode)?.title ??
+    "Full DNS graph";
+
+  const selectGraphMode = useCallback(
+    (mode: TopologyGraphMode) => {
+      setGraphMode(mode);
+      resetView();
+    },
+    [resetView],
+  );
+
+  const focusGraphModeTab = useCallback(
+    (forLightbox: boolean, index: number) => {
+      const count = TOPOLOGY_GRAPH_MODES.length;
+      const mode = TOPOLOGY_GRAPH_MODES[((index % count) + count) % count];
+      if (!mode) return;
+      selectGraphMode(mode.id);
+      graphModeTabRefs.current
+        .get(`${forLightbox ? "lightbox" : "panel"}:${mode.id}`)
+        ?.focus();
+    },
+    [selectGraphMode],
+  );
+
+  const handleGraphModeKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    forLightbox: boolean,
+    index: number,
+  ) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      focusGraphModeTab(forLightbox, index + 1);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      focusGraphModeTab(forLightbox, index - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      focusGraphModeTab(forLightbox, 0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      focusGraphModeTab(forLightbox, TOPOLOGY_GRAPH_MODES.length - 1);
+    }
+  };
+
+  const renderGraphModeSwitch = (forLightbox: boolean) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <div
+        role="tablist"
+        aria-label="Topology graphs"
+        aria-orientation="horizontal"
+        data-testid="topology-graph-mode"
+        className="glass-surface glass-sheen glass-fade ui-segment-group"
+      >
+        {TOPOLOGY_GRAPH_MODES.map((mode, index) => (
+          <button
+            key={mode.id}
+            ref={(node) => {
+              const key = `${forLightbox ? "lightbox" : "panel"}:${mode.id}`;
+              if (node) graphModeTabRefs.current.set(key, node);
+              else graphModeTabRefs.current.delete(key);
+            }}
+            type="button"
+            role="tab"
+            aria-selected={graphMode === mode.id}
+            tabIndex={graphMode === mode.id ? 0 : -1}
+            data-active={graphMode === mode.id}
+            data-testid={`topology-graph-mode-${mode.id}`}
+            className="ui-segment"
+            onClick={() => selectGraphMode(mode.id)}
+            onKeyDown={(event) =>
+              handleGraphModeKeyDown(event, forLightbox, index)
+            }
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+      <span
+        className="text-xs text-muted-foreground"
+        data-testid="topology-graph-title"
+        aria-live="polite"
+      >
+        {activeGraphTitle}
+      </span>
+      {graphMode === "email" && emailRoutingUnavailable && (
+        <span
+          className="text-xs text-muted-foreground"
+          data-testid="topology-email-routing-unavailable"
+        >
+          Email Routing unavailable
+        </span>
+      )}
+    </div>
+  );
+
   const renderGraphControls = (forLightbox: boolean) => (
     <div className="flex flex-wrap items-center gap-2">
+      {renderGraphModeSwitch(forLightbox)}
       <Button
         size="sm"
         variant="outline"
@@ -4234,11 +4545,12 @@ export function ZoneTopologyTab({
             />
             <div className="absolute inset-0 flex flex-col bg-background/96 p-3">
               <div className="mb-2 flex shrink-0 items-center justify-between text-xs text-muted-foreground">
-                <div>Topology graph - full window mode</div>
+                <div>{activeGraphTitle} - full window mode</div>
               </div>
               <div className="mb-2 shrink-0">{renderGraphControls(true)}</div>
               <div
-                ref={expandGraph ? viewportRef : undefined}
+                ref={expandGraph ? attachViewport : undefined}
+                data-testid="topology-viewport"
                 className={cn(
                   "relative min-h-0 flex-1 overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
                   graphBackgroundClass,
@@ -4287,15 +4599,24 @@ export function ZoneTopologyTab({
               >
                 <div
                   className="absolute left-0 top-0"
+                  data-testid="topology-canvas"
                   style={{
                     transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
                     transformOrigin: "0 0",
                   }}
                 >
-                  <div className="relative p-4">
+                  <div className="relative">
                     {renderError ? (
                       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive-foreground">
                         Mermaid render failed: {renderError}
+                      </div>
+                    ) : graphEmptyMessage ? (
+                      <div
+                        role="status"
+                        data-testid="topology-graph-empty"
+                        className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground"
+                      >
+                        {graphEmptyMessage}
                       </div>
                     ) : (
                       <SanitizedTopologySvg svgMarkup={svgMarkup} />
@@ -4750,7 +5071,8 @@ export function ZoneTopologyTab({
         {topologyRecords.length > 0 && (
           <div>
             <div
-              ref={!expandGraph ? viewportRef : undefined}
+              ref={!expandGraph ? attachViewport : undefined}
+              data-testid="topology-viewport"
               className={cn(
                 "relative overflow-hidden overscroll-contain rounded-xl border border-border/60 select-none",
                 graphBackgroundClass,
@@ -4800,15 +5122,24 @@ export function ZoneTopologyTab({
             >
               <div
                 className="absolute left-0 top-0"
+                data-testid="topology-canvas"
                 style={{
                   transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
                   transformOrigin: "0 0",
                 }}
               >
-                <div className="relative p-4">
+                <div className="relative">
                   {renderError ? (
                     <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive-foreground">
                       Mermaid render failed: {renderError}
+                    </div>
+                  ) : graphEmptyMessage ? (
+                    <div
+                      role="status"
+                      data-testid="topology-graph-empty"
+                      className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground"
+                    >
+                      {graphEmptyMessage}
                     </div>
                   ) : (
                     <SanitizedTopologySvg svgMarkup={svgMarkup} />
@@ -5145,3 +5476,4 @@ ZoneTopologyTab.buildTopologyGraphModelProgressively =
   buildTopologyGraphModelProgressively;
 ZoneTopologyTab.filterTopologyModelNodes = filterTopologyModelNodes;
 ZoneTopologyTab.yieldTopologyConstruction = yieldTopologyConstruction;
+ZoneTopologyTab.buildTopology = buildTopology;

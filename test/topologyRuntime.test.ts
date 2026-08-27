@@ -12,8 +12,10 @@ import {
   TOPOLOGY_GRAPH_DOM_EDGE_LIMIT,
   TOPOLOGY_GRAPH_DOM_NODE_LIMIT,
   TOPOLOGY_MODEL_NODE_LIMIT,
+  TOPOLOGY_NODE_LABEL_MAX_CHARS,
   TOPOLOGY_RESULT_PAGE_SIZE,
   ZoneTopologyTab,
+  sanitizeTopologySvg,
 } from "../src/components/dns/ZoneTopologyTab";
 import {
   getRuntimeDiagnostics,
@@ -483,4 +485,208 @@ test("clipboard rejection returns a graceful failure without escaping", async ()
     false,
   );
   assert.match(getRuntimeDiagnostics()[0]?.label ?? "", /Copy test topology/);
+});
+
+function areaRecord(
+  id: string,
+  type: DNSRecord["type"],
+  name: string,
+  content: string,
+  proxied = false,
+): DNSRecord {
+  const timestamp = new Date(0).toISOString();
+  return {
+    id,
+    type,
+    name,
+    content,
+    ttl: 300,
+    proxied,
+    zone_id: "zone-id",
+    zone_name: "example.com",
+    created_on: timestamp,
+    modified_on: timestamp,
+  };
+}
+
+const mixedAreaRecords: DNSRecord[] = [
+  areaRecord("r-www", "CNAME", "www.example.com", "edge.cdn.example.net", true),
+  areaRecord("r-api", "A", "api.example.com", "192.0.2.10"),
+  areaRecord("r-api6", "AAAA", "api.example.com", "2001:db8::10"),
+  areaRecord("r-mx", "MX", "example.com", "10 mail.example.com"),
+  areaRecord(
+    "r-spf",
+    "TXT",
+    "example.com",
+    "v=spf1 include:_spf.example.net -all",
+  ),
+  areaRecord("r-dmarc", "TXT", "_dmarc.example.com", "v=DMARC1; p=reject"),
+  areaRecord("r-ns", "NS", "example.com", "ns1.example.net"),
+  areaRecord(
+    "r-long",
+    "TXT",
+    "a-very-long-verification-label-that-keeps-going-and-going.subdomain.example.com",
+    "site-verification=abcdefghijklmnopqrstuvwxyz0123456789",
+  ),
+];
+
+test("groups record nodes into area subgraphs with one zone edge per area", () => {
+  const { code } = ZoneTopologyTab.buildTopology(
+    mixedAreaRecords,
+    "example.com",
+    8,
+    false,
+    {},
+  );
+  const lines = code.split("\n");
+  assert.equal(lines[0], "flowchart LR");
+
+  const subgraphIds = lines
+    .map((line) => /^\s*subgraph (area_[a-z]+)\[/.exec(line)?.[1])
+    .filter((id): id is string => Boolean(id));
+  assert.deepEqual(
+    [...subgraphIds].sort(),
+    ["area_email", "area_misc", "area_web"],
+    "web, email and misc areas are present (apex NS shares the email apex name, so first area wins); infra is omitted when empty",
+  );
+  assert.equal(
+    new Set(subgraphIds).size,
+    subgraphIds.length,
+    "each area is declared once",
+  );
+
+  const zoneEdges = lines
+    .map((line) => /^\s*zone_root --> (\S+)\s*$/.exec(line)?.[1])
+    .filter((target): target is string => Boolean(target));
+  assert.deepEqual(
+    [...zoneEdges].sort(),
+    [...subgraphIds].sort(),
+    "exactly one zone -> area edge per non-empty area",
+  );
+  assert.equal(
+    zoneEdges.filter((target) => target.startsWith("n_")).length,
+    0,
+    "no zone -> record hub edges",
+  );
+
+  // Every record node is declared inside a subgraph block, before any edge
+  // references it, and subgraphs are closed.
+  let depth = 0;
+  let firstEdgeIndex = Number.POSITIVE_INFINITY;
+  let lastRecordDeclarationIndex = -1;
+  lines.forEach((line, index) => {
+    if (/^\s*subgraph /.test(line)) depth += 1;
+    else if (/^\s*end\s*$/.test(line)) depth -= 1;
+    else if (/^\s*n_\d+\[".*"\]:::record$/.test(line)) {
+      assert.equal(depth, 1, `record node outside a subgraph: ${line}`);
+      lastRecordDeclarationIndex = index;
+    } else if (/-->|\.->/.test(line)) {
+      firstEdgeIndex = Math.min(firstEdgeIndex, index);
+    }
+  });
+  assert.equal(depth, 0, "all subgraphs are closed");
+  assert.ok(
+    lastRecordDeclarationIndex < firstEdgeIndex,
+    "record nodes are declared before the first edge",
+  );
+
+  // Chains still continue to the right of the record nodes.
+  assert.match(code, /n_\d+ -- "CNAME" --> n_\d+/);
+  assert.match(code, /n_\d+ -- "MX" --> n_\d+/);
+
+  // Subgraphs receive the area background class.
+  assert.match(code, /classDef area fill:/);
+  assert.match(code, /^\s*class area_web,area_email,area_misc area$/m);
+});
+
+test("keeps every node label within the label character limit", () => {
+  const { code, nodeMetaById } = ZoneTopologyTab.buildTopology(
+    mixedAreaRecords,
+    "example.com",
+    8,
+    true,
+    {},
+  );
+  const labels = Array.from(
+    code.matchAll(/^\s*(?:n_\d+|svc_\d+|zone_root)\["(.*)"\]:::/gm),
+  ).map((match) => match[1]);
+  assert.ok(labels.length >= mixedAreaRecords.length);
+  for (const label of labels) {
+    assert.ok(
+      label.length <= TOPOLOGY_NODE_LABEL_MAX_CHARS,
+      `label exceeds ${TOPOLOGY_NODE_LABEL_MAX_CHARS} chars: ${label}`,
+    );
+    assert.doesNotMatch(label, /resolves:|A:\d+ AAAA:\d+/);
+  }
+  const truncated = labels.find((label) => label.endsWith("…"));
+  assert.ok(truncated, "the over-long TXT record label is truncated");
+  assert.match(
+    labels.find((label) => label.startsWith("www.example.com")) ?? "",
+    /^www\.example\.com — CNAME · 300 · proxied$/,
+  );
+  const fullText = Object.values(nodeMetaById).map((meta) => meta.text);
+  assert.ok(
+    fullText.some(
+      (text) => text.includes("type:CNAME") && text.includes("proxied"),
+    ),
+    "tooltip metadata keeps the full record detail",
+  );
+});
+
+test("sanitizeTopologySvg keeps subgraph clusters, backgrounds and titles", () => {
+  const clusterSvg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">',
+    '<g class="root"><g class="clusters">',
+    '<g class="cluster area" id="area_web" data-look="classic">',
+    '<rect style="fill:#5b8cff0f !important;stroke:#5b8cff66 !important" x="10" y="10" width="200" height="120"/>',
+    '<g class="cluster-label" transform="translate(40, 12)"><text><tspan class="text-outer-tspan row"><tspan class="text-inner-tspan">Web</tspan></tspan></text></g>',
+    "</g></g>",
+    '<g class="nodes"><g class="node default record" id="flowchart-n_0-1"><rect class="basic label-container"/><g class="label"><text><tspan>www.example.com</tspan></text></g></g></g>',
+    "</g></svg>",
+  ].join("");
+  const safe = sanitizeTopologySvg(clusterSvg);
+  const doc = new DOMParser().parseFromString(safe, "image/svg+xml");
+  const cluster = doc.querySelector("g.cluster");
+  assert.ok(cluster, "cluster group survives");
+  assert.ok(cluster?.querySelector("rect"), "cluster background rect survives");
+  assert.equal(
+    cluster
+      ?.querySelector("rect")
+      ?.getAttribute("style")
+      ?.includes("#5b8cff0f"),
+    true,
+    "cluster fill style survives",
+  );
+  assert.equal(
+    doc.querySelector("g.cluster-label text")?.textContent,
+    "Web",
+    "cluster title text survives",
+  );
+  assert.equal(
+    doc.querySelector("g.node text")?.textContent,
+    "www.example.com",
+  );
+});
+
+test("initializes mermaid with the dagre renderer and no elk fallback", async () => {
+  const mermaid = (await import("mermaid")).default;
+  const originalInitialize = mermaid.initialize;
+  const calls: Array<Parameters<typeof mermaid.initialize>[0]> = [];
+  mermaid.initialize = (config) => {
+    calls.push(config);
+    return originalInitialize.call(mermaid, config);
+  };
+  try {
+    renderTopology(mixedAreaRecords.slice(0, 3));
+    await waitFor(() => assert.ok(calls.length > 0), { timeout: 15_000 });
+  } finally {
+    mermaid.initialize = originalInitialize;
+  }
+  const config = calls[calls.length - 1];
+  assert.equal(config.securityLevel, "strict");
+  assert.equal(config.htmlLabels, false);
+  assert.notEqual(config.flowchart?.defaultRenderer, "elk");
+  assert.equal(config.flowchart?.defaultRenderer, "dagre-wrapper");
+  assert.equal(config.flowchart?.useMaxWidth, false);
+  assert.equal(config.flowchart?.wrappingWidth, 340);
 });
