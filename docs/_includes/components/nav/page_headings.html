@@ -1,0 +1,170 @@
+{%- comment -%}
+  Include as: {%- include components/nav/page_headings.html -%}
+
+  Not part of the upstream theme: this is a Better Cloudflare addition.
+
+  Results in: `nav_section_html`, a `<ul class="nav-list nav-section-list">` of
+  links to the *headings* of the page currently being rendered, or an empty
+  string when there is nothing to list. `components/nav/links.html` nests it
+  under that page's own entry in the main navigation, so a long page is
+  navigable without scrolling it first.
+
+  Depends on:
+    content                 - the rendered HTML of the current page. This is set
+                              by the layout, so this include only works when it
+                              is reached from `_layouts/default.html`.
+    site.nav_heading_level  - deepest heading to list: 2 lists only `##`
+                              sections, 3 (the default) also nests `###`
+                              subsections under their section.
+    site.nav_headings       - set to false to switch the whole feature off.
+    page.nav_headings       - set to false in a page's front matter to switch it
+                              off for that page only.
+
+  Why the headings are read back out of `content` rather than re-derived from
+  the markdown: the `id` attributes are the ones kramdown actually generated, so
+  every link here is guaranteed to hit a real anchor. Re-slugifying the heading
+  text in Liquid would not match kramdown's algorithm (it strips leading
+  non-letters and does not collapse runs of spaces, `slugify` does the reverse).
+
+  Overwrites:
+    nav_section_html, nav_section_max, nav_section_ids, nav_section_titles,
+    nav_section_levels, nav_section_chunk, nav_section_chunks,
+    nav_section_level, nav_section_open, nav_section_id, nav_section_title,
+    nav_section_i, nav_section_next, nav_section_count, nav_section_parent_open,
+    nav_section_sublist_open, nav_section_has_children.
+{%- endcomment -%}
+
+{%- assign nav_section_html = "" -%}
+{%- assign nav_section_max = site.nav_heading_level | default: 3 -%}
+
+{%- if site.nav_headings != false and page.nav_headings != false and nav_section_max >= 2 -%}
+
+  {%- comment -%}
+    Pass 1: collect the headings, in document order, into three parallel arrays.
+    Splitting on `<h` also yields `<hr>`, `<html>` and the like; the level check
+    below discards them. A `<h2` written inside a code fence arrives escaped as
+    `&lt;h2`, so it cannot produce a false entry.
+  {%- endcomment -%}
+
+  {%- assign nav_section_ids = "" | split: "" -%}
+  {%- assign nav_section_titles = "" | split: "" -%}
+  {%- assign nav_section_levels = "" | split: "" -%}
+
+  {%- assign nav_section_chunks = content | split: "<h" -%}
+  {%- for nav_section_chunk in nav_section_chunks -%}
+    {%- assign nav_section_level = nav_section_chunk | slice: 0 -%}
+
+    {%- unless nav_section_level == "2" or nav_section_level == "3" -%}
+      {%- continue -%}
+    {%- endunless -%}
+    {%- if nav_section_level == "3" and nav_section_max < 3 -%}
+      {%- continue -%}
+    {%- endif -%}
+
+    {%- comment -%}
+      `nav_section_open` is everything inside the opening tag after the level,
+      e.g. ` id="the-desktop-build"`. Headings with no id are skipped rather
+      than linked to nothing.
+    {%- endcomment -%}
+    {%- assign nav_section_open = nav_section_chunk | split: ">" | first -%}
+    {%- unless nav_section_open contains ' id="' -%}
+      {%- continue -%}
+    {%- endunless -%}
+
+    {%- assign nav_section_id = nav_section_open | split: '"' -%}
+    {%- assign nav_section_id = nav_section_id[1] -%}
+
+    {%- comment -%}
+      Removing the exact opening tag keeps headings whose text contains `>`
+      intact; `strip_html` then drops inline markup such as `<code>`. The result
+      is still kramdown-escaped, so it is emitted unfiltered as text and only
+      re-escaped where it is used as an attribute value.
+    {%- endcomment -%}
+    {%- assign nav_section_title = nav_section_chunk
+          | remove_first: nav_section_open | remove_first: ">"
+          | split: "</h" | first | strip_html | strip -%}
+
+    {%- if nav_section_id == "" or nav_section_title == "" -%}
+      {%- continue -%}
+    {%- endif -%}
+
+    {%- assign nav_section_ids = nav_section_ids | push: nav_section_id -%}
+    {%- assign nav_section_titles = nav_section_titles | push: nav_section_title -%}
+    {%- assign nav_section_levels = nav_section_levels | push: nav_section_level -%}
+  {%- endfor -%}
+
+  {%- assign nav_section_count = nav_section_levels | size -%}
+
+  {%- comment -%}
+    Pass 2: emit the list. A section only gets an expander when the *next*
+    heading is one level deeper, which is why the levels are collected first.
+    Subsections start collapsed, exactly like the theme's own child pages;
+    `assets/js/nav-sections.js` opens the one you are reading.
+  {%- endcomment -%}
+
+  {%- if nav_section_count > 0 -%}
+    {%- capture nav_section_html -%}
+      <ul class="nav-list nav-section-list">
+        {%- assign nav_section_parent_open = false -%}
+        {%- assign nav_section_sublist_open = false -%}
+
+        {%- for nav_section_level in nav_section_levels -%}
+          {%- assign nav_section_i = forloop.index0 -%}
+          {%- assign nav_section_id = nav_section_ids[nav_section_i] -%}
+          {%- assign nav_section_title = nav_section_titles[nav_section_i] -%}
+          {%- assign nav_section_next = nav_section_levels[forloop.index] -%}
+
+          {%- if nav_section_level == "3" and nav_section_parent_open -%}
+
+            {%- unless nav_section_sublist_open -%}
+              <ul class="nav-list">
+              {%- assign nav_section_sublist_open = true -%}
+            {%- endunless -%}
+            <li class="nav-list-item">
+              <a href="#{{ nav_section_id }}" class="nav-list-link">{{ nav_section_title }}</a>
+            </li>
+            {%- unless nav_section_next == "3" -%}
+              </ul></li>
+              {%- assign nav_section_sublist_open = false -%}
+              {%- assign nav_section_parent_open = false -%}
+            {%- endunless -%}
+
+          {%- else -%}
+
+            {%- comment -%}
+              A section, or a subsection with no section above it — a page that
+              opens on `###`. Either way it belongs at the top of this list.
+            {%- endcomment -%}
+            {%- assign nav_section_has_children = false -%}
+            {%- if nav_section_level == "2" and nav_section_next == "3" -%}
+              {%- assign nav_section_has_children = true -%}
+            {%- endif -%}
+
+            <li class="nav-list-item">
+              {%- if nav_section_has_children -%}
+                <button class="nav-list-expander btn-reset" aria-label="{{ nav_section_title | escape_once }} subsections" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
+                </button>
+              {%- endif -%}
+              <a href="#{{ nav_section_id }}" class="nav-list-link">{{ nav_section_title }}</a>
+            {%- if nav_section_has_children -%}
+              {%- assign nav_section_parent_open = true -%}
+            {%- else -%}
+              </li>
+            {%- endif -%}
+
+          {%- endif -%}
+        {%- endfor -%}
+
+        {%- comment -%}
+          The lookahead closes every list as soon as the run of subsections ends,
+          including at the end of the page, but close defensively anyway so a
+          heading shape nobody anticipated cannot emit unbalanced HTML.
+        {%- endcomment -%}
+        {%- if nav_section_sublist_open -%}</ul>{%- endif -%}
+        {%- if nav_section_parent_open -%}</li>{%- endif -%}
+      </ul>
+    {%- endcapture -%}
+  {%- endif -%}
+
+{%- endif -%}

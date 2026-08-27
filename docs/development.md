@@ -49,6 +49,10 @@ npm ci
 | `npm run docs`        | TypeDoc API reference into `docs/api/`, which is excluded from this site's nav and search.                                         |
 | `npm run check-spf`   | SPF inspection CLI — see [SPF and NAPTR notes](spf-naptr.md#the-check-spf-cli).                                                    |
 
+`npm run tauri dev` goes through the same launcher as `npm run tauri:dev`, so both follow the port Next.js actually bound. Invoking the Tauri CLI directly (`npx tauri dev`, `cargo tauri dev`, an IDE plugin) skips that launcher and loads the static `devUrl` in `src-tauri/tauri.conf.json` (`:3000`); its `beforeDevCommand`, `scripts/tauri-before-dev.mjs`, keeps that honest by reusing this app's dev server if one is already on that port, starting one pinned there if the port is free, and refusing — with a pointer at `npm run tauri:dev` — if something else holds it.
+
+If the window still cannot load its page — the dev server stopped after launch, the port is wrong, or a production build's static export is missing — the app does not sit on a blank or Chromium error page. `src-tauri/src/startup_guard.rs` probes the `devUrl` before the window shows (dev builds) and, on Windows, watches every top-level WebView2 navigation; a failure raises a native error dialog with the exact error (`ERR_CONNECTION_REFUSED`, the URL, the WebView2 status or OS error, and the HTTP status if any), writes the same text to stderr and a redacted line to the crash log, and exits with code 2 once the dialog is dismissed. Sub-resource failures never trigger it.
+
 Because `npm run dev` serves the frontend outside the Tauri shell, anything that needs the Rust backend — credential persistence, the audit log, registrar monitoring, topology resolution — reports its absence rather than working. That is expected, and it is the same code path the jsdom tests exercise. See [Architecture](architecture.md#the-environment-probe).
 
 ## Tests
@@ -90,6 +94,8 @@ cargo clippy --workspace --all-targets --locked
 ```
 
 `bc-error` and `bc-cloudflare-api` are additionally held to `-D warnings`, so a new Clippy lint in either of those crates is a build failure rather than a note.
+
+The desktop shell loads two Tauri plugins in `src-tauri/src/main.rs`: `tauri-plugin-shell` (opening paths and URLs) and `tauri-plugin-notification`, which the background monitor in `src-tauri/src/notifications.rs` uses to raise OS notifications from Rust (so no JavaScript permission prompt is involved); both are granted in `src-tauri/capabilities/main.json` (`shell:allow-open`, `notification:default`).
 
 ## What CI gates on
 
@@ -163,6 +169,17 @@ Two rules keep it working:
 **Front matter must survive Prettier**, because the `format` CI job checks `docs/**/*.md`. Every page needs a `title`, a `nav_order`, and — for a child page — a `parent` that exactly matches the parent page's `title`.
 
 Generated TypeDoc output goes to `docs/api/`, which `_config.yml` marks `nav_exclude` and `search_exclude` so it can never flood the sidebar or the search index.
+
+**The sidebar's per-page section list is ours, not the theme's.** Underneath the entry for the page you are reading, the sidebar also lists that page's `##` sections, with its `###` subsections nested beneath them and collapsed until you scroll into them. Nothing is hand-maintained: `_includes/components/nav/page_headings.html` reads the headings back out of the page's own rendered HTML, so the links always use the `id` values kramdown actually generated and a new heading appears in the sidebar as soon as it is written. Four files carry it; the two that override a pinned `just-the-docs` v0.12.0 include each open with a comment naming the single change they make to upstream:
+
+| File                                          | What it does                                                                                  |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `_includes/components/nav/page_headings.html` | Builds the list from the current page's rendered HTML                                         |
+| `_includes/components/nav/links.html`         | Stock theme include, plus the one call that nests that list under the current page            |
+| `_includes/components/sidebar.html`           | Stock theme include, with the nav included uncached — it is no longer identical on every page |
+| `assets/js/nav-sections.js`                   | Highlights the section you are reading and opens its subsections; the list works without it   |
+
+`nav_heading_level` in `_config.yml` sets the depth (`2` drops the nested subsections), and `nav_headings: false` — site-wide or in one page's front matter — switches it off. When bumping the theme tag, diff the two overridden includes against the new release and re-apply their one change on top.
 
 ## See also
 

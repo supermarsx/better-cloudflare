@@ -79,6 +79,18 @@ search:
 # ---------------------------------------------------------------------------
 nav_enabled: true
 heading_anchors: true
+
+# Sidebar sub-navigation (a local addition, not a theme setting -- see
+# `_includes/components/nav/page_headings.html`). The sidebar lists the headings
+# of the page you are on beneath that page's own entry, so a long page such as
+# "Screens and features" is navigable without scrolling it first.
+#
+# 3 lists `##` sections and nests `###` subsections under them, collapsed until
+# you are reading that section; 2 lists sections only. Kept in step with
+# `search.heading_level` above so the sidebar and the search index agree on how
+# deep a heading is worth addressing. Set `nav_headings: false` here to switch
+# the feature off site-wide, or in a page's front matter for that page alone.
+nav_heading_level: 3
 back_to_top: true
 back_to_top_text: "Back to top"
 

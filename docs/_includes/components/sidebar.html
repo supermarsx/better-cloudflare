@@ -1,0 +1,49 @@
+{%- comment -%}
+  Overrides the theme's `components/sidebar.html` (just-the-docs v0.12.0).
+
+  The only change from upstream: the main navigation is included with `include`
+  rather than `include_cached`. `components/nav/links.html` is overridden to
+  list the current page's headings beneath its own entry, so the nav differs
+  from page to page and a cached copy would show every page the headings of
+  whichever page happened to render first. This site has nine pages, so
+  rendering the nav once per page costs nothing worth measuring.
+
+  `components/children_nav.html` still renders the nav through `include_cached`
+  (with `all=true`), and that copy is still page-independent, because the
+  heading list is skipped whenever `all` is true.
+
+  Include as: {%- include components/sidebar.html -%}
+  Depends on: page(?), site.
+  Results in: HTML for the side bar.
+  Includes:
+    title.html, components/site_nav.html, nav_footer_custom.html
+  Overwrites:
+    nav_footer_custom.
+  Should not be cached, because nav_footer_custom.html might depend on page.
+{%- endcomment -%}
+
+<header class="side-bar">
+  <div class="site-header">
+    <a href="{{ '/' | relative_url }}" class="site-title lh-tight">{% include title.html %}</a>
+    <button id="menu-button" class="site-button btn-reset" aria-label="Menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><use xlink:href="#svg-menu"></use></svg>
+    </button>
+  </div>
+
+  {% include components/site_nav.html %}
+
+  {%- comment -%}
+    note: nav_footer_custom and/or this "site footer" appear in components/footer.html for the mobile view.
+  {%- endcomment -%}
+
+  <div class="d-md-block d-none site-footer">
+  {% capture nav_footer_custom %}
+    {%- include nav_footer_custom.html -%}
+  {% endcapture %}
+  {% if nav_footer_custom != "" %}
+    {{ nav_footer_custom }}
+  {% else %}
+    This site uses <a href="https://github.com/just-the-docs/just-the-docs">Just the Docs</a>, a documentation theme for Jekyll.
+  {% endif %}
+  </div>
+</header>

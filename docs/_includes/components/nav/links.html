@@ -1,0 +1,99 @@
+{%- comment -%}
+  Overrides the theme's `components/nav/links.html` (just-the-docs v0.12.0).
+
+  The only change from upstream: beneath the entry for the page you are
+  currently on, the navigation also lists that page's own headings, via
+  `components/nav/page_headings.html`. Everything else — the recursion over
+  child pages, the duplicate-title error report, the expander markup — is the
+  stock include, so a theme bump can be reconciled by diffing against it.
+
+  Two things this override relies on:
+
+  * `content` is in scope. `components/sidebar.html` is overridden alongside
+    this file to include the site nav uncached, because the nav is no longer the
+    same on every page.
+  * The heading list is skipped when `all` is true. `components/children_nav.html`
+    renders the nav with `all=true` and then string-matches it to decide whether
+    a page has child pages; leaving the heading list out of that pass keeps the
+    check looking at exactly the markup upstream expects.
+
+  Include as: {%- include components/nav/links.html pages=page_array ancestors=title_array all=bool -%}
+  Depends on: include.pages, include.ancestors, include.all.
+  Results in: HTML for the main navigation when all is nil or false;
+    includes links to pages excluded from the main navigation when all is true.
+  Includes: components/nav/sorted.html, components/nav/children.html,
+    components/nav/page_headings.html, components/nav/links.html.
+  Overwrites:
+    node, nav_children, nav_ancestors, nav_current, nav_expandable,
+    and everything listed in components/nav/page_headings.html.
+{%- endcomment -%}
+
+<ul class="nav-list">
+  {%- for node in include.pages -%}
+  {%- if include.all == true or node.nav_exclude != true -%}
+
+  {%- if include.ancestors contains node.title -%}
+
+    <li class="nav-list-item">
+      <a href="{{ node.url | relative_url }}" class="nav-list-link"> ∞ </a>
+    </li>
+    {%- capture nav_error_report -%}
+      <blockquote class="warning">
+        A page has the same title as its parent page or one of its ancestral pages!<br>
+        This causes an incorrect link in the main navigation panel.<br>
+        Page title: <code>{{ node.title }}</code>, location: <code>{{ node.path }}</code>.
+      </blockquote>
+    {%- endcapture -%}
+
+  {%- else -%}
+
+    {%- include components/nav/children.html node=node ancestors=include.ancestors all=include.all -%}
+
+    {%- comment -%}
+      `nav_section_html` is the current page's own headings, and is empty for
+      every other node. It has to be built here, before the recursive include
+      below overwrites it for a child page.
+    {%- endcomment -%}
+    {%- assign nav_section_html = "" -%}
+    {%- assign nav_current = false -%}
+    {%- if include.all != true and node.url == page.url -%}
+      {%- assign nav_current = true -%}
+      {%- include components/nav/page_headings.html -%}
+    {%- endif -%}
+
+    {%- assign nav_expandable = false -%}
+    {%- if nav_children.size >= 1 or nav_section_html != "" -%}
+      {%- assign nav_expandable = true -%}
+    {%- endif -%}
+
+    {%- comment -%}
+      The theme's JS marks the current page's item `active` on load, which is
+      what reveals a nested list. Marking it here too means the headings are
+      already visible in the server-rendered HTML, and lets the expander carry
+      the `aria-expanded` state that actually matches what is on screen.
+    {%- endcomment -%}
+    <li class="nav-list-item{% if nav_current and nav_section_html != "" %} active{% endif %}">
+      {%- if nav_expandable -%}
+      <button class="nav-list-expander btn-reset" aria-label="{{ node.title }} submenu" aria-expanded="{% if nav_current and nav_section_html != "" %}true{% else %}false{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
+      </button>
+      {%- endif -%}
+      <a href="{{ node.url | relative_url }}" class="nav-list-link">{{ node.title }}</a>
+      {%- if nav_section_html != "" -%}
+        {{ nav_section_html }}
+      {%- endif -%}
+      {%- if nav_children.size >= 1 -%}
+        {%- if node.child_nav_order == 'desc' or node.child_nav_order == 'reversed' -%}
+          {%- assign nav_children = nav_children | reverse -%}
+        {%- endif -%}
+        {%- assign nav_ancestors = include.ancestors | push: node.title -%}
+        {%- include components/nav/links.html pages=nav_children ancestors=nav_ancestors all=include.all -%}
+      {%- endif -%}
+    </li>
+
+  {%- endif -%}
+
+  {%- endif -%}
+  {%- endfor -%}
+</ul>
+{%- comment -%}{%- endcomment -%}
