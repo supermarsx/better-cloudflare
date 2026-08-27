@@ -39,3 +39,6 @@ src-tauri/Cargo.lock
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Orchestration scratch
+.orchestration/
