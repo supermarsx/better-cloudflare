@@ -311,3 +311,22 @@ test("an empty tab strip renders the placeholder instead of a tablist", () => {
   );
   assert.equal(screen.queryAllByRole("tab").length, 0);
 });
+
+test("a notifications action tab renders like the other non-zone tabs", () => {
+  const items: DnsWorkspaceTabItem[] = [
+    { id: "a", label: "alpha.test", kind: "zone", status: "active" },
+    { id: "__notifications", label: "Notifications", kind: "notifications" },
+  ];
+  render(
+    <DnsWorkspaceTabs
+      items={items}
+      activeId="__notifications"
+      closeOnMiddleClick
+      onActivate={() => {}}
+      onClose={() => {}}
+      onOrderChange={() => {}}
+    />,
+  );
+  const tab = screen.getByRole("tab", { name: /Notifications/ });
+  assert.equal(tab.getAttribute("aria-selected"), "true");
+});

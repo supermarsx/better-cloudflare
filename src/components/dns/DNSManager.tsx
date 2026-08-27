@@ -61,11 +61,18 @@ import {
   createPreferenceFailureReporter,
   TauriClient,
   type BulkDnsDeleteFailure,
+  type EmailRoutingRuleResponse,
+  type EmailRoutingSettingsResponse,
   type McpServerStatus,
+  type UnlistenFn,
+  type WorkerRouteResponse,
 } from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
 import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
+import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
+import { NotificationsPanel } from "./NotificationsPanel";
+import { toastAllowed } from "@/lib/notifications/notification-settings";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import {
   Dialog,
@@ -81,6 +88,7 @@ import { TOPOLOGY_MODEL_NODE_LIMIT, ZoneTopologyTab } from "./ZoneTopologyTab";
 import { RecordTypeReference } from "@/components/docs/RecordTypeReference";
 import { useRegistrarMonitor } from "@/hooks/registrar/use-registrar-monitor";
 import {
+  findSpecialIpRecords,
   runDomainAudit,
   type DomainAuditCategory,
   type DomainAuditItem,
@@ -391,7 +399,13 @@ type ActionTab =
   | "propagation"
   | "zone-compare"
   | "reference";
-type TabKind = "zone" | "settings" | "audit" | "tags" | "registry";
+type TabKind =
+  | "zone"
+  | "settings"
+  | "audit"
+  | "tags"
+  | "registry"
+  | "notifications";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab =
@@ -643,6 +657,7 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   audit: "Audit",
   tags: "Tags",
   registry: "Registry",
+  notifications: "Notifications",
 };
 
 /**
@@ -1450,11 +1465,29 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     controller: AbortController;
   } | null>(null);
   const nextTopologyRequestIdRef = useRef(0);
+  // Email Routing + Worker routes for the topology Email/Services graphs.
+  // Loaded lazily once per zone while the Topology tab is active; failures are
+  // swallowed (the DNS graph never waits on them) and surface as `undefined`.
+  const [topologyIntegrations, setTopologyIntegrations] = useState<{
+    zoneId: string;
+    emailRouting?: {
+      settings: EmailRoutingSettingsResponse;
+      rules: EmailRoutingRuleResponse[];
+    };
+    workerRoutes?: WorkerRouteResponse[];
+    emailRoutingUnavailable: boolean;
+  } | null>(null);
+  const topologyIntegrationsRequestRef = useRef<{
+    zoneId: string;
+    controller: AbortController;
+  } | null>(null);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState("");
   const [tabs, setTabs] = useState<ZoneTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [actionTab, setActionTab] = useState<ActionTab>("records");
+  // Record a "Go to record" control just navigated to; flashes its row.
+  const [revealedRecordId, setRevealedRecordId] = useState<string | null>(null);
   const actionTabRefs = useRef(new Map<ActionTab, HTMLButtonElement>());
   const [topologyRecordState, setTopologyRecordState] =
     useState<DnsTopologyRecordState>(EMPTY_DNS_TOPOLOGY_RECORD_STATE);
@@ -2640,6 +2673,47 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     region.scrollTo({ top: 0, behavior: "auto" });
   }, [activeTabId, actionTab]);
 
+  /**
+   * Bring one record into view in the records list: narrow the list to it,
+   * switch to the records panel, then scroll to and flash its row.
+   */
+  const revealRecord = useCallback(
+    (record: DNSRecord) => {
+      if (!activeTab || activeTab.kind !== "zone") return;
+      const isKnownType = (type: string): type is RecordType =>
+        (RECORD_TYPES as readonly string[]).includes(type);
+      const typeFilter: RecordType | "" = isKnownType(record.type)
+        ? record.type
+        : "";
+      updateTab(activeTab.id, (prev) => ({
+        ...prev,
+        searchTerm: record.name,
+        typeFilter,
+        editingRecord: null,
+      }));
+      setActionTab("records");
+      setRevealedRecordId(record.id);
+    },
+    [activeTab, updateTab],
+  );
+
+  useEffect(() => {
+    if (!revealedRecordId || actionTab !== "records") return;
+    if (typeof document === "undefined") return;
+    // Cloudflare ids are hex, but `CSS.escape` is missing in some test DOMs.
+    const escaped =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(revealedRecordId)
+        : revealedRecordId.replace(/["\\]/g, "\\$&");
+    const row = document.querySelector<HTMLElement>(
+      `[data-record-row="${escaped}"]`,
+    );
+    row?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    row?.focus?.({ preventScroll: true });
+    const timer = window.setTimeout(() => setRevealedRecordId(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [revealedRecordId, actionTab]);
+
   const focusActionTab = useCallback((index: number) => {
     const tab = ACTION_TABS[(index + ACTION_TABS.length) % ACTION_TABS.length];
     if (!tab) return;
@@ -2675,6 +2749,133 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setActiveTabId(id);
     setSelectedZoneId("");
   }, []);
+
+  // ── Notifications (t9) ─────────────────────────────────────────────────
+  // Start the desktop background monitor with the unlocked token, keep the
+  // bell badge in sync with `notifications://changed`, toast new items that
+  // pass `inApp.toastMinSeverity`, and stop the service when this component
+  // unmounts (every logout path — explicit, confirmed and idle — unmounts it).
+  const [notificationsUnread, setNotificationsUnread] = useState(0);
+  const [notificationsBadge, setNotificationsBadge] = useState(true);
+  const pendingNotificationRevealRef = useRef<{
+    zoneId: string;
+    recordId: string;
+  } | null>(null);
+  // `isDesktop()` is true whenever `__TAURI__` is present (jsdom tests set
+  // it), but IPC needs the internals bridge; skip the service without it.
+  const notificationsAvailable =
+    isDesktop() &&
+    typeof window !== "undefined" &&
+    "__TAURI_INTERNALS__" in window;
+
+  useEffect(() => {
+    if (!notificationsAvailable) return;
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+    let lastSeenAt = new Date().toISOString();
+
+    const announceNew = async () => {
+      const [settings, fresh] = await Promise.all([
+        TauriClient.notificationsGetSettings(),
+        TauriClient.notificationsList({ scope: "unread", limit: 20 }),
+      ]);
+      if (cancelled) return;
+      setNotificationsBadge(settings.inApp.badge);
+      const newest = fresh
+        .filter((item) => item.createdAt > lastSeenAt)
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      if (newest.length === 0) return;
+      lastSeenAt = newest[0].createdAt;
+      for (const item of newest.slice(0, 3)) {
+        if (!toastAllowed(settings, item.severity)) continue;
+        toast({
+          title: item.title,
+          description: item.body,
+          variant: item.severity === "critical" ? "destructive" : undefined,
+        });
+      }
+    };
+
+    const bootstrap = async () => {
+      try {
+        const status = await TauriClient.notificationsStart(apiKey, email);
+        if (cancelled) return;
+        setNotificationsUnread(status.unread);
+        const settings = await TauriClient.notificationsGetSettings();
+        if (cancelled) return;
+        setNotificationsBadge(settings.inApp.badge);
+        unlisten = await TauriClient.onNotificationsChanged(({ unread }) => {
+          if (cancelled) return;
+          setNotificationsUnread(unread);
+          void announceNew().catch((error) =>
+            reportDnsManagerFailure(error, "Announce new notifications"),
+          );
+        });
+        if (cancelled) {
+          unlisten();
+          unlisten = null;
+        }
+      } catch (error) {
+        if (!cancelled)
+          reportDnsManagerFailure(error, "Start notification monitoring");
+      }
+    };
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      void TauriClient.notificationsStop().catch((error) =>
+        reportDnsManagerFailure(error, "Stop notification monitoring"),
+      );
+    };
+  }, [apiKey, email, notificationsAvailable, toast]);
+
+  /** "Go to record" from the inbox: open the zone, reveal once its records load. */
+  const revealNotificationRecord = useCallback(
+    (zoneId: string, recordId: string) => {
+      if (!availableZones.some((zone) => zone.id === zoneId)) {
+        toast({
+          title: t("Zone not available", "Zone not available"),
+          description: t(
+            "The zone this notification refers to is not in the current account.",
+            "The zone this notification refers to is not in the current account.",
+          ),
+          variant: "destructive",
+        });
+        return;
+      }
+      pendingNotificationRevealRef.current = { zoneId, recordId };
+      openZoneTab(zoneId);
+    },
+    [availableZones, openZoneTab, t, toast],
+  );
+
+  useEffect(() => {
+    const pending = pendingNotificationRevealRef.current;
+    if (!pending || !activeTab || activeTab.kind !== "zone") return;
+    if (activeTab.zoneId !== pending.zoneId || activeTab.isLoading) return;
+    const record = activeTab.records.find(
+      (candidate) => candidate.id === pending.recordId,
+    );
+    if (record) {
+      pendingNotificationRevealRef.current = null;
+      revealRecord(record);
+      return;
+    }
+    // Records finished loading (or failed) and the id is gone.
+    if (activeTab.recordLoadState) {
+      pendingNotificationRevealRef.current = null;
+      toast({
+        title: t("Record not found", "Record not found"),
+        description: t(
+          "The record may have been removed since the notification was created.",
+          "The record may have been removed since the notification was created.",
+        ),
+      });
+    }
+  }, [activeTab, revealRecord, t, toast]);
+
   const loadZones = useCallback(
     async (signal?: AbortSignal) => {
       try {
@@ -3263,6 +3464,71 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   ]);
 
   useEffect(() => {
+    if (
+      actionTab !== "topology" ||
+      activeTab?.kind !== "zone" ||
+      !activeTab.zoneId
+    ) {
+      return;
+    }
+    const zoneId = activeTab.zoneId;
+    if (topologyIntegrations?.zoneId === zoneId) return;
+    if (topologyIntegrationsRequestRef.current?.zoneId === zoneId) return;
+    topologyIntegrationsRequestRef.current?.controller.abort();
+    const controller = new AbortController();
+    topologyIntegrationsRequestRef.current = { zoneId, controller };
+    void (async () => {
+      const [settings, rules, routes] = await Promise.allSettled([
+        getEmailRoutingSettings(zoneId, controller.signal),
+        getEmailRoutingRules(zoneId, controller.signal),
+        getWorkerRoutes(zoneId, controller.signal),
+      ]);
+      if (controller.signal.aborted) return;
+      if (topologyIntegrationsRequestRef.current?.controller === controller) {
+        topologyIntegrationsRequestRef.current = null;
+      }
+      const settingsValue =
+        settings.status === "fulfilled" &&
+        settings.value &&
+        typeof settings.value === "object"
+          ? (settings.value as EmailRoutingSettingsResponse)
+          : null;
+      const emailRouting =
+        settingsValue &&
+        rules.status === "fulfilled" &&
+        Array.isArray(rules.value)
+          ? {
+              settings: settingsValue,
+              rules: rules.value as EmailRoutingRuleResponse[],
+            }
+          : undefined;
+      setTopologyIntegrations({
+        zoneId,
+        emailRouting,
+        workerRoutes:
+          routes.status === "fulfilled" && Array.isArray(routes.value)
+            ? (routes.value as WorkerRouteResponse[])
+            : undefined,
+        emailRoutingUnavailable: !emailRouting,
+      });
+    })();
+    return () => {
+      if (topologyIntegrationsRequestRef.current?.controller === controller) {
+        controller.abort();
+        topologyIntegrationsRequestRef.current = null;
+      }
+    };
+  }, [
+    actionTab,
+    activeTab?.kind,
+    activeTab?.zoneId,
+    getEmailRoutingRules,
+    getEmailRoutingSettings,
+    getWorkerRoutes,
+    topologyIntegrations?.zoneId,
+  ]);
+
+  useEffect(() => {
     if (activeTab?.kind === "audit") {
       loadAuditEntries();
     }
@@ -3407,6 +3673,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             topology_scan_resolution_chain?: boolean;
             topology_disable_service_discovery?: boolean;
             topology_tcp_services?: string[];
+            propagation_resolvers?: string[];
+            propagation_custom_resolvers?: string[];
+            propagation_timeout_ms?: number;
+            propagation_attempts?: number;
+            propagation_consensus_percent?: number;
+            propagation_watch_interval_s?: number;
             audit_export_default_documents?: boolean;
             confirm_clear_audit_logs?: boolean;
             audit_export_folder_preset?: string;
@@ -3666,6 +3938,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     .filter(Boolean),
                 ),
               ),
+            );
+          }
+          if (Array.isArray(prefObj.propagation_resolvers)) {
+            storageManager.setPropagationResolvers(
+              prefObj.propagation_resolvers.map((v) => String(v)),
+            );
+          }
+          if (Array.isArray(prefObj.propagation_custom_resolvers)) {
+            storageManager.setPropagationCustomResolvers(
+              prefObj.propagation_custom_resolvers.map((v) => String(v)),
+            );
+          }
+          if (typeof prefObj.propagation_timeout_ms === "number") {
+            storageManager.setPropagationTimeoutMs(
+              prefObj.propagation_timeout_ms,
+            );
+          }
+          if (typeof prefObj.propagation_attempts === "number") {
+            storageManager.setPropagationAttempts(prefObj.propagation_attempts);
+          }
+          if (typeof prefObj.propagation_consensus_percent === "number") {
+            storageManager.setPropagationConsensusPercent(
+              prefObj.propagation_consensus_percent,
+            );
+          }
+          if (typeof prefObj.propagation_watch_interval_s === "number") {
+            storageManager.setPropagationWatchIntervalS(
+              prefObj.propagation_watch_interval_s,
             );
           }
           if (typeof prefObj.audit_export_default_documents === "boolean") {
@@ -6423,6 +6723,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               : currentSessionId
           }
           showAudit={isDesktop()}
+          showNotifications={isDesktop()}
+          unreadCount={notificationsBadge ? notificationsUnread : 0}
+          onOpenNotifications={() => openActionTab("notifications")}
           onOpenAudit={() => openActionTab("audit")}
           onOpenRegistry={() => openActionTab("registry")}
           onOpenSettings={() => openActionTab("settings")}
@@ -7026,6 +7329,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   activeTab.editingRecord === record.id
                                 }
                                 isSelected={isSelected}
+                                isRevealed={revealedRecordId === record.id}
                                 simulateSPF={simulateSPF}
                                 getSPFGraph={getSPFGraph}
                                 onSelectChange={(checked) =>
@@ -8068,6 +8372,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 : undefined;
                             const displaySeverity =
                               originalSeverity ?? item.severity;
+                            // The bogon/private-IP checks list records, so
+                            // give each one a control that jumps to its row
+                            // instead of the audit's plain-text summary.
+                            const specialIpFindings =
+                              item.id === "special-a"
+                                ? findSpecialIpRecords(activeTab.records, "A")
+                                : item.id === "special-aaaa"
+                                  ? findSpecialIpRecords(
+                                      activeTab.records,
+                                      "AAAA",
+                                    )
+                                  : [];
 
                             const badge =
                               displaySeverity === "fail"
@@ -8113,9 +8429,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                         )}
                                       </div>
                                     </div>
-                                    <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                                      {item.details}
-                                    </div>
+                                    {specialIpFindings.length > 0 ? (
+                                      <SpecialIpAuditFindings
+                                        findings={specialIpFindings}
+                                        onGoToRecord={revealRecord}
+                                      />
+                                    ) : (
+                                      <div className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                                        {item.details}
+                                      </div>
+                                    )}
                                   </div>
                                   <div className="flex flex-wrap items-center gap-2">
                                     {item.severity !== "pass" &&
@@ -8629,6 +8952,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         tcpServicePorts={topologyTcpServices
                           .map((v) => Number(v))
                           .filter((v) => Number.isFinite(v) && v > 0)}
+                        emailRouting={
+                          topologyIntegrations?.zoneId === activeTab.zoneId
+                            ? topologyIntegrations.emailRouting
+                            : undefined
+                        }
+                        workerRoutes={
+                          topologyIntegrations?.zoneId === activeTab.zoneId
+                            ? topologyIntegrations.workerRoutes
+                            : undefined
+                        }
+                        emailRoutingUnavailable={
+                          topologyIntegrations?.zoneId === activeTab.zoneId &&
+                          topologyIntegrations.emailRoutingUnavailable
+                        }
                         onRefresh={async () => {
                           await Promise.all([
                             loadRecords(activeTab),
@@ -9879,6 +10216,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               )}
               {activeTab.kind === "registry" && (
                 <RegistryMonitor monitor={registrarMonitor} />
+              )}
+              {activeTab.kind === "notifications" && (
+                <NotificationsPanel
+                  onOpenZone={openZoneTab}
+                  onRevealRecord={revealNotificationRecord}
+                />
               )}
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">

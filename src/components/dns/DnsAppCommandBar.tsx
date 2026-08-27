@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Globe, LogOut, Settings, Shield, Tags } from "lucide-react";
+import { Bell, Globe, LogOut, Settings, Shield, Tags } from "lucide-react";
 
 import { LanguageSelector } from "@/components/layout/LanguageSelector";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
@@ -11,6 +11,10 @@ interface DnsAppCommandBarProps {
   accountLabel: string;
   sessionLabel: string;
   showAudit: boolean;
+  /** Desktop only: the notifications bell (hidden on the web build). */
+  showNotifications?: boolean;
+  unreadCount?: number;
+  onOpenNotifications?: () => void;
   onOpenAudit: () => void;
   onOpenRegistry: () => void;
   onOpenSettings: () => void;
@@ -45,6 +49,9 @@ export function DnsAppCommandBar({
   accountLabel,
   sessionLabel,
   showAudit,
+  showNotifications = false,
+  unreadCount = 0,
+  onOpenNotifications,
   onOpenAudit,
   onOpenRegistry,
   onOpenSettings,
@@ -65,6 +72,31 @@ export function DnsAppCommandBar({
         )}
         className="scrollbar-themed flex max-w-full items-center gap-1 overflow-x-auto"
       >
+        {showNotifications && onOpenNotifications ? (
+          <span className="relative inline-flex shrink-0">
+            <CommandAction
+              label={
+                unreadCount > 0
+                  ? t("Notifications, {{count}} unread", {
+                      count: unreadCount,
+                      defaultValue: `Notifications, ${unreadCount} unread`,
+                    })
+                  : t("Notifications", "Notifications")
+              }
+              icon={<Bell aria-hidden="true" className="h-4 w-4" />}
+              onClick={onOpenNotifications}
+            />
+            {unreadCount > 0 ? (
+              <span
+                aria-hidden="true"
+                data-testid="notifications-unread-badge"
+                className="notifications-unread-badge"
+              >
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         {showAudit ? (
           <CommandAction
             label={t("Audit log", "Audit log")}

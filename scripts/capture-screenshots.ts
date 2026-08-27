@@ -31,7 +31,14 @@ import sharp from "sharp";
 import { readRunningDevServer } from "./dev-port.mjs";
 import { startNextDev } from "./dev-server.mjs";
 
-import { DEMO_IMPORT_JSON } from "../e2e/fixtures/demo-panels.js";
+import {
+  DEMO_IMPORT_JSON,
+  DEMO_NOTIFICATIONS,
+  DEMO_NOTIFICATION_SETTINGS,
+  DEMO_NOTIFICATION_STATUS,
+  DEMO_NOTIFICATION_ZONE_SUMMARY,
+  type DemoNotification,
+} from "../e2e/fixtures/demo-panels.js";
 import {
   createDemoSeed,
   DEMO_API_KEYS,
@@ -101,6 +108,14 @@ type ThemeSpec = { id: string; dir: string };
  * Installs the fake desktop bridge. Everything here runs inside the page, so it
  * may only close over the structured-cloneable `seed` argument.
  */
+/** Seed plus the notifications inbox (t9); lives beside `DemoSeed` so `demo-workspace.ts` stays untouched. */
+type StubSeed = DemoSeed & {
+  notifications: DemoNotification[];
+  notificationStatus: typeof DEMO_NOTIFICATION_STATUS;
+  notificationSettings: typeof DEMO_NOTIFICATION_SETTINGS;
+  notificationZoneSummary: typeof DEMO_NOTIFICATION_ZONE_SUMMARY;
+};
+
 async function installDesktopStub(page: Page, seed: DemoSeed) {
   // tsx/esbuild rewrites named functions through a `__name` helper that does
   // not exist in the page realm; shim it before any transpiled init script runs.
@@ -109,7 +124,15 @@ async function installDesktopStub(page: Page, seed: DemoSeed) {
     globals.__name ??= (target: unknown) => target;
   });
 
-  await page.addInitScript((data: DemoSeed) => {
+  const stubSeed: StubSeed = {
+    ...seed,
+    notifications: DEMO_NOTIFICATIONS,
+    notificationStatus: DEMO_NOTIFICATION_STATUS,
+    notificationSettings: DEMO_NOTIFICATION_SETTINGS,
+    notificationZoneSummary: DEMO_NOTIFICATION_ZONE_SUMMARY,
+  };
+
+  await page.addInitScript((data: StubSeed) => {
     type Callback = (...args: unknown[]) => unknown;
     type NativeCall = { command: string; args?: Record<string, unknown> };
 
@@ -159,6 +182,22 @@ async function installDesktopStub(page: Page, seed: DemoSeed) {
       lastError: null,
     });
     let enabledMcpTools = data.mcpEnabledTools.slice();
+
+    // Mutable inbox so mark/archive/dismiss are reflected by the next list.
+    const inbox = data.notifications.map((item) => ({ ...item }));
+    let notificationSettings: Record<string, unknown> = {
+      ...data.notificationSettings,
+    };
+    let notificationsPaused = false;
+    const unreadCount = () =>
+      inbox.filter((item) => !item.readAt && !item.archivedAt).length;
+    const notificationStatus = () => ({
+      ...data.notificationStatus,
+      paused: notificationsPaused,
+      unread: unreadCount(),
+    });
+    const idList = (value: unknown): string[] =>
+      Array.isArray(value) ? value.map(String) : [];
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
@@ -355,6 +394,122 @@ async function installDesktopStub(page: Page, seed: DemoSeed) {
                 : [];
               return mcpStatus(enabledMcpTools);
 
+            // --- notifications (t9) --------------------------------------
+            case "notifications_start":
+            case "notifications_status":
+            case "notifications_check_now":
+            case "notifications_reconfigure":
+              return notificationStatus();
+            case "notifications_stop":
+            case "notifications_reset_state":
+              return undefined;
+            case "notifications_pause":
+              notificationsPaused = true;
+              return notificationStatus();
+            case "notifications_resume":
+              notificationsPaused = false;
+              return notificationStatus();
+            case "notifications_list": {
+              const query = (args?.query ?? {}) as {
+                scope?: string;
+                kind?: string;
+                zoneId?: string;
+                limit?: number;
+              };
+              const scope = query.scope ?? "all";
+              return inbox
+                .filter((item) =>
+                  scope === "archived"
+                    ? !!item.archivedAt
+                    : scope === "unread"
+                      ? !item.readAt && !item.archivedAt
+                      : !item.archivedAt,
+                )
+                .filter((item) => !query.kind || item.kind === query.kind)
+                .filter((item) => !query.zoneId || item.zoneId === query.zoneId)
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                .slice(0, query.limit ?? 200)
+                .map((item) => ({ ...item }));
+            }
+            case "notifications_unread_count":
+              return unreadCount();
+            case "notifications_mark_read": {
+              const ids = idList(args?.ids);
+              const read = args?.read !== false;
+              let affected = 0;
+              for (const item of inbox) {
+                if (!ids.includes(item.id)) continue;
+                item.readAt = read ? (item.readAt ?? data.modifiedOn) : null;
+                affected += 1;
+              }
+              return affected;
+            }
+            case "notifications_mark_all_read": {
+              let affected = 0;
+              for (const item of inbox) {
+                if (item.readAt || item.archivedAt) continue;
+                item.readAt = data.modifiedOn;
+                affected += 1;
+              }
+              return affected;
+            }
+            case "notifications_archive": {
+              const ids = idList(args?.ids);
+              let affected = 0;
+              for (const item of inbox) {
+                if (!ids.includes(item.id) || item.archivedAt) continue;
+                item.archivedAt = data.modifiedOn;
+                item.readAt ??= data.modifiedOn;
+                affected += 1;
+              }
+              return affected;
+            }
+            case "notifications_unarchive": {
+              const ids = idList(args?.ids);
+              let affected = 0;
+              for (const item of inbox) {
+                if (!ids.includes(item.id) || !item.archivedAt) continue;
+                item.archivedAt = null;
+                affected += 1;
+              }
+              return affected;
+            }
+            case "notifications_archive_all_read": {
+              let affected = 0;
+              for (const item of inbox) {
+                if (!item.readAt || item.archivedAt) continue;
+                item.archivedAt = data.modifiedOn;
+                affected += 1;
+              }
+              return affected;
+            }
+            case "notifications_dismiss": {
+              const ids = idList(args?.ids);
+              const before = inbox.length;
+              for (let index = inbox.length - 1; index >= 0; index -= 1) {
+                if (ids.includes(inbox[index].id)) inbox.splice(index, 1);
+              }
+              return before - inbox.length;
+            }
+            case "notifications_clear_archived": {
+              const before = inbox.length;
+              for (let index = inbox.length - 1; index >= 0; index -= 1) {
+                if (inbox[index].archivedAt) inbox.splice(index, 1);
+              }
+              return before - inbox.length;
+            }
+            case "notifications_get_settings":
+              return notificationSettings;
+            case "notifications_update_settings":
+              notificationSettings = {
+                ...notificationSettings,
+                ...((args?.settings as Record<string, unknown> | undefined) ??
+                  {}),
+              };
+              return notificationSettings;
+            case "notifications_zone_summary":
+              return data.notificationZoneSummary;
+
             // --- window / event plugins -----------------------------------
             case "plugin:window|is_always_on_top":
             case "plugin:window|is_maximized":
@@ -380,7 +535,7 @@ async function installDesktopStub(page: Page, seed: DemoSeed) {
         },
       },
     });
-  }, seed);
+  }, stubSeed);
 }
 
 /**
@@ -504,6 +659,52 @@ async function openCommandBarWorkspace(page: Page, ariaLabel: string) {
 }
 
 /** Opens an extra zone workspace tab from the bottom zone picker. */
+/**
+ * Opens the Topology panel on the primary zone, switches the graph to
+ * `mode` and waits for that graph's `firstSubgraph` cluster to render before
+ * opening the full-window view. The primary zone is used on purpose: unlike
+ * the full DNS graph it carries the whole email story (two MX hosts, SPF,
+ * DKIM, DMARC, MTA-STS, TLS-RPT, autodiscovery and Email Routing rules) and
+ * the Worker routes, and the email and services graphs are compact enough to
+ * fit a window at a readable scale.
+ */
+async function openTopologyGraphMode(
+  page: Page,
+  mode: "email" | "services",
+  firstSubgraph: string,
+) {
+  await openActionSegment(page, "Topology");
+  await page
+    .locator('[data-testid="dns-topology-record-loading"]')
+    .waitFor({ state: "hidden", timeout: 30_000 })
+    .catch(() => undefined);
+  await page
+    .locator(".topology-svg-wrapper svg")
+    .first()
+    .waitFor({ state: "visible", timeout: 45_000 });
+  await page.getByTestId(`topology-graph-mode-${mode}`).first().click();
+  await requireVisible(
+    page,
+    `.topology-svg-wrapper svg g.cluster[id$="-${firstSubgraph}"]`,
+    `the ${mode} graph's "${firstSubgraph}" subgraph`,
+  );
+  await page
+    .getByRole("button", { name: "Full window", exact: true })
+    .first()
+    .click();
+  await page.waitForTimeout(4000);
+
+  const mermaidNodes = await page
+    .locator(".topology-svg-wrapper svg g.node")
+    .count();
+  if (mermaidNodes < 5) {
+    throw new ScreenUnreachableError(
+      `zone-topology-${mode}`,
+      `the Mermaid ${mode} graph rendered only ${mermaidNodes} nodes`,
+    );
+  }
+}
+
 async function openZoneTab(page: Page, zoneName: string, status = "active") {
   await page
     .getByTestId("dns-connection-bar")
@@ -815,6 +1016,27 @@ const SCREENS: Screen[] = [
     },
   },
   {
+    name: "notifications",
+    caption:
+      "Notifications inbox with an expiry notice and an external record change",
+    stage: async (page) => {
+      // The bell's name carries the unread count ("Notifications, 2 unread").
+      await page
+        .getByTestId("app-command-bar")
+        .getByRole("button", { name: /^Notifications/ })
+        .click();
+      await requireVisible(
+        page,
+        '[data-testid="notifications-inbox"]',
+        "the notifications inbox",
+      );
+      await page
+        .getByText("harborline-labs.test expires in 3 days")
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+    },
+  },
+  {
     name: "registry-monitor",
     caption: "Registrar inventory with expiry and lock health",
     stage: async (page) => {
@@ -912,9 +1134,10 @@ const SCREENS: Screen[] = [
     name: "zone-topology",
     caption: "Rendered DNS topology graph, full window",
     stage: async (page) => {
-      // The primary zone has 35 records, which ELK lays out as a 5,700px-tall
-      // column that no window-sized screenshot can show legibly. A smaller zone
-      // renders the same feature at a readable scale.
+      // The primary zone has 35 records; even grouped into area subgraphs the
+      // dagre layout only fits a window-sized screenshot at roughly 15%, which
+      // is not legible. A smaller zone renders the same feature at a readable
+      // scale.
       await openZoneTab(page, "shipwright.test");
       await openActionSegment(page, "Topology");
       await page
@@ -945,6 +1168,22 @@ const SCREENS: Screen[] = [
           `the Mermaid graph rendered only ${mermaidNodes} nodes`,
         );
       }
+    },
+  },
+  {
+    name: "zone-topology-email",
+    caption:
+      "Email graph: inbound MX, authentication, transport policy, client autodiscovery and Email Routing",
+    stage: async (page) => {
+      await openTopologyGraphMode(page, "email", "inbound");
+    },
+  },
+  {
+    name: "zone-topology-services",
+    caption:
+      "Services graph: proxied and DNS-only hostnames, their targets and addresses, and Worker routes",
+    stage: async (page) => {
+      await openTopologyGraphMode(page, "services", "proxied");
     },
   },
   {

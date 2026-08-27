@@ -329,3 +329,71 @@ test("the records table refresh button has a name, not only a hover title", asyn
     assert.ok(recordFetches > before, "the refresh button still refreshes"),
   );
 });
+
+// ── t9: the notifications bell and per-item inbox actions ──────────────────
+
+test("the notifications bell and inbox item actions are announced by name", async () => {
+  const { DnsAppCommandBar } = await import(
+    "../src/components/dns/DnsAppCommandBar"
+  );
+  const { NotificationItem } = await import(
+    "../src/components/dns/NotificationItem"
+  );
+
+  render(
+    <DnsAppCommandBar
+      accountLabel="admin@example.test"
+      sessionLabel="Active session"
+      showAudit
+      showNotifications
+      unreadCount={3}
+      onOpenNotifications={() => {}}
+      onOpenAudit={() => {}}
+      onOpenRegistry={() => {}}
+      onOpenSettings={() => {}}
+      onOpenTags={() => {}}
+      onLogout={() => {}}
+    />,
+  );
+  assert.ok(screen.getByRole("button", { name: "Notifications, 3 unread" }));
+  cleanup();
+
+  const noop = () => {};
+  render(
+    <NotificationItem
+      item={{
+        id: "n-1",
+        kind: "record_change",
+        severity: "warning",
+        zoneId: "zone-1",
+        zoneName: "example.test",
+        title: "A www.example.test changed outside Better Cloudflare",
+        body: "203.0.113.10 → 203.0.113.11",
+        createdAt: "2026-08-07T08:00:00Z",
+        readAt: null,
+        archivedAt: null,
+        dedupeKey: "k",
+        payload: {
+          change: "changed",
+          recordId: "rec-1",
+          recordType: "A",
+          recordName: "www.example.test",
+          before: { content: "203.0.113.10" },
+          after: { content: "203.0.113.11" },
+        },
+      }}
+      onMarkRead={noop}
+      onArchive={noop}
+      onUnarchive={noop}
+      onDismiss={noop}
+      onOpenZone={noop}
+      onRevealRecord={noop}
+    />,
+  );
+  for (const name of ["Mark read", "Archive", "Dismiss", "Go to record"]) {
+    assert.ok(
+      screen.getByRole("button", { name }),
+      `no inbox action is announced as ${name}`,
+    );
+  }
+});
