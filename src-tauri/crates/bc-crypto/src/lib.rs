@@ -197,14 +197,14 @@ impl CryptoManager {
 
         let mut nonce_bytes = [0u8; NONCE_BYTES];
         rng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&key[..])
             .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
         let ciphertext = cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: data.as_bytes(),
                     aad: ENVELOPE_AAD,
@@ -261,12 +261,12 @@ impl CryptoManager {
         let cipher = Aes256Gcm::new_from_slice(&key[..])
             .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
 
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes).map_err(|_| CryptoError::InvalidFormat)?;
         let payload = Payload {
             msg: ciphertext,
             aad: if versioned { ENVELOPE_AAD } else { &[] },
         };
-        let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
+        let plaintext = cipher.decrypt(&nonce, payload).map_err(|_| {
             CryptoError::DecryptionFailed(
                 "authentication failed; the password or ciphertext is invalid".to_string(),
             )
@@ -611,10 +611,7 @@ mod tests {
         pbkdf2_hmac::<Sha256>(b"password", &salt, crypto.config.iterations, &mut key[..]);
         let cipher = Aes256Gcm::new_from_slice(&key[..]).unwrap();
         let ciphertext = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce_bytes),
-                b"legacy-compatible".as_ref(),
-            )
+            .encrypt(&Nonce::from(nonce_bytes), b"legacy-compatible".as_ref())
             .unwrap();
         let mut legacy_bytes = Vec::with_capacity(SALT_BYTES + NONCE_BYTES + ciphertext.len());
         legacy_bytes.extend_from_slice(&salt);
