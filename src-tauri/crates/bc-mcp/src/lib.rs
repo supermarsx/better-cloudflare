@@ -16,7 +16,7 @@ pub mod tools;
 
 use std::sync::Arc;
 
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -136,8 +136,8 @@ fn host_port(host: &str, port: u16) -> String {
 }
 
 fn generate_auth_token() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.gen();
+    let mut rng = rand::rng();
+    let bytes: [u8; 32] = rng.random();
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

@@ -6,12 +6,13 @@
 //! user-supplied password and configurable iteration count.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng, Payload},
+    aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
 use base64::Engine;
 use pbkdf2::pbkdf2_hmac;
-use rand::{CryptoRng, RngCore};
+use rand::rand_core::UnwrapErr;
+use rand::{rngs::SysRng, CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
@@ -169,11 +170,11 @@ impl CryptoManager {
     /// Returns a versioned base64 envelope containing
     /// `salt (16) || nonce (12) || ciphertext || authentication tag`.
     pub fn encrypt(&self, data: &str, password: &str) -> Result<String, CryptoError> {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         self.encrypt_with_rng(data, password, &mut rng)
     }
 
-    fn encrypt_with_rng<R: CryptoRng + RngCore>(
+    fn encrypt_with_rng<R: CryptoRng + Rng>(
         &self,
         data: &str,
         password: &str,
@@ -288,7 +289,7 @@ impl CryptoManager {
         validate_benchmark_iterations(iterations)?;
 
         let mut password_bytes = Zeroizing::new([0u8; AES_256_KEY_LENGTH_BYTES]);
-        OsRng.fill_bytes(&mut password_bytes[..]);
+        UnwrapErr(SysRng).fill_bytes(&mut password_bytes[..]);
         let password =
             Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&password_bytes[..]));
 
@@ -329,6 +330,7 @@ fn validate_password(password: &str) -> Result<(), CryptoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::rand_core::{Infallible, TryCryptoRng, TryRng};
 
     struct DeterministicCryptoRng {
         next: u8,
@@ -340,33 +342,33 @@ mod tests {
         }
     }
 
-    impl RngCore for DeterministicCryptoRng {
-        fn next_u32(&mut self) -> u32 {
+    // rand_core 0.10 blanket-implements Rng and CryptoRng for any
+    // TryRng<Error = Infallible>, so the fallible trait is the one to implement.
+    impl TryRng for DeterministicCryptoRng {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
             let mut bytes = [0u8; 4];
-            self.fill_bytes(&mut bytes);
-            u32::from_le_bytes(bytes)
+            self.try_fill_bytes(&mut bytes)?;
+            Ok(u32::from_le_bytes(bytes))
         }
 
-        fn next_u64(&mut self) -> u64 {
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
             let mut bytes = [0u8; 8];
-            self.fill_bytes(&mut bytes);
-            u64::from_le_bytes(bytes)
+            self.try_fill_bytes(&mut bytes)?;
+            Ok(u64::from_le_bytes(bytes))
         }
 
-        fn fill_bytes(&mut self, dest: &mut [u8]) {
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
             for byte in dest {
                 *byte = self.next;
                 self.next = self.next.wrapping_add(1);
             }
-        }
-
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
-            self.fill_bytes(dest);
             Ok(())
         }
     }
 
-    impl CryptoRng for DeterministicCryptoRng {}
+    impl TryCryptoRng for DeterministicCryptoRng {}
 
     fn decode_versioned(encrypted: &str) -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
