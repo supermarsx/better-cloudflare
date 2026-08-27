@@ -66,24 +66,29 @@
   }
 
   :root[data-theme="sunset"] {
-    --background: 20 14% 4%;
+    /* Deep dusk: the base sits well below the surfaces so the ember hues read
+       as light sources rather than as tinted panels. Backgrounds only ever get
+       darker here, so every foreground token below keeps or improves its
+       contrast ratio; see docs/design-system.md §4.1. */
+    --background: 20 18% 2.5%;
     --foreground: 30 50% 98%;
-    --card: 20 14% 8%;
+    --card: 20 16% 6%;
     --card-foreground: 30 50% 98%;
-    --popover: 20 14% 8%;
+    /* Popovers sit one rung above cards so menus stay legible over a panel. */
+    --popover: 20 16% 7.5%;
     --popover-foreground: 30 50% 98%;
     --primary: 15 90% 55%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 10 40% 15%;
+    --secondary: 10 42% 10%;
     --secondary-foreground: 30 50% 98%;
-    --muted: 10 20% 15%;
+    --muted: 10 22% 9%;
     --muted-foreground: 15 20% 65%;
-    --accent: 15 80% 20%;
+    --accent: 15 80% 13%;
     --accent-foreground: 30 50% 98%;
     --destructive: 0 90% 30%;
     --destructive-foreground: 30 50% 98%;
-    --border: 15 50% 20%;
-    --input: 15 30% 15%;
+    --border: 15 46% 16%;
+    --input: 15 32% 10%;
     --ring: 15 90% 55%;
 
     /* Record-type accents (sunset) */
@@ -178,6 +183,9 @@
     z-index: -10;
   }
 
+  /* The unqualified glow is sunset's; light, oled and void all override it.
+     Kept warmer and stronger than the oled override below so the two dark
+     themes stay tellable apart at a glance. */
   .app-glow::before {
     content: "";
     position: absolute;
@@ -185,12 +193,12 @@
     background:
       radial-gradient(
         circle at 20% 20%,
-        hsl(var(--primary) / 0.15),
+        hsl(var(--primary) / 0.11),
         transparent 35%
       ),
       radial-gradient(
         circle at 80% 80%,
-        hsl(var(--destructive) / 0.12),
+        hsl(var(--destructive) / 0.09),
         transparent 35%
       );
     filter: blur(80px);
@@ -921,14 +929,30 @@
     border-bottom: 0;
   }
 
+  /* "Go to record" lands here: a short flash so the eye finds the row. */
+  .ui-table-row[data-revealed="true"] {
+    animation: uiRowReveal 1.6s ease-out both;
+    box-shadow: inset 2px 0 0 hsl(var(--primary));
+  }
+
+  @keyframes uiRowReveal {
+    0%,
+    60% {
+      background: hsl(var(--primary) / 0.28);
+    }
+    100% {
+      background: hsl(var(--accent) / 0.35);
+    }
+  }
+
   .titlebar {
     background:
       linear-gradient(
         120deg,
-        rgba(255, 120, 64, 0.14),
-        rgba(255, 70, 40, 0.06)
+        rgba(255, 120, 64, 0.12),
+        rgba(255, 70, 40, 0.05)
       ),
-      rgba(8, 6, 5, 0.75);
+      rgba(5, 4, 3, 0.82);
     box-shadow:
       0 12px 30px rgba(0, 0, 0, 0.35),
       inset 0 -1px 0 rgba(255, 255, 255, 0.08);
@@ -1114,6 +1138,12 @@
     .ui-table-row:hover,
     .checkbox-themed:active {
       transform: none !important;
+    }
+
+    /* A static tint still marks the revealed row without the flash. */
+    .ui-table-row[data-revealed="true"] {
+      animation: none !important;
+      background: hsl(var(--accent) / 0.45);
     }
 
     /* `animate-spin` is a status signal, so slow it rather than remove it. */
@@ -1376,4 +1406,48 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
   }
+}
+
+/* Topology graph: let the Mermaid SVG keep its intrinsic (viewBox) size so the
+   pan/zoom/fit maths operate on the same box that is painted. */
+.topology-svg-wrapper svg {
+  max-width: none;
+  height: auto;
+  display: block;
+}
+
+/* Notifications (t9): bell badge, inbox item accent and severity dots. */
+.notifications-unread-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.2rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  border-radius: 9999px;
+  background: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+  font-size: 0.625rem;
+  line-height: 1rem;
+  font-weight: 700;
+  text-align: center;
+  pointer-events: none;
+}
+
+.notification-item--unread {
+  border-left: 3px solid hsl(var(--primary) / 0.8);
+  background: hsl(var(--primary) / 0.06);
+}
+
+.notification-severity--info {
+  background: hsl(var(--muted-foreground) / 0.7);
+}
+
+.notification-severity--warning {
+  background: hsl(38 92% 50%);
+}
+
+.notification-severity--critical {
+  background: hsl(var(--destructive));
+  box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.2);
 }
