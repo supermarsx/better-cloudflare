@@ -721,3 +721,53 @@ test("package workflow typechecks before testing and packaging", () => {
     "npm pack",
   ]);
 });
+
+test("the desktop shell loads the real application on every launch path", () => {
+  const packageJson = JSON.parse(read("package.json")) as {
+    scripts: Record<string, string>;
+  };
+  const tauriConfig = JSON.parse(read("src-tauri/tauri.conf.json")) as {
+    build: { beforeDevCommand: string; frontendDist: string };
+    app: { security: { csp: string } };
+  };
+
+  // `npm run tauri dev` must go through the free-port launcher; every other
+  // subcommand (`build` in autopublish.yml among them) passes through it.
+  assert.equal(packageJson.scripts.tauri, "node scripts/tauri-cli.mjs");
+  // The raw CLI path (`npx tauri dev`, `cargo tauri dev`) is guarded: the
+  // static devUrl is only ever handed to Tauri when this app's server owns it.
+  assert.equal(
+    tauriConfig.build.beforeDevCommand,
+    "node scripts/tauri-before-dev.mjs",
+  );
+  // Production windows load the static export, not a placeholder page.
+  assert.match(read("next.config.mjs"), /output: "export"/);
+  assert.equal(tauriConfig.build.frontendDist, "../out");
+
+  // Tauri does not inject `connect-src`; without it `default-src 'self'`
+  // blocks every `invoke()` (they go to `http://ipc.localhost`), so the
+  // production window renders but no native command ever answers.
+  const directives = new Map(
+    tauriConfig.app.security.csp
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/u))
+      .filter((parts) => parts[0] !== undefined && parts[0].length > 0)
+      .map(([name, ...sources]) => [name, sources] as const),
+  );
+  assert.deepEqual(directives.get("default-src"), ["'self'"]);
+  const connectSources = directives.get("connect-src") ?? [];
+  for (const source of ["ipc:", "http://ipc.localhost"]) {
+    assert.ok(
+      connectSources.includes(source),
+      `connect-src must allow ${source} so Tauri IPC is not blocked`,
+    );
+  }
+  // 8bc93ac removed inline/eval scripts on purpose; keep them out.
+  const scriptSources = directives.get("script-src") ?? [];
+  for (const forbidden of ["'unsafe-inline'", "'unsafe-eval'"]) {
+    assert.ok(
+      !scriptSources.includes(forbidden),
+      `script-src must not allow ${forbidden}`,
+    );
+  }
+});

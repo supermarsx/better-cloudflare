@@ -316,40 +316,140 @@ export function devServerUrl(port, host = "localhost") {
 const APP_IDENTITY_MARKERS = ["/_next/", "Better Cloudflare"];
 
 /**
+ * How long {@link probeDevServer} keeps asking before it gives up. The first
+ * request to a Next.js 16 dev server triggers Turbopack's compile of the route
+ * - measured at 8 s cold on this project, and it can be longer on a slow disk
+ * - so a single short-lived request would see nothing and misjudge our own
+ * server as a stranger. Every attempt keeps the compile going, so retrying
+ * converges.
+ */
+export const DEV_SERVER_PROBE_DEADLINE_MS = 30_000;
+const PROBE_ATTEMPT_TIMEOUT_MS = 5_000;
+const PROBE_RETRY_DELAY_MIN_MS = 250;
+const PROBE_RETRY_DELAY_MAX_MS = 2_000;
+
+/**
+ * @typedef {"ours" | "foreign" | "absent" | "unresponsive"} DevServerVerdict
+ *   - `ours`: a response carried one of this application's markers.
+ *   - `foreign`: a successful response carried none of them - someone else's
+ *     server, never to be loaded into the desktop window.
+ *   - `absent`: nothing accepts connections on the port.
+ *   - `unresponsive`: something accepts connections but gave no conclusive
+ *     HTTP answer before the deadline.
+ */
+
+/**
+ * Judges one HTTP answer. Kept pure so the rule is unit-testable.
+ *
+ * A marker anywhere in the body settles it, whatever the status: a Next.js
+ * error page (404 for a route that is still compiling, 500 for a build error)
+ * still carries `/_next/`. A successful response *without* a marker is
+ * conclusively someone else. Anything else is inconclusive and worth another
+ * try - a proxy's 502 while the server behind it is still starting, say.
+ *
+ * @param {number} status
+ * @param {string} body
+ * @returns {"ours" | "foreign" | "unclear"}
+ */
+export function classifyDevServerResponse(status, body) {
+  if (APP_IDENTITY_MARKERS.some((marker) => body.includes(marker))) {
+    return "ours";
+  }
+  return status >= 200 && status < 300 ? "foreign" : "unclear";
+}
+
+/**
  * Confirms the process on a port is this application, not merely *a* process.
  *
  * A TCP connect proves only that something accepted a socket. A recorded port
  * can be inherited by an unrelated server after the dev server exits, and
  * pointing the desktop shell at that would load someone else's application
- * inside this one's window — with this application's native command surface
- * exposed to it. So the reuse path fetches the port and looks for a marker
+ * inside this one's window - with this application's native command surface
+ * exposed to it. So every reuse path fetches the port and looks for a marker
  * only this frontend emits.
  *
+ * The probe is patient (see {@link DEV_SERVER_PROBE_DEADLINE_MS}) but returns
+ * the moment it has a conclusive answer, and immediately when nothing listens
+ * at all, so a free port costs nothing to check. Redirects are followed.
+ *
  * @param {number} port
- * @param {string} [host]
- * @param {number} [timeoutMs]
+ * @param {object} [options]
+ * @param {string} [options.host]
+ * @param {number} [options.deadlineMs] Total time budget.
+ * @param {number} [options.attemptTimeoutMs] Budget for one request.
+ * @returns {Promise<DevServerVerdict>}
+ */
+export async function probeDevServer(port, options = {}) {
+  const host = options.host ?? "localhost";
+  const deadlineMs = options.deadlineMs ?? DEV_SERVER_PROBE_DEADLINE_MS;
+  const attemptTimeoutMs = options.attemptTimeoutMs ?? PROBE_ATTEMPT_TIMEOUT_MS;
+  const url = devServerUrl(port, host);
+  const deadline = Date.now() + deadlineMs;
+  let retryDelay = PROBE_RETRY_DELAY_MIN_MS;
+
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return "unresponsive";
+
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      Math.min(attemptTimeoutMs, remaining),
+    );
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { accept: "text/html" },
+        redirect: "follow",
+      });
+      const verdict = classifyDevServerResponse(
+        response.status,
+        await response.text(),
+      );
+      if (verdict !== "unclear") return verdict;
+    } catch (error) {
+      if (isConnectionRefused(error)) return "absent";
+      // Timed out, reset, or not speaking HTTP: try again until the deadline.
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (Date.now() + retryDelay >= deadline) return "unresponsive";
+    await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    retryDelay = Math.min(retryDelay * 2, PROBE_RETRY_DELAY_MAX_MS);
+  }
+}
+
+/**
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isConnectionRefused(error) {
+  /** @type {unknown} */
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (/** @type {NodeJS.ErrnoException} */ (current).code === "ECONNREFUSED")
+      return true;
+    // `fetch` wraps the socket error in a TypeError; the aggregate for
+    // `localhost` resolving to both ::1 and 127.0.0.1 nests one level deeper.
+    const aggregate = /** @type {{ errors?: unknown[] }} */ (current).errors;
+    if (Array.isArray(aggregate) && aggregate.some(isConnectionRefused)) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * Boolean form of {@link probeDevServer}.
+ *
+ * @param {number} port
+ * @param {Parameters<typeof probeDevServer>[1]} [options]
  * @returns {Promise<boolean>}
  */
-export async function isOurDevServer(
-  port,
-  host = "localhost",
-  timeoutMs = 2000,
-) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(devServerUrl(port, host), {
-      signal: controller.signal,
-      headers: { accept: "text/html" },
-    });
-    if (!response.ok) return false;
-    const body = await response.text();
-    return APP_IDENTITY_MARKERS.some((marker) => body.includes(marker));
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
+export async function isOurDevServer(port, options) {
+  return (await probeDevServer(port, options)) === "ours";
 }
 
 /**

@@ -10,7 +10,7 @@
     "dev": "node scripts/dev-server.mjs",
     "build": "next build --webpack",
     "start": "next start",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri-cli.mjs",
     "tauri:dev": "node scripts/tauri-dev.mjs",
     "tauri:build": "tauri build",
     "lint": "npm run lint:app && npm run lint:src:baseline",

@@ -12,6 +12,7 @@ import {
   NoFreePortError,
   basePortFrom,
   bindPort,
+  classifyDevServerResponse,
   clearDevServerState,
   devServerUrl,
   findFreePort,
@@ -20,6 +21,7 @@ import {
   isPortListening,
   parseCliArguments,
   parsePort,
+  probeDevServer,
   reservePort,
   readDevServerState,
   readRunningDevServer,
@@ -307,5 +309,121 @@ test("a response carrying our markers is accepted", async () => {
     assert.equal(await isOurDevServer(port), true);
   } finally {
     server.close();
+  }
+});
+
+test("a response is judged by its markers first, then by its status", () => {
+  const ours = '<script src="/_next/static/chunks/main.js"></script>';
+  assert.equal(classifyDevServerResponse(200, ours), "ours");
+  // A Next.js error page (route still compiling, build error) keeps `/_next/`.
+  assert.equal(classifyDevServerResponse(404, ours), "ours");
+  assert.equal(classifyDevServerResponse(500, ours), "ours");
+  assert.equal(
+    classifyDevServerResponse(200, "<title>Better Cloudflare</title>"),
+    "ours",
+  );
+  // A successful page without markers is conclusively someone else.
+  assert.equal(classifyDevServerResponse(200, "<h1>Other App</h1>"), "foreign");
+  // A failure without markers proves nothing yet: worth another try.
+  assert.equal(classifyDevServerResponse(502, "Bad Gateway"), "unclear");
+  assert.equal(classifyDevServerResponse(404, ""), "unclear");
+});
+
+test("the probe reports a free port as absent without waiting", async () => {
+  const port = await findFreePort({ basePort: 49_600, host });
+  const started = Date.now();
+  assert.equal(
+    await probeDevServer(port, { host, deadlineMs: 10_000 }),
+    "absent",
+  );
+  assert.ok(
+    Date.now() - started < 3_000,
+    "a refused connection must settle immediately",
+  );
+  assert.equal(await isOurDevServer(port, { host, deadlineMs: 10_000 }), false);
+});
+
+test("the probe waits out a slow first response instead of misjudging it", async () => {
+  // The first request to a Next.js 16 dev server triggers Turbopack's compile
+  // of the route, which takes seconds; the launcher used to give up after one
+  // short attempt and refuse its own server.
+  let requests = 0;
+  const server = createHttpServer((_request, response) => {
+    requests += 1;
+    const respond = () => {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end('<script src="/_next/static/chunks/main.js"></script>');
+    };
+    // The first two requests outlive the per-attempt budget; the third is quick.
+    if (requests < 3) setTimeout(respond, 1_500);
+    else respond();
+  });
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, host, () =>
+      resolve((server.address() as AddressInfo).port),
+    );
+  });
+
+  try {
+    assert.equal(
+      await probeDevServer(port, {
+        host,
+        deadlineMs: 10_000,
+        attemptTimeoutMs: 400,
+      }),
+      "ours",
+    );
+    assert.ok(requests >= 3, `expected retries, saw ${requests} request(s)`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("the probe follows a redirect to the app", async () => {
+  const server = createHttpServer((request, response) => {
+    if (request.url === "/") {
+      response.writeHead(307, { location: "/login" });
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<title>Better Cloudflare</title>");
+  });
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, host, () =>
+      resolve((server.address() as AddressInfo).port),
+    );
+  });
+  try {
+    assert.equal(await probeDevServer(port, { host }), "ours");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("a socket that accepts but never answers is unresponsive, not ours", async () => {
+  const sockets = new Set<import("node:net").Socket>();
+  const silent = createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  const port = await new Promise<number>((resolve) => {
+    silent.listen(0, host, () =>
+      resolve((silent.address() as AddressInfo).port),
+    );
+  });
+  try {
+    assert.equal(
+      await probeDevServer(port, {
+        host,
+        deadlineMs: 1_200,
+        attemptTimeoutMs: 300,
+      }),
+      "unresponsive",
+    );
+  } finally {
+    // Aborted requests leave their sockets open; `close()` would wait forever.
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => silent.close(resolve));
   }
 });
