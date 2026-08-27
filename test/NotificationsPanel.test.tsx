@@ -298,8 +298,13 @@ test("the inbox lists items grouped by day with a status line and unread count",
   const [expiry] = items;
   assert.equal(expiry.getAttribute("data-unread"), "true");
   assert.equal(expiry.getAttribute("data-severity"), "critical");
+  // The count sits in a sibling <span> separated only by a CSS margin, not by
+  // a whitespace text node, so the accessible name concatenates to
+  // "Inbox(1)". jsdom <= 28 inserted a space here and 29 no longer does,
+  // matching what browsers actually compute. The assertion is that the count
+  // reaches the accessible name at all, so the separator stays flexible.
   assert.ok(
-    screen.getByRole("button", { name: /Inbox \(1\)/ }),
+    screen.getByRole("button", { name: /Inbox\s*\(1\)/ }),
     "the Inbox segment carries the unread count",
   );
 
