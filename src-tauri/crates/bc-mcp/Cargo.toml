@@ -5,7 +5,7 @@ edition = "2021"
 description = "Model Context Protocol (MCP) JSON-RPC server for Cloudflare DNS and SPF tools"
 
 [dependencies]
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 futures-util = "0.3"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "http2", "server-auto", "service", "tokio"] }

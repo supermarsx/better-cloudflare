@@ -6,10 +6,10 @@ description = "PBKDF2 + AES-256-GCM encryption primitives for Better Cloudflare"
 
 [dependencies]
 aes-gcm = "0.10"
-base64 = "0.22"
-pbkdf2 = { version = "0.12", features = ["simple"] }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+pbkdf2 = "0.12"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
-thiserror = "1"
+thiserror = "2"
 zeroize = "1"
