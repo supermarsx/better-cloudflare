@@ -1,0 +1,410 @@
+{
+  "$comment": "Shared parity fixture for bc-notify::NotificationSettings::normalize() (Rust) and clampNotificationSettings() (TS). Owned by t9-e1; other executors may only append cases. Every case: normalize(input) must deep-equal expectedNormalized. expectedNormalized is either the string \"$defaults\" or an object carrying \"$defaults\": true whose listed top-level sections REPLACE (not deep-merge) the defaults. Missing keys take defaults; explicit empty arrays are kept (milestones: [] means expired-only; fields: [] resets to the default list). Invalid enum strings fall back to the default; out-of-range numbers are clamped; out-of-range milestones/days are dropped; mutedUntil in the past (relative to real 'now') is cleared and an override with nothing set is removed. Field order in expectedNormalized is canonical.",
+  "defaults": {
+    "version": 1,
+    "service": {
+      "enabled": true,
+      "paused": false,
+      "catchUpOnLaunch": true,
+      "recordPollMinutes": 15,
+      "expiryPollMinutes": 360,
+      "rdapCacheHours": 24,
+      "maxZonesPerPass": 200,
+      "backoffMaxMinutes": 120
+    },
+    "kinds": {
+      "domainExpiry": { "enabled": true, "severity": "auto", "osNotify": true },
+      "recordChange": {
+        "enabled": true,
+        "severity": "auto",
+        "osNotify": true,
+        "changes": { "added": true, "changed": true, "removed": true },
+        "fields": [
+          "content",
+          "ttl",
+          "proxied",
+          "priority",
+          "comment",
+          "name",
+          "type"
+        ]
+      },
+      "service": { "enabled": true, "severity": "info", "osNotify": false }
+    },
+    "expiry": {
+      "milestones": [90, 60, 30, 14, 7, 3, 1],
+      "notifyExpired": true,
+      "source": "auto",
+      "severityByMilestone": { "warningAtOrBelow": 14, "criticalAtOrBelow": 3 }
+    },
+    "zones": { "mode": "all", "include": [], "exclude": [], "overrides": {} },
+    "quietHours": {
+      "enabled": false,
+      "start": "22:00",
+      "end": "07:00",
+      "days": [0, 1, 2, 3, 4, 5, 6],
+      "timezone": "local",
+      "behaviour": "silence"
+    },
+    "osNotifications": { "enabled": true, "minSeverity": "warning" },
+    "inApp": { "toastMinSeverity": "critical", "badge": true },
+    "retention": {
+      "autoArchiveReadAfterDays": 30,
+      "purgeArchivedAfterDays": 90,
+      "maxItems": 2000,
+      "keepSnapshots": true
+    }
+  },
+  "limits": {
+    "service": {
+      "recordPollMinutes": [5, 1440],
+      "expiryPollMinutes": [60, 10080],
+      "rdapCacheHours": [6, 168],
+      "maxZonesPerPass": [1, 1000],
+      "backoffMaxMinutes": [5, 1440]
+    },
+    "expiry": {
+      "milestone": [1, 365],
+      "maxMilestones": 12,
+      "severityThreshold": [0, 365]
+    },
+    "retention": {
+      "autoArchiveReadAfterDays": [1, 365],
+      "purgeArchivedAfterDays": [1, 365],
+      "maxItems": [100, 10000]
+    }
+  },
+  "cases": [
+    {
+      "name": "empty object normalizes to defaults",
+      "input": {},
+      "expectedNormalized": "$defaults"
+    },
+    {
+      "name": "partial service.enabled keeps every other default",
+      "input": { "service": { "enabled": false } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "service": {
+          "enabled": false,
+          "paused": false,
+          "catchUpOnLaunch": true,
+          "recordPollMinutes": 15,
+          "expiryPollMinutes": 360,
+          "rdapCacheHours": 24,
+          "maxZonesPerPass": 200,
+          "backoffMaxMinutes": 120
+        }
+      }
+    },
+    {
+      "name": "numeric fields below minimum are clamped up",
+      "input": {
+        "service": {
+          "recordPollMinutes": 1,
+          "expiryPollMinutes": 10,
+          "rdapCacheHours": 0,
+          "maxZonesPerPass": 0,
+          "backoffMaxMinutes": 1
+        },
+        "retention": {
+          "autoArchiveReadAfterDays": 0,
+          "purgeArchivedAfterDays": 0,
+          "maxItems": 5
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "service": {
+          "enabled": true,
+          "paused": false,
+          "catchUpOnLaunch": true,
+          "recordPollMinutes": 5,
+          "expiryPollMinutes": 60,
+          "rdapCacheHours": 6,
+          "maxZonesPerPass": 1,
+          "backoffMaxMinutes": 5
+        },
+        "retention": {
+          "autoArchiveReadAfterDays": 1,
+          "purgeArchivedAfterDays": 1,
+          "maxItems": 100,
+          "keepSnapshots": true
+        }
+      }
+    },
+    {
+      "name": "numeric fields above maximum are clamped down",
+      "input": {
+        "service": {
+          "recordPollMinutes": 99999,
+          "expiryPollMinutes": 99999,
+          "rdapCacheHours": 999,
+          "maxZonesPerPass": 5000,
+          "backoffMaxMinutes": 99999
+        },
+        "retention": {
+          "autoArchiveReadAfterDays": 1000,
+          "purgeArchivedAfterDays": 1000,
+          "maxItems": 999999
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "service": {
+          "enabled": true,
+          "paused": false,
+          "catchUpOnLaunch": true,
+          "recordPollMinutes": 1440,
+          "expiryPollMinutes": 10080,
+          "rdapCacheHours": 168,
+          "maxZonesPerPass": 1000,
+          "backoffMaxMinutes": 1440
+        },
+        "retention": {
+          "autoArchiveReadAfterDays": 365,
+          "purgeArchivedAfterDays": 365,
+          "maxItems": 10000,
+          "keepSnapshots": true
+        }
+      }
+    },
+    {
+      "name": "retention null means never",
+      "input": {
+        "retention": {
+          "autoArchiveReadAfterDays": null,
+          "purgeArchivedAfterDays": null,
+          "keepSnapshots": false
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "retention": {
+          "autoArchiveReadAfterDays": null,
+          "purgeArchivedAfterDays": null,
+          "maxItems": 2000,
+          "keepSnapshots": false
+        }
+      }
+    },
+    {
+      "name": "milestones dedup, drop out-of-range, sort descending",
+      "input": { "expiry": { "milestones": [1, 1, 400, 30, 0] } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [30, 1],
+          "notifyExpired": true,
+          "source": "auto",
+          "severityByMilestone": {
+            "warningAtOrBelow": 14,
+            "criticalAtOrBelow": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "milestones capped at the 12 largest",
+      "input": {
+        "expiry": {
+          "milestones": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+          "notifyExpired": false
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3],
+          "notifyExpired": false,
+          "source": "auto",
+          "severityByMilestone": {
+            "warningAtOrBelow": 14,
+            "criticalAtOrBelow": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "empty milestones stays empty (expired-only)",
+      "input": { "expiry": { "milestones": [] } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [],
+          "notifyExpired": true,
+          "source": "auto",
+          "severityByMilestone": {
+            "warningAtOrBelow": 14,
+            "criticalAtOrBelow": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "severity thresholds clamp and critical never exceeds warning",
+      "input": {
+        "expiry": {
+          "source": "registrar",
+          "severityByMilestone": {
+            "warningAtOrBelow": 7,
+            "criticalAtOrBelow": 900
+          }
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [90, 60, 30, 14, 7, 3, 1],
+          "notifyExpired": true,
+          "source": "registrar",
+          "severityByMilestone": {
+            "warningAtOrBelow": 7,
+            "criticalAtOrBelow": 7
+          }
+        }
+      }
+    },
+    {
+      "name": "unknown kind key and unknown top-level key are dropped; enum fallbacks",
+      "input": {
+        "bogusTopLevel": 1,
+        "kinds": {
+          "bogusKind": { "enabled": true },
+          "domainExpiry": { "severity": "loud" },
+          "recordChange": {
+            "severity": "critical",
+            "changes": { "removed": false },
+            "fields": ["ttl", "content", "ttl", "bogus"]
+          },
+          "service": { "severity": "warning", "osNotify": true }
+        },
+        "expiry": { "source": "whois" },
+        "osNotifications": { "minSeverity": "verbose" },
+        "inApp": { "toastMinSeverity": "never", "badge": false }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "kinds": {
+          "domainExpiry": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": true
+          },
+          "recordChange": {
+            "enabled": true,
+            "severity": "critical",
+            "osNotify": true,
+            "changes": { "added": true, "changed": true, "removed": false },
+            "fields": ["content", "ttl"]
+          },
+          "service": {
+            "enabled": true,
+            "severity": "warning",
+            "osNotify": true
+          }
+        },
+        "inApp": { "toastMinSeverity": "never", "badge": false }
+      }
+    },
+    {
+      "name": "empty fields list resets to the default field list",
+      "input": { "kinds": { "recordChange": { "fields": [] } } },
+      "expectedNormalized": "$defaults"
+    },
+    {
+      "name": "zones: ids trimmed and deduped, past mute cleared, empty override removed, future mute kept",
+      "input": {
+        "zones": {
+          "mode": "allowlist",
+          "include": [" z1 ", "z1", "", "z2"],
+          "exclude": ["z3", "z3"],
+          "overrides": {
+            "z1": { "muted": true, "mutedUntil": "2000-01-01T00:00:00Z" },
+            "z2": { "muted": false, "kinds": {} },
+            "z3": {
+              "muted": false,
+              "mutedUntil": "2999-01-01T00:00:00Z",
+              "kinds": { "recordChange": false }
+            },
+            "": { "muted": true }
+          }
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "zones": {
+          "mode": "allowlist",
+          "include": ["z1", "z2"],
+          "exclude": ["z3"],
+          "overrides": {
+            "z1": { "muted": true },
+            "z3": {
+              "muted": false,
+              "mutedUntil": "2999-01-01T00:00:00Z",
+              "kinds": { "recordChange": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "zones: invalid mode falls back to all",
+      "input": { "zones": { "mode": "denylist" } },
+      "expectedNormalized": "$defaults"
+    },
+    {
+      "name": "quiet hours: invalid time disables and resets times; days deduped/sorted/filtered; bad timezone -> local",
+      "input": {
+        "quietHours": {
+          "enabled": true,
+          "start": "25:00",
+          "end": "7:00",
+          "days": [6, 6, 1, 9, -1],
+          "timezone": "Mars/Olympus",
+          "behaviour": "hold"
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "quietHours": {
+          "enabled": false,
+          "start": "22:00",
+          "end": "07:00",
+          "days": [1, 6],
+          "timezone": "local",
+          "behaviour": "hold"
+        }
+      }
+    },
+    {
+      "name": "quiet hours: valid IANA timezone and times kept; empty days means all days",
+      "input": {
+        "quietHours": {
+          "enabled": true,
+          "start": "23:30",
+          "end": "06:15",
+          "days": [],
+          "timezone": "Europe/Lisbon",
+          "behaviour": "loud"
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "quietHours": {
+          "enabled": true,
+          "start": "23:30",
+          "end": "06:15",
+          "days": [0, 1, 2, 3, 4, 5, 6],
+          "timezone": "Europe/Lisbon",
+          "behaviour": "silence"
+        }
+      }
+    },
+    {
+      "name": "version is always rewritten to 1",
+      "input": { "version": 7 },
+      "expectedNormalized": "$defaults"
+    }
+  ]
+}
