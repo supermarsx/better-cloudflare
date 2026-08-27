@@ -15,6 +15,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-close",
     "core:window:allow-destroy",
-    "shell:allow-open"
+    "shell:allow-open",
+    "notification:default"
   ]
 }

@@ -12,6 +12,7 @@ use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput, Zone};
 use crate::storage::Storage;
 
 use super::log_audit;
+use crate::notifications::NotificationManager;
 
 const MAX_NATIVE_EXPORT_PAGE: u32 = 10_000;
 const MAX_NATIVE_EXPORT_PER_PAGE: u32 = 500;
@@ -861,8 +862,13 @@ pub async fn create_dns_record(
     email: Option<String>,
     zone_id: String,
     record: DNSRecordInput,
+    notifications: State<'_, NotificationManager>,
 ) -> Result<DNSRecord, String> {
-    create_dns_record_impl(&storage, api_key, email, zone_id, record).await
+    let created = create_dns_record_impl(&storage, api_key, email, zone_id.clone(), record).await?;
+    if let Some(id) = created.id.as_deref() {
+        notifications.ledger().note(&zone_id, id, "create");
+    }
+    Ok(created)
 }
 
 async fn create_dns_record_impl(
@@ -900,8 +906,19 @@ pub async fn update_dns_record(
     zone_id: String,
     record_id: String,
     record: DNSRecordInput,
+    notifications: State<'_, NotificationManager>,
 ) -> Result<DNSRecord, String> {
-    update_dns_record_impl(&storage, api_key, email, zone_id, record_id, record).await
+    let updated = update_dns_record_impl(
+        &storage,
+        api_key,
+        email,
+        zone_id.clone(),
+        record_id.clone(),
+        record,
+    )
+    .await?;
+    notifications.ledger().note(&zone_id, &record_id, "update");
+    Ok(updated)
 }
 
 async fn update_dns_record_impl(
@@ -939,6 +956,7 @@ pub async fn delete_dns_record(
     email: Option<String>,
     zone_id: String,
     record_id: String,
+    notifications: State<'_, NotificationManager>,
 ) -> Result<(), String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     client
@@ -954,6 +972,7 @@ pub async fn delete_dns_record(
         }),
     )
     .await;
+    notifications.ledger().note(&zone_id, &record_id, "delete");
     Ok(())
 }
 
@@ -965,8 +984,23 @@ pub async fn create_bulk_dns_records(
     zone_id: String,
     records: Vec<DNSRecordInput>,
     dryrun: Option<bool>,
+    notifications: State<'_, NotificationManager>,
 ) -> Result<serde_json::Value, String> {
-    create_bulk_dns_records_impl(&storage, api_key, email, zone_id, records, dryrun).await
+    let result =
+        create_bulk_dns_records_impl(&storage, api_key, email, zone_id.clone(), records, dryrun)
+            .await?;
+    if !dryrun.unwrap_or(false) {
+        for id in result
+            .get("created")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|record| record.get("id").and_then(|id| id.as_str()))
+        {
+            notifications.ledger().note(&zone_id, id, "create");
+        }
+    }
+    Ok(result)
 }
 
 async fn create_bulk_dns_records_impl(
@@ -1157,6 +1191,7 @@ pub async fn delete_bulk_dns_records(
     email: Option<String>,
     zone_id: String,
     record_ids: Vec<String>,
+    notifications: State<'_, NotificationManager>,
 ) -> Result<serde_json::Value, String> {
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let result = client
@@ -1172,6 +1207,9 @@ pub async fn delete_bulk_dns_records(
         }),
     )
     .await;
+    for record_id in &record_ids {
+        notifications.ledger().note(&zone_id, record_id, "delete");
+    }
     Ok(result)
 }
 
@@ -1342,6 +1380,18 @@ pub async fn check_dns_propagation(
     domain: String,
     record_type: String,
     extra_resolvers: Option<Vec<String>>,
+    options: Option<bc_topology::PropagationOptions>,
 ) -> Result<bc_topology::PropagationResult, String> {
-    bc_topology::check_propagation(domain, record_type, extra_resolvers).await
+    bc_topology::check_propagation_with_options(
+        domain,
+        record_type,
+        extra_resolvers,
+        options.unwrap_or_default(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn list_propagation_resolvers() -> Vec<bc_topology::PropagationResolverEntry> {
+    bc_topology::propagation_resolver_catalogue().to_vec()
 }

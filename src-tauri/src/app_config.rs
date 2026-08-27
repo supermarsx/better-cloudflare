@@ -681,6 +681,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_notifications_object_round_trips_and_is_replaced_whole() {
+        let directory = TestDir::new();
+        let store = AppConfigStore::new(directory.0.clone());
+        store
+            .update_preferences(fields(&[("theme", json!("dark"))]), no_legacy, deleted)
+            .await
+            .expect("seed a sibling preference");
+
+        // A partial object is accepted: missing sections take their defaults.
+        store
+            .update_preferences(
+                fields(&[(
+                    "notifications",
+                    json!({ "service": { "recordPollMinutes": 30, "paused": true } }),
+                )]),
+                no_legacy,
+                deleted,
+            )
+            .await
+            .expect("partial notifications object");
+        let loaded = store
+            .get_preferences(no_legacy, deleted)
+            .await
+            .expect("read");
+        let notifications = loaded.notifications.clone().expect("notifications stored");
+        assert_eq!(notifications.service.record_poll_minutes, 30);
+        assert!(notifications.service.paused);
+        assert_eq!(
+            notifications.expiry.milestones,
+            vec![90, 60, 30, 14, 7, 3, 1]
+        );
+        assert_eq!(
+            loaded.theme.as_deref(),
+            Some("dark"),
+            "sibling preferences survive a nested write"
+        );
+
+        // The object is replaced, not deep-merged: a later write without
+        // `service.paused` resets it (the UI therefore always sends the full object).
+        store
+            .update_preferences(
+                fields(&[("notifications", json!({ "expiry": { "milestones": [45] } }))]),
+                no_legacy,
+                deleted,
+            )
+            .await
+            .expect("second nested write");
+        let loaded = store
+            .get_preferences(no_legacy, deleted)
+            .await
+            .expect("read");
+        let notifications = loaded.notifications.expect("notifications stored");
+        assert!(
+            !notifications.service.paused,
+            "merge replaces the whole object"
+        );
+        assert_eq!(notifications.service.record_poll_minutes, 15);
+        assert_eq!(notifications.expiry.milestones, vec![45]);
+
+        // The file survives a restart with the typed field intact.
+        let restarted = AppConfigStore::new(directory.0.clone());
+        let again = restarted
+            .get_preferences(no_legacy, deleted)
+            .await
+            .expect("restart read");
+        assert_eq!(again.notifications, Some(notifications));
+    }
+
+    #[tokio::test]
     async fn get_preferences_does_not_write_on_legacy_error() {
         let directory = TestDir::new();
         let store = AppConfigStore::new(directory.0.clone());

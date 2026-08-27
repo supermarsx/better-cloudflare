@@ -7,13 +7,16 @@ mod cloudflare_api;
 mod commands;
 mod crypto;
 mod mcp_server;
+mod notifications;
 mod passkey;
 mod registrar_commands;
 mod session;
+mod startup_guard;
 mod storage;
 
 use crate::app_config::AppConfigStore;
 use crate::mcp_server::McpServerManager;
+use crate::notifications::NotificationManager;
 use crate::passkey::PasskeyManager;
 use crate::session::SessionManager;
 use crate::storage::Storage;
@@ -55,6 +58,7 @@ fn sanitize_category(category: &str) -> &'static str {
     match category {
         "panic" => "runtime-panic",
         "tauri-run-error" => "application-run-error",
+        startup_guard::CRASH_CATEGORY => startup_guard::CRASH_CATEGORY,
         _ => "runtime-failure",
     }
 }
@@ -154,7 +158,19 @@ fn initialize_app<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_data_dir = app.path().app_data_dir()?;
+    let notifications_dir = app_data_dir.join(notifications::STORE_DIRECTORY);
     app.manage(initialize_app_config_at(app_data_dir));
+    // Background notification service: on-disk inbox under app-data, events and
+    // preferences reached through the app handle (both stores are managed above).
+    let notifications = NotificationManager::default();
+    notifications.attach(
+        notifications_dir,
+        notifications::TauriHost::new(app.handle().clone()),
+    );
+    app.manage(notifications);
+    // Fatal native dialog + exit when the window cannot load its page
+    // (e.g. ERR_CONNECTION_REFUSED because the dev server is not running).
+    startup_guard::install(&app.handle().clone());
     Ok(())
 }
 
@@ -163,6 +179,7 @@ fn main() {
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Storage::default())
         .manage(PasskeyManager)
         .manage(McpServerManager::default())
@@ -288,6 +305,7 @@ fn main() {
             commands::delete_bulk_dns_records,
             // DNS Propagation
             commands::check_dns_propagation,
+            commands::list_propagation_resolvers,
             // Session Management
             commands::session_login,
             commands::session_logout,
@@ -312,8 +330,37 @@ fn main() {
             ai_commands::ai_list_presets,
             ai_commands::ai_get_preset,
             ai_commands::ai_export_conversation,
+            // Notifications
+            notifications::notifications_start,
+            notifications::notifications_stop,
+            notifications::notifications_status,
+            notifications::notifications_check_now,
+            notifications::notifications_list,
+            notifications::notifications_unread_count,
+            notifications::notifications_mark_read,
+            notifications::notifications_mark_all_read,
+            notifications::notifications_archive,
+            notifications::notifications_unarchive,
+            notifications::notifications_archive_all_read,
+            notifications::notifications_dismiss,
+            notifications::notifications_clear_archived,
+            notifications::notifications_reconfigure,
+            notifications::notifications_pause,
+            notifications::notifications_resume,
+            notifications::notifications_get_settings,
+            notifications::notifications_update_settings,
+            notifications::notifications_reset_state,
+            notifications::notifications_zone_summary,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+        .map(|app| {
+            app.run(|handle, event| {
+                if let tauri::RunEvent::Exit = event {
+                    // Drop the API token held by the background poller.
+                    handle.state::<NotificationManager>().shutdown();
+                }
+            })
+        });
 
     if run_result.is_err() {
         let record = build_crash_record(unix_timestamp(), "tauri-run-error", None, None, None);
@@ -396,6 +443,42 @@ mod tests {
         assert!(
             app.try_state::<AppConfigStore>().is_some(),
             "the production setup hook must manage AppConfigStore"
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn tauri_setup_attaches_the_notification_manager() {
+        let mut app = tauri::test::mock_builder()
+            .setup(initialize_app)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock application should build");
+        assert!(app.try_state::<NotificationManager>().is_none());
+        app.run_iteration(|_, _| {});
+        let manager = app.state::<NotificationManager>();
+        assert!(
+            manager.is_attached(),
+            "the production setup hook must attach the notification store and host"
+        );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn every_notification_command_is_registered() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        for command in notifications::COMMAND_NAMES {
+            assert!(
+                production.contains(&format!("notifications::{command},")),
+                "{command} must be registered in the invoke handler"
+            );
+        }
+        assert!(
+            production.contains("tauri::RunEvent::Exit"),
+            "app exit must drop the notification service token"
         );
     }
 
