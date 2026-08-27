@@ -401,7 +401,7 @@ dependencies = [
 name = "bc-biometrics"
 version = "0.1.0"
 dependencies = [
- "core-foundation 0.9.4",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "security-framework-sys",
  "serde",
