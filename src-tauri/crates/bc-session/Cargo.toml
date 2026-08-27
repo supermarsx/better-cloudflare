@@ -7,7 +7,17 @@ description = "Session state management: holds decrypted API credentials, shared
 [dependencies]
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
 bc-error = { path = "../bc-error" }
-reqwest = { version = "0.12", features = ["json"] }
+# TLS is pinned to native-tls deliberately. reqwest 0.13 kept the `default-tls`
+# feature name but redefined it from native-tls to rustls + aws-lc, so leaving
+# defaults on would silently relink the binary and swap the trust store. The
+# rest of 0.12's default set is restated by hand for the same reason.
+reqwest = { version = "0.13", default-features = false, features = [
+    "charset",
+    "http2",
+    "system-proxy",
+    "native-tls",
+    "json",
+] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
