@@ -7,6 +7,7 @@
  */
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 import { isDesktop } from "../environment";
+import type { PropagationCheckOptions } from "@/lib/dns/propagation-resolvers";
 import {
   readBoundedResponseText,
   ResponseBodyLimitError,
@@ -1447,6 +1448,7 @@ export class ServerClient {
     recordType: string,
     extraResolvers?: string[],
     signal?: AbortSignal,
+    options?: PropagationCheckOptions,
   ): Promise<unknown> {
     if (isDesktop()) {
       return TauriClient.checkDnsPropagation(
@@ -1454,6 +1456,7 @@ export class ServerClient {
         recordType,
         extraResolvers,
         signal,
+        options,
       );
     }
     // Web mode: hit our server API
@@ -1463,6 +1466,7 @@ export class ServerClient {
         domain,
         record_type: recordType,
         extra_resolvers: extraResolvers,
+        options,
       },
       signal,
     });

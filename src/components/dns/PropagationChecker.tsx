@@ -2,7 +2,8 @@
  * DNS Propagation Checker — queries multiple global resolvers to verify
  * DNS propagation status for a given record.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, Plus, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,16 @@ import {
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
 import { useI18n } from "@/hooks/use-i18n";
 import { formatRequestError } from "@/lib/api/request-error";
+import { usePropagationSettings } from "@/hooks/dns/use-propagation-settings";
+import {
+  isCataloguePropagationResolverId,
+  isResolverIpLiteral,
+  PROPAGATION_RESOLVER_CATALOGUE,
+  PROPAGATION_SETTING_LIMITS,
+  resolvePropagationSettings,
+  type PropagationCheckOptions,
+  type PropagationResolverEntry,
+} from "@/lib/dns/propagation-resolvers";
 import { retainUtf8 } from "./rendererSafety";
 
 export interface PropagationResolverResult {
@@ -33,11 +44,18 @@ export interface PropagationResult {
   record_type: string;
   resolvers: PropagationResolverResult[];
   consistent: boolean;
+  /** Resolvers whose answer set matched the majority answer set. */
+  agreeing: number;
+  /** Threshold (50–100) the `consistent` verdict was judged against. */
+  consensusPercent: number;
   timestamp: string;
   warnings: string[];
 }
 
 const RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS"];
+const WATCH_INTERVAL_OPTIONS = [5, 10, 15, 30, 60, 120, 300];
+const ATTEMPT_OPTIONS = [1, 2, 3];
+const CONSENSUS_OPTIONS = [100, 90, 75, 50];
 export const PROPAGATION_LIMITS = Object.freeze({
   resolvers: 200,
   renderedResolvers: 100,
@@ -57,6 +75,7 @@ interface PropagationCheckerProps {
     recordType: string,
     extraResolvers?: string[],
     signal?: AbortSignal,
+    options?: PropagationCheckOptions,
   ) => Promise<unknown>;
 }
 
@@ -64,6 +83,8 @@ interface PropagationRequestContext {
   domain: string;
   recordType: string;
   receivedAt?: Date;
+  /** Threshold used when the provider omits `consistent` / `agreeing`. */
+  consensusPercent?: number;
 }
 
 class PropagationResponseError extends Error {
@@ -289,15 +310,41 @@ function boundedTopLevelString(
   );
 }
 
-function inferConsistency(resolvers: PropagationResolverResult[]): boolean {
-  const successfulRecords = resolvers
-    .filter((resolver) => !resolver.error && resolver.rcode === "NOERROR")
-    .map((resolver) => [...resolver.records].sort());
-  if (successfulRecords.length === 0) return false;
-  const first = JSON.stringify(successfulRecords[0]);
-  return successfulRecords.every(
-    (records) => JSON.stringify(records) === first,
-  );
+/**
+ * Mirror of the Rust `compute_consensus`: among resolvers that answered
+ * NOERROR without error, find the most common sorted answer set; the check is
+ * consistent when that set covers at least `percent` of the successful
+ * resolvers. At 100 % this is "every successful resolver agrees".
+ */
+/** A resolver counts toward the consensus threshold only when it answered NOERROR without error. */
+function isAnsweringResolver(resolver: PropagationResolverResult): boolean {
+  return !resolver.error && resolver.rcode === "NOERROR";
+}
+
+function countAnsweringResolvers(
+  resolvers: PropagationResolverResult[],
+): number {
+  return resolvers.filter(isAnsweringResolver).length;
+}
+
+function inferConsistency(
+  resolvers: PropagationResolverResult[],
+  percent: number = PROPAGATION_SETTING_LIMITS.consensusPercent.default,
+): { consistent: boolean; agreeing: number } {
+  const counts = new Map<string, number>();
+  let successful = 0;
+  for (const resolver of resolvers) {
+    if (!isAnsweringResolver(resolver)) continue;
+    successful += 1;
+    const key = JSON.stringify([...resolver.records].sort());
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let agreeing = 0;
+  for (const count of counts.values()) {
+    if (count > agreeing) agreeing = count;
+  }
+  if (successful === 0) return { consistent: false, agreeing: 0 };
+  return { consistent: (agreeing / successful) * 100 >= percent, agreeing };
 }
 
 /**
@@ -306,7 +353,12 @@ function inferConsistency(resolvers: PropagationResolverResult[]): boolean {
  */
 export function normalizePropagationResult(
   value: unknown,
-  { domain, recordType, receivedAt = new Date() }: PropagationRequestContext,
+  {
+    domain,
+    recordType,
+    receivedAt = new Date(),
+    consensusPercent: requestedConsensus,
+  }: PropagationRequestContext,
 ): PropagationResult {
   if (!isRecord(value)) {
     throw new PropagationResponseError(
@@ -396,6 +448,14 @@ export function normalizePropagationResult(
     );
   }
 
+  const consensusPercent = Math.round(
+    finiteNonNegativeNumber(value.consensus_percent) ??
+      requestedConsensus ??
+      PROPAGATION_SETTING_LIMITS.consensusPercent.default,
+  );
+  const inferred = inferConsistency(resolvers, consensusPercent);
+  const agreeing = finiteNonNegativeNumber(value.agreeing);
+
   return {
     domain: normalizedDomain,
     record_type: normalizedRecordType,
@@ -403,12 +463,426 @@ export function normalizePropagationResult(
     consistent:
       typeof value.consistent === "boolean"
         ? value.consistent
-        : inferConsistency(resolvers),
+        : inferred.consistent,
+    agreeing:
+      agreeing !== undefined
+        ? Math.min(Math.round(agreeing), resolvers.length)
+        : inferred.agreeing,
+    consensusPercent,
     timestamp: Number.isFinite(parsedTimestamp)
       ? new Date(parsedTimestamp).toISOString()
       : receivedAt.toISOString(),
     warnings: warnings.finish(),
   };
+}
+
+interface PropagationSettingsPanelProps {
+  settings: ReturnType<typeof usePropagationSettings>["settings"];
+  disabled: boolean;
+  onUpdate: ReturnType<typeof usePropagationSettings>["update"];
+  onReset: ReturnType<typeof usePropagationSettings>["reset"];
+}
+
+/** Catalogue rows grouped by provider, keeping catalogue order. */
+const CATALOGUE_BY_PROVIDER: ReadonlyArray<
+  readonly [string, readonly PropagationResolverEntry[]]
+> = (() => {
+  const groups = new Map<string, PropagationResolverEntry[]>();
+  for (const entry of PROPAGATION_RESOLVER_CATALOGUE) {
+    const list = groups.get(entry.provider);
+    if (list) list.push(entry);
+    else groups.set(entry.provider, [entry]);
+  }
+  return Array.from(groups.entries());
+})();
+
+function PropagationSettingsPanel({
+  settings,
+  disabled,
+  onUpdate,
+  onReset,
+}: PropagationSettingsPanelProps) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [customDraft, setCustomDraft] = useState("");
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [timeoutDraft, setTimeoutDraft] = useState(String(settings.timeoutMs));
+  useEffect(() => {
+    setTimeoutDraft(String(settings.timeoutMs));
+  }, [settings.timeoutMs]);
+
+  const enabled = new Set(settings.resolvers);
+  const catalogueTotal = PROPAGATION_RESOLVER_CATALOGUE.length;
+  const limits = PROPAGATION_SETTING_LIMITS;
+  const customCapReached =
+    settings.customResolvers.length >= limits.maxCustomResolvers;
+
+  const toggleResolver = (id: string, checked: boolean) => {
+    const next = new Set(settings.resolvers);
+    if (checked) next.add(id);
+    else next.delete(id);
+    onUpdate({ resolvers: Array.from(next) });
+  };
+
+  const addCustomResolver = () => {
+    const ip = customDraft.trim();
+    if (!ip) return;
+    if (!isResolverIpLiteral(ip)) {
+      setCustomError(
+        t(
+          "Enter a bare IPv4 or IPv6 address (no port, brackets or zone id).",
+          "Enter a bare IPv4 or IPv6 address (no port, brackets or zone id).",
+        ),
+      );
+      return;
+    }
+    if (isCataloguePropagationResolverId(ip)) {
+      setCustomError(
+        t(
+          "That address is already in the catalogue — enable it above instead.",
+          "That address is already in the catalogue — enable it above instead.",
+        ),
+      );
+      return;
+    }
+    if (settings.customResolvers.includes(ip)) {
+      setCustomError(
+        t("That address is already listed.", "That address is already listed."),
+      );
+      return;
+    }
+    if (customCapReached) {
+      setCustomError(
+        t("Up to {{max}} custom resolvers can be added.", {
+          max: limits.maxCustomResolvers,
+          defaultValue: "Up to {{max}} custom resolvers can be added.",
+        }),
+      );
+      return;
+    }
+    onUpdate({ customResolvers: [...settings.customResolvers, ip] });
+    setCustomDraft("");
+    setCustomError(null);
+  };
+
+  const commitTimeout = () => {
+    const parsed = Number.parseInt(timeoutDraft, 10);
+    if (!Number.isFinite(parsed)) {
+      setTimeoutDraft(String(settings.timeoutMs));
+      return;
+    }
+    const next = onUpdate({ timeoutMs: parsed });
+    setTimeoutDraft(String(next.timeoutMs));
+  };
+
+  const segmentGroupClass =
+    "glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed";
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 text-left"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="propagation-settings-body"
+          data-testid="propagation-settings-toggle"
+        >
+          <span className="min-w-0">
+            <CardTitle className="text-sm">
+              {t("Resolver options", "Resolver options")}
+            </CardTitle>
+            <span
+              className="block text-[11px] text-muted-foreground"
+              data-testid="propagation-settings-summary"
+            >
+              {t(
+                "{{enabled}} of {{total}} catalogue entries enabled · {{custom}} custom · {{timeout}} ms · {{attempts}}× · {{percent}}% consensus",
+                {
+                  enabled: settings.resolvers.length,
+                  total: catalogueTotal,
+                  custom: settings.customResolvers.length,
+                  timeout: settings.timeoutMs,
+                  attempts: settings.attempts,
+                  percent: settings.consensusPercent,
+                  defaultValue:
+                    "{{enabled}} of {{total}} catalogue entries enabled · {{custom}} custom · {{timeout}} ms · {{attempts}}× · {{percent}}% consensus",
+                },
+              )}
+            </span>
+          </span>
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+      </CardHeader>
+      {open && (
+        <CardContent
+          id="propagation-settings-body"
+          className="space-y-4"
+          data-testid="propagation-settings-body"
+        >
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label className="text-xs">
+                {t("Public resolvers", "Public resolvers")}
+              </Label>
+              <div className="flex flex-wrap gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={disabled}
+                  onClick={() => onReset()}
+                >
+                  {t("Defaults", "Defaults")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={disabled}
+                  onClick={() =>
+                    onUpdate({
+                      resolvers: PROPAGATION_RESOLVER_CATALOGUE.map(
+                        (r) => r.id,
+                      ),
+                    })
+                  }
+                >
+                  {t("All", "All")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  disabled={disabled}
+                  onClick={() => onUpdate({ resolvers: [] })}
+                >
+                  {t("None", "None")}
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+              {CATALOGUE_BY_PROVIDER.map(([provider, entries]) => (
+                <fieldset
+                  key={provider}
+                  className="min-w-0 rounded-md border px-3 py-2"
+                >
+                  <legend className="px-1 text-[11px] font-medium">
+                    {provider}
+                  </legend>
+                  <div className="space-y-1">
+                    {entries.map((entry) => (
+                      <label
+                        key={entry.id}
+                        className="flex min-w-0 cursor-pointer items-center gap-2 text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          className="checkbox-themed"
+                          checked={enabled.has(entry.id)}
+                          disabled={disabled}
+                          onChange={(e) =>
+                            toggleResolver(entry.id, e.target.checked)
+                          }
+                          data-testid={`propagation-resolver-option-${entry.id}`}
+                        />
+                        <span className="min-w-0 truncate">{entry.label}</span>
+                        <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
+                          {entry.ip}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          {entry.region}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs" htmlFor="propagation-custom-resolver">
+              {t("Custom resolvers", "Custom resolvers")}
+            </Label>
+            <div className="flex flex-wrap gap-2">
+              <Input
+                id="propagation-custom-resolver"
+                value={customDraft}
+                disabled={disabled || customCapReached}
+                onChange={(e) => {
+                  setCustomDraft(e.target.value.slice(0, 64));
+                  if (customError) setCustomError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomResolver();
+                  }
+                }}
+                placeholder="203.0.113.53"
+                className="h-8 w-56 font-mono text-xs"
+                aria-invalid={customError ? true : undefined}
+                aria-describedby={
+                  customError ? "propagation-custom-resolver-error" : undefined
+                }
+                data-testid="propagation-custom-resolver-input"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8"
+                disabled={disabled || customCapReached || !customDraft.trim()}
+                onClick={addCustomResolver}
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                {t("Add", "Add")}
+              </Button>
+            </div>
+            {customError && (
+              <p
+                id="propagation-custom-resolver-error"
+                className="text-[11px] text-destructive"
+                role="alert"
+                data-testid="propagation-custom-resolver-error"
+              >
+                {customError}
+              </p>
+            )}
+            {settings.customResolvers.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {settings.customResolvers.map((ip) => (
+                  <span
+                    key={ip}
+                    className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 font-mono text-[10px]"
+                    data-testid="propagation-custom-resolver-chip"
+                  >
+                    {ip}
+                    <button
+                      type="button"
+                      className="rounded-full text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      disabled={disabled}
+                      aria-label={t("Remove custom resolver {{ip}}", {
+                        ip,
+                        defaultValue: "Remove custom resolver {{ip}}",
+                      })}
+                      onClick={() =>
+                        onUpdate({
+                          customResolvers: settings.customResolvers.filter(
+                            (v) => v !== ip,
+                          ),
+                        })
+                      }
+                    >
+                      <X className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground">
+              {t(
+                "Every enabled resolver, including custom ones, receives the queried hostname.",
+                "Every enabled resolver, including custom ones, receives the queried hostname.",
+              )}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="w-28">
+              <Label className="text-xs" htmlFor="propagation-timeout">
+                {t("Timeout (ms)", "Timeout (ms)")}
+              </Label>
+              <Input
+                id="propagation-timeout"
+                type="number"
+                inputMode="numeric"
+                min={limits.timeoutMs.min}
+                max={limits.timeoutMs.max}
+                step={100}
+                value={timeoutDraft}
+                disabled={disabled}
+                onChange={(e) => setTimeoutDraft(e.target.value)}
+                onBlur={commitTimeout}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitTimeout();
+                  }
+                }}
+                className="h-8 text-xs"
+                data-testid="propagation-timeout-input"
+              />
+            </div>
+            <div>
+              <Label className="text-xs" id="propagation-attempts-label">
+                {t("Attempts", "Attempts")}
+              </Label>
+              <div
+                role="group"
+                aria-labelledby="propagation-attempts-label"
+                className={segmentGroupClass}
+              >
+                {ATTEMPT_OPTIONS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className="ui-segment"
+                    data-active={settings.attempts === n}
+                    aria-pressed={settings.attempts === n}
+                    disabled={disabled}
+                    onClick={() => onUpdate({ attempts: n })}
+                    data-testid={`propagation-attempts-${n}`}
+                  >
+                    {n}×
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs" id="propagation-consensus-label">
+                {t("Consensus", "Consensus")}
+              </Label>
+              <div
+                role="group"
+                aria-labelledby="propagation-consensus-label"
+                className={segmentGroupClass}
+              >
+                {CONSENSUS_OPTIONS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className="ui-segment"
+                    data-active={settings.consensusPercent === p}
+                    aria-pressed={settings.consensusPercent === p}
+                    disabled={disabled}
+                    onClick={() => onUpdate({ consensusPercent: p })}
+                    data-testid={`propagation-consensus-${p}`}
+                  >
+                    {p}%
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {t(
+              "Consensus is the share of answering resolvers that must return the same record set for the check to count as propagated. Timeout and attempts apply per resolver.",
+              "Consensus is the share of answering resolvers that must return the same record set for the check to count as propagated. Timeout and attempts apply per resolver.",
+            )}
+          </p>
+        </CardContent>
+      )}
+    </Card>
+  );
 }
 
 function PropagationCheckerInner({
@@ -431,7 +905,18 @@ function PropagationCheckerInner({
       : null,
   );
   const [watching, setWatching] = useState(false);
-  const [watchInterval, setWatchInterval] = useState(15);
+  const {
+    settings,
+    update: updateSettings,
+    reset: resetSettings,
+  } = usePropagationSettings();
+  const watchInterval = settings.watchIntervalS;
+  const resolved = useMemo(
+    () => resolvePropagationSettings(settings),
+    [settings],
+  );
+  const hasResolvers =
+    resolved.resolverIds.length + resolved.customResolvers.length > 0;
   const watchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const watchGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -446,7 +931,7 @@ function PropagationCheckerInner({
   const check = useCallback(
     async (watchGeneration?: number) => {
       const requestedDomain = domain.trim();
-      if (!requestedDomain) return;
+      if (!requestedDomain || !hasResolvers) return;
       if (
         watchGeneration !== undefined &&
         watchGenerationRef.current !== watchGeneration
@@ -470,13 +955,17 @@ function PropagationCheckerInner({
         const rawResult = await checkDnsPropagation(
           requestedDomain,
           recordType,
-          undefined,
+          resolved.customResolvers.length > 0
+            ? resolved.customResolvers
+            : undefined,
           controller.signal,
+          resolved.options,
         );
         if (!isCurrentRequest()) return;
         const res = normalizePropagationResult(rawResult, {
           domain: requestedDomain,
           recordType,
+          consensusPercent: resolved.options.consensusPercent,
         });
         setResult(res);
         setCheckCount((c) => c + 1);
@@ -517,7 +1006,7 @@ function PropagationCheckerInner({
         }
       }
     },
-    [domain, recordType, checkDnsPropagation],
+    [domain, recordType, checkDnsPropagation, resolved, hasResolvers],
   );
   const latestCheckRef = useRef(check);
   const latestWatchIntervalRef = useRef(watchInterval);
@@ -605,6 +1094,10 @@ function PropagationCheckerInner({
   };
   const visibleResolvers =
     result?.resolvers.slice(0, PROPAGATION_LIMITS.renderedResolvers) ?? [];
+  const watchIntervalOptions = WATCH_INTERVAL_OPTIONS.includes(watchInterval)
+    ? WATCH_INTERVAL_OPTIONS
+    : [...WATCH_INTERVAL_OPTIONS, watchInterval].sort((a, b) => a - b);
+  const canCheck = !watching && !loading && !!domain.trim() && hasResolvers;
 
   return (
     <div className="space-y-4">
@@ -673,7 +1166,7 @@ function PropagationCheckerInner({
               <Button
                 size="sm"
                 onClick={() => void check()}
-                disabled={watching || loading || !domain.trim()}
+                disabled={!canCheck}
               >
                 {loading ? t("Checking…", "Checking…") : t("Check", "Check")}
               </Button>
@@ -684,14 +1177,19 @@ function PropagationCheckerInner({
                   </Label>
                   <Select
                     value={String(watchInterval)}
-                    onValueChange={(v) => setWatchInterval(parseInt(v, 10))}
+                    onValueChange={(v) =>
+                      updateSettings({ watchIntervalS: parseInt(v, 10) })
+                    }
                     disabled={watching}
                   >
-                    <SelectTrigger className="h-8 text-xs">
+                    <SelectTrigger
+                      className="h-8 text-xs"
+                      aria-label={t("Watch interval", "Watch interval")}
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {[10, 15, 30, 60].map((s) => (
+                      {watchIntervalOptions.map((s) => (
                         <SelectItem key={s} value={String(s)}>
                           {s}s
                         </SelectItem>
@@ -703,15 +1201,34 @@ function PropagationCheckerInner({
                   size="sm"
                   variant={watching ? "destructive" : "outline"}
                   onClick={toggleWatch}
-                  disabled={!domain.trim()}
+                  disabled={!domain.trim() || (!watching && !hasResolvers)}
                 >
                   {watching ? t("Stop", "Stop") : t("Watch", "Watch")}
                 </Button>
               </div>
             </div>
           </div>
+          {!hasResolvers && (
+            <p
+              className="mt-2 text-[11px] text-yellow-700 dark:text-yellow-300"
+              data-testid="propagation-no-resolvers"
+              role="status"
+            >
+              {t(
+                "Enable at least one resolver or add a custom one before checking.",
+                "Enable at least one resolver or add a custom one before checking.",
+              )}
+            </p>
+          )}
         </CardContent>
       </Card>
+
+      <PropagationSettingsPanel
+        settings={settings}
+        disabled={watching}
+        onUpdate={updateSettings}
+        onReset={resetSettings}
+      />
 
       {error && (
         <div
@@ -726,7 +1243,7 @@ function PropagationCheckerInner({
             size="sm"
             variant="outline"
             onClick={() => void check()}
-            disabled={watching || loading || !domain.trim()}
+            disabled={!canCheck}
           >
             {t("Retry", "Retry")}
           </Button>
@@ -748,16 +1265,31 @@ function PropagationCheckerInner({
                 className={`h-2 w-2 rounded-full ${result.consistent ? "bg-green-500" : "bg-yellow-500"}`}
               />
               {result.consistent
-                ? t("Fully Propagated", "Fully Propagated")
+                ? result.consensusPercent >= 100
+                  ? t("Fully Propagated", "Fully Propagated")
+                  : t("Propagated (≥ {{percent}}%)", {
+                      percent: result.consensusPercent,
+                      defaultValue: "Propagated (≥ {{percent}}%)",
+                    })
                 : t("Inconsistent", "Inconsistent")}
             </span>
-            <span className="text-xs text-muted-foreground">
-              {t("{{domain}} {{recordType}} — {{count}} resolvers", {
-                domain: result.domain,
-                recordType: result.record_type,
-                count: result.resolvers.length,
-                defaultValue: "{{domain}} {{recordType}} — {{count}} resolvers",
-              })}
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid="propagation-summary"
+            >
+              {t(
+                "{{domain}} {{recordType}} — {{agree}}/{{answered}} answering resolvers agree ({{percent}}% needed) · {{answered}}/{{count}} answered",
+                {
+                  domain: result.domain,
+                  recordType: result.record_type,
+                  agree: result.agreeing,
+                  answered: countAnsweringResolvers(result.resolvers),
+                  count: result.resolvers.length,
+                  percent: result.consensusPercent,
+                  defaultValue:
+                    "{{domain}} {{recordType}} — {{agree}}/{{answered}} answering resolvers agree ({{percent}}% needed) · {{answered}}/{{count}} answered",
+                },
+              )}
             </span>
           </div>
 
@@ -802,7 +1334,7 @@ function PropagationCheckerInner({
                     size="sm"
                     variant="outline"
                     onClick={() => void check()}
-                    disabled={watching || loading || !domain.trim()}
+                    disabled={!canCheck}
                   >
                     {t("Retry", "Retry")}
                   </Button>

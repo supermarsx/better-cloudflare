@@ -1492,26 +1492,231 @@ pub struct PropagationResult {
     pub record_type: String,
     pub results: Vec<PropagationResolverResult>,
     pub consistent: bool,
+    /// The agreement threshold (50..=100) that `consistent` was evaluated against.
+    #[serde(default = "default_consensus_percent")]
+    pub consensus_percent: u8,
+    /// Number of successful resolvers that returned the majority answer set.
+    #[serde(default)]
+    pub agreeing: usize,
+}
+
+fn default_consensus_percent() -> u8 {
+    DEFAULT_PROPAGATION_CONSENSUS_PERCENT
+}
+
+/// One well-known public resolver the propagation checker can query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PropagationResolverEntry {
+    /// Stable identifier (currently identical to `ip`).
+    pub id: &'static str,
+    pub ip: &'static str,
+    pub label: &'static str,
+    pub provider: &'static str,
+    pub region: &'static str,
+    pub default_enabled: bool,
+}
+
+const fn entry(
+    ip: &'static str,
+    label: &'static str,
+    provider: &'static str,
+    region: &'static str,
+    default_enabled: bool,
+) -> PropagationResolverEntry {
+    PropagationResolverEntry {
+        id: ip,
+        ip,
+        label,
+        provider,
+        region,
+        default_enabled,
+    }
 }
 
 /// Well-known public resolvers to check propagation against.
-const PROPAGATION_RESOLVERS: &[(&str, &str)] = &[
-    ("1.1.1.1", "Cloudflare"),
-    ("8.8.8.8", "Google"),
-    ("9.9.9.9", "Quad9"),
-    ("208.67.222.222", "OpenDNS"),
-    ("185.228.168.9", "CleanBrowsing"),
-    ("76.76.19.19", "Alternate DNS"),
-    ("94.140.14.14", "AdGuard"),
-    ("8.26.56.26", "Comodo"),
+///
+/// This is the single source of truth; the TypeScript mirror in
+/// `src/lib/dns/propagation-resolvers.ts` is parity-tested against this block.
+// PROPAGATION_CATALOGUE_BEGIN
+const PROPAGATION_RESOLVER_CATALOGUE: &[PropagationResolverEntry] = &[
+    entry("1.1.1.1", "Cloudflare", "Cloudflare", "Global", true),
+    entry(
+        "1.0.0.1",
+        "Cloudflare (secondary)",
+        "Cloudflare",
+        "Global",
+        false,
+    ),
+    entry("8.8.8.8", "Google", "Google", "Global", true),
+    entry("8.8.4.4", "Google (secondary)", "Google", "Global", false),
+    entry("9.9.9.9", "Quad9", "Quad9", "Global", true),
+    entry(
+        "149.112.112.112",
+        "Quad9 (secondary)",
+        "Quad9",
+        "Global",
+        false,
+    ),
+    entry("208.67.222.222", "OpenDNS", "Cisco OpenDNS", "Global", true),
+    entry(
+        "208.67.220.220",
+        "OpenDNS (secondary)",
+        "Cisco OpenDNS",
+        "Global",
+        false,
+    ),
+    entry(
+        "185.228.168.9",
+        "CleanBrowsing",
+        "CleanBrowsing",
+        "Global",
+        true,
+    ),
+    entry("76.76.19.19", "Alternate DNS", "Alternate DNS", "US", false),
+    entry("94.140.14.14", "AdGuard", "AdGuard", "Global", true),
+    entry("8.26.56.26", "Comodo", "Comodo Secure DNS", "US", true),
+    entry("4.2.2.2", "Level3 / Lumen", "Lumen", "US", true),
+    entry(
+        "64.6.64.6",
+        "Neustar UltraDNS",
+        "Neustar / Vercara",
+        "US",
+        true,
+    ),
+    entry("84.200.69.80", "DNS.WATCH", "DNS.WATCH", "Germany", true),
+    entry("77.88.8.8", "Yandex", "Yandex", "Russia", false),
+    entry(
+        "74.82.42.42",
+        "Hurricane Electric",
+        "Hurricane Electric",
+        "US",
+        true,
+    ),
+    entry("76.76.2.0", "Control D", "Control D", "Global", true),
+    entry("45.90.28.0", "NextDNS", "NextDNS", "Global", false),
+    entry(
+        "156.154.70.1",
+        "Neustar (secondary)",
+        "Neustar / Vercara",
+        "US",
+        false,
+    ),
+    entry(
+        "101.101.101.101",
+        "Quad101 (TWNIC)",
+        "TWNIC",
+        "Taiwan",
+        false,
+    ),
+    entry("114.114.114.114", "114DNS", "114DNS", "China", false),
+    entry("80.80.80.80", "Freenom World", "Freenom", "Global", false),
 ];
+// PROPAGATION_CATALOGUE_END
 
-type ValidatedPropagationRequest = (String, String, Vec<(String, String)>);
+/// The full resolver catalogue, in display order.
+pub fn propagation_resolver_catalogue() -> &'static [PropagationResolverEntry] {
+    PROPAGATION_RESOLVER_CATALOGUE
+}
+
+/// Per-resolver query timeout when none is supplied (the historical fixed value).
+pub const DEFAULT_PROPAGATION_TIMEOUT_MS: u32 = 3_000;
+/// Retry count per resolver when none is supplied.
+pub const DEFAULT_PROPAGATION_ATTEMPTS: u8 = 1;
+/// Agreement threshold when none is supplied (historical rule: all must agree).
+pub const DEFAULT_PROPAGATION_CONSENSUS_PERCENT: u8 = 100;
+
+/// Optional tuning for a propagation check. Every field is optional and
+/// falls back to the historical behaviour; numeric fields are clamped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PropagationOptions {
+    /// Catalogue ids to query. `None` selects every `default_enabled` entry.
+    pub resolvers: Option<Vec<String>>,
+    /// Per-attempt timeout, clamped to `MIN..=MAX_PROPAGATION_TIMEOUT_MS`.
+    pub timeout_ms: Option<u32>,
+    /// Attempts per resolver, clamped to `MIN..=MAX_PROPAGATION_ATTEMPTS`.
+    pub attempts: Option<u8>,
+    /// Percentage of successful resolvers that must agree, clamped to
+    /// `MIN..=MAX_PROPAGATION_CONSENSUS_PERCENT`.
+    pub consensus_percent: Option<u8>,
+}
+
+/// Fully resolved, clamped tuning derived from [`PropagationOptions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedPropagationOptions {
+    pub timeout: Duration,
+    pub attempts: usize,
+    pub consensus_percent: u8,
+}
+
+impl ResolvedPropagationOptions {
+    /// Outer deadline for one resolver: every attempt may use the full
+    /// timeout, plus a fixed grace period for connection setup.
+    pub fn deadline(&self) -> Duration {
+        self.timeout * (self.attempts as u32) + Duration::from_secs(2)
+    }
+}
+
+/// Clamp the numeric knobs of `options` into their supported ranges.
+pub fn clamp_propagation_options(options: &PropagationOptions) -> ResolvedPropagationOptions {
+    let timeout_ms = options
+        .timeout_ms
+        .unwrap_or(DEFAULT_PROPAGATION_TIMEOUT_MS)
+        .clamp(MIN_PROPAGATION_TIMEOUT_MS, MAX_PROPAGATION_TIMEOUT_MS);
+    let attempts = options
+        .attempts
+        .unwrap_or(DEFAULT_PROPAGATION_ATTEMPTS)
+        .clamp(MIN_PROPAGATION_ATTEMPTS, MAX_PROPAGATION_ATTEMPTS);
+    let consensus_percent = options
+        .consensus_percent
+        .unwrap_or(DEFAULT_PROPAGATION_CONSENSUS_PERCENT)
+        .clamp(
+            MIN_PROPAGATION_CONSENSUS_PERCENT,
+            MAX_PROPAGATION_CONSENSUS_PERCENT,
+        );
+    ResolvedPropagationOptions {
+        timeout: Duration::from_millis(u64::from(timeout_ms)),
+        attempts: usize::from(attempts),
+        consensus_percent,
+    }
+}
+
+/// Decide whether the successful results agree at `percent`.
+///
+/// Among results with no error and `NOERROR`, the most common answer set is
+/// the majority; returns `(consistent, agreeing)` where `agreeing` is the
+/// size of that majority. With no successful result nothing is consistent.
+pub fn compute_consensus(results: &[PropagationResolverResult], percent: u8) -> (bool, usize) {
+    // Answers are already deduplicated and sorted by `query_single_resolver`.
+    let successful: Vec<&Vec<String>> = results
+        .iter()
+        .filter(|result| result.error.is_none() && result.rcode == "NOERROR")
+        .map(|result| &result.answers)
+        .collect();
+    if successful.is_empty() {
+        return (false, 0);
+    }
+    let mut counts: HashMap<&Vec<String>, usize> = HashMap::new();
+    for answers in &successful {
+        *counts.entry(answers).or_insert(0) += 1;
+    }
+    let agreeing = counts.values().copied().max().unwrap_or(0);
+    let consistent = agreeing * 100 >= successful.len() * usize::from(percent);
+    (consistent, agreeing)
+}
+
+struct ValidatedPropagationRequest {
+    domain: String,
+    record_type: String,
+    resolvers: Vec<(String, String)>,
+    options: ResolvedPropagationOptions,
+}
 
 fn validate_propagation_request(
     domain: &str,
     record_type: &str,
     extra_resolvers: Option<&[String]>,
+    options: &PropagationOptions,
 ) -> Result<ValidatedPropagationRequest, String> {
     let domain = bounded_domain(domain)
         .ok_or_else(|| format!("domain must contain 1 to {MAX_HOSTNAME_BYTES} UTF-8 bytes"))?;
@@ -1532,14 +1737,40 @@ fn validate_propagation_request(
             extras.len()
         ));
     }
-    let mut resolver_list: Vec<(String, String)> = PROPAGATION_RESOLVERS
-        .iter()
-        .map(|(ip, label)| (ip.to_string(), label.to_string()))
-        .collect();
-    let mut seen: HashSet<String> = resolver_list
-        .iter()
-        .map(|(resolver, _)| resolver.clone())
-        .collect();
+
+    let mut resolver_list: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    match options.resolvers.as_deref() {
+        None => {
+            for entry in PROPAGATION_RESOLVER_CATALOGUE
+                .iter()
+                .filter(|entry| entry.default_enabled)
+            {
+                seen.insert(entry.ip.to_string());
+                resolver_list.push((entry.ip.to_string(), entry.label.to_string()));
+            }
+        }
+        Some(ids) => {
+            if ids.len() > MAX_PROPAGATION_RESOLVERS {
+                return Err(format!(
+                    "resolver selection exceeds the safe {MAX_PROPAGATION_RESOLVERS} item limit (actual: {})",
+                    ids.len()
+                ));
+            }
+            for id in ids {
+                let id = id.trim();
+                let entry = PROPAGATION_RESOLVER_CATALOGUE
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .ok_or_else(|| {
+                        format!("unknown propagation resolver id: {}", bounded_error(id))
+                    })?;
+                if seen.insert(entry.ip.to_string()) {
+                    resolver_list.push((entry.ip.to_string(), entry.label.to_string()));
+                }
+            }
+        }
+    }
     for resolver in extras {
         let resolver = resolver.trim();
         if resolver.len() > MAX_IP_LITERAL_BYTES {
@@ -1555,20 +1786,57 @@ fn validate_propagation_request(
             resolver_list.push((normalized.clone(), format!("Custom ({normalized})")));
         }
     }
-    Ok((domain, record_type, resolver_list))
+    if resolver_list.is_empty() {
+        return Err("select at least one resolver".to_string());
+    }
+    if resolver_list.len() > MAX_PROPAGATION_RESOLVERS {
+        return Err(format!(
+            "resolver count exceeds the safe {MAX_PROPAGATION_RESOLVERS} item limit (actual: {})",
+            resolver_list.len()
+        ));
+    }
+    Ok(ValidatedPropagationRequest {
+        domain,
+        record_type,
+        resolvers: resolver_list,
+        options: clamp_propagation_options(options),
+    })
 }
 
-/// Check DNS propagation across multiple global resolvers.
+/// Check DNS propagation across the default resolver set.
 ///
-/// Queries the given domain for `record_type` against each well-known
-/// public DNS resolver and reports whether results are consistent.
+/// Thin wrapper over [`check_propagation_with_options`] using default options.
 pub async fn check_propagation(
     domain: String,
     record_type: String,
     extra_resolvers: Option<Vec<String>>,
 ) -> Result<PropagationResult, String> {
-    let (domain, record_type, resolver_list) =
-        validate_propagation_request(&domain, &record_type, extra_resolvers.as_deref())?;
+    check_propagation_with_options(
+        domain,
+        record_type,
+        extra_resolvers,
+        PropagationOptions::default(),
+    )
+    .await
+}
+
+/// Check DNS propagation across the selected resolvers.
+///
+/// Queries the given domain for `record_type` against each selected public
+/// DNS resolver plus any custom `extra_resolvers`, and reports whether the
+/// successful answers agree at the configured consensus percentage.
+pub async fn check_propagation_with_options(
+    domain: String,
+    record_type: String,
+    extra_resolvers: Option<Vec<String>>,
+    options: PropagationOptions,
+) -> Result<PropagationResult, String> {
+    let ValidatedPropagationRequest {
+        domain,
+        record_type,
+        resolvers: resolver_list,
+        options,
+    } = validate_propagation_request(&domain, &record_type, extra_resolvers.as_deref(), &options)?;
     let _request_permit = propagation_request_semaphore()
         .clone()
         .try_acquire_owned()
@@ -1585,24 +1853,20 @@ pub async fn check_propagation(
         move |(ip, label): (String, String)| {
             let domain = query_domain.clone();
             let record_type = query_record_type.clone();
-            async move { query_single_resolver(&ip, &label, &domain, &record_type).await }
+            async move { query_single_resolver(&ip, &label, &domain, &record_type, options).await }
         },
     )
     .await;
 
-    // Answers are already deduplicated and sorted by `query_single_resolver`.
-    let mut good_results = results
-        .iter()
-        .filter(|result| result.error.is_none() && result.rcode == "NOERROR");
-    let consistent = good_results
-        .next()
-        .is_some_and(|first| good_results.all(|result| result.answers == first.answers));
+    let (consistent, agreeing) = compute_consensus(&results, options.consensus_percent);
 
     Ok(PropagationResult {
         domain,
         record_type,
         results,
         consistent,
+        consensus_percent: options.consensus_percent,
+        agreeing,
     })
 }
 
@@ -1611,6 +1875,7 @@ async fn query_single_resolver(
     label: &str,
     domain: &str,
     record_type: &str,
+    options: ResolvedPropagationOptions,
 ) -> PropagationResolverResult {
     let start = std::time::Instant::now();
     let parsed_ip: IpAddr = match ip.parse() {
@@ -1628,8 +1893,8 @@ async fn query_single_resolver(
     };
 
     let mut opts = ResolverOpts::default();
-    opts.timeout = Duration::from_secs(3);
-    opts.attempts = 1;
+    opts.timeout = options.timeout;
+    opts.attempts = options.attempts;
     let config =
         ResolverConfig::from_parts(None, vec![], vec![NameServerConfig::udp_and_tcp(parsed_ip)]);
     let resolver = match TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
@@ -1650,7 +1915,7 @@ async fn query_single_resolver(
     };
 
     note_network_start();
-    let timeout_result = tokio::time::timeout(Duration::from_secs(5), async {
+    let timeout_result = tokio::time::timeout(options.deadline(), async {
         match record_type.to_uppercase().as_str() {
             "A" => {
                 let lookup = resolver.ipv4_lookup(domain).await;
@@ -1995,18 +2260,25 @@ mod tests {
         let exact: Vec<String> = (1..=MAX_EXTRA_RESOLVERS)
             .map(|index| format!("192.0.2.{index}"))
             .collect();
-        let validated = validate_propagation_request("example.com", "A", Some(&exact)).unwrap();
+        let defaults = PropagationOptions::default();
+        let validated =
+            validate_propagation_request("example.com", "A", Some(&exact), &defaults).unwrap();
         assert_eq!(
-            validated.2.len(),
-            PROPAGATION_RESOLVERS.len() + MAX_EXTRA_RESOLVERS
+            validated.resolvers.len(),
+            default_propagation_resolver_count() + MAX_EXTRA_RESOLVERS
         );
         let mut oversized = exact;
         oversized.push("198.51.100.1".to_string());
-        assert!(validate_propagation_request("example.com", "A", Some(&oversized)).is_err());
         assert!(
-            validate_propagation_request("example.com", "A", Some(&["not-an-ip".to_string()]))
-                .is_err()
+            validate_propagation_request("example.com", "A", Some(&oversized), &defaults).is_err()
         );
+        assert!(validate_propagation_request(
+            "example.com",
+            "A",
+            Some(&["not-an-ip".to_string()]),
+            &defaults
+        )
+        .is_err());
     }
 
     #[test]
@@ -2164,5 +2436,193 @@ mod tests {
             build_dns_resolver(Some("1.1.1.1"), None, None).expect("build custom DNS resolver");
         assert_eq!(resolver.options().timeout, Duration::from_secs(2));
         assert_eq!(resolver.options().attempts, 1);
+    }
+
+    fn default_propagation_resolver_count() -> usize {
+        PROPAGATION_RESOLVER_CATALOGUE
+            .iter()
+            .filter(|entry| entry.default_enabled)
+            .count()
+    }
+
+    fn synthetic_result(
+        resolver: &str,
+        answers: &[&str],
+        rcode: &str,
+    ) -> PropagationResolverResult {
+        let mut answers: Vec<String> = answers.iter().map(|value| value.to_string()).collect();
+        answers.sort();
+        PropagationResolverResult {
+            resolver: resolver.to_string(),
+            resolver_label: resolver.to_string(),
+            answers,
+            rcode: rcode.to_string(),
+            latency_ms: 1,
+            error: if rcode == "NOERROR" {
+                None
+            } else {
+                Some("failed".to_string())
+            },
+        }
+    }
+
+    #[test]
+    fn propagation_catalogue_has_unique_ids_valid_ips_and_expected_defaults() {
+        let catalogue = propagation_resolver_catalogue();
+        assert_eq!(catalogue.len(), 23);
+        let mut ids = HashSet::new();
+        for entry in catalogue {
+            assert!(ids.insert(entry.id), "duplicate id {}", entry.id);
+            assert_eq!(entry.id, entry.ip);
+            assert!(
+                entry.ip.parse::<IpAddr>().is_ok(),
+                "invalid ip {}",
+                entry.ip
+            );
+            assert!(!entry.label.is_empty() && !entry.provider.is_empty());
+            assert!(!entry.region.is_empty());
+        }
+        assert_eq!(default_propagation_resolver_count(), 12);
+        assert!(default_propagation_resolver_count() <= MAX_PROPAGATION_RESOLVERS);
+        for original in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "9.9.9.9",
+            "208.67.222.222",
+            "185.228.168.9",
+            "94.140.14.14",
+            "8.26.56.26",
+        ] {
+            assert!(
+                catalogue
+                    .iter()
+                    .any(|entry| entry.id == original && entry.default_enabled),
+                "{original} must stay default-enabled"
+            );
+        }
+    }
+
+    #[test]
+    fn propagation_options_clamp_into_supported_ranges_and_default_to_legacy_behaviour() {
+        let defaults = clamp_propagation_options(&PropagationOptions::default());
+        assert_eq!(defaults.timeout, Duration::from_secs(3));
+        assert_eq!(defaults.attempts, 1);
+        assert_eq!(defaults.consensus_percent, 100);
+        assert_eq!(defaults.deadline(), Duration::from_secs(5));
+
+        let low = clamp_propagation_options(&PropagationOptions {
+            resolvers: None,
+            timeout_ms: Some(1),
+            attempts: Some(0),
+            consensus_percent: Some(3),
+        });
+        assert_eq!(low.timeout, Duration::from_millis(500));
+        assert_eq!(low.attempts, 1);
+        assert_eq!(low.consensus_percent, 50);
+
+        let high = clamp_propagation_options(&PropagationOptions {
+            resolvers: None,
+            timeout_ms: Some(u32::MAX),
+            attempts: Some(u8::MAX),
+            consensus_percent: Some(u8::MAX),
+        });
+        assert_eq!(high.timeout, Duration::from_millis(15_000));
+        assert_eq!(high.attempts, 3);
+        assert_eq!(high.consensus_percent, 100);
+        assert_eq!(high.deadline(), Duration::from_millis(47_000));
+    }
+
+    #[test]
+    fn propagation_options_deserialize_camel_case_with_missing_fields() {
+        let parsed: PropagationOptions =
+            serde_json::from_str(r#"{"timeoutMs": 1200, "consensusPercent": 75}"#).unwrap();
+        assert_eq!(parsed.timeout_ms, Some(1200));
+        assert_eq!(parsed.consensus_percent, Some(75));
+        assert_eq!(parsed.attempts, None);
+        assert_eq!(parsed.resolvers, None);
+        let empty: PropagationOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, PropagationOptions::default());
+    }
+
+    #[test]
+    fn consensus_percentage_controls_consistency() {
+        let results = vec![
+            synthetic_result("a", &["192.0.2.1"], "NOERROR"),
+            synthetic_result("b", &["192.0.2.1"], "NOERROR"),
+            synthetic_result("c", &["192.0.2.1"], "NOERROR"),
+            synthetic_result("d", &["192.0.2.9"], "NOERROR"),
+            synthetic_result("e", &[], "TIMEOUT"),
+        ];
+        assert_eq!(compute_consensus(&results, 100), (false, 3));
+        assert_eq!(compute_consensus(&results, 75), (true, 3));
+        assert_eq!(compute_consensus(&results, 50), (true, 3));
+        assert_eq!(compute_consensus(&[], 50), (false, 0));
+        let failures = vec![synthetic_result("e", &[], "SERVFAIL")];
+        assert_eq!(compute_consensus(&failures, 50), (false, 0));
+        let unanimous = vec![
+            synthetic_result("a", &["x", "y"], "NOERROR"),
+            synthetic_result("b", &["y", "x"], "NOERROR"),
+        ];
+        assert_eq!(compute_consensus(&unanimous, 100), (true, 2));
+    }
+
+    #[test]
+    fn resolver_selection_validates_ids_and_rejects_empty_selection() {
+        let selected = PropagationOptions {
+            resolvers: Some(vec![
+                "8.8.8.8".to_string(),
+                "1.1.1.1".to_string(),
+                " 8.8.8.8 ".to_string(),
+            ]),
+            ..PropagationOptions::default()
+        };
+        let validated = validate_propagation_request("example.com", "A", None, &selected).unwrap();
+        assert_eq!(validated.resolvers.len(), 2);
+        assert_eq!(validated.resolvers[0].0, "8.8.8.8");
+        assert_eq!(validated.resolvers[0].1, "Google");
+
+        let unknown = PropagationOptions {
+            resolvers: Some(vec!["203.0.113.7".to_string()]),
+            ..PropagationOptions::default()
+        };
+        assert!(validate_propagation_request("example.com", "A", None, &unknown).is_err());
+
+        let empty = PropagationOptions {
+            resolvers: Some(Vec::new()),
+            ..PropagationOptions::default()
+        };
+        assert!(validate_propagation_request("example.com", "A", None, &empty).is_err());
+        let with_custom = validate_propagation_request(
+            "example.com",
+            "A",
+            Some(&["192.0.2.1".to_string()]),
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(with_custom.resolvers.len(), 1);
+
+        let too_many = PropagationOptions {
+            resolvers: Some(vec!["1.1.1.1".to_string(); MAX_PROPAGATION_RESOLVERS + 1]),
+            ..PropagationOptions::default()
+        };
+        assert!(validate_propagation_request("example.com", "A", None, &too_many).is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unknown_resolver_id_starts_zero_network_work() {
+        TEST_NETWORK_STARTS.store(0, Ordering::SeqCst);
+        let options = PropagationOptions {
+            resolvers: Some(vec!["not-a-catalogue-id".to_string()]),
+            ..PropagationOptions::default()
+        };
+        let result = check_propagation_with_options(
+            "example.com".to_string(),
+            "A".to_string(),
+            None,
+            options,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(TEST_NETWORK_STARTS.load(Ordering::SeqCst), 0);
     }
 }

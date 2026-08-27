@@ -1529,3 +1529,32 @@ async fn existing_models_and_bounded_audit_behavior_still_roundtrip() {
     assert!(entries.len() == MAX_AUDIT_ENTRIES);
     assert!(entries[0]["idx"].as_u64() == Some(5));
 }
+
+#[test]
+fn legacy_preferences_json_without_propagation_keys_still_loads() {
+    let legacy =
+        r#"{"vault_enabled":true,"auto_refresh_interval":60000,"topology_tcp_services":["smtp"]}"#;
+    let loaded: Preferences = serde_json::from_str(legacy).expect("legacy prefs deserialize");
+    assert_eq!(loaded.vault_enabled, Some(true));
+    assert_eq!(loaded.topology_tcp_services, Some(vec!["smtp".to_string()]));
+    assert_eq!(loaded.propagation_resolvers, None);
+    assert_eq!(loaded.propagation_custom_resolvers, None);
+    assert_eq!(loaded.propagation_timeout_ms, None);
+    assert_eq!(loaded.propagation_attempts, None);
+    assert_eq!(loaded.propagation_consensus_percent, None);
+    assert_eq!(loaded.propagation_watch_interval_s, None);
+
+    let with_new = Preferences {
+        propagation_resolvers: Some(vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()]),
+        propagation_custom_resolvers: Some(vec!["192.0.2.1".to_string()]),
+        propagation_timeout_ms: Some(2500),
+        propagation_attempts: Some(2),
+        propagation_consensus_percent: Some(75),
+        propagation_watch_interval_s: Some(30),
+        ..Preferences::default()
+    };
+    let json = serde_json::to_string(&with_new).expect("serialize");
+    assert!(json.contains("\"propagation_consensus_percent\":75"));
+    let round_trip: Preferences = serde_json::from_str(&json).expect("round trip");
+    assert_eq!(round_trip, with_new);
+}

@@ -16,9 +16,15 @@ import {
   PropagationChecker,
 } from "../src/components/dns/PropagationChecker";
 import { utf8ByteLengthUpTo } from "../src/components/dns/rendererSafety";
+import {
+  DEFAULT_PROPAGATION_RESOLVER_IDS,
+  type PropagationCheckOptions,
+} from "../src/lib/dns/propagation-resolvers";
+import { storageManager } from "../src/lib/storage/storage";
 
 afterEach(() => {
   cleanup();
+  storageManager.resetPropagationSettings();
 });
 
 function nativeResult(domain: string, answers: string[] = ["203.0.113.10"]) {
@@ -45,6 +51,7 @@ function renderChecker(
     recordType: string,
     extraResolvers?: string[],
     signal?: AbortSignal,
+    options?: PropagationCheckOptions,
   ) => Promise<unknown>,
 ) {
   return render(
@@ -70,7 +77,10 @@ test("normalizes and renders the populated native propagation response", async (
 
   assert.ok(await screen.findByText("203.0.113.10"));
   assert.ok(screen.getByText("Cloudflare"));
-  assert.match(screen.getByText(/resolvers/).textContent ?? "", /1 resolvers/);
+  assert.match(
+    screen.getByTestId("propagation-summary").textContent ?? "",
+    /1\/1 answering resolvers agree/,
+  );
   assert.equal(screen.queryByRole("alert"), null);
 });
 
@@ -132,7 +142,10 @@ test("renders an empty successful lookup with an explicit retry affordance", asy
   await clickCheck();
 
   assert.ok(await screen.findByText("No resolver results were returned."));
-  assert.match(screen.getByText(/resolvers/).textContent ?? "", /0 resolvers/);
+  assert.match(
+    screen.getByTestId("propagation-summary").textContent ?? "",
+    /0\/0 answering resolvers agree/,
+  );
   assert.ok(screen.getByRole("button", { name: "Retry" }));
 });
 
@@ -476,4 +489,112 @@ test("watch polling is single-flight and stop prevents timers and stale writes",
     globalThis.setInterval = originalSetInterval;
     globalThis.clearInterval = originalClearInterval;
   }
+});
+
+function mixedResults(consistent?: boolean) {
+  const row = (resolver: string, answers: string[]) => ({
+    resolver,
+    resolver_label: resolver,
+    answers,
+    rcode: "NOERROR",
+    latency_ms: 5,
+  });
+  return {
+    domain: "example.com",
+    record_type: "A",
+    results: [
+      row("1.1.1.1", ["192.0.2.1"]),
+      row("8.8.8.8", ["192.0.2.1"]),
+      row("9.9.9.9", ["192.0.2.1"]),
+      row("4.2.2.2", ["192.0.2.9"]),
+      {
+        resolver: "77.88.8.8",
+        resolver_label: "Yandex",
+        rcode: "SERVFAIL",
+        latency_ms: 0,
+        error: "timeout",
+      },
+    ],
+    ...(consistent === undefined ? {} : { consistent }),
+  };
+}
+
+test("infers the consensus verdict from the configured threshold when the provider omits it", () => {
+  const strict = normalizePropagationResult(mixedResults(), {
+    domain: "example.com",
+    recordType: "A",
+  });
+  assert.equal(strict.consistent, false);
+  assert.equal(strict.agreeing, 3);
+  assert.equal(strict.consensusPercent, 100);
+
+  const lenient = normalizePropagationResult(mixedResults(), {
+    domain: "example.com",
+    recordType: "A",
+    consensusPercent: 75,
+  });
+  assert.equal(lenient.consistent, true);
+  assert.equal(lenient.agreeing, 3);
+  assert.equal(lenient.consensusPercent, 75);
+
+  // Provider-supplied fields win over inference.
+  const native = normalizePropagationResult(
+    { ...mixedResults(true), agreeing: 4, consensus_percent: 50 },
+    { domain: "example.com", recordType: "A", consensusPercent: 100 },
+  );
+  assert.equal(native.consistent, true);
+  assert.equal(native.agreeing, 4);
+  assert.equal(native.consensusPercent, 50);
+});
+
+test("passes the persisted resolver selection, custom resolvers and options to the check", async () => {
+  storageManager.setPropagationResolvers(["1.1.1.1", "8.8.8.8"]);
+  storageManager.setPropagationCustomResolvers(["203.0.113.53"]);
+  storageManager.setPropagationTimeoutMs(4000);
+  storageManager.setPropagationAttempts(2);
+  storageManager.setPropagationConsensusPercent(75);
+
+  const calls: Array<{
+    extraResolvers?: string[];
+    options?: PropagationCheckOptions;
+  }> = [];
+  renderChecker(
+    async (_domain, _recordType, extraResolvers, _signal, options) => {
+      calls.push({ extraResolvers, options });
+      return mixedResults();
+    },
+  );
+
+  await clickCheck();
+  await waitFor(() => assert.equal(calls.length, 1));
+  assert.deepEqual(calls[0]?.extraResolvers, ["203.0.113.53"]);
+  assert.deepEqual(calls[0]?.options, {
+    resolvers: ["1.1.1.1", "8.8.8.8"],
+    timeoutMs: 4000,
+    attempts: 2,
+    consensusPercent: 75,
+  });
+
+  // 3 of 4 answering resolvers agree → propagated at the 75 % threshold.
+  assert.ok(await screen.findByText("Propagated (≥ 75%)"));
+  assert.match(
+    screen.getByTestId("propagation-summary").textContent ?? "",
+    /3\/4 answering resolvers agree \(75% needed\) · 4\/5 answered/,
+  );
+});
+
+test("sends the default catalogue selection and no custom resolvers out of the box", async () => {
+  let seen: { extra?: string[]; options?: PropagationCheckOptions } | null =
+    null;
+  renderChecker(async (_d, _r, extra, _s, options) => {
+    seen = { extra, options };
+    return nativeResult("example.com");
+  });
+  await clickCheck();
+  await waitFor(() => assert.ok(seen));
+  assert.equal(seen!.extra, undefined);
+  assert.deepEqual(seen!.options?.resolvers, [
+    ...DEFAULT_PROPAGATION_RESOLVER_IDS,
+  ]);
+  assert.equal(seen!.options?.consensusPercent, 100);
 });

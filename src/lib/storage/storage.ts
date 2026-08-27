@@ -23,6 +23,13 @@ import {
   type StorageLike,
 } from "./storage-util";
 import { generateUUID } from "../utils";
+import {
+  PROPAGATION_SETTING_LIMITS,
+  clampPropagationNumber,
+  normalizeCustomResolvers,
+  normalizeResolverIds,
+  type PropagationSettings,
+} from "../dns/propagation-resolvers";
 import { reportRuntimeError } from "../errors/runtime-reporting";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
@@ -1550,6 +1557,121 @@ export class StorageManager {
     );
   }
 
+  // ── Propagation checker ─────────────────────────────────────────────────
+
+  setPropagationResolvers(ids: string[]): void {
+    const next = normalizeResolverIds(ids);
+    this.data.propagationResolvers = next;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationResolvers: next });
+  }
+
+  getPropagationResolvers(): string[] {
+    return normalizeResolverIds(this.data.propagationResolvers);
+  }
+
+  setPropagationCustomResolvers(ips: string[]): void {
+    const next = normalizeCustomResolvers(ips);
+    this.data.propagationCustomResolvers = next;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationCustomResolvers: next });
+  }
+
+  getPropagationCustomResolvers(): string[] {
+    return normalizeCustomResolvers(this.data.propagationCustomResolvers);
+  }
+
+  setPropagationTimeoutMs(ms: number): void {
+    const clamped = clampPropagationNumber(
+      ms,
+      PROPAGATION_SETTING_LIMITS.timeoutMs,
+    );
+    this.data.propagationTimeoutMs = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationTimeoutMs: clamped });
+  }
+
+  getPropagationTimeoutMs(): number {
+    return clampPropagationNumber(
+      this.data.propagationTimeoutMs,
+      PROPAGATION_SETTING_LIMITS.timeoutMs,
+    );
+  }
+
+  setPropagationAttempts(attempts: number): void {
+    const clamped = clampPropagationNumber(
+      attempts,
+      PROPAGATION_SETTING_LIMITS.attempts,
+    );
+    this.data.propagationAttempts = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationAttempts: clamped });
+  }
+
+  getPropagationAttempts(): number {
+    return clampPropagationNumber(
+      this.data.propagationAttempts,
+      PROPAGATION_SETTING_LIMITS.attempts,
+    );
+  }
+
+  setPropagationConsensusPercent(percent: number): void {
+    const clamped = clampPropagationNumber(
+      percent,
+      PROPAGATION_SETTING_LIMITS.consensusPercent,
+    );
+    this.data.propagationConsensusPercent = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationConsensusPercent: clamped });
+  }
+
+  getPropagationConsensusPercent(): number {
+    return clampPropagationNumber(
+      this.data.propagationConsensusPercent,
+      PROPAGATION_SETTING_LIMITS.consensusPercent,
+    );
+  }
+
+  setPropagationWatchIntervalS(seconds: number): void {
+    const clamped = clampPropagationNumber(
+      seconds,
+      PROPAGATION_SETTING_LIMITS.watchIntervalS,
+    );
+    this.data.propagationWatchIntervalS = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationWatchIntervalS: clamped });
+  }
+
+  getPropagationWatchIntervalS(): number {
+    return clampPropagationNumber(
+      this.data.propagationWatchIntervalS,
+      PROPAGATION_SETTING_LIMITS.watchIntervalS,
+    );
+  }
+
+  getPropagationSettings(): PropagationSettings {
+    return {
+      resolvers: this.getPropagationResolvers(),
+      customResolvers: this.getPropagationCustomResolvers(),
+      timeoutMs: this.getPropagationTimeoutMs(),
+      attempts: this.getPropagationAttempts(),
+      consensusPercent: this.getPropagationConsensusPercent(),
+      watchIntervalS: this.getPropagationWatchIntervalS(),
+    };
+  }
+
+  /** Drop every propagation preference so getters fall back to defaults. */
+  resetPropagationSettings(): void {
+    delete this.data.propagationResolvers;
+    delete this.data.propagationCustomResolvers;
+    delete this.data.propagationTimeoutMs;
+    delete this.data.propagationAttempts;
+    delete this.data.propagationConsensusPercent;
+    delete this.data.propagationWatchIntervalS;
+    this.save();
+    this.dispatchPreferencesChanged({ propagationSettingsReset: true });
+  }
+
   setAuditExportDefaultDocuments(enabled: boolean): void {
     this.data.auditExportDefaultDocuments = enabled;
     this.save();
@@ -1854,6 +1976,12 @@ export class StorageManager {
     delete this.data.auditExportCustomPath;
     delete this.data.auditExportSkipDestinationConfirm;
     delete this.data.domainAuditCategories;
+    delete this.data.propagationResolvers;
+    delete this.data.propagationCustomResolvers;
+    delete this.data.propagationTimeoutMs;
+    delete this.data.propagationAttempts;
+    delete this.data.propagationConsensusPercent;
+    delete this.data.propagationWatchIntervalS;
     delete this.data.sessionSettingsProfiles;
     this.save();
     this.dispatchPreferencesChanged({ settingsCleared: true });

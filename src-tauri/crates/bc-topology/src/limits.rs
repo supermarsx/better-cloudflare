@@ -28,3 +28,13 @@ pub const MAX_ERROR_BYTES: usize = 1024;
 pub const NETWORK_CONCURRENCY: usize = 8;
 pub const MAX_CONCURRENT_TOPOLOGY_REQUESTS: usize = 2;
 pub const MAX_CONCURRENT_PROPAGATION_REQUESTS: usize = 4;
+
+// ── DNS propagation checker tuning ceilings ─────────────────────────────────
+/// Hard ceiling on catalogue selection plus custom resolvers per check.
+pub const MAX_PROPAGATION_RESOLVERS: usize = 64;
+pub const MIN_PROPAGATION_TIMEOUT_MS: u32 = 500;
+pub const MAX_PROPAGATION_TIMEOUT_MS: u32 = 15_000;
+pub const MIN_PROPAGATION_ATTEMPTS: u8 = 1;
+pub const MAX_PROPAGATION_ATTEMPTS: u8 = 3;
+pub const MIN_PROPAGATION_CONSENSUS_PERCENT: u8 = 50;
+pub const MAX_PROPAGATION_CONSENSUS_PERCENT: u8 = 100;

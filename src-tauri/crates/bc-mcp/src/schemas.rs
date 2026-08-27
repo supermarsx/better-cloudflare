@@ -481,9 +481,17 @@ pub fn tool_input_schema(name: &str) -> Value {
                 },
                 "extra_resolvers": {
                     "type": "array",
-                    "description": "Additional DNS resolver IPs to check.",
+                    "description": "Additional custom DNS resolver IPs to query (max 32).",
                     "items": { "type": "string" }
-                }
+                },
+                "resolvers": {
+                    "type": "array",
+                    "description": "Catalogue resolver ids (IP literals such as \"1.1.1.1\") to query. Omit to use the 12 default-enabled resolvers; unknown ids are rejected.",
+                    "items": { "type": "string" }
+                },
+                "timeout_ms": { "type": "integer", "description": "Per-attempt timeout per resolver in milliseconds (clamped 500-15000, default 3000).", "minimum": 500, "maximum": 15000 },
+                "attempts": { "type": "integer", "description": "Attempts per resolver (clamped 1-3, default 1).", "minimum": 1, "maximum": 3 },
+                "consensus_percent": { "type": "integer", "description": "Percentage of successful resolvers that must return the same answers for the result to count as consistent (clamped 50-100, default 100).", "minimum": 50, "maximum": 100 }
             },
             "required": ["domain", "record_type"]
         }),

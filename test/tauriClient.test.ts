@@ -6,6 +6,7 @@ import {
   createPreferenceFailureReporter,
   createSerializedPreferenceWriter,
   getTauriInvokeTimeoutMs,
+  getPropagationInvokeTimeoutMs,
   normalizeTauriInvokeError,
   TauriClient,
   withTauriUiTimeout,
@@ -892,4 +893,20 @@ test("gives unknown native failures a diagnostic ID", () => {
   assert.equal(error.kind, "unknown");
   assert.match(error.message, /undocumented state/);
   assert.match(error.diagnosticId ?? "", /^REQ-[A-Z0-9-]+$/);
+});
+
+test("check_dns_propagation timeout scales with the requested resolver load", () => {
+  assert.equal(getTauriInvokeTimeoutMs("check_dns_propagation"), 60_000);
+  // 12 defaults at 3000 ms × 1 attempt: 2 rounds × 5 s + margin < the floor.
+  assert.equal(getPropagationInvokeTimeoutMs(12), 60_000);
+  // 64 resolvers at the maximum knobs: 8 rounds × 47 s + 5 s = 381 s.
+  assert.equal(
+    getPropagationInvokeTimeoutMs(64, { timeoutMs: 15_000, attempts: 3 }),
+    381_000,
+  );
+  // Out-of-range input is clamped like the native side and never exceeds the cap.
+  assert.equal(
+    getPropagationInvokeTimeoutMs(10_000, { timeoutMs: 999_999, attempts: 99 }),
+    381_000,
+  );
 });

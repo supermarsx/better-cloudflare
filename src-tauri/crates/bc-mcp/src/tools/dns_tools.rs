@@ -27,9 +27,16 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             let domain = get_required_string(args, "domain")?;
             let record_type = get_required_string(args, "record_type")?;
             let extra = get_string_array(args, "extra_resolvers");
-            let result = bc_topology::check_propagation(domain, record_type, extra)
-                .await
-                .map_err(|e| e.to_string())?;
+            let options = bc_topology::PropagationOptions {
+                resolvers: get_string_array(args, "resolvers"),
+                timeout_ms: get_optional_u32(args, "timeout_ms"),
+                attempts: get_optional_u8(args, "attempts"),
+                consensus_percent: get_optional_u8(args, "consensus_percent"),
+            };
+            let result =
+                bc_topology::check_propagation_with_options(domain, record_type, extra, options)
+                    .await
+                    .map_err(|e| e.to_string())?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 

@@ -96,6 +96,13 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   mcpPermissionPolicyVersion?: number;
   sessionSettingsProfiles?: Record<string, BrowserSessionSettingsProfile>;
   auditOverrides?: Record<string, string[]>;
+  /** Propagation checker — catalogue ids (see `src/lib/dns/propagation-resolvers.ts`). */
+  propagationResolvers?: string[];
+  propagationCustomResolvers?: string[];
+  propagationTimeoutMs?: number;
+  propagationAttempts?: number;
+  propagationConsensusPercent?: number;
+  propagationWatchIntervalS?: number;
 }
 
 /**
@@ -285,6 +292,12 @@ const BROWSER_PREFERENCE_SCHEMA = {
   mcpPermissionPolicyVersion: "number",
   sessionSettingsProfiles: "profiles",
   auditOverrides: "string-array-map",
+  propagationResolvers: "strings",
+  propagationCustomResolvers: "strings",
+  propagationTimeoutMs: "number",
+  propagationAttempts: "number",
+  propagationConsensusPercent: "number",
+  propagationWatchIntervalS: "number",
 } as const satisfies Record<keyof BrowserPreferenceData, PreferenceKind>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

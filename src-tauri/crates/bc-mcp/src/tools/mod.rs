@@ -88,7 +88,7 @@ const TOOL_CATALOGUE: &[(&str, &str, &str, &str)] = &[
     ("spf_parse", "Parse SPF record", "Parse an SPF content string into structured mechanisms, qualifiers, and modifiers.", "spf"),
     // ── DNS Tools ───────────────────────────────────────────────────────
     ("dns_validate_record", "Validate DNS record", "Validate a DNS record for correctness (type, name, content, TTL).", "dns"),
-    ("dns_check_propagation", "Check DNS propagation", "Check DNS record propagation across 15+ global resolvers.", "dns"),
+    ("dns_check_propagation", "Check DNS propagation", "Check DNS record propagation across a catalogue of up to 23 public resolvers (12 queried by default) plus optional custom IPs; resolver selection, timeout, attempts, and consensus threshold are configurable.", "dns"),
     ("dns_resolve_topology", "Resolve topology", "Resolve CNAME chains, reverse DNS, and geo-location for hostnames.", "dns"),
     ("dns_parse_csv", "Parse CSV records", "Parse CSV text into partial DNS records for import.", "dns"),
     ("dns_parse_bind", "Parse BIND zone", "Parse a BIND zone file into partial DNS records for import.", "dns"),

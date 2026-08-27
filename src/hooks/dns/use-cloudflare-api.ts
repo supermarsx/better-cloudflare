@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { ServerClient } from "@/lib/api/server-client";
 import type { EmailRoutingRuleInput } from "@/lib/api/tauri-client";
+import type { PropagationCheckOptions } from "@/lib/dns/propagation-resolvers";
 import type { SPFGraph } from "@/lib/dns/spf";
 import type { DNSRecord, Zone, ZoneSetting } from "@/types/dns";
 
@@ -474,6 +475,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
       recordType: string,
       extraResolvers?: string[],
       signal?: AbortSignal,
+      options?: PropagationCheckOptions,
     ) => {
       if (!api) return Promise.reject(new Error("API key not provided"));
       return api.checkDnsPropagation(
@@ -481,6 +483,7 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
         recordType,
         extraResolvers,
         signal,
+        options,
       );
     },
     [api],

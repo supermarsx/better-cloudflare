@@ -341,6 +341,22 @@ pub struct Preferences {
     pub topology_scan_resolution_chain: Option<bool>,
     pub topology_disable_service_discovery: Option<bool>,
     pub topology_tcp_services: Option<Vec<String>>,
+    #[serde(default)]
+    pub propagation_resolvers: Option<Vec<String>>,
+    #[serde(default)]
+    pub propagation_custom_resolvers: Option<Vec<String>>,
+    #[serde(default)]
+    pub propagation_timeout_ms: Option<u32>,
+    #[serde(default)]
+    pub propagation_attempts: Option<u8>,
+    #[serde(default)]
+    pub propagation_consensus_percent: Option<u8>,
+    #[serde(default)]
+    pub propagation_watch_interval_s: Option<u32>,
+    /// Background notification service settings (one nested, versioned object;
+    /// see `bc_notify::NotificationSettings::normalize`).
+    #[serde(default)]
+    pub notifications: Option<bc_notify::NotificationSettings>,
     pub audit_export_folder_preset: Option<String>,
     pub audit_export_custom_path: Option<String>,
     pub audit_export_skip_destination_confirm: Option<bool>,
