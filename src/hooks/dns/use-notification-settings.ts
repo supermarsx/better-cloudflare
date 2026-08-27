@@ -15,11 +15,7 @@ import {
 } from "@/lib/notifications/notification-settings";
 
 export type NotificationSettingsSaveState =
-  | "idle"
-  | "loading"
-  | "saving"
-  | "saved"
-  | "error";
+  "idle" | "loading" | "saving" | "saved" | "error";
 
 export interface UseNotificationSettingsResult {
   settings: NotificationSettings;

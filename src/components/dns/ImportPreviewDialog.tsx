@@ -234,9 +234,9 @@ export function ImportPreviewDialog({
                     selected[idx] &&
                     Boolean(
                       items[idx] &&
-                        items[idx].type &&
-                        items[idx].name &&
-                        items[idx].content,
+                      items[idx].type &&
+                      items[idx].name &&
+                      items[idx].content,
                     ),
                 );
                 onConfirm(toImport, dryRun);

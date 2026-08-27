@@ -400,35 +400,17 @@ type ActionTab =
   | "zone-compare"
   | "reference";
 type TabKind =
-  | "zone"
-  | "settings"
-  | "audit"
-  | "tags"
-  | "registry"
-  | "notifications";
+  "zone" | "settings" | "audit" | "tags" | "registry" | "notifications";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab =
-  | "general"
-  | "columns"
-  | "topology"
-  | "audit"
-  | "mcp"
-  | "profiles";
+  "general" | "columns" | "topology" | "audit" | "mcp" | "profiles";
 type ExportFolderPreset =
-  | "system"
-  | "documents"
-  | "downloads"
-  | "desktop"
-  | "custom";
+  "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyResolverMode = "dns" | "doh";
 type TopologyDohProvider = "google" | "cloudflare" | "quad9" | "custom";
 type TopologyGeoProvider =
-  | "auto"
-  | "ipwhois"
-  | "ipapi_co"
-  | "ip_api"
-  | "internal";
+  "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal";
 type TopologyCopyAction = "mermaid" | "svg" | "png";
 type TopologyExportAction = "mermaid" | "svg" | "png" | "pdf";
 type AuditFilterField = "operation" | "resource" | "timestamp" | "details";
@@ -5244,8 +5226,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       try {
         const text = await file.text();
         const parsed = JSON.parse(text) as
-          | SessionSettingsProfile
-          | { settings?: SessionSettingsProfile };
+          SessionSettingsProfile | { settings?: SessionSettingsProfile };
         const profile =
           parsed && typeof parsed === "object" && "settings" in parsed
             ? (parsed.settings as SessionSettingsProfile | undefined)
@@ -8365,10 +8346,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 ? (item.details.match(
                                     /Original severity: (\w+)/,
                                   )?.[1] as
-                                    | "fail"
-                                    | "warn"
-                                    | "info"
-                                    | undefined)
+                                    "fail" | "warn" | "info" | undefined)
                                 : undefined;
                             const displaySeverity =
                               originalSeverity ?? item.severity;
@@ -9612,9 +9590,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 );
                               }
                               const field = column as
-                                | "timestamp"
-                                | "operation"
-                                | "resource";
+                                "timestamp" | "operation" | "resource";
                               const labels = {
                                 timestamp: t("Timestamp", "Timestamp"),
                                 operation: t("Operation", "Operation"),

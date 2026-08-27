@@ -776,8 +776,7 @@ export function RecordRow({
   useEffect(() => {
     const onChanged = (event: Event) => {
       const detail = (event as CustomEvent).detail as
-        | { zoneId?: string; recordId?: string }
-        | undefined;
+        { zoneId?: string; recordId?: string } | undefined;
       if (!detail?.zoneId) return;
       if (detail.zoneId !== zoneId) return;
       setZoneTags(storageManager.getZoneTags(zoneId));

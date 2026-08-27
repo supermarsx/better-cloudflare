@@ -21,7 +21,7 @@ export function utf8ByteLengthUpTo(
   stopAfterBytes = Number.POSITIVE_INFINITY,
 ): number {
   let bytes = 0;
-  for (let index = 0; index < value.length; ) {
+  for (let index = 0; index < value.length;) {
     const codePoint = value.codePointAt(index) ?? 0xfffd;
     bytes += utf8BytesForCodePoint(codePoint);
     if (bytes > stopAfterBytes) return bytes;

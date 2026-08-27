@@ -333,12 +333,10 @@ test("the records table refresh button has a name, not only a hover title", asyn
 // ── t9: the notifications bell and per-item inbox actions ──────────────────
 
 test("the notifications bell and inbox item actions are announced by name", async () => {
-  const { DnsAppCommandBar } = await import(
-    "../src/components/dns/DnsAppCommandBar"
-  );
-  const { NotificationItem } = await import(
-    "../src/components/dns/NotificationItem"
-  );
+  const { DnsAppCommandBar } =
+    await import("../src/components/dns/DnsAppCommandBar");
+  const { NotificationItem } =
+    await import("../src/components/dns/NotificationItem");
 
   render(
     <DnsAppCommandBar

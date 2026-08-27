@@ -46,7 +46,8 @@ const buttonVariants = cva(
  * custom element, and exposes style variants via `class-variance-authority`.
  */
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+  extends
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean;
 }

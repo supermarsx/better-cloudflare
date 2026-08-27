@@ -294,8 +294,7 @@ export function createPreferenceFailureReporter(
 }
 
 let preferenceWriter:
-  | ReturnType<typeof createSerializedPreferenceWriter>
-  | undefined;
+  ReturnType<typeof createSerializedPreferenceWriter> | undefined;
 
 export interface TauriZone {
   id: string;
@@ -832,11 +831,7 @@ export class TauriClient {
     tcpServicePorts?: number[],
     disableGeoLookups = false,
     geoProvider:
-      | "auto"
-      | "ipwhois"
-      | "ipapi_co"
-      | "ip_api"
-      | "internal" = "auto",
+      "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" = "auto",
     scanResolutionChain = true,
   ): Promise<TopologyBatchResult> {
     return invoke("resolve_topology_batch", {
@@ -1995,11 +1990,7 @@ export interface DomainAuditOptions {
 // ── Biometric types ────────────────────────────────────────────────────────
 
 export type BiometricType =
-  | "touchId"
-  | "faceId"
-  | "windowsHello"
-  | "fingerprint"
-  | "none";
+  "touchId" | "faceId" | "windowsHello" | "fingerprint" | "none";
 
 export interface BiometricStatus {
   available: boolean;

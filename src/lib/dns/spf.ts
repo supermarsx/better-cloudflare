@@ -275,10 +275,7 @@ export type SPFGraph = {
 };
 
 type DNSCacheValue =
-  | string[][]
-  | string[]
-  | { exchange: string; priority: number }[]
-  | Error;
+  string[][] | string[] | { exchange: string; priority: number }[] | Error;
 const dnsCache = new Map<string, DNSCacheValue>();
 
 async function resolveTxtCached(domain: string): Promise<string[][]> {

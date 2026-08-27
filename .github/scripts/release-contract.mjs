@@ -566,7 +566,7 @@ function copyOpenedFile(file, size, source, destination) {
 function writeOpenedFile(destination, contents) {
   const data = Buffer.from(contents);
   return withNewFile(destination, "Staged checksum file", (file) => {
-    for (let offset = 0; offset < data.length; ) {
+    for (let offset = 0; offset < data.length;) {
       const count = writeSync(file, data, offset, data.length - offset);
       if (!count) fail(`Write stalled: ${basename(destination)}.`);
       offset += count;

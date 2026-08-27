@@ -83,8 +83,7 @@ export function usePropagationSettings(): UsePropagationSettingsResult {
     if (typeof window === "undefined") return;
     const onPrefs = (event: Event) => {
       const detail = (event as CustomEvent).detail as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (!detail) return;
       if (!PROPAGATION_PREF_KEYS.some((key) => key in detail)) return;
       setSettings(storageManager.getPropagationSettings());

@@ -9,12 +9,7 @@
 
 /** Supported registrar provider identifiers. */
 export type RegistrarProvider =
-  | "cloudflare"
-  | "porkbun"
-  | "namecheap"
-  | "godaddy"
-  | "google"
-  | "namecom";
+  "cloudflare" | "porkbun" | "namecheap" | "godaddy" | "google" | "namecom";
 
 /** Human-friendly labels for each registrar. */
 export const REGISTRAR_LABELS: Record<RegistrarProvider, string> = {

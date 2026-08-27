@@ -23,12 +23,7 @@ import { NotificationsSettingsService } from "./NotificationsSettingsService";
 import { NotificationsSettingsZones } from "./NotificationsSettingsZones";
 
 export type NotificationsSettingsSection =
-  | "service"
-  | "kinds"
-  | "expiry"
-  | "zones"
-  | "delivery"
-  | "retention";
+  "service" | "kinds" | "expiry" | "zones" | "delivery" | "retention";
 
 const SECTIONS: readonly { id: NotificationsSettingsSection; label: string }[] =
   [

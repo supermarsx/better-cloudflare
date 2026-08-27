@@ -7,11 +7,7 @@
 
 /** Stable action ids, also emitted as `data-record-action` for tests. */
 export type RecordActionId =
-  | "edit"
-  | "copy"
-  | "open-in-browser"
-  | "clone"
-  | "delete";
+  "edit" | "copy" | "open-in-browser" | "clone" | "delete";
 
 export interface RecordAction {
   id: RecordActionId;
