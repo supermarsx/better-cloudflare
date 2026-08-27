@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/supermarsx/better-cloudflare/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/supermarsx/better-cloudflare/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/supermarsx/better-cloudflare?sort=date&display_name=tag&label=release&logo=github&color=e05d44)](https://github.com/supermarsx/better-cloudflare/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?logo=opensourceinitiative&logoColor=white)](license.md)
-[![Docs](https://img.shields.io/badge/docs-read%20the%20guides-8A63D2?logo=markdown&logoColor=white)](docs/index.md)
+[![Docs](https://img.shields.io/badge/docs-read%20the%20guides-8A63D2?logo=markdown&logoColor=white)](https://supermarsx.github.io/better-cloudflare/)
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-17%20crates-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -67,16 +67,17 @@ An optional MCP server speaks JSON-RPC over protocol version `2024-11-05` and bi
 
 ### Elsewhere in the app
 
-| Area              | Behaviour                                                                                                                                                               |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Record tables     | Column visibility per table, with identity columns locked on. Right-click row actions read from the same definitions as the actions menu. Records can carry local tags. |
-| Bulk editing      | TTL, proxy state, delete and export applied across a selection.                                                                                                         |
-| Import and export | JSON, CSV and BIND import, each with a dry-run preview before anything is written.                                                                                      |
-| Workspace         | Workspace tabs reorder by drag or by keyboard. Zone comparison copies missing records in one click.                                                                     |
-| Verification      | Propagation checks run against a spread of public resolvers. The audit log of actions taken in the app is exportable.                                                   |
-| Command line      | `npm run check-spf <domain>` expands a domain's SPF record from the terminal.                                                                                           |
+| Area              | Behaviour                                                                                                                                                                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Record tables     | Column visibility per table, with identity columns locked on. Right-click row actions read from the same definitions as the actions menu. Records can carry local tags.                                                                                                                |
+| Bulk editing      | TTL, proxy state, delete and export applied across a selection.                                                                                                                                                                                                                        |
+| Import and export | JSON, CSV and BIND import, each with a dry-run preview before anything is written.                                                                                                                                                                                                     |
+| Workspace         | Workspace tabs reorder by drag or by keyboard. Zone comparison copies missing records in one click.                                                                                                                                                                                    |
+| Verification      | Propagation checks run against a configurable spread of up to 23 public resolvers plus your own. The audit log of actions taken in the app is exportable.                                                                                                                              |
+| Command line      | `npm run check-spf <domain>` expands a domain's SPF record from the terminal.                                                                                                                                                                                                          |
+| Notifications     | A background monitor (desktop) announces domain expiry milestones and DNS records changed outside the app, with before/after values, in an inbox with read, archive and dismiss actions. Intervals, kinds, milestones, per-zone rules, quiet hours and retention are all configurable. |
 
-Every screen is documented in [Screens and features](docs/screens.md).
+Every screen is documented in [Screens and features](https://supermarsx.github.io/better-cloudflare/screens.html).
 
 ## Getting started
 
@@ -107,6 +108,13 @@ port through `scripts/dev-port.mjs`, following whatever port `next dev` actually
 bound, so a busy `:3000` no longer strands them. Set `PORT` to pin an exact port.
 `CI=true` pins as well, which is what keeps CI fixed.
 
+`npm run tauri dev` is routed to the same launcher as `npm run tauri:dev`. If you
+bypass both — `npx tauri dev`, `cargo tauri dev`, an IDE plugin — Tauri loads the
+static `devUrl` (`:3000`), so a guard (`scripts/tauri-before-dev.mjs`) runs
+first: it joins a dev server of this app already on that port, starts one pinned
+there if the port is free, and otherwise exits with an error instead of opening
+the window on a stranger's server.
+
 There is no package-manager distribution: no Homebrew, Chocolatey, WinGet, Flathub or Snap. Bundles are unsigned and un-notarized, and the Tauri updater is disabled. See [Security](#security).
 
 ## Security
@@ -132,7 +140,7 @@ Browser-context code paths still exist in `src/lib/storage`, because they back t
 - The auto-updater is disabled (`"updater": { "active": false }`), and no code signing or macOS notarization is configured. The bundles are not signed, not notarized and do not update themselves.
 - There is no AI assistant in the UI. Four Rust crates, Tauri commands and a `useAiChat` hook exist as backend groundwork, but no component imports the hook, so nothing is user-reachable.
 
-More detail is in the [security model](docs/security.md).
+More detail is in the [security model](https://supermarsx.github.io/better-cloudflare/security.html).
 
 ## Development
 
@@ -164,12 +172,14 @@ CI (`.github/workflows/ci.yml`) gates release on `ci_contract`, `unit_tests` (ma
 
 ## Documentation
 
-- [Screens and features](docs/screens.md) — all 26 screens, what each one does
-- [Architecture](docs/architecture.md) — the desktop shell, the crate map, how data flows
-- [Security model](docs/security.md) — encryption, storage, and current limits
-- [Design system](docs/design-system.md) — theming and UI conventions
-- [SPF and NAPTR notes](docs/spf-naptr.md)
-- [Documentation hub](docs/index.md)
+The guides are published at **[supermarsx.github.io/better-cloudflare](https://supermarsx.github.io/better-cloudflare/)**, searchable and with every screenshot rendered. The same files live in [`docs/`](docs/) to read in the repository.
+
+- [Screens and features](https://supermarsx.github.io/better-cloudflare/screens.html) — all 26 screens, what each one does
+- [Architecture](https://supermarsx.github.io/better-cloudflare/architecture.html) — the desktop shell, the crate map, how data flows
+- [Security model](https://supermarsx.github.io/better-cloudflare/security.html) — encryption, storage, and current limits
+- [Development](https://supermarsx.github.io/better-cloudflare/development.html) — dev commands, the `node:test` runner, CI gates, screenshots
+- [Design system](https://supermarsx.github.io/better-cloudflare/design-system.html) — theming and UI conventions
+- [SPF and NAPTR notes](https://supermarsx.github.io/better-cloudflare/spf-naptr.html)
 
 ## Contributing
 
