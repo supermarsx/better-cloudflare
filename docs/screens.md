@@ -185,15 +185,25 @@ When the other zone has records yours lacks, a **Copy N missing → current** li
 
 ### Zone topology
 
-![Zone topology graph in light theme, following a CNAME chain from docs.shipwright.test through two hostnames to A and AAAA addresses annotated with country geolocation and a PTR result, with pan, zoom, annotate, copy and export controls above](screenshots/light/zone-topology.png)
+![Zone topology graph in light theme: the zone node fans out to Email and Web area groups, and docs.shipwright.test follows a CNAME chain through two hostnames to A and AAAA addresses annotated with country geolocation and a PTR result, with pan, zoom, annotate, copy and export controls above](screenshots/light/zone-topology.png)
 
-Renders the zone as a graph, following CNAME chains all the way to their terminal addresses. Shown here in the light theme, which suits the Mermaid rendering particularly well.
+Renders the zone as a graph: records are grouped into Web, Email, Infra and Other areas, and CNAME chains are followed all the way to their terminal addresses. The graph fits and centres itself in the viewport when it first renders. Shown here in the light theme, which suits the Mermaid rendering particularly well.
 
 Pan and zoom the viewport, normalise back to 100%, or open **Full window** for a lightbox view. The refresh button re-resolves; **Discover services** probes TCP services on the resolved addresses. Resolution enriches nodes with PTR results and geolocation from the `bc-topology` crate.
 
 **Copy** and **Export** menus offer the Mermaid source, SVG, PNG and PDF — each individually enabled in settings, with file export handled by the Rust backend. A search and filter panel finds nodes by name or record type with a live match count and a clickable result list that reveals the node in the graph. Annotations can be attached to the diagram unless disabled.
 
 The Mermaid output is sanitized before rendering (`sanitizeTopologySvg` in `ZoneTopologyTab.tsx`), since node labels are built from zone data.
+
+A **Full / Email / Services** switch above the controls picks which graph is drawn; the summary header names the active one, and Copy and Export always act on the graph currently shown.
+
+![Email graph in the light theme, full window: the zone node leads to five groups - Inbound mail with two MX hosts labelled by priority, Authentication with the SPF record fanning out to ip4 and include mechanisms plus DKIM selectors and the DMARC policy with its aggregate-report address, Transport & reporting with MTA-STS and TLS-RPT, Client autodiscovery with the autoconfig CNAME and autodiscover SRV resolved to geolocated addresses, and Cloudflare Email Routing with four rules forwarding to destination addresses, the disabled catch-all drawn dashed](screenshots/light/zone-topology-email.png)
+
+The **Email** graph reads the zone's mail story left to right: inbound MX hosts and their resolved addresses, then the authentication records (SPF parsed into its `ip4`, `ip6`, `include`, `a`, `mx` and `redirect` mechanisms with the `all` qualifier and lookup count in the node, DKIM selectors, DMARC policy and report addresses), the transport and reporting policies (MTA-STS, TLS-RPT, BIMI) when present, client autodiscovery names and SRV endpoints, and finally the zone's Cloudflare Email Routing rules with their forward, worker or drop actions. Disabled rules are dashed. A zone with no MX, SPF, DKIM or DMARC records shows an empty-state note in place of the graph.
+
+![Services graph in the dark theme, full window: hostnames grouped into Proxied by Cloudflare and DNS-only origins boxes, each linked by A, AAAA, CNAME and SRV edges to shared address nodes and CNAME targets that chain on to geolocated addresses, and a Workers box where route patterns lead to their scripts](screenshots/dark/zone-topology-services.png)
+
+The **Services** graph leaves mail out and groups the remaining hostnames by how they are delivered: proxied through Cloudflare, served from DNS-only origins, pointed at a recognised third-party platform (CloudFront, Fastly, Vercel, Netlify and the like, one provider node each), or routed to a Worker. Each hostname shows its proxy state and TTL, edges are labelled by record type, an address that several names share appears once, and after **Discover services** the open ports found on an address hang off it (solid for confirmed, dotted for inferred).
 
 ### Domain audit
 
@@ -213,9 +223,11 @@ The panel states its own limitation at the bottom: these are heuristics based on
 
 Query one name across several independent public resolvers at once and see whether they agree.
 
-Enter a **domain**, pick a record **type**, press **Check**. The badge reads **Fully Propagated** or **Inconsistent**, followed by the resolver count. Each resolver gets a row with its address, response code, answer and latency; rows can also report "No records", and failures offer **Retry**.
+Enter a **domain**, pick a record **type**, press **Check**. The badge reads **Fully Propagated** (or **Propagated (≥ N%)** when a lower consensus threshold is set) or **Inconsistent**, followed by how many resolvers agreed out of how many answered; resolvers that timed out or refused the query are listed but do not count toward the threshold. Each resolver gets a row with its address, response code, answer and latency; rows can also report "No records", and failures offer **Retry**.
 
-Set an **interval** (10, 15, 30 or 60 seconds) and press **Watch** to poll until you press **Stop** — useful while waiting out a TTL after a cutover. A footer records the time and sequence number of the last check.
+The collapsible **Resolver options** card below the query chooses what gets asked and how. A catalogue of 23 public resolvers is grouped by provider with the address and region beside each checkbox; 12 are enabled by default (the rest are secondaries, regional or slower resolvers you can opt into), and **Defaults**, **All** and **None** reset the selection in one click. **Custom resolvers** accepts bare IPv4/IPv6 addresses (up to 32) and lists them as removable chips — every enabled resolver, custom ones included, sees the hostname you query. **Timeout** (500–15000 ms) and **Attempts** (1–3) apply per resolver; **Consensus** (100, 90, 75 or 50 %) is the share of answering resolvers that must agree before the check counts as propagated. Everything here persists with your other preferences.
+
+Set an **interval** (5 seconds to 5 minutes) and press **Watch** to poll until you press **Stop** — useful while waiting out a TTL after a cutover. A footer records the time and sequence number of the last check.
 
 ### Analytics
 
@@ -231,6 +243,10 @@ Notices appear when a large result has been downsampled for the chart or when th
 Zone topology is shown above in the light theme; here it is in the default dark theme.
 
 ![Zone topology, dark theme](screenshots/dark/zone-topology.png)
+
+![Email graph, dark theme](screenshots/dark/zone-topology-email.png)
+
+![Services graph, light theme](screenshots/light/zone-topology-services.png)
 
 ![Domain audit, light theme](screenshots/light/domain-audit.png)
 
@@ -337,6 +353,29 @@ Search across entries, cap the row **limit**, and use the one-click presets: Err
 
 The log is persisted by the Rust backend. When the frontend is rendered outside the desktop shell — under the dev server, or in the jsdom tests — the panel simply reads "Audit log is only available in the desktop app."
 
+### Notifications
+
+![Notifications tab with the Inbox view selected: a status line reading last checked, zones and next check, Check now / Mark all read / Archive all read buttons, All / Unread / Archived filters, kind and zone selectors, a search box, and items grouped under Today and Yesterday — a critical domain-expiry notice and a record change showing the before and after value](screenshots/dark/notifications.png)
+
+A **bell** in the command bar carries the unread count and opens the Notifications tab. The desktop backend runs a background monitor while the app is open (and a catch-up pass at login) that watches two things: **domain expiry** — registrar data when a registrar is configured, public RDAP otherwise, announced at configurable milestones (90, 60, 30, 14, 7, 3 and 1 days by default, plus expiry itself) — and **record changes made outside this app**, found by comparing each zone against its last snapshot so the notice can show the old and new value. Edits made from this app are recognised and skipped; edits made through the local MCP server are reported like any other external change.
+
+The **Inbox** groups items by day. Each one shows a severity dot, kind, zone, relative time (full timestamp on hover) and, for record changes, the fields that changed with `before → after`. Per-item actions: **Mark read** / **Mark unread**, **Archive** (kept under the Archived filter, pruned after 90 days by default) or **Unarchive**, **Dismiss** (deletes), and **Go to record**, which opens the zone tab, narrows the table to the record and flashes its row — or **Go to zone** for expiry notices. The header offers **Check now**, **Mark all read** and **Archive all read**; the filters are All / Unread / Archived, kind, zone and free text.
+
+The **Settings** view of the same tab configures everything, in six sections:
+
+| Section   | Controls                                                                                                                                                                                                                                                                         |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Service   | Master switch, Pause / Resume, Run now (records, expiry or both), catch-up on launch, record poll interval (5 min to 24 h), expiry refresh, RDAP cache, max zones per pass, max backoff, a live status block and confirm-gated resets of the expiry ledger, snapshots and inbox. |
+| Kinds     | Per kind (domain expiry, record changes, service): enabled, severity (auto / info / warning / critical), OS notification. Record changes add Added / Changed / Removed toggles and the list of fields that count as a change.                                                    |
+| Expiry    | Editable milestone chips (1–365 days, up to twelve), notify when expired, data source (auto / RDAP / registrar), warning and critical thresholds.                                                                                                                                |
+| Zones     | All zones or only selected, Monitor all / none, and a table with per-zone monitoring, expiry and record-change switches, mute with 1 h / 8 h / 24 h / 7 d quick picks or a custom deadline, last check, snapshot size and last error.                                            |
+| Delivery  | Quiet hours (window, days, time zone, silence or hold), OS notifications (enabled and minimum severity; shown as unavailable in builds without the plugin), in-app toast threshold and the bell badge.                                                                           |
+| Retention | Auto-archive read items after N days or never, delete archived items after N days or never, maximum inbox size, keep record snapshots.                                                                                                                                           |
+
+Switches save immediately; typed values save 400 ms after the last keystroke, are clamped to their allowed range and say so inline. Every change is written as one normalized object, so the Rust service and the panel always agree. **Restore defaults** asks first.
+
+Outside the desktop shell the bell is not rendered and the tab reads "Notifications are only available in the desktop app."
+
 <details>
 <summary>Light theme</summary>
 
@@ -345,6 +384,8 @@ The log is persisted by the Rust backend. When the frontend is rendered outside 
 ![Tag manager, light theme](screenshots/light/tag-manager.png)
 
 ![Audit log, light theme](screenshots/light/audit-log.png)
+
+![Notifications, light theme](screenshots/light/notifications.png)
 
 </details>
 

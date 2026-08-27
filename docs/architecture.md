@@ -75,7 +75,7 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 
 ## Rust workspace
 
-`src-tauri/crates/` holds 17 crates:
+`src-tauri/crates/` holds 18 crates:
 
 | Crate                                                        | Responsibility                                                          |
 | ------------------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -91,6 +91,7 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 | `bc-passkey`                                                 | Passkey storage — registration and auth fail closed                     |
 | `bc-biometrics`                                              | macOS Touch ID; every other platform returns `PlatformNotSupported`     |
 | `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com |
+| `bc-notify`                                                  | Notification monitor: expiry milestones, snapshot diff, inbox store     |
 | `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions           |
 | `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                           |
 
