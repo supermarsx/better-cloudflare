@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
 
 type AuthFailureMode = "invalid" | "provider-object" | "provider-json";
 
@@ -31,6 +32,7 @@ async function installFailingDesktopAuth(
   page: Page,
   initialMode: AuthFailureMode,
 ) {
+  await installTauriEventPluginInternals(page);
   await page.addInitScript(
     ({
       mode,

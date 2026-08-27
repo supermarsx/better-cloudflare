@@ -1,8 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
 
 const nativeSecret = "cf-native-secret-must-not-render";
 
 async function installAuthenticatedDesktop(page: Page) {
+  await installTauriEventPluginInternals(page);
   await page.addInitScript(
     ({ secret }) => {
       type Callback = (...args: unknown[]) => unknown;

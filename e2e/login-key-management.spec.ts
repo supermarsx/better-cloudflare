@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
 
 type RuntimeFailures = {
   console: string[];
@@ -9,6 +10,7 @@ type RuntimeFailures = {
 };
 
 async function installDesktopMock(page: Page, apiKeyCount = 1) {
+  await installTauriEventPluginInternals(page);
   await page.addInitScript((requestedKeyCount) => {
     type Callback = (...args: unknown[]) => unknown;
     type TauriInternals = {
