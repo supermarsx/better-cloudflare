@@ -23,7 +23,11 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./tsconfig.tools.tsbuildinfo",
     "noEmit": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // TypeScript 6 no longer auto-discovers @types/* packages; `types`
+    // now defaults to []. These files are Node programs (scripts/, test/,
+    // e2e/), so the node globals have to be requested by name.
+    "types": ["node"]
   },
   "include": [
     "src/**/*.d.ts",

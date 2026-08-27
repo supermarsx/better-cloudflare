@@ -1,14 +1,23 @@
 type Base64urlString = string;
-type BinaryLike = Base64urlString | ArrayBuffer | Uint8Array | ArrayBufferView;
+// Views are pinned to ArrayBuffer-backed (rather than the ArrayBufferLike
+// default, which also admits SharedArrayBuffer) because the WebAuthn and
+// WebCrypto signatures take BufferSource = ArrayBuffer | ArrayBufferView<ArrayBuffer>.
+type BinaryLike =
+  | Base64urlString
+  | ArrayBuffer
+  | Uint8Array<ArrayBuffer>
+  | ArrayBufferView<ArrayBuffer>;
 
-function base64ToUint8Array(base64: string): Uint8Array {
+function base64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
 
-export function base64urlToUint8Array(data: Base64urlString): Uint8Array {
+export function base64urlToUint8Array(
+  data: Base64urlString,
+): Uint8Array<ArrayBuffer> {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
   return base64ToUint8Array(padded);
@@ -34,9 +43,7 @@ type AuthenticationOptions = PublicKeyCredentialRequestOptions & {
   allowCredentials?: { id: BinaryLike; type: PublicKeyCredentialType }[];
 };
 
-function normalizeBinary(
-  data: BinaryLike,
-): Uint8Array | ArrayBuffer | ArrayBufferView {
+function normalizeBinary(data: BinaryLike): BufferSource {
   if (typeof data === "string") {
     try {
       return base64urlToUint8Array(data);
