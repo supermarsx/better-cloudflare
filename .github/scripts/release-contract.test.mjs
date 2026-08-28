@@ -515,13 +515,64 @@ test("the workflow builds every bundle target the matrix declares", () => {
   assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /matrix\.asset \}\}/);
 });
 
+test("the deb and rpm declare the runtime libraries they need", () => {
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const linux = config.bundle?.linux ?? {};
+
+  // Tauri writes no Depends/Requires at all when these are empty, which yields
+  // packages that install on a minimal system and then fail to launch. That is
+  // the whole point of shipping deb/rpm instead of only the AppImage: they rely
+  // on the system WebKitGTK rather than carrying one.
+  for (const format of ["deb", "rpm"]) {
+    const depends = linux[format]?.depends ?? [];
+    assert.ok(
+      depends.length > 0,
+      `bundle.linux.${format}.depends must not be empty`,
+    );
+    // The webview and TLS are what the binary cannot start without.
+    assert.ok(
+      depends.some((entry) => /webkit2gtk[-.]?4[._]1/.test(entry)),
+      `bundle.linux.${format}.depends must require WebKitGTK 4.1`,
+    );
+    assert.ok(
+      depends.some((entry) => /gtk-?3/.test(entry)),
+      `bundle.linux.${format}.depends must require GTK 3`,
+    );
+    assert.ok(
+      depends.some((entry) => /ssl/.test(entry)),
+      `bundle.linux.${format}.depends must require OpenSSL (reqwest uses native-tls)`,
+    );
+  }
+
+  // Debian and Ubuntu disagree on the t64 names, so those two entries have to
+  // stay alternatives rather than a single hard-coded package.
+  for (const entry of linux.deb.depends) {
+    if (/gtk-?3|ssl/.test(entry)) {
+      assert.match(entry, / \| /, `${entry} must offer a t64 alternative`);
+    }
+  }
+
+  // The app configures no tray icon and enables no tray feature, so declaring
+  // appindicator would force an unused dependency on every user.
+  assert.equal(JSON.stringify(config).includes("trayIcon"), false);
+  for (const format of ["deb", "rpm"]) {
+    for (const entry of linux[format].depends) {
+      assert.doesNotMatch(entry, /appindicator/);
+    }
+  }
+});
+
 test("Flatpak is built from the Debian package on Linux runners only", () => {
   const install = workflowStep("Install Flatpak tooling");
   const build = workflowStep("Build Flatpak bundle");
   for (const step of [install, build]) {
     assert.match(step, /^\s+if: matrix\.flatpak$/m);
   }
-  assert.match(install, /org\.gnome\.Platform\/\/47 org\.gnome\.Sdk\/\/47/);
   assert.match(build, /flatpak-builder/);
   assert.match(build, /flatpak build-bundle/);
   // The bundle must land where the staging step's .flatpak suffix looks.
@@ -535,8 +586,26 @@ test("Flatpak is built from the Debian package on Linux runners only", () => {
     "utf8",
   );
   assert.match(manifest, /^id: com\.bettercloudflare\.app$/m);
-  assert.match(manifest, /^runtime-version: '47'$/m);
   assert.match(manifest, /^command: better-cloudflare$/m);
+
+  // The runtime the workflow installs and the one the manifest builds against
+  // must not drift apart, or the build fails after a ~1 GB download.
+  const manifestRuntime = /^runtime-version: '(\d+)'$/m.exec(manifest)?.[1];
+  assert.ok(manifestRuntime, "manifest must pin a numeric runtime version");
+  const installed = new RegExp(
+    String.raw`org\.gnome\.Platform//(\d+) org\.gnome\.Sdk//(\d+)`,
+  ).exec(install);
+  assert.deepEqual(
+    [installed?.[1], installed?.[2]],
+    [manifestRuntime, manifestRuntime],
+  );
+  // GNOME runtimes are supported for roughly a year, so an old branch means an
+  // unpatched WebKitGTK under an app that handles API tokens. 47 and 48 are
+  // both already end-of-life.
+  assert.ok(
+    Number(manifestRuntime) >= 49,
+    `GNOME runtime ${manifestRuntime} is end-of-life; pin a supported branch`,
+  );
   // A DNS client with no network egress would be inert.
   assert.match(manifest, /--share=network/);
   // Building from the local .deb keeps the sandboxed build offline.

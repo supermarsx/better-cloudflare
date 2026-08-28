@@ -12,7 +12,14 @@ Linux, macOS, and Windows on x64 and arm64.
 
 The Windows portable `.exe` is the unpackaged binary: it runs without
 installation but, unlike the two installers, cannot install the Microsoft Edge
-WebView2 runtime, which must already be present.
+WebView2 runtime, which must already be present. The app checks for that
+runtime before it builds its window and exits with a native error dialog
+naming the download, rather than failing invisibly.
+
+The `.deb` and `.rpm` declare their runtime libraries — WebKitGTK 4.1, GTK 3
+and OpenSSL 3 — so a package manager refuses to install them somewhere they
+could not run. Those packages deliberately rely on the system WebKitGTK, which
+is why they are a fraction of the AppImage's size.
 
 Before publication, the workflow:
 

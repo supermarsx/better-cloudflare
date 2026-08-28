@@ -7,9 +7,17 @@
 # `org.gnome.Platform` provides the WebKitGTK 4.1 stack that Tauri links
 # against, which is why the bundle stays small instead of carrying its own
 # copy of the web engine the way the AppImage does.
+#
+# Pin the current stable GNOME runtime, not the '47' the Tauri guide still
+# shows: GNOME runtimes are supported for roughly a year, so 47 (September
+# 2024) and 48 (March 2025) are both end-of-life. Shipping an EOL runtime
+# would put an unpatched WebKitGTK under an app that handles API tokens.
+# Verified against gnome-build-meta's `elements/sdk-platform.bst` on the
+# `gnome-50` branch, which still includes `sdk/gtk+-3.bst` and
+# `sdk/webkit2gtk-4.1.bst` — the two this app needs.
 id: com.bettercloudflare.app
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: better-cloudflare
 
