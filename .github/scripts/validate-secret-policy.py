@@ -20,8 +20,10 @@ from typing import Any, Iterable
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 POLICY_RELATIVE_PATH = ".github/gitleaks.toml"
+IGNORE_RELATIVE_PATH = ".gitleaksignore"
 POLICY_REVIEW = ".github/RELEASE_SECURITY.md#secret-scanning-allowlist-register"
 POLICY_REVIEW_HEADING = "## Secret scanning allowlist register"
+FINGERPRINT_REVIEW_HEADING = "## Secret scanning fingerprint register"
 POLICY_OWNER = "Better Cloudflare security maintainers"
 POLICY_REVIEW_DEADLINE = dt.date(2026, 10, 30)
 REQUIRED_WORKFLOWS = {"security.yml"}
@@ -72,6 +74,50 @@ APPROVED_RULE_ALLOWLISTS = {
         ],
     },
 }
+
+# Reviewed fingerprint suppressions, held in `.gitleaksignore`.
+#
+# A Gitleaks fingerprint is `<commit>:<path>:<rule>:<line>`, so an entry pins one
+# rule firing on one line of one file in one historical commit. That is narrower
+# than anything expressible in the policy file: it cannot hide the same value in
+# another commit, the same line under another rule, or anything in the working
+# tree.
+#
+# Fingerprints exist only because the push scan reads commit patches and history
+# is immutable - a finding introduced by an old commit cannot be edited away,
+# because the old patch keeps it and the removal line in the new commit is
+# scanned as well. Anything that CAN be fixed at the source must be, so this set
+# is expected to stay tiny. The value records what each entry covers, so a
+# silently repurposed line fails the gate instead of the scan.
+APPROVED_FINGERPRINTS = {
+    (
+        "5972d00ab057c78d95c73e55bc36191777b28916"
+        ":src-tauri/crates/bc-dns-tools/src/import.rs"
+        ":generic-api-key"
+        ":1123"
+    ): (
+        "Fabricated OpenPGP blob on the OPENPGPKEY row of the #[cfg(test)] DNS "
+        "record-type fixture table, as reported by the CI history scan; decodes "
+        "to the packet header 99 02 0d 04 followed by the ASCII text "
+        "dandomKeyDataForTestingOnly"
+    ),
+    (
+        "src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123"
+    ): (
+        "The same fixture row as reported by `gitleaks dir`, which fingerprints "
+        "without a commit. CI never runs dir mode, but leaving the finding "
+        "locally is a trap: the obvious local fix is to edit the value, which "
+        "adds a second history finding instead of clearing the first"
+    ),
+}
+
+# A fingerprint must name a path, a rule and a line number, optionally prefixed
+# by a full commit SHA - `git` mode emits the four-part form and `dir` mode the
+# three-part one. Anything looser - a bare rule id, a truncated SHA, a glob - is
+# rejected, so no entry can grow into a wildcard.
+FINGERPRINT_PATTERN = re.compile(
+    r"^(?:[0-9a-f]{40}:)?[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+:[0-9]+$"
+)
 
 # No allowlist entry may match any of these. They stand in for the real trees
 # that hold credential-shaped strings, so a blanket "ignore anything that looks
@@ -230,6 +276,44 @@ def _validate_allowlists(allowlists: Any) -> set[str]:
     return observed
 
 
+def _validate_fingerprints(ignore_path: Path) -> set[str]:
+    """Refuse to scan unless `.gitleaksignore` is exactly the reviewed set.
+
+    Gitleaks reads this file automatically, so without this check it would be a
+    second, unreviewed suppression channel sitting beside the policy file.
+    """
+    expected_path = REPOSITORY_ROOT / IGNORE_RELATIVE_PATH
+    if ignore_path.resolve() != expected_path.resolve():
+        raise PolicyError(f"ignore file must be exactly {IGNORE_RELATIVE_PATH}")
+    if not ignore_path.is_file():
+        raise PolicyError(f"ignore file does not exist: {ignore_path}")
+
+    observed: set[str] = set()
+    for number, raw in enumerate(
+        ignore_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not FINGERPRINT_PATTERN.match(line):
+            raise PolicyError(
+                f"{IGNORE_RELATIVE_PATH}:{number}: not a "
+                f"<commit>:<path>:<rule>:<line> fingerprint: {line!r}"
+            )
+        if line in observed:
+            raise PolicyError(f"{IGNORE_RELATIVE_PATH}:{number}: duplicate: {line}")
+        if line not in APPROVED_FINGERPRINTS:
+            raise PolicyError(
+                f"{IGNORE_RELATIVE_PATH}:{number}: unapproved fingerprint: {line}"
+            )
+        observed.add(line)
+
+    missing = sorted(set(APPROVED_FINGERPRINTS) - observed)
+    if missing:
+        raise PolicyError(f"reviewed fingerprints are missing: {missing}")
+    return observed
+
+
 def _reject_broad_path(path: str) -> None:
     compiled = _compiled(path, f"allowlist path {path!r}")
     matched = sorted(
@@ -290,6 +374,20 @@ def _validate_review_document(today: dt.date) -> None:
         if f"`{path}`" not in register:
             raise PolicyError(f"the register does not document allowlist path {path}")
 
+    if FINGERPRINT_REVIEW_HEADING not in text:
+        raise PolicyError(f"fingerprint register is absent: {FINGERPRINT_REVIEW_HEADING}")
+    fingerprints = text.partition(FINGERPRINT_REVIEW_HEADING)[2].partition("\n## ")[0]
+    fingerprints = fingerprints.replace("\\|", "|")
+    if POLICY_OWNER not in fingerprints:
+        raise PolicyError("the fingerprint register must name the reviewing owner")
+    if POLICY_REVIEW_DEADLINE.isoformat() not in fingerprints:
+        raise PolicyError("the fingerprint register must record the reviewed expiry")
+    for fingerprint in APPROVED_FINGERPRINTS:
+        if f"`{fingerprint}`" not in fingerprints:
+            raise PolicyError(
+                f"the register does not document fingerprint {fingerprint}"
+            )
+
 
 def _step_block(text: str, needle: str, name: str) -> str:
     matches = list(re.finditer(re.escape(needle), text))
@@ -346,6 +444,7 @@ def validate_workflow_text(name: str, text: str) -> None:
         raise PolicyError(f"{name}: validator step must actively run the validator")
     for argument in (
         f"--config=./{POLICY_RELATIVE_PATH}",
+        f"--ignore-file=./{IGNORE_RELATIVE_PATH}",
         f"--workflow=./.github/workflows/{name}",
     ):
         if len(re.findall(rf"(?m)^\s+{re.escape(argument)}\s*$", validator_step)) != 1:
@@ -375,6 +474,14 @@ def validate_workflow_text(name: str, text: str) -> None:
     for step, label in ((diff_step, "diff scan"), (history_step, "history scan")):
         if len(re.findall(rf"--config={re.escape(POLICY_RELATIVE_PATH)}", step)) != 1:
             raise PolicyError(f"{name}: the {label} must load the reviewed policy")
+        # Gitleaks would find `.gitleaksignore` on its own, but naming it makes
+        # the suppression channel visible in the workflow and pins it to the
+        # reviewed file rather than to whatever the default resolves to.
+        ignore_flag = rf"--gitleaks-ignore-path={re.escape(IGNORE_RELATIVE_PATH)}"
+        if len(re.findall(ignore_flag, step)) != 1:
+            raise PolicyError(
+                f"{name}: the {label} must name the reviewed ignore file"
+            )
         for forbidden in ("--exit-code", "--baseline-path", "--enable-rule"):
             if forbidden in step:
                 raise PolicyError(
@@ -402,16 +509,19 @@ def validate_workflows(workflows: Iterable[Path]) -> None:
 def validate_policy(
     config: Path,
     workflows: Iterable[Path],
+    ignore_file: Path,
     *,
     today: dt.date | None = None,
 ) -> None:
     validate_config(config, today=today)
+    _validate_fingerprints(ignore_file)
     validate_workflows(workflows)
 
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--ignore-file", required=True, type=Path)
     parser.add_argument(
         "--workflow", required=True, action="append", type=Path, dest="workflows"
     )
@@ -421,13 +531,14 @@ def _arguments() -> argparse.Namespace:
 def main() -> int:
     args = _arguments()
     try:
-        validate_policy(args.config, args.workflows)
+        validate_policy(args.config, args.workflows, args.ignore_file)
     except PolicyError as error:
         print(f"Secret scanning policy validation failed: {error}", file=sys.stderr)
         return 1
     print(
         f"Secret scanning policy valid: {len(APPROVED_RULES)} reviewed rules, "
         f"{len(APPROVED_ALLOWLIST_PATHS)} path-scoped allowlist entries, "
+        f"{len(APPROVED_FINGERPRINTS)} reviewed fingerprint suppressions, "
         f"Gitleaks {GITLEAKS_VERSION} pinned by digest"
     )
     return 0

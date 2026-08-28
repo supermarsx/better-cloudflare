@@ -125,10 +125,15 @@ unless:
 - the allowlist path set is exactly the reviewed set below and no entry matches
   any protected canary path under `src/`, `src-tauri/`, `test/`, `docs/`,
   `app/`, `scripts/`, `.github/workflows/` or a dotenv file;
-- the register below still names its owner and its unexpired review date and
-  documents every rule and every allowlist path;
+- every fingerprint in `.gitleaksignore` is well-formed, unique, in the reviewed
+  set below, and documented there — Gitleaks reads that file automatically, so
+  without this check it would be a second, unreviewed suppression channel
+  sitting beside the policy;
+- the registers below still name their owner and their unexpired review date
+  and document every rule, every allowlist path and every fingerprint;
 - the workflow retains the pinned version, the pinned digest, the digest
-  verification, the diff/history split and no `continue-on-error`.
+  verification, the diff/history split, the reviewed ignore-file path and no
+  `continue-on-error`.
 
 ### Secret scanning rule register
 
@@ -185,8 +190,37 @@ and are expected to survive a scan unsuppressed.
 | `^e2e/fixtures/demo-panels\.ts$`    | screenshot fixture | Same harness, same construction. Scoped to this exact file.                                                                                                                                                             |
 | `^\.github/gitleaks\.toml$`         | policy             | The policy necessarily spells out the credential shapes it detects.                                                                                                                                                     |
 
-Verified before the gate was wired in: Gitleaks 8.30.1 with this policy reports
-zero findings against both the full commit history and the working tree.
+### Secret scanning fingerprint register
+
+Owner for every entry: Better Cloudflare security maintainers. Review and
+expiry date for every entry: 2026-10-30.
+
+Entries live in `.gitleaksignore`. A Gitleaks fingerprint is
+`<commit>:<path>:<rule>:<line>` in `git` mode, which is what CI runs, and
+`<path>:<rule>:<line>` in `dir` mode. Either way one entry pins a single rule
+firing on a single line of a single file — and in `git` mode, in a single
+historical commit. That is narrower than anything the policy file can express:
+it cannot hide the same value in another commit, or the same line under another
+rule. The validator rejects any entry that is not exactly one of those two
+shapes, so an entry cannot be widened into a glob.
+
+Fingerprints exist only because the push scan reads commit patches and history
+is immutable. A finding introduced by an old commit cannot be edited away: the
+old patch still contains the value, and the removal line in the new commit is
+itself scanned, which adds a second finding instead of clearing the first.
+Anything that _can_ be fixed at the source must be fixed there instead, so this
+register is expected to stay near-empty.
+
+| Fingerprint                                                                                                 | Class        | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `5972d00ab057c78d95c73e55bc36191777b28916:src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123` | test fixture | The OPENPGPKEY row of the `#[cfg(test)]` DNS record-type fixture table, beside the DNSKEY, DS, SMIMEA and TLSA fixtures. The value is a fabricated OpenPGP public-key blob: it decodes to the packet header `99 02 0d 04` — which is why every real key block starts `mQINB` — followed by the ASCII text `dandomKeyDataForTestingOnly`. It holds no key material and never did; upstream `generic-api-key` fires only because a quoted base64 blob measures 4.7 bits of entropy. Not path-allowlisted, because `import.rs` is production parser source and a path entry would blind every rule to that whole file. This is the entry that makes CI pass. |
+| `src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123`                                          | test fixture | The same fixture row, as fingerprinted by `gitleaks dir`. CI never runs `dir` mode, so this entry is not needed for the gate; it keeps a local working-tree run clean so that a developer is not met by a finding whose obvious fix — editing the value — is the one change that makes CI worse rather than better.                                                                                                                                                                                                                                                                                                                                       |
+
+Verified with Gitleaks 8.30.1: with this policy and this fingerprint register
+the scan reports zero findings against both the full commit history and the
+working tree. Verified to still have teeth: reintroducing the identical value in
+a new commit is reported, because that is a different commit and therefore a
+different fingerprint.
 
 ## Explicit residual controls
 

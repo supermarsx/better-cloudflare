@@ -1,0 +1,51 @@
+# Reviewed Gitleaks fingerprint suppressions.
+#
+# Register and rationale:
+#   .github/RELEASE_SECURITY.md#secret-scanning-fingerprint-register
+# Fail-closed validator:
+#   .github/scripts/validate-secret-policy.py
+#
+# Each line is a Gitleaks fingerprint, `<commit>:<path>:<rule>:<line>`. A
+# fingerprint pins one rule firing on one line of one file in one historical
+# commit, so it is the narrowest suppression Gitleaks offers: it cannot hide the
+# same value in any other commit, the same line under any other rule, or
+# anything at all in the working tree. The same value reintroduced by a new
+# commit is still reported, because that is a different commit and therefore a
+# different fingerprint. This was verified, not assumed.
+#
+# This file exists because the full-history scan (`gitleaks git .`, run on push)
+# reads commit patches, and history is immutable. A finding introduced by an old
+# commit cannot be cleared by editing the value today: the old patch still
+# contains it, and the new commit's own removal line is scanned too, which adds
+# a second finding rather than removing the first. Rewriting published history
+# is not an option, so a fingerprint is the only narrow remedy.
+#
+# Do not append to this file casually. The validator above rejects any entry
+# that is not in its reviewed set and not documented in the register, so a new
+# suppression fails the build until it has been reviewed and written down.
+#
+# ---------------------------------------------------------------------------
+#
+# `generic-api-key` on the OPENPGPKEY row of the DNS record-type fixture table
+# in `bc-dns-tools`. The table drives the record-type validation tests and lives
+# inside `#[cfg(test)]`, next to the DNSKEY, DS, SMIMEA and TLSA fixtures.
+#
+# The value is a fabricated OpenPGP public-key blob. It decodes to the four
+# bytes `99 02 0d 04` - the standard OpenPGP public-key packet header that makes
+# every real key block start with `mQINB` - followed by the ASCII text
+# `dandomKeyDataForTestingOnly`. It carries no key material, is not a
+# credential, and never was one; it is a shape the OPENPGPKEY parser must
+# accept. Upstream's `generic-api-key` fires on it purely because a base64 blob
+# in quotes measures 4.7 bits of entropy.
+#
+# It is suppressed rather than rewritten because rewriting cannot work (see
+# above), and it is not path-allowlisted because `import.rs` is production
+# parser source: a path entry would blind every rule to that whole file forever.
+#
+# Two entries, one finding. `gitleaks git` (what CI runs) fingerprints with the
+# commit; `gitleaks dir` fingerprints without one. Only the first is needed to
+# make CI pass. The second keeps a local `gitleaks dir` run clean as well, so a
+# developer is not met by a finding whose obvious fix - editing the value - is
+# the one change that makes CI worse rather than better.
+5972d00ab057c78d95c73e55bc36191777b28916:src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123
+src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123

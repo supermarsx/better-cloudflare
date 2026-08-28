@@ -16,9 +16,18 @@ POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 ROOT = SCRIPT.resolve().parents[2]
 CONFIG = ROOT / ".github/gitleaks.toml"
+IGNORE = ROOT / ".gitleaksignore"
 REGISTER = ROOT / ".github/RELEASE_SECURITY.md"
 WORKFLOW = ROOT / ".github/workflows/security.yml"
 TODAY = dt.date(2026, 7, 30)
+
+# The reviewed history-scan fingerprint, reused by the tests below.
+FIXTURE_FINGERPRINT = (
+    "5972d00ab057c78d95c73e55bc36191777b28916"
+    ":src-tauri/crates/bc-dns-tools/src/import.rs"
+    ":generic-api-key"
+    ":1123"
+)
 
 
 class SecretPolicyContractTests(unittest.TestCase):
@@ -43,8 +52,103 @@ class SecretPolicyContractTests(unittest.TestCase):
             finally:
                 POLICY.REPOSITORY_ROOT = original_root
 
+    def _reject_ignore(self, mutated_ignore: str, expected: str) -> None:
+        """Validate a mutated ignore file in an isolated tree."""
+        original_root = POLICY.REPOSITORY_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".gitleaksignore").write_text(mutated_ignore, encoding="utf-8")
+            POLICY.REPOSITORY_ROOT = root
+            try:
+                with self.assertRaisesRegex(POLICY.PolicyError, expected):
+                    POLICY._validate_fingerprints(root / ".gitleaksignore")
+            finally:
+                POLICY.REPOSITORY_ROOT = original_root
+
     def test_repository_policy_is_valid(self) -> None:
-        POLICY.validate_policy(CONFIG, [WORKFLOW], today=TODAY)
+        POLICY.validate_policy(CONFIG, [WORKFLOW], IGNORE, today=TODAY)
+
+    def test_repository_ignore_file_is_exactly_the_reviewed_set(self) -> None:
+        self.assertEqual(
+            POLICY._validate_fingerprints(IGNORE),
+            set(POLICY.APPROVED_FINGERPRINTS),
+        )
+
+    def test_ignore_file_must_live_at_the_reviewed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "gitleaksignore-copy"
+            copy.write_text(IGNORE.read_text(encoding="utf-8"), encoding="utf-8")
+            with self.assertRaisesRegex(POLICY.PolicyError, "must be exactly"):
+                POLICY._validate_fingerprints(copy)
+
+    def test_missing_ignore_file_fails_closed(self) -> None:
+        original_root = POLICY.REPOSITORY_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            POLICY.REPOSITORY_ROOT = root
+            try:
+                with self.assertRaisesRegex(POLICY.PolicyError, "does not exist"):
+                    POLICY._validate_fingerprints(root / ".gitleaksignore")
+            finally:
+                POLICY.REPOSITORY_ROOT = original_root
+
+    def test_unapproved_fingerprint_fails(self) -> None:
+        source = IGNORE.read_text(encoding="utf-8")
+        extra = "0" * 40 + ":src/lib/storage/storage.ts:generic-api-key:12"
+        self._reject_ignore(f"{source}{extra}\n", "unapproved fingerprint")
+
+    def test_widened_fingerprint_fails(self) -> None:
+        """A suppression may not be broadened into a path or rule wildcard."""
+        for widened in (
+            "src-tauri/crates/bc-dns-tools/src/import.rs",
+            "src-tauri/crates/bc-dns-tools/src/*:generic-api-key:1123",
+            "generic-api-key",
+            "5972d00:src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123",
+        ):
+            with self.subTest(widened=widened):
+                self._reject_ignore(f"{widened}\n", "fingerprint")
+
+    def test_dropping_a_reviewed_fingerprint_fails(self) -> None:
+        self._reject_ignore("# nothing here\n", "reviewed fingerprints are missing")
+
+    def test_duplicate_fingerprint_fails(self) -> None:
+        source = IGNORE.read_text(encoding="utf-8")
+        self._reject_ignore(f"{source}{FIXTURE_FINGERPRINT}\n", "duplicate")
+
+    def test_register_must_document_every_fingerprint(self) -> None:
+        original_root = POLICY.REPOSITORY_ROOT
+        source = REGISTER.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").mkdir()
+            (root / ".github/gitleaks.toml").write_text(
+                CONFIG.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (root / ".github/RELEASE_SECURITY.md").write_text(
+                source.replace(FIXTURE_FINGERPRINT, "undocumented", 1),
+                encoding="utf-8",
+            )
+            POLICY.REPOSITORY_ROOT = root
+            try:
+                with self.assertRaisesRegex(
+                    POLICY.PolicyError, "does not document fingerprint"
+                ):
+                    POLICY.validate_config(
+                        root / ".github/gitleaks.toml", today=TODAY
+                    )
+            finally:
+                POLICY.REPOSITORY_ROOT = original_root
+
+    def test_scans_must_name_the_reviewed_ignore_file(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        stripped = workflow.replace(
+            "            --gitleaks-ignore-path=.gitleaksignore \\\n", "", 1
+        )
+        self.assertNotEqual(stripped, workflow)
+        with self.assertRaisesRegex(
+            POLICY.PolicyError, "must name the reviewed ignore file"
+        ):
+            POLICY.validate_workflow_text("security.yml", stripped)
 
     def test_policy_must_live_at_the_reviewed_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -170,11 +274,17 @@ class SecretPolicyContractTests(unittest.TestCase):
 
     def test_history_scan_must_not_be_range_limited(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        limited = workflow.replace(
-            "            --config=.github/gitleaks.toml \\\n            --redact \\",
+        anchor = (
             "            --config=.github/gitleaks.toml \\\n"
-            '            --log-opts="HEAD~1..HEAD" \\\n'
-            "            --redact \\",
+            "            --gitleaks-ignore-path=.gitleaksignore \\\n"
+            "            --redact \\"
+        )
+        limited = workflow.replace(
+            anchor,
+            anchor.replace(
+                "            --redact \\",
+                '            --log-opts="HEAD~1..HEAD" \\\n            --redact \\',
+            ),
             1,
         )
         self.assertNotEqual(limited, workflow)
