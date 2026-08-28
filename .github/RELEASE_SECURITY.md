@@ -76,6 +76,13 @@ backend crates, so that whole stack — along with `async-fs`, `nix`,
 lockfile. The validator's `keyring` floor exists to stop a downgrade from
 resurrecting them.
 
+Note that membership of the validator's `MINIMUM_VERSIONS` table is also a
+_presence_ requirement, not only a lower bound: a package listed there must
+appear in the lockfile at or above its floor. Removing the `keyring`
+dependency from `bc-storage` altogether would therefore fail the gate until the
+floor is removed in the same change. This matches how the `openssl` and
+`serde_with` floors already behave, but it is a new constraint on `bc-storage`.
+
 ### OSV exception register
 
 Owner for every entry: Better Cloudflare security maintainers. Review and
