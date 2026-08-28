@@ -803,6 +803,56 @@ function removeEntryIfUnchanged(entry: IndexedCacheEntry): void {
   }
 }
 
+/**
+ * The writer that produced a mutation token.
+ *
+ * `nextMutationToken` builds `<cachedAt>:<CACHE_OWNER_ID>:<sequence>`, so the
+ * middle field identifies the tab. Legacy entries carry an empty token and all
+ * compare as the same (empty) owner, which is the right answer for them: they
+ * have no sequence to order by either.
+ */
+function mutationTokenOwner(mutationToken: string): string {
+  const tokenOwner = mutationToken.split(":")[1];
+  return tokenOwner === undefined ? "" : tokenOwner;
+}
+
+/**
+ * Total order over recovery candidates that share a `cachedAt`.
+ *
+ * Two tabs writing in the same millisecond is ordinary — `cachedAt` is a
+ * millisecond clock and a zone refresh fans out. Falling straight through to
+ * the mutation token made the writer's `CACHE_OWNER_ID`, a `crypto.randomUUID()`
+ * drawn at module load, the deciding field: identical stored bytes recovered in
+ * a different order on every run, and eviction picked a different victim.
+ *
+ * Within one writer the token's trailing sequence is real information, so it
+ * still decides. Across writers there is no meaningful ordering between two
+ * random UUIDs, so `zoneId` — stable, and visible to the caller — decides
+ * instead. `key` is the final discriminator, leaving no pair unordered.
+ */
+function compareRecoveryCandidates(
+  left: IndexedCacheEntry,
+  right: IndexedCacheEntry,
+): number {
+  const ageDelta = left.value.cachedAt - right.value.cachedAt;
+  if (ageDelta !== 0) return ageDelta;
+  if (
+    mutationTokenOwner(left.mutationToken) ===
+    mutationTokenOwner(right.mutationToken)
+  ) {
+    return (
+      left.mutationToken.localeCompare(right.mutationToken) ||
+      left.zoneId.localeCompare(right.zoneId) ||
+      left.key.localeCompare(right.key)
+    );
+  }
+  return (
+    left.zoneId.localeCompare(right.zoneId) ||
+    left.mutationToken.localeCompare(right.mutationToken) ||
+    left.key.localeCompare(right.key)
+  );
+}
+
 function retainRecoveryCandidate(
   state: CacheRecoveryState,
   entry: IndexedCacheEntry,
@@ -911,12 +961,7 @@ function continueRecovery(): IndexedCacheEntry[] | undefined {
 
   const ordered = [...state.candidates.values()]
     .filter((entry) => localStorage.getItem(entry.key) === entry.raw)
-    .sort(
-      (left, right) =>
-        left.value.cachedAt - right.value.cachedAt ||
-        left.mutationToken.localeCompare(right.mutationToken) ||
-        left.zoneId.localeCompare(right.zoneId),
-    );
+    .sort(compareRecoveryCandidates);
   const { retained, evicted } = entriesWithinLimits(ordered);
   for (const entry of evicted) removeEntryIfUnchanged(entry);
   const indexWrite = prepareCacheIndex(

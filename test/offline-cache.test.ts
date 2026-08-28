@@ -15,7 +15,10 @@ import {
   resetRuntimeReportingForTests,
 } from "../src/lib/errors/runtime-reporting";
 
+type OfflineCacheModule = typeof import("../src/lib/storage/offline-cache");
+
 const CACHE_KEY_PREFIX = "bc_offline_cache_";
+const CACHE_ENTRY_KEY_PREFIX = `${CACHE_KEY_PREFIX}entry_v1_`;
 const CACHE_INDEX_KEY = "bc_offline_cache_index";
 const CACHE_COORDINATION_KEY = "bc_offline_cache_coordination";
 
@@ -341,48 +344,156 @@ test("recovers a malformed index within byte limits and removes corrupt owned ke
   );
 });
 
-test("reconciles a deterministic stale-index interleaving from a second module instance", async () => {
-  const secondTab = (await import(
-    new URL("../src/lib/storage/offline-cache.ts?second-tab", import.meta.url)
-      .href
-  )) as typeof import("../src/lib/storage/offline-cache");
-  assert.notEqual(secondTab.cacheZoneRecords, cacheZoneRecords);
+/**
+ * Rebuild the index from two entries that share a `cachedAt` but were written
+ * by two different module instances, and report the order recovery settles on.
+ *
+ * `owners` is the `CACHE_OWNER_ID` each zone's mutation token carries, in
+ * `[zone-alpha, zone-beta]` order. Real owner IDs are `crypto.randomUUID()`
+ * values, so their relative order is whatever the two tabs happened to draw.
+ * Passing the two permutations asks the comparator the same question twice with
+ * only that draw reversed: a total order answers identically both times.
+ */
+function recoverEqualTimestampOrder(
+  owners: readonly [string, string],
+): string[] {
+  clearOfflineCache();
+  const cachedAt = 1_700_000_000_000;
+  const zoneIds = ["zone-alpha", "zone-beta"] as const;
+  zoneIds.forEach((zoneId, position) => {
+    const mutationToken = [
+      cachedAt.toString(36).padStart(11, "0"),
+      owners[position],
+      (position + 1).toString(36).padStart(11, "0"),
+    ].join(":");
+    localStorage.setItem(
+      `${CACHE_ENTRY_KEY_PREFIX}${mutationToken}`,
+      JSON.stringify({
+        zoneId,
+        zoneName: `Zone ${zoneId}`,
+        records: [],
+        cachedAt,
+        __bcMutation: mutationToken,
+      }),
+    );
+  });
+  // No index on disk, so reconciliation must rebuild one from the entries.
+  localStorage.removeItem(CACHE_INDEX_KEY);
+  return storedZoneIds();
+}
 
-  const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
-  const originalSetItem = storagePrototype.setItem;
-  let injected = false;
-  let observedStaleOverwrite = false;
-  storagePrototype.setItem = function setItemWithInterleaving(
-    this: Storage,
-    key: string,
-    value: string,
-  ): void {
-    originalSetItem.call(this, key, value);
-    if (!injected && zoneIdFromRawEntry(value) === "tab-a") {
-      injected = true;
-      secondTab.cacheZoneRecords("tab-b", "Tab B", []);
-      return;
-    }
-    if (
-      injected &&
-      key === CACHE_INDEX_KEY &&
-      JSON.stringify(rawIndexZoneIds()) === JSON.stringify(["tab-a"])
-    ) {
-      observedStaleOverwrite = true;
-    }
-  };
+/**
+ * Two tabs writing in the same millisecond is the ordinary case, not a rare
+ * race: `cachedAt` is a millisecond clock and a zone list refresh fans out.
+ *
+ * When the timestamps tie, the tie-break used to fall through to the mutation
+ * token, whose second field is the writer's `crypto.randomUUID()`. The recovered
+ * order was therefore decided by which UUID each tab drew at module load —
+ * different on every run, for identical stored bytes. Ordering by `zoneId`
+ * first whenever the writers differ makes the comparator a total order over
+ * content the caller can actually see.
+ */
+test("recovery orders equal-timestamp entries from different writers deterministically", () => {
+  const alphaWroteFirst = recoverEqualTimestampOrder([
+    "owner-aaaaaaaa",
+    "owner-zzzzzzzz",
+  ]);
+  const betaWroteFirst = recoverEqualTimestampOrder([
+    "owner-zzzzzzzz",
+    "owner-aaaaaaaa",
+  ]);
+
+  assert.deepEqual(alphaWroteFirst, ["zone-alpha", "zone-beta"]);
+  assert.deepEqual(betaWroteFirst, ["zone-alpha", "zone-beta"]);
+  assert.deepEqual(alphaWroteFirst, betaWroteFirst);
+});
+
+/**
+ * The same-writer path must keep using the mutation token, whose third field is
+ * a monotonic sequence: within one tab, write order is real information and
+ * outranks the zone ID.
+ */
+test("recovery keeps same-writer equal-timestamp entries in write order", () => {
+  const sequential = recoverEqualTimestampOrder([
+    "owner-single",
+    "owner-single",
+  ]);
+  assert.deepEqual(sequential, ["zone-alpha", "zone-beta"]);
+});
+
+test("reconciles a deterministic stale-index interleaving from a second module instance", async () => {
+  const ownerSequence = ["z-det-owner-tab-a", "a-det-owner-tab-b"] as const;
+  const fixedNow = 1_700_000_000_000;
+  const originalRandomUUID = crypto.randomUUID;
+  const originalDateNow = Date.now;
+  let primaryTab: OfflineCacheModule | undefined;
+  let secondaryTab: OfflineCacheModule | undefined;
 
   try {
-    cacheZoneRecords("tab-a", "Tab A", []);
-  } finally {
-    storagePrototype.setItem = originalSetItem;
-  }
+    // Both writers get a pinned owner ID, chosen so that ordering by owner and
+    // ordering by zone ID disagree: "z-…" wrote tab-a, "a-…" wrote tab-b.
+    crypto.randomUUID = () => ownerSequence[0];
+    primaryTab = (await import(
+      new URL(
+        "../src/lib/storage/offline-cache.ts?recovery-primary",
+        import.meta.url,
+      ).href
+    )) as OfflineCacheModule;
+    crypto.randomUUID = () => ownerSequence[1];
+    secondaryTab = (await import(
+      new URL(
+        "../src/lib/storage/offline-cache.ts?recovery-secondary",
+        import.meta.url,
+      ).href
+    )) as OfflineCacheModule;
+    assert.notEqual(primaryTab.cacheZoneRecords, secondaryTab.cacheZoneRecords);
 
-  assert.equal(injected, true);
-  assert.equal(observedStaleOverwrite, true);
-  assert.deepEqual([...getCacheIndex()].sort(), ["tab-a", "tab-b"]);
-  assert.deepEqual([...rawIndexZoneIds()].sort(), ["tab-a", "tab-b"]);
-  assert.deepEqual(ownedEntryZoneIds(), ["tab-a", "tab-b"]);
+    primaryTab.clearOfflineCache();
+    // A frozen clock makes both writes share a `cachedAt`, which is what forces
+    // the tie-break to decide the order.
+    Date.now = () => fixedNow;
+
+    const storagePrototype = Object.getPrototypeOf(localStorage) as Storage;
+    const originalSetItem = storagePrototype.setItem;
+    let injected = false;
+    let observedStaleOverwrite = false;
+    storagePrototype.setItem = function setItemWithInterleaving(
+      this: Storage,
+      key: string,
+      value: string,
+    ): void {
+      originalSetItem.call(this, key, value);
+      if (!injected && zoneIdFromRawEntry(value) === "tab-a") {
+        injected = true;
+        secondaryTab?.cacheZoneRecords("tab-b", "Tab B", []);
+        return;
+      }
+      if (
+        injected &&
+        key === CACHE_INDEX_KEY &&
+        JSON.stringify(rawIndexZoneIds()) === JSON.stringify(["tab-a"])
+      ) {
+        observedStaleOverwrite = true;
+      }
+    };
+
+    try {
+      primaryTab.cacheZoneRecords("tab-a", "Tab A", []);
+    } finally {
+      storagePrototype.setItem = originalSetItem;
+    }
+
+    assert.equal(injected, true);
+    assert.equal(observedStaleOverwrite, true);
+    assert.deepEqual(primaryTab.getCacheIndex(), ["tab-a", "tab-b"]);
+    assert.deepEqual(rawIndexZoneIds(), ["tab-a", "tab-b"]);
+    assert.deepEqual(ownedEntryZoneIds(), ["tab-a", "tab-b"]);
+  } finally {
+    Date.now = originalDateNow;
+    crypto.randomUUID = originalRandomUUID;
+    primaryTab?.clearOfflineCache();
+    secondaryTab?.clearOfflineCache();
+  }
 });
 
 test("immutable entry versions survive a concurrent replacement during stale eviction", async () => {
