@@ -211,6 +211,22 @@ itself scanned, which adds a second finding instead of clearing the first.
 Anything that _can_ be fixed at the source must be fixed there instead, so this
 register is expected to stay near-empty.
 
+Suppressing one of these findings by path instead was considered and rejected:
+a path entry blinds every rule to a whole file forever, and the file here is
+production parser source. `src-tauri/crates/bc-dns-tools/src/import.rs` is
+therefore listed among the validator's protected canary paths, which keeps the
+broad form permanently unavailable — an allowlist path matching it fails the
+gate.
+
+**Retiring an entry.** An entry becomes retirable only when the commit it names
+leaves the scanned history, which for published history means it does not. If
+that ever happens — a history rewrite, or the repository being re-created — drop
+the line from `.gitleaksignore`, drop it from `APPROVED_FINGERPRINTS`, drop its
+row here, and record the retirement in prose the way the OSV register does. The
+validator requires the file and the reviewed set to agree in both directions, so
+a half-finished retirement fails the gate rather than silently widening or
+narrowing the scan.
+
 | Fingerprint                                                                                                 | Class        | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------------------------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `5972d00ab057c78d95c73e55bc36191777b28916:src-tauri/crates/bc-dns-tools/src/import.rs:generic-api-key:1123` | test fixture | The OPENPGPKEY row of the `#[cfg(test)]` DNS record-type fixture table, beside the DNSKEY, DS, SMIMEA and TLSA fixtures. The value is a fabricated OpenPGP public-key blob: it decodes to the packet header `99 02 0d 04` — which is why every real key block starts `mQINB` — followed by the ASCII text `dandomKeyDataForTestingOnly`. It holds no key material and never did; upstream `generic-api-key` fires only because a quoted base64 blob measures 4.7 bits of entropy. Not path-allowlisted, because `import.rs` is production parser source and a path entry would blind every rule to that whole file. This is the entry that makes CI pass. |

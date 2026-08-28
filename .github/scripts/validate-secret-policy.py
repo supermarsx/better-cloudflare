@@ -140,6 +140,13 @@ PROTECTED_CANARY_PATHS = (
     "src/lib/storage/storage.ts",
     "src-tauri/crates/bc-registrar/src/porkbun.rs",
     "src-tauri/crates/bc-mcp/src/transport.rs",
+    # Production zone-file parser. It holds the OPENPGPKEY fixture row that the
+    # fingerprint below suppresses, so it is the one file a future reader is
+    # most likely to reach for a path allowlist on. That fix was considered and
+    # rejected: a path entry blinds every rule to the whole file forever, where
+    # the fingerprint suppresses exactly one rule on one line of one commit.
+    # Listing it here keeps the broad form permanently unavailable.
+    "src-tauri/crates/bc-dns-tools/src/import.rs",
     "src-tauri/tauri.conf.json",
     "test/storageManager.test.ts",
 )
@@ -383,9 +390,13 @@ def _validate_review_document(today: dt.date) -> None:
     if POLICY_REVIEW_DEADLINE.isoformat() not in fingerprints:
         raise PolicyError("the fingerprint register must record the reviewed expiry")
     for fingerprint in APPROVED_FINGERPRINTS:
-        if f"`{fingerprint}`" not in fingerprints:
+        # Row-scoped, like the OSV register check, so a passing mention in prose
+        # does not satisfy the requirement to table the entry. Cell padding
+        # varies with the widest row, so the separators are matched loosely.
+        row = rf"\|\s*`{re.escape(fingerprint)}`\s*\|"
+        if not re.search(row, fingerprints):
             raise PolicyError(
-                f"the register does not document fingerprint {fingerprint}"
+                f"the register does not table fingerprint {fingerprint}"
             )
 
 
@@ -474,9 +485,11 @@ def validate_workflow_text(name: str, text: str) -> None:
     for step, label in ((diff_step, "diff scan"), (history_step, "history scan")):
         if len(re.findall(rf"--config={re.escape(POLICY_RELATIVE_PATH)}", step)) != 1:
             raise PolicyError(f"{name}: the {label} must load the reviewed policy")
-        # Gitleaks would find `.gitleaksignore` on its own, but naming it makes
-        # the suppression channel visible in the workflow and pins it to the
-        # reviewed file rather than to whatever the default resolves to.
+        # Gitleaks reads the repository-root `.gitleaksignore` whether or not
+        # the flag is given, so this does not by itself constrain what is
+        # suppressed - `_validate_fingerprints` is what does that. Requiring the
+        # flag keeps the suppression channel visible to anyone reading the
+        # workflow, instead of it applying invisibly by default.
         ignore_flag = rf"--gitleaks-ignore-path={re.escape(IGNORE_RELATIVE_PATH)}"
         if len(re.findall(ignore_flag, step)) != 1:
             raise PolicyError(

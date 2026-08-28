@@ -115,6 +115,61 @@ class SecretPolicyContractTests(unittest.TestCase):
         source = IGNORE.read_text(encoding="utf-8")
         self._reject_ignore(f"{source}{FIXTURE_FINGERPRINT}\n", "duplicate")
 
+    def test_path_allowlisting_the_fixture_file_stays_unavailable(self) -> None:
+        """The broad fix that was considered and rejected must stay rejected.
+
+        Suppressing the OPENPGPKEY fixture by path would blind every rule to the
+        whole of `import.rs`, which is production parser source. The fingerprint
+        covers one rule on one line of one commit instead. `import.rs` is a
+        protected canary so the broad form cannot come back.
+        """
+        source = CONFIG.read_text(encoding="utf-8")
+        for widened in (
+            r"^src-tauri/crates/bc-dns-tools/src/import\.rs$",
+            r"(^|/)bc-dns-tools/",
+            r"^src-tauri/",
+        ):
+            with self.subTest(path=widened):
+                self._reject(
+                    source.replace(
+                        r"""    '''^\.github/gitleaks\.toml$''',""",
+                        r"""    '''^\.github/gitleaks\.toml$''',"""
+                        + f"\n    '''{widened}''',",
+                        1,
+                    ),
+                    "unapproved allowlist path|would suppress protected files",
+                )
+
+    def test_prose_mention_does_not_satisfy_the_fingerprint_register(self) -> None:
+        """A fingerprint must be tabled, not merely mentioned in passing."""
+        original_root = POLICY.REPOSITORY_ROOT
+        source = REGISTER.read_text(encoding="utf-8")
+        demoted = source.replace(
+            f"| `{FIXTURE_FINGERPRINT}` |",
+            f"mentioned only in prose: `{FIXTURE_FINGERPRINT}` |",
+            1,
+        )
+        self.assertNotEqual(demoted, source)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").mkdir()
+            (root / ".github/gitleaks.toml").write_text(
+                CONFIG.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (root / ".github/RELEASE_SECURITY.md").write_text(
+                demoted, encoding="utf-8"
+            )
+            POLICY.REPOSITORY_ROOT = root
+            try:
+                with self.assertRaisesRegex(
+                    POLICY.PolicyError, "does not table fingerprint"
+                ):
+                    POLICY.validate_config(
+                        root / ".github/gitleaks.toml", today=TODAY
+                    )
+            finally:
+                POLICY.REPOSITORY_ROOT = original_root
+
     def test_register_must_document_every_fingerprint(self) -> None:
         original_root = POLICY.REPOSITORY_ROOT
         source = REGISTER.read_text(encoding="utf-8")
@@ -131,7 +186,7 @@ class SecretPolicyContractTests(unittest.TestCase):
             POLICY.REPOSITORY_ROOT = root
             try:
                 with self.assertRaisesRegex(
-                    POLICY.PolicyError, "does not document fingerprint"
+                    POLICY.PolicyError, "does not table fingerprint"
                 ):
                     POLICY.validate_config(
                         root / ".github/gitleaks.toml", today=TODAY
