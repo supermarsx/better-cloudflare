@@ -9,6 +9,8 @@ description: Curated documentation for Better Cloudflare, a Cloudflare DNS conso
 
 Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a Tauri v2 desktop application. Start at the [readme](https://github.com/supermarsx/better-cloudflare/blob/main/readme.md) for an overview and installation.
 
+> **This is experimental software.** Better Cloudflare is under active development and is not stable. Expect breaking changes to behaviour, storage formats and preferences between releases, and expect bugs. It writes to live DNS, so use it at your own risk: keep your own backups, and verify what it changed in the Cloudflare dashboard. It is not recommended for production-critical DNS management unless you check its results yourself. The software is provided as-is, without warranty — see the [license](https://github.com/supermarsx/better-cloudflare/blob/main/license.md). What does and does not work today is listed under [current status](#current-status-at-a-glance).
+
 Generated API reference is written separately to `docs/api/`, so `npm run docs` never overwrites these guides.
 
 ## Start here

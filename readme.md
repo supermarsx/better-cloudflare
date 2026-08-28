@@ -10,6 +10,8 @@
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=000000)](https://react.dev/)
 
+> **This is experimental software.** Better Cloudflare is under active development and is not stable. Expect breaking changes to behaviour, storage formats and preferences between releases, and expect bugs. It writes to live DNS, so use it at your own risk: keep your own backups, and verify what it changed in the Cloudflare dashboard. It is not recommended for production-critical DNS management unless you check its results yourself. The software is provided as-is, without warranty — see [license.md](license.md).
+
 Better Cloudflare is a desktop console for managing DNS across many Cloudflare zones. It is a Tauri v2 application: a React 19 / Next.js frontend over a Rust workspace of 17 crates. It runs on your machine, keeps credentials in the OS keyring, and talks to the Cloudflare API directly.
 
 The work it is built for is bulk and detail editing: changing many records across many zones, composing the fiddly record types (SPF, DMARC, TLSA, SVCB, CAA) from validated fields, moving records between zones without rewriting hostnames by hand, and keeping quoted TXT content inside the limits RFC 1035 sets.
