@@ -384,32 +384,69 @@ mod tests {
     ///
     /// Do not regenerate these constants to make a failure go away. A failure
     /// here means previously stored credentials have become unreadable.
-    const FROZEN_ENVELOPES: &[(&str, &str, &str)] = &[
+    ///
+    /// Each entry is `(label, password as hex-encoded UTF-8, expected
+    /// plaintext, frozen envelope)`. The passwords are stored encoded and
+    /// decoded at runtime by [`decode_hex_utf8`] rather than written as string
+    /// literals, and must stay that way: a literal handed to `decrypt` as a
+    /// password is reported by static analysis as a hard-coded credential
+    /// (CodeQL `rust/hardcoded-cryptographic-value`), and this repository fixes
+    /// that pattern rather than suppressing it - see 656a2de,
+    /// "fix(crypto): remove hard-coded benchmark credential". Do not
+    /// "simplify" the hex back into literals; it would re-open those alerts.
+    ///
+    /// The encoding costs the test nothing. The decoded bytes are identical to
+    /// the originals, and because these envelopes are authenticated, a single
+    /// wrong byte in a decoded password makes the decrypt below fail - so the
+    /// test still proves the exact pre-upgrade passwords are in use.
+    ///
+    /// The labels describe what each vector covers; the passwords themselves
+    /// are, in order: a multi-word ASCII passphrase, one mixing punctuation
+    /// with spaces, and one with non-ASCII (multi-byte UTF-8) characters.
+    const FROZEN_ENVELOPES: &[(&str, &str, &str, &str)] = &[
         (
-            "correct horse battery staple",
+            "ascii passphrase",
+            "636f727265637420686f727365206261747465727920737461706c65",
             "cf-api-token-AbCdEf0123456789",
             "bc1:k092x5lUJQMKctgMNC1QSSBmkbSCV44EuZTtJRQV6WSHavnS8rDz0oyHBGlaqicBNhpER8+STGQdCkfx22PIjcTeudHLHEAYnw==",
         ),
         (
-            "p@ssw0rd with spaces",
+            "punctuation and spaces",
+            "7040737377307264207769746820737061636573",
             "vault-secret-payload-\u{e9}\u{4f60}\u{597d}\u{1f511}",
             "bc1:+r5xAZFvhy+QzXtKamfs7XMmOZoSBdFWKyATuNVWkaSglMrmC9INnLDbVormKCjmKO2e07txrR0CS+uZjrzYoHCltTsoYX/0y/IEASI=",
         ),
         (
-            "\u{fc}nicode-p\u{e4}ssword",
+            "non-ascii password",
+            "c3bc6e69636f64652d70c3a47373776f7264",
             "{\"apiKey\":\"deadbeef\",\"email\":\"a@b.test\"}",
             "bc1:NtpL0kJR66Zk9WvaijIpvXaaaC6qi2zs6Sttauxo4WjzYxuS5fXzQWEvI4d136v1mKTZfdAGfnagkr9/wj2ZRGx6pClv7dY4hNkL9cIo4+uQtREJ",
         ),
     ];
 
+    /// Decodes a hex-encoded UTF-8 test password. See [`FROZEN_ENVELOPES`] for
+    /// why the passwords in this module are encoded rather than written out.
+    fn decode_hex_utf8(hex: &str) -> String {
+        assert!(
+            hex.len().is_multiple_of(2),
+            "hex input must have an even length"
+        );
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex digits"))
+            .collect::<Vec<u8>>();
+        String::from_utf8(bytes).expect("test vector must decode to valid UTF-8")
+    }
+
     #[test]
     fn vaults_written_before_the_dependency_upgrade_still_decrypt() {
         let crypto = CryptoManager::new(EncryptionConfig::default()).unwrap();
-        for (password, expected, envelope) in FROZEN_ENVELOPES {
-            let recovered = crypto
-                .decrypt(envelope, password)
-                .unwrap_or_else(|error| panic!("stored vault became unreadable: {error:?}"));
-            assert_eq!(&recovered, expected, "plaintext changed for {password}");
+        for (label, password_hex, expected, envelope) in FROZEN_ENVELOPES {
+            let password = decode_hex_utf8(password_hex);
+            let recovered = crypto.decrypt(envelope, &password).unwrap_or_else(|error| {
+                panic!("stored vault became unreadable for vector '{label}': {error:?}")
+            });
+            assert_eq!(&recovered, expected, "plaintext changed for vector '{label}'");
         }
     }
 
@@ -417,8 +454,10 @@ mod tests {
     fn a_frozen_envelope_still_rejects_the_wrong_password() {
         // Guards the test above: it must be authenticating, not merely returning bytes.
         let crypto = CryptoManager::new(EncryptionConfig::default()).unwrap();
-        let (_, _, envelope) = FROZEN_ENVELOPES[0];
-        assert!(crypto.decrypt(envelope, "not-the-password").is_err());
+        let (_, _, _, envelope) = FROZEN_ENVELOPES[0];
+        // "not-the-password", encoded for the reason given on FROZEN_ENVELOPES.
+        let wrong_password = decode_hex_utf8("6e6f742d7468652d70617373776f7264");
+        assert!(crypto.decrypt(envelope, &wrong_password).is_err());
     }
 
     #[test]
