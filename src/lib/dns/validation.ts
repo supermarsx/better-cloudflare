@@ -1,5 +1,6 @@
 import { z } from "zod";
 import net from "net";
+import { parseNAPTR } from "./dns-parsers";
 import { validateSPF } from "./spf";
 import { RECORD_TYPES } from "../../types/dns";
 
@@ -147,54 +148,47 @@ export const dnsRecordSchema = z
     }
     // NAPTR record: order preference flags service regexp replacement
     if (val.type === "NAPTR") {
-      const splitNaptrTokens = (s: string) => {
-        const tokens: string[] = [];
-        let current = "";
-        let inQuote = false;
-        for (let i = 0; i < s.length; i++) {
-          const ch = s[i];
-          if (ch === '"') {
-            inQuote = !inQuote;
-            current += ch;
-            continue;
-          }
-          if (ch === " " && !inQuote) {
-            if (current.trim().length > 0) {
-              tokens.push(current.trim());
-              current = "";
-            }
-            continue;
-          }
-          current += ch;
+      // Tokenised by the same parser the rest of the app reads NAPTR content
+      // with. A second tokeniser here would be a second definition of what a
+      // NAPTR record *is*, and content accepted under the weaker of the two
+      // would be re-read as something else everywhere downstream.
+      const parsed = parseNAPTR(val.content);
+      if (parsed.order === undefined || parsed.preference === undefined) {
+        // `parseNAPTR` is the only thing that decides acceptance. The two
+        // checks below refine the *message* for the most common mistakes; they
+        // can never accept content the parser rejected.
+        const [rawOrder, rawPreference] = String(val.content)
+          .trim()
+          .split(/[ \t]+/u);
+        const isUint16Field = (field?: string) =>
+          field !== undefined &&
+          /^\d{1,5}$/u.test(field) &&
+          Number(field) <= 65_535;
+        if (!isUint16Field(rawOrder)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "NAPTR order must be an integer in 0-65535",
+          });
+        } else if (!isUint16Field(rawPreference)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "NAPTR preference must be an integer in 0-65535",
+          });
+        } else {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              'NAPTR content must be: "order preference flags service regexp ' +
+              'replacement" — exactly six fields, with no raw control ' +
+              "characters, line breaks, or over-long fields",
+          });
         }
-        if (current.trim().length > 0) tokens.push(current.trim());
-        return tokens;
-      };
-      const parts = splitNaptrTokens(String(val.content).trim());
-      if (parts.length < 6) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'NAPTR content must be: "order preference flags service regexp replacement"',
-        });
       } else {
-        if (!/^\d+$/.test(parts[0])) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "NAPTR order must be an integer",
-          });
-        }
-        if (!/^\d+$/.test(parts[1])) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "NAPTR preference must be an integer",
-          });
-        }
         // flags should be non-empty and single token
         if (
-          !parts[2] ||
-          typeof parts[2] !== "string" ||
-          parts[2].trim() === ""
+          !parsed.flags ||
+          parsed.flags.trim() === "" ||
+          /\s/u.test(parsed.flags)
         ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -203,33 +197,32 @@ export const dnsRecordSchema = z
         }
         // service should be a non-empty token and not contain spaces
         if (
-          !parts[3] ||
-          typeof parts[3] !== "string" ||
-          parts[3].trim() === "" ||
-          /\s/.test(parts[3])
+          !parsed.service ||
+          parsed.service.trim() === "" ||
+          /\s/u.test(parsed.service)
         ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: "NAPTR service must be a non-empty token",
           });
         }
-        // regexp should be a quoted string or slash-delimited regex
+        // REGEXP and REPLACEMENT are mutually exclusive (RFC 3403 §4.1), so an
+        // empty REGEXP is not just legal but required for the terminal `S`/`A`
+        // flag forms — `100 10 "S" "SIP+D2U" "" _sip._udp.example.com.` is a
+        // valid record. The previous rule only appeared to allow it because the
+        // local tokeniser kept the `""` quotes in the field value and so never
+        // saw the field as empty. It is now the pair that must not be empty.
         if (
-          !parts[4] ||
-          typeof parts[4] !== "string" ||
-          parts[4].trim() === ""
+          (!parsed.regexp || parsed.regexp.trim() === "") &&
+          (!parsed.replacement || parsed.replacement.trim() === "")
         ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: "NAPTR regexp must be non-empty",
+            message: "NAPTR regexp and replacement must not both be empty",
           });
         }
         // replacement should be a domain (or @)
-        if (
-          !parts[5] ||
-          typeof parts[5] !== "string" ||
-          parts[5].trim() === ""
-        ) {
+        if (!parsed.replacement || parsed.replacement.trim() === "") {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: "NAPTR replacement must be a non-empty token",
