@@ -20,6 +20,14 @@ from typing import Any, Iterable
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 POLICY_RELATIVE_PATH = ".github/gitleaks.toml"
+# Gitleaks reads a repository-root `.gitleaksignore` automatically. Measured
+# against 8.30.1: a fingerprint listed there suppresses the finding, and
+# `--gitleaks-ignore-path` pointing at an empty file elsewhere does NOT override
+# it - the root file is still honoured. That makes it a second suppression
+# channel sitting outside this policy, so the gate refuses to run while one
+# exists with entries in it. (A `.gitleaksignore` in a subdirectory is ignored by
+# gitleaks, so only the root path is guarded.)
+IGNORE_RELATIVE_PATH = ".gitleaksignore"
 POLICY_REVIEW = ".github/RELEASE_SECURITY.md#secret-scanning-allowlist-register"
 POLICY_REVIEW_HEADING = "## Secret scanning allowlist register"
 POLICY_OWNER = "Better Cloudflare security maintainers"
@@ -119,6 +127,14 @@ PROTECTED_CANARY_PATHS = (
     "src/lib/storage/storage.ts",
     "src-tauri/crates/bc-registrar/src/porkbun.rs",
     "src-tauri/crates/bc-mcp/src/transport.rs",
+    # Production zone-file parser, and the file most likely to be reached for.
+    # It carries the OPENPGPKEY fixture that the value-scoped allowlist below
+    # suppresses, so the tempting "simplification" is to path-allowlist the whole
+    # file instead. That would blind every rule to a real source file in a
+    # `gitleaks dir` run (measured: a planted Porkbun key went undetected and
+    # 46142 fewer bytes were read). Listing it here makes that form permanently
+    # unavailable rather than merely discouraged.
+    "src-tauri/crates/bc-dns-tools/src/import.rs",
     "src-tauri/tauri.conf.json",
     "test/storageManager.test.ts",
 )
@@ -326,8 +342,34 @@ def validate_config(config_path: Path, *, today: dt.date | None = None) -> set[s
 
     rules = _validate_rules(config.get("rules"))
     _validate_allowlists(config.get("allowlists"))
+    _validate_no_unreviewed_ignore_file()
     _validate_review_document(today)
     return rules
+
+
+def _validate_no_unreviewed_ignore_file() -> None:
+    """Refuse to scan while an unreviewed `.gitleaksignore` can suppress findings.
+
+    Every suppression in this repository goes through the reviewed policy file so
+    that it is registered, justified and covered by this validator. A root
+    `.gitleaksignore` bypasses all of that: gitleaks reads it on its own, and no
+    flag on the scan step turns it off.
+    """
+    ignore_file = REPOSITORY_ROOT / IGNORE_RELATIVE_PATH
+    if not ignore_file.is_file():
+        return
+    entries = [
+        line.strip()
+        for line in ignore_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if entries:
+        raise PolicyError(
+            f"{IGNORE_RELATIVE_PATH} is an unreviewed suppression channel and "
+            f"carries {len(entries)} entry/entries: {entries[:3]}. Suppress "
+            f"through {POLICY_RELATIVE_PATH} instead, where the register and "
+            "this validator can hold it to review."
+        )
 
 
 def _validate_review_document(today: dt.date) -> None:
@@ -344,8 +386,8 @@ def _validate_review_document(today: dt.date) -> None:
         raise PolicyError(f"policy review anchor is absent: {POLICY_REVIEW_HEADING}")
     # Markdown tables escape the pipes inside the path patterns; compare against
     # the unescaped text so the register stays readable.
-    register = text.partition(POLICY_REVIEW_HEADING)[2].partition("\n## ")[0]
-    register = register.replace("\\|", "|")
+    register_raw = text.partition(POLICY_REVIEW_HEADING)[2].partition("\n## ")[0]
+    register = register_raw.replace("\\|", "|")
     if POLICY_OWNER not in register:
         raise PolicyError("the register must name the reviewing owner")
     if POLICY_REVIEW_DEADLINE.isoformat() not in register:
@@ -356,11 +398,34 @@ def _validate_review_document(today: dt.date) -> None:
     for path in APPROVED_ALLOWLIST_PATHS:
         if f"`{path}`" not in register:
             raise PolicyError(f"the register does not document allowlist path {path}")
+    # Row-scoped, not a substring match: the value must be tabled like every OSV
+    # exception, so a passing mention in prose cannot stand in for a register
+    # entry. Cells are compared after stripping, because Prettier pads every cell
+    # out to the width of the widest row - a fixed-width literal would never
+    # match and the assertion would pass vacuously.
+    tabled = {cell for row in _register_rows(register_raw) for cell in row}
     for regex in APPROVED_VALUE_ALLOWLIST["regexes"]:
-        if f"`{regex}`" not in register:
+        if f"`{regex}`" not in tabled:
             raise PolicyError(
-                f"the register does not document the allowlisted value {regex}"
+                "the register does not table the allowlisted value "
+                f"{regex} (a prose mention does not count)"
             )
+
+
+def _register_rows(register: str) -> list[list[str]]:
+    """Split the register's markdown tables into stripped cells, one list per row.
+
+    Parsed from the raw register text rather than the pipe-unescaped copy, so a
+    `\\|` inside a pattern cannot be mistaken for a cell boundary.
+    """
+    rows: list[list[str]] = []
+    for line in register.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        rows.append(cells)
+    return rows
 
 
 def _step_block(text: str, needle: str, name: str) -> str:
@@ -454,6 +519,16 @@ def validate_workflow_text(name: str, text: str) -> None:
                 )
         if "--redact" not in step:
             raise PolicyError(f"{name}: the {label} must redact its report")
+        # Without this flag a `gitleaks:allow` comment on the offending line
+        # silently drops the finding. Measured against 8.30.1: a planted Porkbun
+        # key with that comment went undetected, and the flag brought it back.
+        # That is a suppression channel in ordinary source, reviewable by nobody,
+        # so both scans must refuse to honour it.
+        if "--ignore-gitleaks-allow" not in step:
+            raise PolicyError(
+                f"{name}: the {label} must pass --ignore-gitleaks-allow, or a "
+                "`gitleaks:allow` comment can suppress a finding unreviewed"
+            )
 
 
 def validate_workflows(workflows: Iterable[Path]) -> None:

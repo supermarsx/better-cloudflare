@@ -134,15 +134,45 @@ unless:
   replaces, the upstream Gitleaks ruleset;
 - the rule identifiers are exactly the reviewed set below, each with a
   description, a compiling regex and lowercase keywords;
-- global allowlists suppress by path only, so no value-shaped or entropy-shaped
-  blanket suppression can be introduced;
+- global allowlists suppress by path only, apart from the single reviewed
+  value-scoped entry below, which is held to its exact anchored literal and may
+  not carry a `paths` or `condition` key;
 - the allowlist path set is exactly the reviewed set below and no entry matches
   any protected canary path under `src/`, `src-tauri/`, `test/`, `docs/`,
   `app/`, `scripts/`, `.github/workflows/` or a dotenv file;
 - the register below still names its owner and its unexpired review date and
-  documents every rule and every allowlist path;
+  documents every rule and every allowlist path, with the value-scoped entry
+  **tabled** rather than merely mentioned in prose;
+- no unreviewed `.gitleaksignore` sits at the repository root (see below);
 - the workflow retains the pinned version, the pinned digest, the digest
-  verification, the diff/history split and no `continue-on-error`.
+  verification, the diff/history split, `--ignore-gitleaks-allow` on both scans
+  and no `continue-on-error`.
+
+### Suppression channels, and why only one is open
+
+Gitleaks honours more than the policy file. Each of these was measured against
+8.30.1 and then closed, so that `.github/gitleaks.toml` is the only way to
+suppress a finding in this repository:
+
+| Channel                                                                            | Status                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository-root `.gitleaksignore`                                                  | **Auto-read.** A fingerprint listed there suppresses the finding, and `--gitleaks-ignore-path` pointed at an empty file elsewhere does **not** override it. The validator therefore refuses to run while a root `.gitleaksignore` carries any entry. |
+| `.gitleaksignore` in a subdirectory                                                | Not honoured by gitleaks; nothing to close.                                                                                                                                                                                                          |
+| `gitleaks:allow` comment on the offending line                                     | **Was a bypass** — a planted Porkbun key with that comment went undetected. Both scan steps now pass `--ignore-gitleaks-allow`, and the validator requires it.                                                                                       |
+| `[allowlist]` (singular), rule-level `allowlist` (singular), `[extend] path`/`url` | Rejected already: the validator allows only the exact top-level and rule key sets.                                                                                                                                                                   |
+| `--baseline-path`, `--enable-rule`, `--exit-code`                                  | Rejected already: the validator forbids them on both scan steps.                                                                                                                                                                                     |
+
+### Ref scope of the history scan
+
+The `secrets` job checks out with `fetch-depth: 0`, which creates a
+remote-tracking ref for every branch, and the history scan is deliberately not
+range-limited. Measured: a commit reachable **only** from
+`refs/remotes/origin/*` — not an ancestor of `HEAD`, on no local branch — is
+still scanned. So the gate covers every pushed branch, not just `main`. That is
+the safe direction (a secret pushed to a side branch is caught rather than
+missed), but it has two consequences worth knowing: a leak on an abandoned
+branch reds `main` until the branch is deleted and the object is gone, and the
+failure will name a commit that is not in `main`'s history.
 
 ### Secret scanning rule register
 

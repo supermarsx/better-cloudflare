@@ -193,6 +193,7 @@ jobs:
             --config=.github/gitleaks.toml \
             --log-opts="--no-merges $PR_BASE_SHA..$PR_HEAD_SHA" \
             --redact \
+            --ignore-gitleaks-allow \
             --no-banner \
             --report-format=sarif \
             --report-path="$RUNNER_TEMP/gitleaks-report.sarif"
@@ -204,6 +205,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks" git . \
             --config=.github/gitleaks.toml \
             --redact \
+            --ignore-gitleaks-allow \
             --no-banner \
             --report-format=sarif \
             --report-path="$RUNNER_TEMP/gitleaks-report.sarif"
