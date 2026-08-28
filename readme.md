@@ -81,7 +81,17 @@ Every screen is documented in [Screens and features](https://supermarsx.github.i
 
 ## Getting started
 
-You need Node.js `^20.19 || ^22.13 || >=24` (CI pins 24.18.1), a Rust toolchain, and your platform's [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/).
+Prebuilt packages for every [release](https://github.com/supermarsx/better-cloudflare/releases) are published for x64 and arm64:
+
+| Platform | Formats                                      |
+| -------- | -------------------------------------------- |
+| Linux    | `.AppImage`, `.deb`, `.rpm`, `.flatpak`      |
+| macOS    | `.dmg`                                       |
+| Windows  | `-setup.exe` (NSIS), `.msi`, portable `.exe` |
+
+Each one ships a `.sha256` file and a build-provenance attestation; see [release security](.github/RELEASE_SECURITY.md) for how to verify them. The `.deb`, `.rpm`, and Flatpak builds use the system WebKitGTK, so they are far smaller than the self-contained AppImage. The Windows portable `.exe` needs no installation but, unlike the installers, will not install the [Microsoft Edge WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/) for you — it must already be present.
+
+To build it yourself instead, you need Node.js `^20.19 || ^22.13 || >=24` (CI pins 24.18.1), a Rust toolchain, and your platform's [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/).
 
 ```bash
 git clone https://github.com/supermarsx/better-cloudflare.git
