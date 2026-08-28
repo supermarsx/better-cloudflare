@@ -9,6 +9,16 @@ const naptrWithReplacement = (replacement: string) =>
 const composeWithReplacement = (replacement: string) =>
   composeNAPTR(10, 20, "U", "E2U+sip", "!x!y!", replacement);
 
+/** What `parseNAPTR` returns for content it refuses. */
+const emptyNAPTR = () => ({
+  order: undefined,
+  preference: undefined,
+  flags: "",
+  service: "",
+  regexp: "",
+  replacement: "",
+});
+
 // Test-only RFC 1035 presentation decoder: escaped dots stay within a label.
 const decodeDnsPresentationLabels = (input: string): string[] | null => {
   const labels: string[] = [];
@@ -57,9 +67,9 @@ test("NAPTR quoted regexp is accepted", () => {
   assert.equal(ok.success, true);
 });
 
-test("NAPTR parser handles every whitespace separator outside quoted fields", () => {
+test("NAPTR parser accepts horizontal separators outside quoted fields", () => {
   const parsed = parseNAPTR(
-    '10\t20\r\n"U"\u2028"E2U+sip"\n"!^.*$!sip:info@example.com!"\texample.com.',
+    '10\t20  "U"\t"E2U+sip" "!^.*$!sip:info@example.com!"\texample.com.',
   );
   assert.deepEqual(parsed, {
     order: 10,
@@ -69,6 +79,85 @@ test("NAPTR parser handles every whitespace separator outside quoted fields", ()
     regexp: "!^.*$!sip:info@example.com!",
     replacement: "example.com.",
   });
+});
+
+test("NAPTR parser rejects raw line breaks anywhere in the content", () => {
+  const rejected = emptyNAPTR();
+  // A line break was previously accepted as an ordinary whitespace separator,
+  // so one stored record could carry a second attacker-chosen line into any
+  // zone file, log, or terminal that later rendered it.
+  for (const lineBreak of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
+    assert.deepEqual(
+      parseNAPTR(`10 20 U E2U+sip !x!y!${lineBreak}example.com.`),
+      rejected,
+      `separator ${JSON.stringify(lineBreak)}`,
+    );
+    assert.deepEqual(
+      parseNAPTR(`10 20 U E2U+sip !x!y! .${lineBreak}evil`),
+      rejected,
+      `trailing ${JSON.stringify(lineBreak)}`,
+    );
+    assert.deepEqual(
+      parseNAPTR(`${lineBreak}10 20 U E2U+sip !x!y! .`),
+      rejected,
+      `leading ${JSON.stringify(lineBreak)}`,
+    );
+  }
+});
+
+test("NAPTR parser rejects raw controls smuggled behind a backslash", () => {
+  const rejected = emptyNAPTR();
+  // The escape branch consumes the next character without re-entering the
+  // scanning loop, so it was the one path a *raw* control byte could take into
+  // a token. Every control has a legal `\010`-style presentation form, so the
+  // raw one is never needed.
+  for (const raw of [
+    "\u0000",
+    "\n",
+    "\r",
+    "\t",
+    "\u007f",
+    "\u009f",
+    "\u2028",
+    "\u2029",
+  ]) {
+    assert.deepEqual(
+      parseNAPTR(`10 20 U E2U+sip "!x\\${raw}y!" example.com.`),
+      rejected,
+      `regexp backslash+${JSON.stringify(raw)}`,
+    );
+    assert.deepEqual(
+      parseNAPTR(`10 20 \\${raw}U E2U+sip !x!y! example.com.`),
+      rejected,
+      `flags backslash+${JSON.stringify(raw)}`,
+    );
+  }
+  // The decimal-escape form stays legal and still round-trips.
+  assert.equal(parseNAPTR('10 20 U E2U+sip "!x\\010y!" .').regexp, "!x\ny!");
+});
+
+test("NAPTR parser bounds order and preference to their 16-bit fields", () => {
+  const rejected = emptyNAPTR();
+  for (const [order, preference] of [
+    ["65536", "20"],
+    ["10", "65536"],
+    ["999999", "20"],
+    ["0000010", "20"],
+    ["1e3", "20"],
+    ["0x10", "20"],
+    ["-1", "20"],
+    ["10", "Infinity"],
+  ]) {
+    assert.deepEqual(
+      parseNAPTR(`${order} ${preference} U E2U+sip !x!y! example.com.`),
+      rejected,
+      `${order}/${preference}`,
+    );
+  }
+  // The boundary itself is valid.
+  const atCeiling = parseNAPTR("65535 65535 U E2U+sip !x!y! example.com.");
+  assert.equal(atCeiling.order, 65_535);
+  assert.equal(atCeiling.preference, 65_535);
 });
 
 test("NAPTR serializer preserves quotes and backslashes through one boundary", () => {
@@ -186,4 +275,44 @@ test("NAPTR parser rejects malformed and resource-exhausting forms", () => {
     composeNAPTR(10, 20, "U", "E2U+sip", "x".repeat(4_097), "."),
     "",
   );
+  // Each field is capped at MAX_NAPTR_TOKEN_LENGTH, but four capped fields
+  // compose past MAX_NAPTR_INPUT_LENGTH — the composer used to emit content
+  // its own parser would then refuse.
+  const maxField = "x".repeat(4_096);
+  const wide = composeNAPTR(
+    10,
+    20,
+    maxField,
+    maxField,
+    maxField,
+    maxField.replace(/^x/u, "y"),
+  );
+  assert.equal(wide, "");
+  // A control-only field serialises to `\000` triples, tripling its length.
+  assert.equal(
+    composeNAPTR(10, 20, "U", "E2U+sip", "\u0000".repeat(4_096), "."),
+    "",
+  );
+});
+
+test("NAPTR composer output always parses back", () => {
+  // The composer and the parser must agree: anything compose emits must be
+  // content parse accepts, or the builder writes records the app cannot read.
+  const composed = composeNAPTR(
+    65_535,
+    65_535,
+    "U",
+    "E2U+sip",
+    "!^.*$!sip:info@example.com!",
+    "example.com.",
+  );
+  assert.notEqual(composed, "");
+  assert.deepEqual(parseNAPTR(composed), {
+    order: 65_535,
+    preference: 65_535,
+    flags: "U",
+    service: "E2U+sip",
+    regexp: "!^.*$!sip:info@example.com!",
+    replacement: "example.com.",
+  });
 });

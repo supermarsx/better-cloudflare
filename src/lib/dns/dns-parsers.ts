@@ -553,6 +553,20 @@ const isUnsafeRawControl = (character: string) => {
   return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
 };
 
+/**
+ * The characters that end a line for *some* consumer downstream.
+ *
+ * `\n` and `\r` are already unsafe raw controls, but U+2028 and U+2029 are not,
+ * and none of the four are safe as field separators: a record whose content
+ * carries a raw line break is one record to this parser and two lines to
+ * anything that later writes it into a zone file, a log, or a shell.
+ */
+const isRawLineBreak = (character: string) =>
+  character === "\n" ||
+  character === "\r" ||
+  character === "\u2028" ||
+  character === "\u2029";
+
 const splitNaptrTokens = (input: string): string[] | null => {
   if (input.length > MAX_NAPTR_INPUT_LENGTH) return null;
 
@@ -577,7 +591,14 @@ const splitNaptrTokens = (input: string): string[] | null => {
 
   for (let index = 0; index < input.length; index++) {
     const character = input[index] ?? "";
+    // Never a separator, never data, in or out of a quote: one stored record
+    // must not be able to become two lines anywhere downstream.
+    if (isRawLineBreak(character)) return null;
     if (!inQuote && /\s/u.test(character)) {
+      // RFC 1035 §5.1 separates fields with spaces and tabs. Any other
+      // whitespace is neither a separator nor legal unquoted field data, so
+      // absorbing it would let a NBSP-bearing token pass as a well-formed one.
+      if (character !== " " && character !== "\t") return null;
       if (!finishToken()) return null;
       continue;
     }
@@ -605,6 +626,16 @@ const splitNaptrTokens = (input: string): string[] | null => {
 
       index++;
       const escapedCharacter = input[index] ?? "";
+      // A backslash escape is consumed without re-entering the loop, so it is
+      // the one path a *raw* control or line break can take into a token. A
+      // control byte still has a legal presentation form here — the `\010`
+      // decimal escape handled above — so refusing the raw one costs nothing.
+      if (
+        isUnsafeRawControl(escapedCharacter) ||
+        isRawLineBreak(escapedCharacter)
+      ) {
+        return null;
+      }
       if (
         !append(
           tokens.length === NAPTR_FIELD_COUNT - 1
@@ -640,9 +671,18 @@ export const parseNAPTR = (content?: string) => {
   if (!tokens || tokens.length !== NAPTR_FIELD_COUNT) return emptyNAPTR();
   const [order, preference, flags, service, regexp, replacement] = tokens;
   if (serializeNaptrReplacement(replacement) === null) return emptyNAPTR();
+  // ORDER and PREFERENCE are 16-bit fields (RFC 3403 §4.1). `Number()` alone
+  // accepts `0x10`, `1e3`, `Infinity` and `-1` and yields a value no wire
+  // format can hold, so the shape is checked before the value is taken.
+  if (!/^\d{1,5}$/u.test(order) || !/^\d{1,5}$/u.test(preference)) {
+    return emptyNAPTR();
+  }
+  const orderNumber = Number(order);
+  const preferenceNumber = Number(preference);
+  if (orderNumber > 65_535 || preferenceNumber > 65_535) return emptyNAPTR();
   return {
-    order: Number(order),
-    preference: Number(preference),
+    order: orderNumber,
+    preference: preferenceNumber,
     flags,
     service,
     regexp,
@@ -746,5 +786,9 @@ export const composeNAPTR = (
   ) {
     return "";
   }
-  return `${o ?? 0} ${p ?? 0} ${flags} ${service} ${regexp} ${replacement}`;
+  // Each field is capped on its own, but six capped fields still compose past
+  // `MAX_NAPTR_INPUT_LENGTH` — and `parseNAPTR` would then reject what this
+  // function just produced. Refuse here rather than emit unparseable content.
+  const composed = `${o ?? 0} ${p ?? 0} ${flags} ${service} ${regexp} ${replacement}`;
+  return composed.length <= MAX_NAPTR_INPUT_LENGTH ? composed : "";
 };

@@ -358,6 +358,40 @@ test("expandSPFMacro basic tokens", () => {
   assert.equal(tokens[5], "%");
 });
 
+test("expandSPFMacro expands %_ that is not followed by a space", () => {
+  const ctx = {
+    domain: "example.com",
+    ip: "1.2.3.4",
+    sender: "user@example.com",
+  };
+  // Regression: the alternation used to read `%_ ` — with a trailing space — so
+  // the escape only expanded when a literal space happened to follow it. A bare
+  // `%_`, which is the whole point of the escape, was emitted verbatim.
+  assert.equal(expandSPFMacro("%_", ctx), " ");
+  assert.equal(expandSPFMacro("%_%_", ctx), "  ");
+  assert.equal(expandSPFMacro("a%_b", ctx), "a b");
+  assert.equal(expandSPFMacro("%{d}%_%{i}", ctx), "example.com 1.2.3.4");
+  // The previously-working form must keep working: the escape expands and the
+  // following literal space survives as itself.
+  assert.equal(expandSPFMacro("%_ ", ctx), "  ");
+});
+
+test("expandSPFMacro exactly expands escapes and hostile suffix sentinels", () => {
+  const out = expandSPFMacro(
+    "escapes=[%%][%_][%-];sender=[%{s}.attacker.invalid];local=[%{l}.attacker.invalid];domain=[%{d}.attacker.invalid];ip=[%{i}.attacker.invalid]",
+    {
+      domain: "domain-sentinel.example",
+      ip: "203.0.113.77",
+      sender: "local-sentinel@sender-sentinel.example",
+    },
+  );
+
+  assert.equal(
+    out,
+    "escapes=[%][ ][%20];sender=[local-sentinel@sender-sentinel.example.attacker.invalid];local=[local-sentinel.attacker.invalid];domain=[domain-sentinel.example.attacker.invalid];ip=[203.0.113.77.attacker.invalid]",
+  );
+});
+
 test("SPF URL host checks use parsed normalized exact hosts", () => {
   assert.equal(
     hasExactHttpHost("https://example.com/path", "example.com"),
