@@ -586,7 +586,7 @@ export function expandSPFMacro(
   ctx: { domain: string; ip: string; sender?: string },
 ) {
   // simple escape sequences
-  return template.replace(/%{([^}]+)}|%%|%_ |%-/g, (m, g1) => {
+  return template.replace(/%{([^}]+)}|%%|%_|%-/g, (m, g1) => {
     if (m === "%%") return "%";
     if (m === "%_") return " ";
     if (m === "%-") return "%20";
