@@ -82,24 +82,36 @@ function parseSerializedError(error: unknown): unknown {
 }
 
 function redact(value: string, maxLength = MAX_DETAIL_LENGTH): string {
-  return value
-    .replace(
-      /([?&](?:api[_-]?key|api[_-]?token|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|auth|cookie)=)[^&#\s]*/gi,
-      "$1[redacted]",
-    )
-    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(
-      /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
-      "$2=[redacted]",
-    )
-    .replace(/\b(https?:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1[redacted]@")
-    .replace(
-      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-      "[redacted-jwt]",
-    )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, maxLength);
+  return (
+    value
+      // Diagnostics are printed to a terminal and pasted into bug reports. A raw
+      // ESC from an upstream body repaints the operator's screen, and the other
+      // C0 controls (NUL, BEL, backspace) can hide the text that follows them.
+      // Line breaks and tabs are real separators, so they collapse to a space
+      // rather than vanishing; everything else in the class is dropped outright.
+      .replace(/\p{Cc}/gu, (character) =>
+        character === "\t" || character === "\n" || character === "\r"
+          ? " "
+          : "",
+      )
+      .replace(
+        /([?&](?:api[_-]?key|api[_-]?token|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|auth|cookie)=)[^&#\s]*/gi,
+        "$1[redacted]",
+      )
+      .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(
+        /(["']?)(authorization|proxy[-_ ]?authorization|api[-_ ]?(?:key|token)|x[-_ ]?auth[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|password|cookie|set[-_ ]?cookie)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+        "$2=[redacted]",
+      )
+      .replace(/\b(https?:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1[redacted]@")
+      .replace(
+        /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+        "[redacted-jwt]",
+      )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, maxLength)
+  );
 }
 
 function safeEndpoint(endpoint?: string): string | undefined {
@@ -1050,14 +1062,42 @@ function decodeHtmlTextEntitiesOnce(value: string): string {
   });
 }
 
+/**
+ * Remove comment and executable element *content*, not just their delimiters.
+ *
+ * Every terminator is optional (`(?:-->|$)`, `(?:<\/\1\s*>|$)`): a truncated
+ * body or a hand-written proxy page routinely opens a `<script>` or `<!--` and
+ * never closes it. Anchored on the closing delimiter alone the region would not
+ * match, the lone opening tag would then be removed as an ordinary tag, and the
+ * script body would be emitted as if it were prose. The final pass sweeps up
+ * orphan opening or closing tags left by either branch.
+ */
+function stripExecutableHtmlText(value: string): string {
+  return value
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, " ")
+    .replace(/<\/?(?:script|style)\b[^>]*(?:>|$)/gi, " ");
+}
+
+/**
+ * The visible prose of an HTML fragment, with no markup left executable.
+ *
+ * Strip, decode once, then strip again. The second pass is the point: decoding
+ * turns `&lt;script&gt;` back into real markup, so a single strip-then-decode
+ * pipeline hands the decoded tag straight to the diagnostic. Decoding stays
+ * one-shot, so `&amp;lt;` still reads as the literal `&lt;` it encodes.
+ */
+function htmlVisibleText(value: string): string {
+  const withoutMarkup = stripExecutableHtmlText(value).replace(/<[^>]+>/g, " ");
+  return stripExecutableHtmlText(decodeHtmlTextEntitiesOnce(withoutMarkup));
+}
+
 function summarizeHtmlResponse(bodyText: string): string {
-  const title = bodyText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  const visibleText = decodeHtmlTextEntitiesOnce(
-    bodyText
-      .replace(/<!--[\s\S]*?-->/g, " ")
-      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<[^>]+>/g, " "),
-  );
+  const rawTitle = bodyText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  // The title is interpolated into the message, so it needs the same treatment
+  // as the body — a `<title>` can carry markup of its own.
+  const title = rawTitle ? htmlVisibleText(rawTitle) : undefined;
+  const visibleText = htmlVisibleText(bodyText);
   const summary = combineDetails(
     title ? `page title: ${title}` : undefined,
     visibleText,

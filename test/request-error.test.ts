@@ -510,7 +510,14 @@ test("summarizes HTML failures without exposing markup or secrets", () => {
   const error = requestErrorFromResponse(
     response,
     "/verify-token",
-    "<!doctype html><html><head><title>Proxy login</title></head><body><script>token=script-secret</script><h1>Gateway unavailable</h1><p>password=body-secret</p></body></html>",
+    [
+      "<!doctype html><html><head>",
+      "<title><script>alert('TITLE_MARKER')</script>Proxy login</title>",
+      "<style>.a{background:url(STYLE_MARKER)}</style></head><body>",
+      "<!-- COMMENT_MARKER --><script>alert('SCRIPT_MARKER')</script>",
+      "<h1>Gateway unavailable</h1><p>password=body-secret</p>",
+      "</body></html>",
+    ].join(""),
     "POST",
     "https://backend.example.test/api/verify-token",
   );
@@ -521,7 +528,7 @@ test("summarizes HTML failures without exposing markup or secrets", () => {
   assert.match(error.message, /Gateway unavailable/);
   assert.doesNotMatch(
     error.message,
-    /<html|<script|script-secret|body-secret/i,
+    /<html|<script|<style|<!--|TITLE_MARKER|STYLE_MARKER|COMMENT_MARKER|SCRIPT_MARKER|body-secret/i,
   );
 
   const malformedHtml = malformedResponseError(
@@ -558,6 +565,7 @@ test("decodes HTML diagnostic entities exactly once without losing metadata", ()
       "<p>Upstream &lt;edge&gt; says &quot;retry&quot; &amp; wait.</p>",
       "<p>Encoded marker: &amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</p>",
       "<p>Encoded terminal marker: &#27;[31m password=body-secret</p>",
+      `<p>Raw terminal marker: ${String.fromCharCode(27)}[32m safe diagnostic</p>`,
       "</body></html>",
     ].join(""),
     "POST",
@@ -586,12 +594,150 @@ test("decodes HTML diagnostic entities exactly once without losing metadata", ()
   assert.doesNotMatch(error.message, /Encoded marker: <script>/i);
   assert.match(error.message, /Encoded terminal marker: &#27;\[31m/);
   assert.equal(error.message.includes(`${String.fromCharCode(27)}[31m`), false);
+  assert.match(error.message, /Raw terminal marker:/);
+  assert.equal(error.message.includes(String.fromCharCode(27)), false);
   assert.doesNotMatch(error.message, /body-secret|hidden/);
 
   const formatted = formatRequestError(error);
   assert.match(formatted, /status 502 Bad Gateway/);
   assert.match(formatted, /request ID ray-html-safe/);
   assert.match(formatted, /retry after 30/);
+});
+
+/**
+ * A `<script>`, `<style>` or `<!--` that is never closed — truncated bodies and
+ * hand-written proxy pages produce these constantly. A stripper anchored only on
+ * the closing delimiter fails to match, the lone opening tag is then removed as
+ * an ordinary tag, and the executable body is emitted as if it were prose.
+ */
+test("unterminated script, style and comment bodies never reach the diagnostic", () => {
+  const htmlResponse = () =>
+    new Response("", {
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+
+  const unterminatedScript = requestErrorFromResponse(
+    htmlResponse(),
+    "/zones",
+    "<html><body><h1>Gateway unavailable</h1><script>alert('UNCLOSED_SCRIPT_MARKER')",
+    "GET",
+  );
+  assert.match(unterminatedScript.message, /Gateway unavailable/);
+  assert.doesNotMatch(
+    unterminatedScript.message,
+    /UNCLOSED_SCRIPT_MARKER|alert\(/i,
+  );
+
+  const unterminatedStyle = requestErrorFromResponse(
+    htmlResponse(),
+    "/zones",
+    "<html><body><h1>Gateway unavailable</h1><style>.a{content:'UNCLOSED_STYLE_MARKER'}",
+    "GET",
+  );
+  assert.match(unterminatedStyle.message, /Gateway unavailable/);
+  assert.doesNotMatch(unterminatedStyle.message, /UNCLOSED_STYLE_MARKER/i);
+
+  const unterminatedComment = requestErrorFromResponse(
+    htmlResponse(),
+    "/zones",
+    "<html><body><h1>Gateway unavailable</h1><!-- UNCLOSED_COMMENT_MARKER",
+    "GET",
+  );
+  assert.match(unterminatedComment.message, /Gateway unavailable/);
+  assert.doesNotMatch(
+    unterminatedComment.message,
+    /UNCLOSED_COMMENT_MARKER|<!--/i,
+  );
+
+  const unterminatedInTitle = requestErrorFromResponse(
+    htmlResponse(),
+    "/zones",
+    "<html><head><title>Proxy login<script>alert('UNCLOSED_TITLE_MARKER')</title></head><body><h1>Gateway unavailable</h1></body></html>",
+    "GET",
+  );
+  assert.match(unterminatedInTitle.message, /Proxy login/);
+  assert.doesNotMatch(
+    unterminatedInTitle.message,
+    /UNCLOSED_TITLE_MARKER|<script/i,
+  );
+});
+
+/**
+ * Entities must be decoded, or `&lt;edge&gt;` reads as noise — but decoding is
+ * the last thing that happens on main, so `&lt;script&gt;` decodes *back into*
+ * markup after the stripper has already run and lands in the diagnostic verbatim.
+ * The fix strips, decodes, then strips what decoding revealed.
+ */
+test("entity-encoded markup cannot decode back into the diagnostic", () => {
+  const response = new Response("", {
+    status: 502,
+    statusText: "Bad Gateway",
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+  const error = requestErrorFromResponse(
+    response,
+    "/zones",
+    [
+      "<html><head><title>&lt;script&gt;alert('ENCODED_TITLE_MARKER')&lt;/script&gt;Proxy</title></head>",
+      "<body><h1>Gateway unavailable</h1>",
+      "<p>&lt;script&gt;alert('ENCODED_BODY_MARKER')&lt;/script&gt;</p>",
+      "</body></html>",
+    ].join(""),
+    "GET",
+  );
+  assert.match(error.message, /Gateway unavailable/);
+  assert.match(error.message, /Proxy/);
+  assert.doesNotMatch(error.message, /<script|<\/script/i);
+  assert.doesNotMatch(
+    error.message,
+    /ENCODED_TITLE_MARKER|ENCODED_BODY_MARKER/i,
+  );
+});
+
+/**
+ * Diagnostics are printed to a terminal and copied into bug reports. A raw
+ * `ESC` in a server-supplied message repaints the operator's screen; other C0
+ * controls (NUL, BEL, backspace) can hide text that follows them. `redact` is
+ * the single choke point every detail passes through, so the guard belongs there.
+ */
+test("control and terminal escape sequences never survive redaction", () => {
+  const escape = String.fromCharCode(27);
+  const response = new Response("", {
+    status: 500,
+    statusText: "Internal Server Error",
+    headers: { "content-type": "application/json" },
+  });
+  const error = requestErrorFromResponse(
+    response,
+    "/zones",
+    JSON.stringify({
+      message: `Upstream${escape}[31m failed${String.fromCharCode(7)} at${String.fromCharCode(0)} origin${String.fromCharCode(8)}`,
+    }),
+    "GET",
+  );
+  assert.match(error.message, /Upstream/);
+  assert.match(error.message, /failed/);
+  assert.match(error.message, /origin/);
+  assert.equal(error.message.includes(escape), false);
+  assert.equal(error.message.includes(String.fromCharCode(7)), false);
+  assert.equal(error.message.includes(String.fromCharCode(8)), false);
+  assert.equal(error.message.includes(String.fromCharCode(0)), false);
+  assert.doesNotMatch(error.message, /\p{Cc}/u);
+
+  const withNewlines = requestErrorFromResponse(
+    new Response("", {
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: { "content-type": "application/json" },
+    }),
+    "/zones",
+    JSON.stringify({ message: "line one\nline two\ttabbed\rreturned" }),
+    "GET",
+  );
+  assert.match(withNewlines.message, /line one line two tabbed returned/);
+  assert.doesNotMatch(withNewlines.message, /\p{Cc}/u);
 });
 
 /**
