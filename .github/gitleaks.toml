@@ -172,9 +172,33 @@ keywords = ["sk-ant-", "sk-"]
 # Allowlists
 #
 # Every entry below is path-scoped to named files or to git-ignored generated
-# trees. There is deliberately no rule that suppresses "anything under test/"
-# or "anything that looks like a fixture": the repository's fixture tokens are
-# written as obviously fake strings and are expected to survive a scan.
+# trees, with the single exception of the value-scoped entry at the end of this
+# file, which is pinned to one exact literal. There is deliberately no rule that
+# suppresses "anything under test/" or "anything that looks like a fixture": the
+# repository's fixture tokens are written as obviously fake strings and are
+# expected to survive a scan.
+#
+# READ THIS BEFORE ADDING A `paths` ENTRY FOR A SOURCE FILE.
+#
+# `paths` in a global allowlist is a FILE FILTER, not a qualifier. It does not
+# mean "ignore the reviewed value when it appears in this file" - it means "stop
+# scanning this file". In a `gitleaks dir` run the file is dropped before any
+# rule executes, so every credential shape in it becomes invisible, including
+# ones added later by someone who never read this policy.
+#
+# `condition = "AND"` does NOT contain it. AND constrains the git scan only; the
+# dir scan still skips the file.
+#
+# Measured, not assumed (Gitleaks 8.30.1): with
+# `src-tauri/crates/bc-dns-tools/src/import.rs` named in a `paths` entry, a
+# Porkbun key planted in that file went UNDETECTED by `gitleaks dir`, and the
+# scan read exactly 46142 fewer bytes - the size of the file. Suppressing the
+# same value by value alone leaves the planted key detected in both scan modes.
+#
+# So the entries below are paths only where skipping the whole file is the
+# intent: generated trees, lockfiles, and two fixture files that are fictional
+# end to end. To silence one value in a real source file, scope it by value,
+# the way the entry at the end of this file does.
 # ---------------------------------------------------------------------------
 
 [[allowlists]]
@@ -207,4 +231,40 @@ paths = [
 description = "This policy file, which necessarily spells out the credential shapes it detects."
 paths = [
     '''^\.github/gitleaks\.toml$''',
+]
+
+# The one value-scoped entry in this policy.
+#
+# `mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==` is the OPENPGPKEY row of the
+# `(record type, sample content)` table that drives the DNS record-type
+# validation tests in `src-tauri/crates/bc-dns-tools/src/import.rs`, inside that
+# file's `#[cfg(test)] mod tests`. It sits alongside the DNSKEY, DS and SMIMEA
+# fixtures and exists only so the parser sees a realistically shaped OpenPGP
+# key. It is not a credential: it decodes to the OpenPGP public-key packet
+# header `99 02 0d 04` followed by the ASCII text "dandomKeyDataForTestingOnly",
+# so there is no key material in it at all. Upstream `generic-api-key` scores it
+# on entropy alone and cannot tell it apart from a real token.
+#
+# This is allowlisted rather than rewritten because the history is scanned too.
+# The finding is attributed to the commit that introduced the line (5972d00,
+# 2026-08-10), so editing the fixture today cannot clear it; measured against
+# Gitleaks 8.30.1, replacing the value adds a second finding instead of removing
+# the first, because a plainer base64 stand-in trips the same entropy rule.
+#
+# The entry is deliberately scoped by value alone, with no `paths` filter, even
+# though pinning it to import.rs reads as narrower. A `paths` filter in a global
+# allowlist is a file filter: in a `gitleaks dir` scan it drops the whole file
+# before any rule runs, so import.rs would stop being scanned at all. Measured
+# with Gitleaks 8.30.1: with a `paths` entry a Porkbun key planted in that file
+# goes undetected by `gitleaks dir` and the scan reads 46142 fewer bytes, exactly
+# the size of the file. `condition = "AND"` does not prevent that; it constrains
+# the git scan only. Without a `paths` filter, both `gitleaks git` and
+# `gitleaks dir` still flag the planted key, and only this literal is hidden.
+#
+# The regex is anchored to the whole secret, so it suppresses this exact 44-byte
+# string and nothing that merely contains it.
+[[allowlists]]
+description = "DNS record-type test fixture in bc-dns-tools, pinned to one exact literal. The value is a fake OpenPGP packet whose payload is the ASCII text \"dandomKeyDataForTestingOnly\", carried in git history since 5972d00."
+regexes = [
+    '''^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$''',
 ]

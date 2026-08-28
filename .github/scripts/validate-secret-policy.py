@@ -20,6 +20,14 @@ from typing import Any, Iterable
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 POLICY_RELATIVE_PATH = ".github/gitleaks.toml"
+# Gitleaks reads a repository-root `.gitleaksignore` automatically. Measured
+# against 8.30.1: a fingerprint listed there suppresses the finding, and
+# `--gitleaks-ignore-path` pointing at an empty file elsewhere does NOT override
+# it - the root file is still honoured. That makes it a second suppression
+# channel sitting outside this policy, so the gate refuses to run while one
+# exists with entries in it. (A `.gitleaksignore` in a subdirectory is ignored by
+# gitleaks, so only the root path is guarded.)
+IGNORE_RELATIVE_PATH = ".gitleaksignore"
 POLICY_REVIEW = ".github/RELEASE_SECURITY.md#secret-scanning-allowlist-register"
 POLICY_REVIEW_HEADING = "## Secret scanning allowlist register"
 POLICY_OWNER = "Better Cloudflare security maintainers"
@@ -47,6 +55,14 @@ APPROVED_RULES = {
 
 # Reviewed path allowlist. Nothing else may be suppressed, and every entry is
 # reproduced verbatim in the register document.
+#
+# Every entry here skips a whole file: `paths` in a global allowlist is a file
+# filter, not a qualifier, and a `gitleaks dir` run drops the file before any
+# rule executes (`condition = "AND"` does not contain that; it constrains the
+# git scan only). That is why this set holds only generated trees, lockfiles and
+# end-to-end fictional fixtures, and why `_reject_broad_path` guards it with
+# canaries. To silence one value in real source, add it to the value-scoped
+# allowlist below instead of naming the file here.
 APPROVED_ALLOWLIST_PATHS = {
     r"(^|/)node_modules/",
     r"(^|/)target/",
@@ -60,6 +76,23 @@ APPROVED_ALLOWLIST_PATHS = {
     r"^e2e/fixtures/demo-workspace\.ts$",
     r"^e2e/fixtures/demo-panels\.ts$",
     r"^\.github/gitleaks\.toml$",
+}
+
+# The single reviewed value-scoped global allowlist. It suppresses one exact
+# literal in one exact file: the OPENPGPKEY fixture in the bc-dns-tools record
+# type table, which is a fake OpenPGP packet carrying the ASCII text
+# "dandomKeyDataForTestingOnly". It is allowlisted rather than rewritten because
+# the history scan attributes the finding to the commit that introduced the line,
+# so editing the fixture today cannot clear it.
+#
+#
+# It carries no `paths` filter and must never gain one. A `paths` filter in a
+# global allowlist is a file filter: a `gitleaks dir` scan drops the whole file
+# before any rule runs, so scoping this entry to import.rs would stop that file
+# being scanned at all rather than narrowing what is hidden. `condition = "AND"`
+# does not prevent that either, so neither key is accepted here.
+APPROVED_VALUE_ALLOWLIST = {
+    "regexes": [r"^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$"],
 }
 
 # Only this rule may carry a value-shaped allowlist, and only for reserved
@@ -94,6 +127,14 @@ PROTECTED_CANARY_PATHS = (
     "src/lib/storage/storage.ts",
     "src-tauri/crates/bc-registrar/src/porkbun.rs",
     "src-tauri/crates/bc-mcp/src/transport.rs",
+    # Production zone-file parser, and the file most likely to be reached for.
+    # It carries the OPENPGPKEY fixture that the value-scoped allowlist below
+    # suppresses, so the tempting "simplification" is to path-allowlist the whole
+    # file instead. That would blind every rule to a real source file in a
+    # `gitleaks dir` run (measured: a planted Porkbun key went undetected and
+    # 46142 fewer bytes were read). Listing it here makes that form permanently
+    # unavailable rather than merely discouraged.
+    "src-tauri/crates/bc-dns-tools/src/import.rs",
     "src-tauri/tauri.conf.json",
     "test/storageManager.test.ts",
 )
@@ -108,6 +149,7 @@ ALLOWED_RULE_KEYS = {
     "allowlists",
 }
 ALLOWED_ALLOWLIST_KEYS = {"description", "paths"}
+ALLOWED_VALUE_ALLOWLIST_KEYS = {"description", "regexes"}
 ALLOWED_RULE_ALLOWLIST_KEYS = {"description", "regexTarget", "regexes"}
 
 
@@ -199,18 +241,28 @@ def _validate_allowlists(allowlists: Any) -> set[str]:
         raise PolicyError("policy must declare a non-empty [[allowlists]] array")
 
     observed: set[str] = set()
+    value_scoped = 0
     for allowlist in allowlists:
         if not isinstance(allowlist, dict):
             raise PolicyError("each global allowlist must be a table")
+        description = allowlist.get("description")
+        if not isinstance(description, str) or len(description) < 40:
+            raise PolicyError("every global allowlist needs a reviewed justification")
+
+        # An entry carrying either value-shaped key is judged against the one
+        # reviewed value-scoped allowlist, never against the path rules, so a
+        # value allowlist can neither slip through nor silently widen.
+        if "regexes" in allowlist or "condition" in allowlist:
+            _validate_value_allowlist(allowlist)
+            value_scoped += 1
+            continue
+
         extra = set(allowlist) - ALLOWED_ALLOWLIST_KEYS
         if extra:
             raise PolicyError(
                 "global allowlists may only suppress by path, got: "
                 f"{sorted(extra)}"
             )
-        description = allowlist.get("description")
-        if not isinstance(description, str) or len(description) < 40:
-            raise PolicyError("every global allowlist needs a reviewed justification")
         paths = allowlist.get("paths")
         if not isinstance(paths, list) or not paths:
             raise PolicyError("every global allowlist must list paths")
@@ -227,7 +279,38 @@ def _validate_allowlists(allowlists: Any) -> set[str]:
     missing = sorted(APPROVED_ALLOWLIST_PATHS - observed)
     if missing:
         raise PolicyError(f"reviewed allowlist paths are missing: {missing}")
+    if value_scoped != 1:
+        raise PolicyError(
+            "exactly one reviewed value-scoped allowlist is approved, found "
+            f"{value_scoped}"
+        )
     return observed
+
+
+def _validate_value_allowlist(allowlist: dict[str, Any]) -> None:
+    """Hold a value-scoped allowlist to the reviewed entry, character for character."""
+    # `paths` and `condition` are refused outright rather than reviewed. A path
+    # filter here would skip the whole file in a `gitleaks dir` scan instead of
+    # narrowing the suppression, and `condition` is only ever needed to tame one.
+    extra = set(allowlist) - ALLOWED_VALUE_ALLOWLIST_KEYS
+    if extra:
+        raise PolicyError(
+            "global allowlists may only suppress by path; the one reviewed "
+            "value-scoped entry suppresses by value alone and may not narrow "
+            f"itself with {sorted(extra)}, which would skip whole files instead"
+        )
+    for key, expected in APPROVED_VALUE_ALLOWLIST.items():
+        if allowlist.get(key) != expected:
+            raise PolicyError(
+                "global allowlists may only suppress by path unless they "
+                "reproduce the reviewed value-scoped entry exactly; "
+                f"{key} drifted to {allowlist.get(key)!r}"
+            )
+    # Anchoring is what keeps the entry to one literal, so it is checked rather
+    # than trusted to the reviewed string above.
+    for regex in APPROVED_VALUE_ALLOWLIST["regexes"]:
+        if not regex.startswith("^") or not regex.endswith("$"):
+            raise PolicyError(f"value-scoped allowlist regex is not anchored: {regex}")
 
 
 def _reject_broad_path(path: str) -> None:
@@ -259,8 +342,34 @@ def validate_config(config_path: Path, *, today: dt.date | None = None) -> set[s
 
     rules = _validate_rules(config.get("rules"))
     _validate_allowlists(config.get("allowlists"))
+    _validate_no_unreviewed_ignore_file()
     _validate_review_document(today)
     return rules
+
+
+def _validate_no_unreviewed_ignore_file() -> None:
+    """Refuse to scan while an unreviewed `.gitleaksignore` can suppress findings.
+
+    Every suppression in this repository goes through the reviewed policy file so
+    that it is registered, justified and covered by this validator. A root
+    `.gitleaksignore` bypasses all of that: gitleaks reads it on its own, and no
+    flag on the scan step turns it off.
+    """
+    ignore_file = REPOSITORY_ROOT / IGNORE_RELATIVE_PATH
+    if not ignore_file.is_file():
+        return
+    entries = [
+        line.strip()
+        for line in ignore_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if entries:
+        raise PolicyError(
+            f"{IGNORE_RELATIVE_PATH} is an unreviewed suppression channel and "
+            f"carries {len(entries)} entry/entries: {entries[:3]}. Suppress "
+            f"through {POLICY_RELATIVE_PATH} instead, where the register and "
+            "this validator can hold it to review."
+        )
 
 
 def _validate_review_document(today: dt.date) -> None:
@@ -277,8 +386,8 @@ def _validate_review_document(today: dt.date) -> None:
         raise PolicyError(f"policy review anchor is absent: {POLICY_REVIEW_HEADING}")
     # Markdown tables escape the pipes inside the path patterns; compare against
     # the unescaped text so the register stays readable.
-    register = text.partition(POLICY_REVIEW_HEADING)[2].partition("\n## ")[0]
-    register = register.replace("\\|", "|")
+    register_raw = text.partition(POLICY_REVIEW_HEADING)[2].partition("\n## ")[0]
+    register = register_raw.replace("\\|", "|")
     if POLICY_OWNER not in register:
         raise PolicyError("the register must name the reviewing owner")
     if POLICY_REVIEW_DEADLINE.isoformat() not in register:
@@ -289,6 +398,34 @@ def _validate_review_document(today: dt.date) -> None:
     for path in APPROVED_ALLOWLIST_PATHS:
         if f"`{path}`" not in register:
             raise PolicyError(f"the register does not document allowlist path {path}")
+    # Row-scoped, not a substring match: the value must be tabled like every OSV
+    # exception, so a passing mention in prose cannot stand in for a register
+    # entry. Cells are compared after stripping, because Prettier pads every cell
+    # out to the width of the widest row - a fixed-width literal would never
+    # match and the assertion would pass vacuously.
+    tabled = {cell for row in _register_rows(register_raw) for cell in row}
+    for regex in APPROVED_VALUE_ALLOWLIST["regexes"]:
+        if f"`{regex}`" not in tabled:
+            raise PolicyError(
+                "the register does not table the allowlisted value "
+                f"{regex} (a prose mention does not count)"
+            )
+
+
+def _register_rows(register: str) -> list[list[str]]:
+    """Split the register's markdown tables into stripped cells, one list per row.
+
+    Parsed from the raw register text rather than the pipe-unescaped copy, so a
+    `\\|` inside a pattern cannot be mistaken for a cell boundary.
+    """
+    rows: list[list[str]] = []
+    for line in register.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        rows.append(cells)
+    return rows
 
 
 def _step_block(text: str, needle: str, name: str) -> str:
@@ -382,6 +519,16 @@ def validate_workflow_text(name: str, text: str) -> None:
                 )
         if "--redact" not in step:
             raise PolicyError(f"{name}: the {label} must redact its report")
+        # Without this flag a `gitleaks:allow` comment on the offending line
+        # silently drops the finding. Measured against 8.30.1: a planted Porkbun
+        # key with that comment went undetected, and the flag brought it back.
+        # That is a suppression channel in ordinary source, reviewable by nobody,
+        # so both scans must refuse to honour it.
+        if "--ignore-gitleaks-allow" not in step:
+            raise PolicyError(
+                f"{name}: the {label} must pass --ignore-gitleaks-allow, or a "
+                "`gitleaks:allow` comment can suppress a finding unreviewed"
+            )
 
 
 def validate_workflows(workflows: Iterable[Path]) -> None:
@@ -428,6 +575,7 @@ def main() -> int:
     print(
         f"Secret scanning policy valid: {len(APPROVED_RULES)} reviewed rules, "
         f"{len(APPROVED_ALLOWLIST_PATHS)} path-scoped allowlist entries, "
+        f"{len(APPROVED_VALUE_ALLOWLIST['regexes'])} value-scoped allowlist entry, "
         f"Gitleaks {GITLEAKS_VERSION} pinned by digest"
     )
     return 0
