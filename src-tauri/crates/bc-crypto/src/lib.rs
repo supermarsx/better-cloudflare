@@ -370,6 +370,87 @@ mod tests {
 
     impl TryCryptoRng for DeterministicCryptoRng {}
 
+    /// Known-answer tests pinning the on-disk envelope format and the KDF.
+    ///
+    /// The envelopes below were produced by the pre-upgrade crypto stack
+    /// (aes-gcm 0.10, pbkdf2 0.12, sha2 0.10, rand 0.8, base64 0.22) at commit
+    /// a6d4f65, and are frozen here deliberately. Every other test in this
+    /// module encrypts and decrypts with the same code, so none of them can
+    /// detect a change to the stored format - they would agree with themselves
+    /// after a silent break. These cannot: if a future change alters the PBKDF2
+    /// parameters, the salt/nonce layout, the AAD, the version prefix or the
+    /// base64 alphabet, real users' existing vaults stop opening and this test
+    /// goes red first.
+    ///
+    /// Do not regenerate these constants to make a failure go away. A failure
+    /// here means previously stored credentials have become unreadable.
+    const FROZEN_ENVELOPES: &[(&str, &str, &str)] = &[
+        (
+            "correct horse battery staple",
+            "cf-api-token-AbCdEf0123456789",
+            "bc1:k092x5lUJQMKctgMNC1QSSBmkbSCV44EuZTtJRQV6WSHavnS8rDz0oyHBGlaqicBNhpER8+STGQdCkfx22PIjcTeudHLHEAYnw==",
+        ),
+        (
+            "p@ssw0rd with spaces",
+            "vault-secret-payload-\u{e9}\u{4f60}\u{597d}\u{1f511}",
+            "bc1:+r5xAZFvhy+QzXtKamfs7XMmOZoSBdFWKyATuNVWkaSglMrmC9INnLDbVormKCjmKO2e07txrR0CS+uZjrzYoHCltTsoYX/0y/IEASI=",
+        ),
+        (
+            "\u{fc}nicode-p\u{e4}ssword",
+            "{\"apiKey\":\"deadbeef\",\"email\":\"a@b.test\"}",
+            "bc1:NtpL0kJR66Zk9WvaijIpvXaaaC6qi2zs6Sttauxo4WjzYxuS5fXzQWEvI4d136v1mKTZfdAGfnagkr9/wj2ZRGx6pClv7dY4hNkL9cIo4+uQtREJ",
+        ),
+    ];
+
+    #[test]
+    fn vaults_written_before_the_dependency_upgrade_still_decrypt() {
+        let crypto = CryptoManager::new(EncryptionConfig::default()).unwrap();
+        for (password, expected, envelope) in FROZEN_ENVELOPES {
+            let recovered = crypto
+                .decrypt(envelope, password)
+                .unwrap_or_else(|error| panic!("stored vault became unreadable: {error:?}"));
+            assert_eq!(&recovered, expected, "plaintext changed for {password}");
+        }
+    }
+
+    #[test]
+    fn a_frozen_envelope_still_rejects_the_wrong_password() {
+        // Guards the test above: it must be authenticating, not merely returning bytes.
+        let crypto = CryptoManager::new(EncryptionConfig::default()).unwrap();
+        let (_, _, envelope) = FROZEN_ENVELOPES[0];
+        assert!(crypto.decrypt(envelope, "not-the-password").is_err());
+    }
+
+    #[test]
+    fn pbkdf2_matches_the_published_rfc_7914_vectors() {
+        // RFC 7914 section 11. Pins the KDF independently of the envelope, so a
+        // sha2/pbkdf2 bump that changed the derived key fails here even if the
+        // envelope layout is untouched.
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        let mut out = [0u8; 64];
+        pbkdf2_hmac::<Sha256>(b"passwd", b"salt", 1, &mut out);
+        assert_eq!(
+            hex(&out),
+            concat!(
+                "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
+                "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"
+            )
+        );
+
+        let mut out = [0u8; 64];
+        pbkdf2_hmac::<Sha256>(b"Password", b"NaCl", 80_000, &mut out);
+        assert_eq!(
+            hex(&out),
+            concat!(
+                "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56",
+                "a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d"
+            )
+        );
+    }
+
     fn decode_versioned(encrypted: &str) -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
             .decode(encrypted.strip_prefix(ENVELOPE_PREFIX).unwrap())
