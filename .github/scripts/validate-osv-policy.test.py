@@ -17,12 +17,17 @@ POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 ROOT = SCRIPT.resolve().parents[2]
 
-# Advisories retired by the tauri-plugin 2.6.3 upgrade, which moved tauri-utils
-# onto the "build-2" (dom_query) HTML backend and removed the archived
-# kuchikiki -> selectors -> phf_generator stack from the lockfile. They must stay
-# retired: the packages they name are gone, so re-listing either one would make
-# the validator fail closed as a stale exception.
+# Advisories retired by dependency upgrades rather than renewed. They must stay
+# retired: the packages they name are gone from the lockfile, so re-listing any
+# of them would make the validator fail closed as a stale exception. Each group
+# is held retired by a version floor in POLICY.MINIMUM_VERSIONS.
 RETIRED_EXCEPTIONS = {
+    # keyring 4 replaced the secret-service/zbus 3 credential stack with its own
+    # per-platform backends, removing both packages from the graph.
+    "RUSTSEC-2024-0384": ("instant", "0.1.13"),
+    "RUSTSEC-2024-0388": ("derivative", "2.2.0"),
+    # tauri-plugin 2.6.3 moved tauri-utils onto the "build-2" (dom_query) HTML
+    # backend, removing the archived kuchikiki -> selectors -> phf_generator stack.
     "RUSTSEC-2025-0057": ("fxhash", "0.2.1"),
     "RUSTSEC-2026-0097": ("rand", "0.7.3"),
 }
@@ -154,7 +159,7 @@ class OsvPolicyContractTests(unittest.TestCase):
                 POLICY.REPOSITORY_ROOT = old_root
 
     def test_security_floor_regression_fails(self) -> None:
-        """Downgrading tauri-plugin would resurrect the retired advisories."""
+        """Downgrading tauri-plugin would resurrect the fxhash/rand advisories."""
         with tempfile.TemporaryDirectory() as directory:
             lockfile = _synthetic_lock(
                 Path(directory), downgrade=("tauri-plugin", "2.5.2")
@@ -162,6 +167,18 @@ class OsvPolicyContractTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 POLICY.PolicyError,
                 r"tauri-plugin resolved below security floor 2\.6\.3",
+            ):
+                POLICY.validate_config(
+                    ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
+                )
+
+    def test_keyring_floor_regression_fails(self) -> None:
+        """Downgrading keyring would resurrect the derivative/instant advisories."""
+        with tempfile.TemporaryDirectory() as directory:
+            lockfile = _synthetic_lock(Path(directory), downgrade=("keyring", "2.3.3"))
+            with self.assertRaisesRegex(
+                POLICY.PolicyError,
+                r"keyring resolved below security floor 4\.1\.6",
             ):
                 POLICY.validate_config(
                     ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)

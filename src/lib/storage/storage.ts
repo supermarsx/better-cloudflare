@@ -1501,11 +1501,7 @@ export class StorageManager {
   }
 
   getTopologyGeoProvider():
-    | "auto"
-    | "ipwhois"
-    | "ipapi_co"
-    | "ip_api"
-    | "internal" {
+    "auto" | "ipwhois" | "ipapi_co" | "ip_api" | "internal" {
     const value = this.data.topologyGeoProvider;
     if (
       value === "ipwhois" ||

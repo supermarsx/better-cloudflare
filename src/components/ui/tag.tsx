@@ -16,7 +16,8 @@ const tagVariants = cva("ui-tag", {
 });
 
 export interface TagProps
-  extends React.HTMLAttributes<HTMLSpanElement>,
+  extends
+    React.HTMLAttributes<HTMLSpanElement>,
     VariantProps<typeof tagVariants> {}
 
 export function Tag({ className, variant, ...props }: TagProps) {

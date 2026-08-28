@@ -118,11 +118,7 @@ type ZoneTopologyTabProps = {
   dohCustomUrl?: string;
   exportConfirmPath?: boolean;
   exportFolderPreset?:
-    | "system"
-    | "documents"
-    | "downloads"
-    | "desktop"
-    | "custom";
+    "system" | "documents" | "downloads" | "desktop" | "custom";
   exportCustomPath?: string;
   copyActions?: Array<"mermaid" | "svg" | "png">;
   exportActions?: Array<"mermaid" | "svg" | "png" | "pdf">;

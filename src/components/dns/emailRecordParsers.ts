@@ -68,14 +68,7 @@ function parseMailtoList(value: string | undefined): string[] {
 
 export type SpfQualifier = "+" | "-" | "~" | "?";
 export type SpfMechanismType =
-  | "all"
-  | "include"
-  | "a"
-  | "mx"
-  | "ptr"
-  | "ip4"
-  | "ip6"
-  | "exists";
+  "all" | "include" | "a" | "mx" | "ptr" | "ip4" | "ip6" | "exists";
 
 export type SpfMechanism = {
   qualifier: SpfQualifier;

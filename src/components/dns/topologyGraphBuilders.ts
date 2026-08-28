@@ -163,13 +163,7 @@ const CHAIN_HOPS_LIMIT = 8;
 // ── Mermaid writer ──────────────────────────────────────────────────────────
 
 type NodeClass =
-  | "zone"
-  | "record"
-  | "target"
-  | "ip"
-  | "service"
-  | "policy"
-  | "disabled";
+  "zone" | "record" | "target" | "ip" | "service" | "policy" | "disabled";
 type EdgeStyle = "solid" | "dotted";
 
 type GraphGroup = { id: string; title: string; nodeLines: string[] };

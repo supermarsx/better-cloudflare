@@ -152,8 +152,7 @@ export function WindowTitleBar() {
   useEffect(() => {
     const onPrefs = (event: Event) => {
       const detail = (event as CustomEvent).detail as
-        | { confirmWindowClose?: unknown }
-        | undefined;
+        { confirmWindowClose?: unknown } | undefined;
       if (!detail) return;
       if (typeof detail.confirmWindowClose === "boolean") {
         setConfirmWindowClose(detail.confirmWindowClose);

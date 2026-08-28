@@ -1,12 +1,7 @@
 import type { McpToolDescriptor } from "@/lib/api/tauri-client";
 
 export type McpToolRisk =
-  | "read"
-  | "write"
-  | "bulk-sensitive"
-  | "destructive"
-  | "credential"
-  | "admin";
+  "read" | "write" | "bulk-sensitive" | "destructive" | "credential" | "admin";
 
 export interface McpToolCategory {
   id: string;

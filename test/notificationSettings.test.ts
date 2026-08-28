@@ -25,8 +25,7 @@ interface FixtureCase {
   name: string;
   input: unknown;
   expectedNormalized:
-    | "$defaults"
-    | ({ $defaults: true } & Record<string, unknown>);
+    "$defaults" | ({ $defaults: true } & Record<string, unknown>);
 }
 
 interface Fixture {

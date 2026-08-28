@@ -404,8 +404,7 @@ function metadataFromUnknown(error: unknown): ExtractedRequestMetadata {
     status: safeStatus(firstField(records, ["status", "statusCode"])),
     statusText: safeLabel(
       firstField(records, ["statusText", "status_message"]) as
-        | string
-        | undefined,
+        string | undefined,
       MAX_HEADER_VALUE_LENGTH,
     ),
     code: safeCode(firstField(records, ["code", "errorCode"])),

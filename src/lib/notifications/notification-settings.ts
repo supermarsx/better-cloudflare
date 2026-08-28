@@ -21,13 +21,7 @@ export type QuietHoursBehaviour = "silence" | "hold";
 export type NotificationKindKey = "domainExpiry" | "recordChange" | "service";
 export type RecordChangeKind = "added" | "changed" | "removed";
 export type RecordChangeField =
-  | "content"
-  | "ttl"
-  | "proxied"
-  | "priority"
-  | "comment"
-  | "name"
-  | "type";
+  "content" | "ttl" | "proxied" | "priority" | "comment" | "name" | "type";
 
 export interface NotificationServiceSettings {
   /** Master switch; `false` keeps the task idle (no network). */

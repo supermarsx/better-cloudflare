@@ -59,16 +59,16 @@ test("AuditLogDialog loads entries in desktop mode", async () => {
       screen.getByText((content, element) =>
         Boolean(
           element?.tagName === "DIV" &&
-            element.classList.contains("font-medium") &&
-            /dns:create/.test(content),
+          element.classList.contains("font-medium") &&
+          /dns:create/.test(content),
         ),
       ),
     );
     const entryTimestamp = screen.getByText((content, element) =>
       Boolean(
         element?.tagName === "DIV" &&
-          element.classList.contains("text-muted-foreground") &&
-          /2026-01-01/i.test(content),
+        element.classList.contains("text-muted-foreground") &&
+        /2026-01-01/i.test(content),
       ),
     );
     assert.ok(entryTimestamp);

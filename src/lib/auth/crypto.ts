@@ -94,7 +94,7 @@ function encodeUtf8Bounded(
   value: string,
   maxBytes: number,
   field: string,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   if (value.length > maxBytes) {
     throw new Error(`${field} exceeds the ${maxBytes}-byte limit`);
   }
@@ -216,7 +216,7 @@ export class CryptoManager {
     }
   }
 
-  generateSalt(): Uint8Array {
+  generateSalt(): Uint8Array<ArrayBuffer> {
     const webcrypto = this.getWebCrypto();
     if (!webcrypto?.getRandomValues)
       throw new Error("Web Crypto API not available");
@@ -228,7 +228,7 @@ export class CryptoManager {
    *
    * @returns a 12-byte Uint8Array iv
    */
-  generateIV(): Uint8Array {
+  generateIV(): Uint8Array<ArrayBuffer> {
     const webcrypto = this.getWebCrypto();
     if (!webcrypto?.getRandomValues)
       throw new Error("Web Crypto API not available");
@@ -242,7 +242,10 @@ export class CryptoManager {
    * @param salt - a salt value to use with PBKDF2
    * @returns a derived CryptoKey suitable for encrypt/decrypt
    */
-  async deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+  async deriveKey(
+    password: string,
+    salt: Uint8Array<ArrayBuffer>,
+  ): Promise<CryptoKey> {
     validateConfig(this.config, false);
     if (password.length === 0) {
       throw new Error("Password must not be empty");
@@ -465,7 +468,7 @@ export class CryptoManager {
     field: string,
     maxChars: number,
     exactBytes?: number,
-  ): Uint8Array {
+  ): Uint8Array<ArrayBuffer> {
     if (
       base64.length === 0 ||
       base64.length > maxChars ||

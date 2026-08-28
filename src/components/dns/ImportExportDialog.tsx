@@ -94,7 +94,7 @@ export function preflightImportText(
     return null;
   };
 
-  for (let index = 0; index < text.length; ) {
+  for (let index = 0; index < text.length;) {
     const codePoint = text.codePointAt(index) ?? 0xfffd;
     const char = String.fromCodePoint(codePoint);
     const charUnits = codePoint > 0xffff ? 2 : 1;

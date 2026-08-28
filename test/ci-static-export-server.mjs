@@ -142,7 +142,7 @@ export function startStaticExportServer(options = {}) {
           new Error(
             pinned
               ? `Port ${basePort} is already in use and this run pinned it. ` +
-                "Free the port, or unset PORT/CI to let the server climb."
+                  "Free the port, or unset PORT/CI to let the server climb."
               : `No free TCP port was found in ${basePort}-${basePort + attempts - 1} on ${host}.`,
           ),
         );

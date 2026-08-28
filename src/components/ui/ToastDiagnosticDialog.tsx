@@ -56,8 +56,7 @@ export function ToastDiagnosticDialog({
   );
 }
 
-interface ToastDiagnosticTriggerProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+interface ToastDiagnosticTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   expanded: boolean;
 }
 
