@@ -1,0 +1,72 @@
+# Flatpak is not a Tauri bundler target, so the release workflow wraps the
+# `.deb` that the same job already built. Building from the finished package
+# keeps the Flatpak byte-identical in behaviour to the Debian artifact and
+# keeps the sandboxed build completely offline: the only source is a local
+# file, so nothing is fetched while `flatpak-builder` runs.
+#
+# `org.gnome.Platform` provides the WebKitGTK 4.1 stack that Tauri links
+# against, which is why the bundle stays small instead of carrying its own
+# copy of the web engine the way the AppImage does.
+#
+# Pin the current stable GNOME runtime, not the '47' the Tauri guide still
+# shows: GNOME runtimes are supported for roughly a year, so 47 (September
+# 2024) and 48 (March 2025) are both end-of-life. Shipping an EOL runtime
+# would put an unpatched WebKitGTK under an app that handles API tokens.
+# Verified against gnome-build-meta's `elements/sdk-platform.bst` on the
+# `gnome-50` branch, which still includes `sdk/gtk+-3.bst` and
+# `sdk/webkit2gtk-4.1.bst` — the two this app needs.
+id: com.bettercloudflare.app
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: better-cloudflare
+
+finish-args:
+  # Windowing and GPU acceleration for the webview.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=ipc
+  # The app is a Cloudflare DNS client; without egress it cannot do anything.
+  - --share=network
+  # Record-change and expiry notifications (tauri-plugin-notification).
+  - --talk-name=org.freedesktop.Notifications
+
+modules:
+  - name: better-cloudflare
+    buildsystem: simple
+    sources:
+      - type: file
+        path: better-cloudflare.deb
+    build-commands:
+      # Unpack the Debian package. `ar` yields control/data tarballs; only the
+      # data side carries the payload. The archive compression is whatever the
+      # Tauri bundler chose, so match it by glob rather than by name.
+      - |
+        set -eux
+        ar -x better-cloudflare.deb
+        mkdir -p payload
+        tar -xf data.tar.* -C payload
+
+        install -Dm755 payload/usr/bin/better-cloudflare \
+          /app/bin/better-cloudflare
+
+        # Flatpak only exports a desktop entry whose basename is the app ID.
+        desktop="$(find payload/usr/share/applications -name '*.desktop' | head -n1)"
+        test -n "$desktop"
+        install -Dm644 "$desktop" \
+          /app/share/applications/com.bettercloudflare.app.desktop
+        desktop-file-edit --set-icon=com.bettercloudflare.app \
+          /app/share/applications/com.bettercloudflare.app.desktop
+
+        # Icons must be renamed to the app ID for the same reason. Copy every
+        # size the package happens to ship rather than pinning a fixed list.
+        found_icon=0
+        for icon in payload/usr/share/icons/hicolor/*/apps/*.png; do
+          [ -e "$icon" ] || continue
+          size="$(basename "$(dirname "$(dirname "$icon")")")"
+          install -Dm644 "$icon" \
+            "/app/share/icons/hicolor/$size/apps/com.bettercloudflare.app.png"
+          found_icon=1
+        done
+        test "$found_icon" -eq 1

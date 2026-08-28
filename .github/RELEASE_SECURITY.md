@@ -1,8 +1,25 @@
 # Release security contract
 
-Automated desktop releases retain the `YY.N` tag format and exactly twelve
-downloadable assets: one binary plus one SHA-256 file for Linux, macOS, and
-Windows on x64 and arm64.
+Automated desktop releases retain the `YY.N` tag format and exactly thirty-two
+downloadable assets: sixteen packages, each with one SHA-256 file, covering
+Linux, macOS, and Windows on x64 and arm64.
+
+| Platform | Per architecture                           |
+| -------- | ------------------------------------------ |
+| Linux    | `.AppImage`, `.deb`, `.rpm`, `.flatpak`    |
+| macOS    | `.dmg`                                     |
+| Windows  | NSIS `-setup.exe`, `.msi`, portable `.exe` |
+
+The Windows portable `.exe` is the unpackaged binary: it runs without
+installation but, unlike the two installers, cannot install the Microsoft Edge
+WebView2 runtime, which must already be present. The app checks for that
+runtime before it builds its window and exits with a native error dialog
+naming the download, rather than failing invisibly.
+
+The `.deb` and `.rpm` declare their runtime libraries — WebKitGTK 4.1, GTK 3
+and OpenSSL 3 — so a package manager refuses to install them somewhere they
+could not run. Those packages deliberately rely on the system WebKitGTK, which
+is why they are a fraction of the AppImage's size.
 
 Before publication, the workflow:
 
@@ -16,7 +33,7 @@ Before publication, the workflow:
   with the build output;
 - creates GitHub/Sigstore build-provenance attestations and requires the exact
   source commit and reusable signer workflow without adding files to the
-  twelve-asset release contract;
+  thirty-two-asset release contract;
 - pins release builds to Node 24.18.1 and Rust 1.97.1;
 - refuses to overwrite release assets and safely removes a failed draft and
   newly reserved tag only when both still target the expected commit.

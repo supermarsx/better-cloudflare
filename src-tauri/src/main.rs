@@ -59,6 +59,7 @@ fn sanitize_category(category: &str) -> &'static str {
         "panic" => "runtime-panic",
         "tauri-run-error" => "application-run-error",
         startup_guard::CRASH_CATEGORY => startup_guard::CRASH_CATEGORY,
+        startup_guard::MISSING_WEBVIEW_CATEGORY => startup_guard::MISSING_WEBVIEW_CATEGORY,
         _ => "runtime-failure",
     }
 }
@@ -176,6 +177,11 @@ fn initialize_app<R: tauri::Runtime>(
 
 fn main() {
     install_panic_hook();
+
+    // Must precede `build()`. A missing WebView2 runtime makes the builder fail
+    // in a way that can only be reported on stderr, which nobody sees when the
+    // portable executable is started from Explorer.
+    startup_guard::require_webview_runtime();
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

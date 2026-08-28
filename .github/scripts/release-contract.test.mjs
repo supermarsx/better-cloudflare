@@ -129,23 +129,44 @@ function withPatchedFs(name, replacement, operation) {
 }
 
 function writeReleaseAssets(root) {
-  for (const { asset } of RELEASE_MATRIX) {
-    const contents = `native-${asset}`;
-    const hash = createHash("sha256").update(contents).digest("hex");
-    writeFileSync(join(root, asset), contents);
-    writeFileSync(join(root, `${asset}.sha256`), `${hash}  ${asset}\n`);
+  for (const { outputs } of RELEASE_MATRIX) {
+    for (const { asset } of outputs) {
+      const contents = `native-${asset}`;
+      const hash = createHash("sha256").update(contents).digest("hex");
+      writeFileSync(join(root, asset), contents);
+      writeFileSync(join(root, `${asset}.sha256`), `${hash}  ${asset}\n`);
+    }
   }
 }
 
 function writeIsolatedArtifacts(root) {
-  for (const { platform, arch, asset } of RELEASE_MATRIX) {
+  for (const { platform, arch, outputs } of RELEASE_MATRIX) {
     const directory = join(root, `native-${platform}-${arch}`);
     mkdirSync(directory, { recursive: true });
-    const contents = `native-${asset}`;
-    const hash = createHash("sha256").update(contents).digest("hex");
-    writeFileSync(join(directory, asset), contents);
-    writeFileSync(join(directory, `${asset}.sha256`), `${hash}  ${asset}\n`);
+    for (const { asset } of outputs) {
+      const contents = `native-${asset}`;
+      const hash = createHash("sha256").update(contents).digest("hex");
+      writeFileSync(join(directory, asset), contents);
+      writeFileSync(join(directory, `${asset}.sha256`), `${hash}  ${asset}\n`);
+    }
   }
+}
+
+const LINUX_X64 = RELEASE_MATRIX.find(
+  ({ platform, arch }) => platform === "linux" && arch === "x64",
+);
+
+// linux-x64 publishes four bundles. A staging test that has to reach the copy
+// stage must provide all of them, because discovery fails on the first
+// missing suffix. Returns the written paths keyed by suffix.
+function writeLinuxBundle(bundleRoot, contents = "trusted") {
+  const written = new Map();
+  for (const { suffix } of LINUX_X64.outputs) {
+    const path = join(bundleRoot, `Better Cloudflare_0.0.0_amd64${suffix}`);
+    writeFileSync(path, `${contents}${suffix}`);
+    written.set(suffix, path);
+  }
+  return written;
 }
 
 function writeExecutable(path, format, arch) {
@@ -183,10 +204,7 @@ function assertOutputParentSwapRejected(linkType) {
     const outside = join(root, "outside");
     const output = join(parent, "output");
     for (const path of [bundle, parent, outside]) mkdirSync(path);
-    writeFileSync(
-      join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage"),
-      "trusted",
-    );
+    writeLinuxBundle(bundle);
     const swapParent = (original, prefix, ...arguments_) => {
       renameSync(parent, join(root, "parked"));
       symlinkSync(outside, parent, linkType);
@@ -226,17 +244,155 @@ test("release matrix contains the six required native runner/target pairs", () =
 
 test("release asset names are deterministic", () => {
   assert.deepEqual(
-    RELEASE_MATRIX.map(({ asset }) => asset),
+    RELEASE_MATRIX.flatMap(({ outputs }) => outputs.map(({ asset }) => asset)),
     [
       "better-cloudflare-linux-x64.AppImage",
+      "better-cloudflare-linux-x64.deb",
+      "better-cloudflare-linux-x64.rpm",
+      "better-cloudflare-linux-x64.flatpak",
       "better-cloudflare-linux-arm64.AppImage",
+      "better-cloudflare-linux-arm64.deb",
+      "better-cloudflare-linux-arm64.rpm",
+      "better-cloudflare-linux-arm64.flatpak",
       "better-cloudflare-macos-x64.dmg",
       "better-cloudflare-macos-arm64.dmg",
       "better-cloudflare-windows-x64-setup.exe",
+      "better-cloudflare-windows-x64.msi",
+      "better-cloudflare-windows-x64-portable.exe",
       "better-cloudflare-windows-arm64-setup.exe",
+      "better-cloudflare-windows-arm64.msi",
+      "better-cloudflare-windows-arm64-portable.exe",
     ],
   );
-  assert.equal(expectedAssetNames().length, 12);
+  // 16 assets, each with a .sha256 sidecar.
+  assert.equal(expectedAssetNames().length, 32);
+});
+
+test("every platform builds the bundle targets its assets are staged from", () => {
+  assert.deepEqual(
+    RELEASE_MATRIX.map(
+      ({ platform, arch, bundles, flatpak }) =>
+        `${platform}-${arch}:${bundles}:${flatpak ? "flatpak" : "none"}`,
+    ),
+    [
+      "linux-x64:appimage deb rpm:flatpak",
+      "linux-arm64:appimage deb rpm:flatpak",
+      "macos-x64:dmg:none",
+      "macos-arm64:dmg:none",
+      "windows-x64:nsis msi:none",
+      "windows-arm64:nsis msi:none",
+    ],
+  );
+
+  // Flatpak is not a Tauri bundler target, so it must never be requested from
+  // the Tauri CLI; the workflow wraps the .deb instead.
+  for (const { bundles } of RELEASE_MATRIX) {
+    assert.doesNotMatch(bundles, /flatpak/);
+  }
+
+  // Every suffix-sourced asset must come from a bundle target that is built.
+  const bundleForSuffix = {
+    ".AppImage": "appimage",
+    ".deb": "deb",
+    ".rpm": "rpm",
+    ".dmg": "dmg",
+    "-setup.exe": "nsis",
+    ".msi": "msi",
+  };
+  for (const { platform, arch, bundles, outputs } of RELEASE_MATRIX) {
+    const built = bundles.split(" ");
+    for (const { suffix, fromExecutable } of outputs) {
+      if (fromExecutable || suffix === ".flatpak") continue;
+      assert.ok(
+        built.includes(bundleForSuffix[suffix]),
+        `${platform}-${arch} stages ${suffix} without building it`,
+      );
+    }
+  }
+});
+
+test("the portable Windows executable is staged from the unpackaged binary", () => {
+  for (const entry of RELEASE_MATRIX) {
+    const portable = entry.outputs.filter(
+      ({ fromExecutable }) => fromExecutable,
+    );
+    assert.equal(
+      portable.length,
+      entry.platform === "windows" ? 1 : 0,
+      `${entry.platform}-${entry.arch} portable output count`,
+    );
+    for (const output of portable) {
+      assert.match(output.asset, /-portable\.exe$/);
+      assert.equal(output.suffix, undefined);
+    }
+  }
+});
+
+test("staging a Windows pair requires the unpackaged executable path", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-portable-"));
+  try {
+    const bundle = join(root, "bundle");
+    mkdirSync(bundle);
+    assert.throws(
+      () =>
+        stageNativeAsset(
+          bundle,
+          "windows",
+          "x64",
+          join(root, "release-assets", "windows-x64"),
+        ),
+      /requires the path of the unpackaged executable/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a Windows pair stages the installers and the portable executable", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-windows-"));
+  try {
+    const bundle = join(root, "bundle");
+    const output = join(root, "release-assets", "windows-x64");
+    mkdirSync(bundle);
+    const setup = join(bundle, "Better Cloudflare_0.0.0_x64-setup.exe");
+    const msi = join(bundle, "Better Cloudflare_0.0.0_x64_en-US.msi");
+    const executable = join(root, "better-cloudflare.exe");
+    writeFileSync(setup, "nsis-installer");
+    writeFileSync(msi, "wix-installer");
+    writeExecutable(executable, "pe", "x64");
+
+    const results = stageNativeAsset(
+      bundle,
+      "windows",
+      "x64",
+      output,
+      executable,
+    );
+    assert.deepEqual(
+      results.map(({ asset }) => basename(asset)),
+      [
+        "better-cloudflare-windows-x64-setup.exe",
+        "better-cloudflare-windows-x64.msi",
+        "better-cloudflare-windows-x64-portable.exe",
+      ],
+    );
+    // The portable asset must be the raw binary, not the NSIS installer.
+    assert.deepEqual(readFileSync(results[2].asset), readFileSync(executable));
+    assert.equal(
+      readFileSync(results[0].asset, "utf8"),
+      readFileSync(setup, "utf8"),
+    );
+    assert.deepEqual(readdirSync(output).sort(), [
+      "better-cloudflare-windows-x64-portable.exe",
+      "better-cloudflare-windows-x64-portable.exe.sha256",
+      "better-cloudflare-windows-x64-setup.exe",
+      "better-cloudflare-windows-x64-setup.exe.sha256",
+      "better-cloudflare-windows-x64.msi",
+      "better-cloudflare-windows-x64.msi.sha256",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("next release tag is strict and incremental within the requested year", () => {
@@ -335,12 +491,130 @@ test("executable inspection rejects a correctly named wrong architecture", () =>
 });
 
 test("native staging uses the repository-root Cargo bundle directory", () => {
-  const step = workflowStep("Stage deterministic native asset");
+  const step = workflowStep("Stage deterministic native assets");
   assert.match(
     step,
     /^\s+target\/\$\{\{ matrix\.target \}\}\/release\/bundle$/m,
   );
+  // The portable Windows asset is copied from the unpackaged binary, which
+  // lives beside the bundle tree rather than inside it.
+  assert.match(
+    step,
+    /^\s+target\/\$\{\{ matrix\.target \}\}\/release\/\$\{\{ matrix\.executable \}\}$/m,
+  );
   assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /src-tauri\/target/);
+});
+
+test("the workflow builds every bundle target the matrix declares", () => {
+  assert.match(
+    workflowStep("Build native Tauri bundle"),
+    /--bundles \$\{\{ matrix\.bundles \}\}/,
+  );
+  // A stale singular reference would silently build only one target.
+  assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /matrix\.bundle \}\}/);
+  assert.doesNotMatch(AUTOPUBLISH_WORKFLOW, /matrix\.asset \}\}/);
+});
+
+test("the deb and rpm declare the runtime libraries they need", () => {
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const linux = config.bundle?.linux ?? {};
+
+  // Tauri writes no Depends/Requires at all when these are empty, which yields
+  // packages that install on a minimal system and then fail to launch. That is
+  // the whole point of shipping deb/rpm instead of only the AppImage: they rely
+  // on the system WebKitGTK rather than carrying one.
+  for (const format of ["deb", "rpm"]) {
+    const depends = linux[format]?.depends ?? [];
+    assert.ok(
+      depends.length > 0,
+      `bundle.linux.${format}.depends must not be empty`,
+    );
+    // The webview and TLS are what the binary cannot start without.
+    assert.ok(
+      depends.some((entry) => /webkit2gtk[-.]?4[._]1/.test(entry)),
+      `bundle.linux.${format}.depends must require WebKitGTK 4.1`,
+    );
+    assert.ok(
+      depends.some((entry) => /gtk-?3/.test(entry)),
+      `bundle.linux.${format}.depends must require GTK 3`,
+    );
+    assert.ok(
+      depends.some((entry) => /ssl/.test(entry)),
+      `bundle.linux.${format}.depends must require OpenSSL (reqwest uses native-tls)`,
+    );
+  }
+
+  // Debian and Ubuntu disagree on the t64 names, so those two entries have to
+  // stay alternatives rather than a single hard-coded package.
+  for (const entry of linux.deb.depends) {
+    if (/gtk-?3|ssl/.test(entry)) {
+      assert.match(entry, / \| /, `${entry} must offer a t64 alternative`);
+    }
+  }
+
+  // The app configures no tray icon and enables no tray feature, so declaring
+  // appindicator would force an unused dependency on every user.
+  assert.equal(JSON.stringify(config).includes("trayIcon"), false);
+  for (const format of ["deb", "rpm"]) {
+    for (const entry of linux[format].depends) {
+      assert.doesNotMatch(entry, /appindicator/);
+    }
+  }
+});
+
+test("Flatpak is built from the Debian package on Linux runners only", () => {
+  const install = workflowStep("Install Flatpak tooling");
+  const build = workflowStep("Build Flatpak bundle");
+  for (const step of [install, build]) {
+    assert.match(step, /^\s+if: matrix\.flatpak$/m);
+  }
+  assert.match(build, /flatpak-builder/);
+  assert.match(build, /flatpak build-bundle/);
+  // The bundle must land where the staging step's .flatpak suffix looks.
+  assert.match(
+    build,
+    /\$BUNDLE_DIRECTORY\/flatpak\/better-cloudflare\.flatpak/,
+  );
+
+  const manifest = readFileSync(
+    new URL("../flatpak/com.bettercloudflare.app.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(manifest, /^id: com\.bettercloudflare\.app$/m);
+  assert.match(manifest, /^command: better-cloudflare$/m);
+
+  // The runtime the workflow installs and the one the manifest builds against
+  // must not drift apart, or the build fails after a ~1 GB download.
+  const manifestRuntime = /^runtime-version: '(\d+)'$/m.exec(manifest)?.[1];
+  assert.ok(manifestRuntime, "manifest must pin a numeric runtime version");
+  const installed = new RegExp(
+    String.raw`org\.gnome\.Platform//(\d+) org\.gnome\.Sdk//(\d+)`,
+  ).exec(install);
+  assert.deepEqual(
+    [installed?.[1], installed?.[2]],
+    [manifestRuntime, manifestRuntime],
+  );
+  // GNOME runtimes are supported for roughly a year, so an old branch means an
+  // unpatched WebKitGTK under an app that handles API tokens. 47 and 48 are
+  // both already end-of-life.
+  assert.ok(
+    Number(manifestRuntime) >= 49,
+    `GNOME runtime ${manifestRuntime} is end-of-life; pin a supported branch`,
+  );
+  // A DNS client with no network egress would be inert.
+  assert.match(manifest, /--share=network/);
+  // Building from the local .deb keeps the sandboxed build offline.
+  assert.match(manifest, /path: better-cloudflare\.deb/);
+
+  const flatpakPairs = RELEASE_MATRIX.filter(({ flatpak }) => flatpak).map(
+    ({ platform, arch }) => `${platform}-${arch}`,
+  );
+  assert.deepEqual(flatpakPairs, ["linux-x64", "linux-arm64"]);
 });
 
 test("only Windows ARM64 disables dependency lifecycle scripts", () => {
@@ -382,21 +656,30 @@ test("native staging renames one real bundle and writes its checksum", () => {
     const bundleRoot = join(root, "bundle", "appimage");
     const output = join(root, "release-assets", "linux-x64");
     mkdirSync(bundleRoot, { recursive: true });
-    const source = join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage");
-    writeFileSync(source, "native-appimage");
+    const written = writeLinuxBundle(bundleRoot, "native");
+    const source = written.get(".AppImage");
 
-    const result = stageNativeAsset(bundleRoot, "linux", "x64", output);
-    assert.equal(
-      readFileSync(result.asset, "utf8"),
-      readFileSync(source, "utf8"),
+    const results = stageNativeAsset(bundleRoot, "linux", "x64", output);
+    assert.deepEqual(
+      results.map(({ asset }) => basename(asset)),
+      [
+        "better-cloudflare-linux-x64.AppImage",
+        "better-cloudflare-linux-x64.deb",
+        "better-cloudflare-linux-x64.rpm",
+        "better-cloudflare-linux-x64.flatpak",
+      ],
     );
-    const expectedHash = createHash("sha256")
-      .update(readFileSync(source))
-      .digest("hex");
-    assert.equal(
-      readFileSync(result.checksum, "utf8"),
-      `${expectedHash}  better-cloudflare-linux-x64.AppImage\n`,
-    );
+    for (const result of results) {
+      assert.equal(
+        readFileSync(result.asset, "utf8"),
+        readFileSync(result.source, "utf8"),
+      );
+      assert.equal(
+        readFileSync(result.checksum, "utf8"),
+        `${createHash("sha256").update(readFileSync(result.source)).digest("hex")}  ${basename(result.asset)}\n`,
+      );
+    }
+    assert.equal(results[0].source, source);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -412,23 +695,24 @@ test(
       const output = join(root, "release-assets", "linux-x64");
       const appDir = join(bundleRoot, "AppDir");
       const icon = join(root, "icon.png");
-      const source = join(bundleRoot, "Better Cloudflare_0.0.0_amd64.AppImage");
       const iconLink = join(appDir, ".DirIcon");
       mkdirSync(appDir, { recursive: true });
       writeFileSync(icon, "trusted-icon");
       symlinkSync(icon, iconLink);
-      writeFileSync(source, "trusted-appimage");
+      const source = writeLinuxBundle(bundleRoot, "trusted-appimage").get(
+        ".AppImage",
+      );
 
-      const result = stageNativeAsset(bundleRoot, "linux", "x64", output);
+      const results = stageNativeAsset(bundleRoot, "linux", "x64", output);
       assert.equal(
-        readFileSync(result.asset, "utf8"),
+        readFileSync(results[0].asset, "utf8"),
         readFileSync(source, "utf8"),
       );
       assert.equal(
-        readFileSync(result.checksum, "utf8"),
+        readFileSync(results[0].checksum, "utf8"),
         `${createHash("sha256").update(readFileSync(source)).digest("hex")}  better-cloudflare-linux-x64.AppImage\n`,
       );
-      assert.equal(result.source, source);
+      assert.equal(results[0].source, source);
       assert.equal(fs.lstatSync(iconLink).isSymbolicLink(), true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -512,8 +796,7 @@ test("native staging rejects an open-time parent junction swap", () => {
     const outside = join(root, "outside");
     const out = join(root, "output");
     for (const path of [bundle, outside]) mkdirSync(path);
-    const source = join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage");
-    writeFileSync(source, "trusted");
+    const source = writeLinuxBundle(bundle).get(".AppImage");
     writeFileSync(join(outside, basename(source)), "attacker");
     let swapped = false;
     const swapParent = (original, path, ...arguments_) => {
@@ -548,9 +831,10 @@ test("staging rejects every copy and identity fault without leftovers", () => {
     try {
       const bundle = join(root, "bundle");
       const out = join(root, "output");
-      const source = join(bundle, "Better Cloudflare_0.0.0_amd64.AppImage");
       mkdirSync(bundle);
-      writeFileSync(source, "trusted");
+      // The AppImage is staged first, so the injected call indices below still
+      // land on its copy (1) and its checksum (2).
+      const source = writeLinuxBundle(bundle).get(".AppImage");
       let calls = 0;
       const inject = (original, ...arguments_) => {
         calls += 1;

@@ -47,6 +47,20 @@
     "category": "DeveloperTool",
     "shortDescription": "Cloudflare DNS Manager",
     "longDescription": "A secure desktop application for managing Cloudflare DNS records with passkey support",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0t64 | libgtk-3-0",
+          "libssl3t64 | libssl3"
+        ],
+        "recommends": ["librsvg2-2"]
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "openssl-libs"],
+        "recommends": ["librsvg2"]
+      }
+    },
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "10.13",

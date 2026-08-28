@@ -10,7 +10,13 @@
 //! 2. shows a blocking native OS error dialog with the same text, and
 //! 3. exits with [`LOAD_FAILURE_EXIT_CODE`] once the dialog is dismissed.
 //!
-//! Two independent detectors feed one classifier:
+//! A separate, earlier check covers the case where no webview can be created at
+//! all: [`require_webview_runtime`] runs before `tauri::Builder::build()` and
+//! reports a missing Microsoft Edge WebView2 runtime through the same dialog.
+//! Without it that failure surfaces only on stderr, which is invisible for a
+//! windowed process — the portable Windows build would appear to do nothing.
+//!
+//! Two independent detectors then feed one classifier:
 //!
 //! * **Pre-flight probe** (all platforms, dev builds only): before the window
 //!   has a chance to render, a TCP connect to the `devUrl` host and port maps
@@ -436,24 +442,110 @@ pub fn refine_unknown_failure(failure: LoadFailure, probe: Preflight) -> LoadFai
 /// Logs the failure, shows the blocking native dialog, and exits the process.
 /// Never returns.
 pub fn fail_fast(failure: &LoadFailure) -> ! {
-    let text = failure.dialog_text();
+    fatal(
+        CRASH_CATEGORY,
+        format!("navigation:{}", failure.error_name),
+        &failure.dialog_text(),
+    )
+}
+
+/// Shared exit path: redacted log, stderr copy, blocking native dialog, exit.
+///
+/// This is deliberately the only way the guard terminates. `rfd` shows an OS
+/// message box, not a webview, so it still works when the reason for exiting is
+/// that no webview can be created at all.
+fn fatal(category: &'static str, location: String, text: &str) -> ! {
     crate::write_stderr(&format!("[startup-guard] {DIALOG_TITLE}\n{text}\n"));
     let record = crate::CrashRecord {
         timestamp_unix: crate::unix_timestamp(),
-        category: CRASH_CATEGORY,
-        location: format!("navigation:{}", failure.error_name),
+        category,
+        location,
     };
     let _ = crate::persist_crash_record(&crate::crash_log_path(), &record);
 
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title(DIALOG_TITLE)
-        .set_description(&text)
+        .set_description(text)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
 
     std::process::exit(LOAD_FAILURE_EXIT_CODE)
 }
+
+/// Category written to the redacted crash log when the WebView2 runtime is
+/// absent. Distinct from [`CRASH_CATEGORY`] because nothing was ever loaded.
+pub const MISSING_WEBVIEW_CATEGORY: &str = "webview2-runtime-missing";
+
+/// Text shown when the Microsoft Edge WebView2 runtime is missing.
+///
+/// Kept separate from [`LoadFailure`] because there is no URL, no HTTP status
+/// and no navigation to describe: the window is never created.
+///
+/// Only Windows can reach this, but the text is asserted by a test that runs on
+/// every platform, so it is compiled for tests too. Without the gate it would
+/// be dead code on Linux, which CI rejects with `-D warnings`.
+#[cfg(any(windows, test))]
+pub fn missing_webview_text() -> String {
+    concat!(
+        "The application window could not be created and the application will ",
+        "now exit.\n\nThe Microsoft Edge WebView2 runtime is required, and it ",
+        "is not installed on this computer.\n\nInstall the Evergreen WebView2 ",
+        "Runtime from:\nhttps://developer.microsoft.com/microsoft-edge/webview2/",
+        "\n\nThe Better Cloudflare installers add this runtime for you. The ",
+        "portable executable cannot, because it does not run an installer."
+    )
+    .to_string()
+}
+
+/// Reports the installed WebView2 runtime version, or `None` when no runtime is
+/// available.
+///
+/// `GetAvailableCoreWebView2BrowserVersionString` is the loader's own probe: it
+/// fails when the runtime is not registered, and can also succeed while
+/// reporting no version, which counts as absent.
+#[cfg(windows)]
+pub fn webview2_runtime_version() -> Option<String> {
+    use webview2_com::CoTaskMemPWSTR;
+    use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
+    use windows::core::{PCWSTR, PWSTR};
+
+    let mut raw = PWSTR::null();
+    // SAFETY: `raw` is a valid out-pointer. Ownership of any returned buffer is
+    // handed straight to `CoTaskMemPWSTR`, which frees it with CoTaskMemFree.
+    let result = unsafe { GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut raw) };
+    let owned = CoTaskMemPWSTR::from(raw);
+    if result.is_err() || raw.is_null() {
+        return None;
+    }
+    let version = owned.to_string();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version)
+}
+
+/// Exits with the standard native dialog when the WebView2 runtime is missing.
+///
+/// Must run *before* `tauri::Builder::build()`. Without it, a missing runtime
+/// makes `build()` return an error that `main` can only report on stderr, which
+/// is invisible for a windowed process started from Explorer — so a portable
+/// build would appear to do nothing at all.
+#[cfg(windows)]
+pub fn require_webview_runtime() {
+    if webview2_runtime_version().is_none() {
+        fatal(
+            MISSING_WEBVIEW_CATEGORY,
+            "startup:webview2-runtime".to_string(),
+            &missing_webview_text(),
+        );
+    }
+}
+
+/// Non-Windows platforms link their webview at load time, so a missing engine
+/// is a loader error before `main` runs and cannot be probed here.
+#[cfg(not(windows))]
+pub fn require_webview_runtime() {}
 
 /// Installs both detectors on the main window. Safe to call when the window
 /// does not exist (tests with a mock runtime): it then does nothing.
@@ -835,5 +927,31 @@ mod tests {
         let location = format!("navigation:{}", failure.error_name);
         assert_eq!(location, "navigation:ERR_CONNECTION_REFUSED");
         assert!(!location.contains("secret"));
+    }
+
+    #[test]
+    fn missing_webview_text_names_the_runtime_and_where_to_get_it() {
+        let text = missing_webview_text();
+        assert!(text.contains("WebView2"));
+        assert!(text.contains("https://developer.microsoft.com/microsoft-edge/webview2/"));
+        // The portable build is the one that cannot install the runtime, so the
+        // dialog has to say so rather than leaving the user stuck.
+        assert!(text.contains("portable"));
+        // Distinct category: nothing was loaded, so this is not a load failure.
+        assert_ne!(MISSING_WEBVIEW_CATEGORY, CRASH_CATEGORY);
+        assert!(!MISSING_WEBVIEW_CATEGORY.is_empty());
+    }
+
+    /// The probe must agree with reality on a machine that has the runtime.
+    /// Every Windows CI runner and dev box that can build this app has it.
+    #[cfg(windows)]
+    #[test]
+    fn webview2_probe_finds_the_installed_runtime() {
+        let version = webview2_runtime_version()
+            .expect("a Windows host building this app has the WebView2 runtime");
+        assert!(
+            version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+            "unexpected WebView2 version string: {version}"
+        );
     }
 }

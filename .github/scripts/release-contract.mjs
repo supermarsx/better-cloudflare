@@ -22,6 +22,14 @@ import { freemem, totalmem } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+// Every entry builds one platform/architecture pair and publishes one or more
+// assets from it. `outputs[].suffix` names a file produced inside the Tauri
+// `bundle/` tree; `outputs[].fromExecutable` instead publishes the unpackaged
+// binary next to that tree, which is how the Windows portable build ships.
+//
+// Flatpak is not a Tauri bundler target. The Linux jobs wrap their own `.deb`
+// with `flatpak-builder` and drop the single-file bundle into
+// `bundle/flatpak/` so it stages exactly like a native target.
 export const RELEASE_MATRIX = Object.freeze(
   [
     {
@@ -31,10 +39,20 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "linux",
       nodeArch: "x64",
       target: "x86_64-unknown-linux-gnu",
-      bundle: "appimage",
+      bundles: "appimage deb rpm",
+      flatpak: true,
       executable: "better-cloudflare",
-      sourceSuffix: ".AppImage",
-      asset: "better-cloudflare-linux-x64.AppImage",
+      outputs: Object.freeze(
+        [
+          {
+            suffix: ".AppImage",
+            asset: "better-cloudflare-linux-x64.AppImage",
+          },
+          { suffix: ".deb", asset: "better-cloudflare-linux-x64.deb" },
+          { suffix: ".rpm", asset: "better-cloudflare-linux-x64.rpm" },
+          { suffix: ".flatpak", asset: "better-cloudflare-linux-x64.flatpak" },
+        ].map(Object.freeze),
+      ),
     },
     {
       runner: "ubuntu-24.04-arm",
@@ -43,10 +61,23 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "linux",
       nodeArch: "arm64",
       target: "aarch64-unknown-linux-gnu",
-      bundle: "appimage",
+      bundles: "appimage deb rpm",
+      flatpak: true,
       executable: "better-cloudflare",
-      sourceSuffix: ".AppImage",
-      asset: "better-cloudflare-linux-arm64.AppImage",
+      outputs: Object.freeze(
+        [
+          {
+            suffix: ".AppImage",
+            asset: "better-cloudflare-linux-arm64.AppImage",
+          },
+          { suffix: ".deb", asset: "better-cloudflare-linux-arm64.deb" },
+          { suffix: ".rpm", asset: "better-cloudflare-linux-arm64.rpm" },
+          {
+            suffix: ".flatpak",
+            asset: "better-cloudflare-linux-arm64.flatpak",
+          },
+        ].map(Object.freeze),
+      ),
     },
     {
       runner: "macos-15-intel",
@@ -55,10 +86,13 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "darwin",
       nodeArch: "x64",
       target: "x86_64-apple-darwin",
-      bundle: "dmg",
+      bundles: "dmg",
       executable: "better-cloudflare",
-      sourceSuffix: ".dmg",
-      asset: "better-cloudflare-macos-x64.dmg",
+      outputs: Object.freeze(
+        [{ suffix: ".dmg", asset: "better-cloudflare-macos-x64.dmg" }].map(
+          Object.freeze,
+        ),
+      ),
     },
     {
       runner: "macos-15",
@@ -67,10 +101,13 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "darwin",
       nodeArch: "arm64",
       target: "aarch64-apple-darwin",
-      bundle: "dmg",
+      bundles: "dmg",
       executable: "better-cloudflare",
-      sourceSuffix: ".dmg",
-      asset: "better-cloudflare-macos-arm64.dmg",
+      outputs: Object.freeze(
+        [{ suffix: ".dmg", asset: "better-cloudflare-macos-arm64.dmg" }].map(
+          Object.freeze,
+        ),
+      ),
     },
     {
       runner: "windows-2025",
@@ -79,10 +116,21 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "win32",
       nodeArch: "x64",
       target: "x86_64-pc-windows-msvc",
-      bundle: "nsis",
+      bundles: "nsis msi",
       executable: "better-cloudflare.exe",
-      sourceSuffix: "-setup.exe",
-      asset: "better-cloudflare-windows-x64-setup.exe",
+      outputs: Object.freeze(
+        [
+          {
+            suffix: "-setup.exe",
+            asset: "better-cloudflare-windows-x64-setup.exe",
+          },
+          { suffix: ".msi", asset: "better-cloudflare-windows-x64.msi" },
+          {
+            fromExecutable: true,
+            asset: "better-cloudflare-windows-x64-portable.exe",
+          },
+        ].map(Object.freeze),
+      ),
     },
     {
       runner: "windows-11-arm",
@@ -91,10 +139,21 @@ export const RELEASE_MATRIX = Object.freeze(
       nodePlatform: "win32",
       nodeArch: "arm64",
       target: "aarch64-pc-windows-msvc",
-      bundle: "nsis",
+      bundles: "nsis msi",
       executable: "better-cloudflare.exe",
-      sourceSuffix: "-setup.exe",
-      asset: "better-cloudflare-windows-arm64-setup.exe",
+      outputs: Object.freeze(
+        [
+          {
+            suffix: "-setup.exe",
+            asset: "better-cloudflare-windows-arm64-setup.exe",
+          },
+          { suffix: ".msi", asset: "better-cloudflare-windows-arm64.msi" },
+          {
+            fromExecutable: true,
+            asset: "better-cloudflare-windows-arm64-portable.exe",
+          },
+        ].map(Object.freeze),
+      ),
     },
   ].map(Object.freeze),
 );
@@ -292,7 +351,9 @@ export function assertMatrixContract(matrix = RELEASE_MATRIX) {
     );
   }
 
-  const assets = matrix.map(({ asset }) => asset);
+  const assets = matrix.flatMap(({ outputs }) =>
+    (outputs ?? []).map(({ asset }) => asset),
+  );
   if (new Set(assets).size !== assets.length) {
     fail("Release matrix contains duplicate asset names.");
   }
@@ -305,16 +366,50 @@ export function assertMatrixContract(matrix = RELEASE_MATRIX) {
       "nodePlatform",
       "nodeArch",
       "target",
-      "bundle",
+      "bundles",
       "executable",
-      "sourceSuffix",
-      "asset",
     ]) {
       if (!entry[field]) {
         fail(
           `Release matrix entry ${entry.platform}-${entry.arch} is missing ${field}.`,
         );
       }
+    }
+
+    if (!Array.isArray(entry.outputs) || entry.outputs.length === 0) {
+      fail(
+        `Release matrix entry ${entry.platform}-${entry.arch} must publish at least one asset.`,
+      );
+    }
+
+    for (const output of entry.outputs) {
+      if (!output?.asset) {
+        fail(
+          `Release matrix entry ${entry.platform}-${entry.arch} has an output without an asset name.`,
+        );
+      }
+      // Exactly one source: a file inside the bundle tree, or the raw binary.
+      if (Boolean(output.suffix) === Boolean(output.fromExecutable)) {
+        fail(
+          `Release matrix output ${output.asset} must set exactly one of suffix or fromExecutable.`,
+        );
+      }
+    }
+
+    const suffixes = entry.outputs
+      .filter(({ suffix }) => suffix)
+      .map(({ suffix }) => suffix);
+    if (new Set(suffixes).size !== suffixes.length) {
+      fail(
+        `Release matrix entry ${entry.platform}-${entry.arch} reuses a bundle suffix.`,
+      );
+    }
+    if (
+      entry.outputs.filter(({ fromExecutable }) => fromExecutable).length > 1
+    ) {
+      fail(
+        `Release matrix entry ${entry.platform}-${entry.arch} publishes the executable more than once.`,
+      );
     }
   }
 
@@ -323,7 +418,9 @@ export function assertMatrixContract(matrix = RELEASE_MATRIX) {
 
 export function expectedAssetNames(matrix = RELEASE_MATRIX) {
   assertMatrixContract(matrix);
-  return matrix.flatMap(({ asset }) => [asset, `${asset}.sha256`]);
+  return matrix.flatMap(({ outputs }) =>
+    outputs.flatMap(({ asset }) => [asset, `${asset}.sha256`]),
+  );
 }
 
 export function nextReleaseTag(year, tags) {
@@ -781,44 +878,72 @@ export function verifyExecutableArchitecture(path, platform, arch) {
   return true;
 }
 
-export function stageNativeAsset(bundleRoot, platform, arch, outputDirectory) {
+export function stageNativeAsset(
+  bundleRoot,
+  platform,
+  arch,
+  outputDirectory,
+  executablePath,
+) {
   const entry = matrixEntry(platform, arch);
   const root = resolve(bundleRoot);
+  const needsExecutable = entry.outputs.some(
+    ({ fromExecutable }) => fromExecutable,
+  );
+  if (needsExecutable && !executablePath) {
+    fail(
+      `Staging ${platform}-${arch} requires the path of the unpackaged executable.`,
+    );
+  }
 
   const destinationDirectory = resolve(outputDirectory);
-  let source;
+  const staged = [];
   withRealDirectory(root, "Tauri bundle directory", () => {
-    const candidates = filesRecursively(root).filter((path) =>
-      path.endsWith(entry.sourceSuffix),
-    );
-    if (candidates.length !== 1) {
-      fail(
-        `Expected exactly one non-empty ${entry.sourceSuffix} bundle for ${platform}-${arch}; found ${candidates.length}.`,
+    const bundleFiles = filesRecursively(root);
+    for (const output of entry.outputs) {
+      if (output.fromExecutable) {
+        staged.push({ output, source: resolve(executablePath) });
+        continue;
+      }
+      const candidates = bundleFiles.filter((path) =>
+        path.endsWith(output.suffix),
       );
+      if (candidates.length !== 1) {
+        fail(
+          `Expected exactly one non-empty ${output.suffix} bundle for ${platform}-${arch}; found ${candidates.length}.`,
+        );
+      }
+      staged.push({ output, source: candidates[0] });
     }
-    source = candidates[0];
+
     publishOutputDirectory(
       destinationDirectory,
       "Release output directory",
-      (stage, track) =>
-        withReleaseFile(source, { label: "Release asset" }, (file, size) => {
-          const destination = join(stage, entry.asset);
-          const copied = copyOpenedFile(file, size, source, destination);
-          track(copied, destination);
-          const checksumPath = `${destination}.sha256`;
-          track(
-            writeOpenedFile(checksumPath, `${copied.digest}  ${entry.asset}\n`),
-            checksumPath,
-          );
-        }),
+      (stage, track) => {
+        for (const { output, source } of staged) {
+          withReleaseFile(source, { label: "Release asset" }, (file, size) => {
+            const destination = join(stage, output.asset);
+            const copied = copyOpenedFile(file, size, source, destination);
+            track(copied, destination);
+            const checksumPath = `${destination}.sha256`;
+            track(
+              writeOpenedFile(
+                checksumPath,
+                `${copied.digest}  ${output.asset}\n`,
+              ),
+              checksumPath,
+            );
+          });
+        }
+      },
     );
   });
 
-  return {
-    asset: join(destinationDirectory, entry.asset),
-    checksum: join(destinationDirectory, `${entry.asset}.sha256`),
+  return staged.map(({ output, source }) => ({
+    asset: join(destinationDirectory, output.asset),
+    checksum: join(destinationDirectory, `${output.asset}.sha256`),
     source,
-  };
+  }));
 }
 
 export function validateAssetNames(names, matrix = RELEASE_MATRIX) {
@@ -851,15 +976,17 @@ export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
       matrix,
     );
 
-    for (const { asset } of matrix) {
-      const assetPath = join(root, asset);
-      withReleaseFile(assetPath, { label: "Release asset" }, (file, size) => {
-        const expectedChecksum = `${sha256(file, size, assetPath)}  ${asset}`;
-        const actualChecksum = readChecksum(`${assetPath}.sha256`);
-        if (actualChecksum !== expectedChecksum) {
-          fail(`SHA-256 checksum does not match ${asset}.`);
-        }
-      });
+    for (const { outputs } of matrix) {
+      for (const { asset } of outputs) {
+        const assetPath = join(root, asset);
+        withReleaseFile(assetPath, { label: "Release asset" }, (file, size) => {
+          const expectedChecksum = `${sha256(file, size, assetPath)}  ${asset}`;
+          const actualChecksum = readChecksum(`${assetPath}.sha256`);
+          if (actualChecksum !== expectedChecksum) {
+            fail(`SHA-256 checksum does not match ${asset}.`);
+          }
+        });
+      }
     }
 
     return true;
@@ -900,7 +1027,9 @@ export function aggregateNativeArtifacts(
             root,
             `native-${entry.platform}-${entry.arch}`,
           );
-          const expected = [entry.asset, `${entry.asset}.sha256`].sort();
+          const expected = entry.outputs
+            .flatMap(({ asset }) => [asset, `${asset}.sha256`])
+            .sort();
           const platformEntries = withRealDirectory(
             platformDirectory,
             "Platform artifact directory",
@@ -920,44 +1049,49 @@ export function aggregateNativeArtifacts(
             );
           }
 
-          const assetPath = join(platformDirectory, entry.asset);
-          const checksumPath = join(platformDirectory, `${entry.asset}.sha256`);
-          withReleaseFile(assetPath, { label: "Release asset" }, (file, size) =>
+          for (const { asset } of entry.outputs) {
+            const assetPath = join(platformDirectory, asset);
+            const checksumPath = join(platformDirectory, `${asset}.sha256`);
             withReleaseFile(
-              checksumPath,
-              { label: "Checksum file", maximumBytes: MAX_CHECKSUM_BYTES },
-              (checksumFile, checksumSize) => {
-                const actualChecksum = readExact(
-                  checksumFile,
+              assetPath,
+              { label: "Release asset" },
+              (file, size) =>
+                withReleaseFile(
                   checksumPath,
-                  checksumSize,
-                )
-                  .toString("utf8")
-                  .trimEnd();
-                const copiedPath = join(stage, entry.asset);
-                const copied = copyOpenedFile(
-                  file,
-                  size,
-                  assetPath,
-                  copiedPath,
-                );
-                track(copied, copiedPath);
-                if (actualChecksum !== `${copied.digest}  ${entry.asset}`) {
-                  fail(
-                    `SHA-256 checksum does not match ${entry.asset} in its platform artifact.`,
-                  );
-                }
-                const stagedChecksum = `${copiedPath}.sha256`;
-                track(
-                  writeOpenedFile(
-                    stagedChecksum,
-                    `${copied.digest}  ${entry.asset}\n`,
-                  ),
-                  stagedChecksum,
-                );
-              },
-            ),
-          );
+                  { label: "Checksum file", maximumBytes: MAX_CHECKSUM_BYTES },
+                  (checksumFile, checksumSize) => {
+                    const actualChecksum = readExact(
+                      checksumFile,
+                      checksumPath,
+                      checksumSize,
+                    )
+                      .toString("utf8")
+                      .trimEnd();
+                    const copiedPath = join(stage, asset);
+                    const copied = copyOpenedFile(
+                      file,
+                      size,
+                      assetPath,
+                      copiedPath,
+                    );
+                    track(copied, copiedPath);
+                    if (actualChecksum !== `${copied.digest}  ${asset}`) {
+                      fail(
+                        `SHA-256 checksum does not match ${asset} in its platform artifact.`,
+                      );
+                    }
+                    const stagedChecksum = `${copiedPath}.sha256`;
+                    track(
+                      writeOpenedFile(
+                        stagedChecksum,
+                        `${copied.digest}  ${asset}\n`,
+                      ),
+                      stagedChecksum,
+                    );
+                  },
+                ),
+            );
+          }
         }
       },
     );
@@ -1298,7 +1432,7 @@ function usage() {
     "  release-contract.mjs next-tag <YY> [tags...]",
     "  release-contract.mjs verify-runner <platform> <arch>",
     "  release-contract.mjs verify-executable <path> <platform> <arch>",
-    "  release-contract.mjs stage <bundle-root> <platform> <arch> <output-dir>",
+    "  release-contract.mjs stage <bundle-root> <platform> <arch> <output-dir> [executable]",
     "  release-contract.mjs aggregate <artifact-root> <output-dir>",
     "  release-contract.mjs validate <asset-dir>",
     "  release-contract.mjs validate-names",
@@ -1335,26 +1469,31 @@ function main() {
       );
       break;
     case "stage": {
-      const result = stageNativeAsset(
+      const results = stageNativeAsset(
         arguments_[0],
         arguments_[1],
         arguments_[2],
         arguments_[3],
+        arguments_[4],
       );
-      console.log(
-        `Staged ${basename(result.source)} as ${basename(result.asset)} with SHA-256 checksum.`,
-      );
+      for (const result of results) {
+        console.log(
+          `Staged ${basename(result.source)} as ${basename(result.asset)} with SHA-256 checksum.`,
+        );
+      }
       break;
     }
     case "aggregate":
       aggregateNativeArtifacts(arguments_[0], arguments_[1]);
       console.log(
-        "All six isolated platform artifacts were validated and aggregated.",
+        `All ${RELEASE_MATRIX.length} isolated platform artifacts were validated and aggregated.`,
       );
       break;
     case "validate":
       validateReleaseAssets(arguments_[0]);
-      console.log("All six native assets and checksums are present and valid.");
+      console.log(
+        `All ${expectedAssetNames().length / 2} native assets and checksums are present and valid.`,
+      );
       break;
     case "validate-names": {
       const names = readStdinBounded().split(/\r?\n/).filter(Boolean);

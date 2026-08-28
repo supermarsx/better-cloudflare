@@ -108,31 +108,69 @@ jobs:
         run: >-
           npm run tauri -- build
           --target ${{ matrix.target }}
-          --bundles ${{ matrix.bundle }}
+          --bundles ${{ matrix.bundles }}
       - name: Verify packaged application executable architecture
         run: >-
           node .github/scripts/release-contract.mjs verify-executable
           target/${{ matrix.target }}/release/${{ matrix.executable }}
           ${{ matrix.platform }} ${{ matrix.arch }}
-      - name: Stage deterministic native asset
+      # Flatpak is not a Tauri bundler target. Wrap the .deb this job just
+      # built, then drop the single-file bundle where the staging step looks
+      # for it. The sandboxed build itself is offline; only the runtime and
+      # SDK are downloaded, by the step above it.
+      - name: Install Flatpak tooling
+        if: matrix.flatpak
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.gnome.Platform//50 org.gnome.Sdk//50
+      - name: Build Flatpak bundle
+        if: matrix.flatpak
+        shell: bash
+        env:
+          BUNDLE_DIRECTORY: target/${{ matrix.target }}/release/bundle
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          cp .github/flatpak/com.bettercloudflare.app.yml "$work/"
+
+          debian_package="$(find "$BUNDLE_DIRECTORY/deb" -maxdepth 1 -type f -name '*.deb')"
+          if [ "$(printf '%s\n' "$debian_package" | grep -c .)" -ne 1 ]; then
+            echo "::error::Expected exactly one .deb to wrap as a Flatpak."
+            exit 1
+          fi
+          cp "$debian_package" "$work/better-cloudflare.deb"
+
+          flatpak-builder --user --disable-cache --force-clean \
+            --repo="$work/repo" \
+            "$work/build" \
+            "$work/com.bettercloudflare.app.yml"
+
+          mkdir -p "$BUNDLE_DIRECTORY/flatpak"
+          flatpak build-bundle "$work/repo" \
+            "$BUNDLE_DIRECTORY/flatpak/better-cloudflare.flatpak" \
+            com.bettercloudflare.app
+      - name: Stage deterministic native assets
         run: >-
           node .github/scripts/release-contract.mjs stage
           target/${{ matrix.target }}/release/bundle
           ${{ matrix.platform }} ${{ matrix.arch }}
           release-assets/${{ matrix.platform }}-${{ matrix.arch }}
+          target/${{ matrix.target }}/release/${{ matrix.executable }}
       - name: Attest native asset provenance
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: |
-            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}
-            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}.sha256
-      - name: Upload native asset and checksum
+            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/*
+      - name: Upload native assets and checksums
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}
-            release-assets/${{ matrix.platform }}-${{ matrix.arch }}/${{ matrix.asset }}.sha256
+          path: release-assets/${{ matrix.platform }}-${{ matrix.arch }}/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -179,7 +217,7 @@ jobs:
         run: >-
           node .github/scripts/release-contract.mjs aggregate
           release-artifacts release-assets
-      - name: Require all six native assets and valid checksums
+      - name: Require every native asset and valid checksums
         run: node .github/scripts/release-contract.mjs validate release-assets
       - name: Require release commit to remain current main
         env:
@@ -271,7 +309,7 @@ jobs:
             --target "$RELEASE_SHA" \
             --draft \
             --title "Better Cloudflare $RELEASE_TAG" \
-            --notes "Automated native release for commit \`$short_sha\`. Includes Linux, macOS, and Windows installers for x64 and arm64, with SHA-256 checksums and GitHub build-provenance attestations. Executables are not yet platform code-signed."
+            --notes "Automated native release for commit \`$short_sha\`, for x64 and arm64. Linux: AppImage, .deb, .rpm and Flatpak. macOS: .dmg. Windows: NSIS setup, .msi, and a portable .exe that needs the Microsoft Edge WebView2 runtime already installed. Every asset carries a SHA-256 checksum and a GitHub build-provenance attestation. Executables are not yet platform code-signed."
 
           gh release upload "$RELEASE_TAG" release-assets/* \
             --repo "$GITHUB_REPOSITORY"
