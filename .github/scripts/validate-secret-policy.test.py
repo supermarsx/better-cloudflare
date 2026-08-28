@@ -85,6 +85,79 @@ class SecretPolicyContractTests(unittest.TestCase):
             "only suppress by path",
         )
 
+    VALUE_ENTRY_MARKER = "# The one value-scoped entry in this policy."
+
+    def test_dropping_the_reviewed_value_allowlist_fails(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source[: source.index(self.VALUE_ENTRY_MARKER)],
+            "exactly one reviewed value-scoped allowlist",
+        )
+
+    def test_value_allowlist_may_not_take_a_path_filter(self) -> None:
+        """A path filter would skip the whole file in a dir scan, not narrow the entry."""
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source.replace(
+                "regexes = [\n    '''^mQINBG",
+                "paths = ['''^src-tauri/crates/bc-dns-tools/src/import\\.rs$''']\n"
+                "regexes = [\n    '''^mQINBG",
+                1,
+            ),
+            "only suppress by path",
+        )
+
+    def test_value_allowlist_may_not_take_a_condition(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source.replace(
+                "regexes = [\n    '''^mQINBG",
+                'condition = "AND"\nregexes = [\n    \'\'\'^mQINBG',
+                1,
+            ),
+            "only suppress by path",
+        )
+
+    def test_unanchored_value_allowlist_regex_fails(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source.replace(
+                "'''^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$'''",
+                "'''mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ=='''",
+                1,
+            ),
+            "regexes drifted",
+        )
+
+    def test_widening_the_reviewed_value_allowlist_fails(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source.replace(
+                "'''^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$'''",
+                "'''^[A-Za-z0-9+/=]{20,}$'''",
+                1,
+            ),
+            "regexes drifted",
+        )
+
+    def test_unreviewed_second_value_allowlist_fails(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        self._reject(
+            source
+            + "\n[[allowlists]]\n"
+            'description = "A second value-scoped entry that was never reviewed at all."\n'
+            "regexes = ['''^sk1_[a-f0-9]{64}$''']\n",
+            "regexes drifted",
+        )
+
+    def test_duplicate_reviewed_value_allowlist_fails(self) -> None:
+        source = CONFIG.read_text(encoding="utf-8")
+        entry = source[source.index(self.VALUE_ENTRY_MARKER) :]
+        self._reject(
+            source + "\n" + entry,
+            "exactly one reviewed value-scoped allowlist",
+        )
+
     def test_broad_path_that_hides_real_source_fails(self) -> None:
         source = CONFIG.read_text(encoding="utf-8")
         approved = set(POLICY.APPROVED_ALLOWLIST_PATHS)

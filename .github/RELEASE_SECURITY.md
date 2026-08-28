@@ -177,12 +177,25 @@ cannot identify a real Cloudflare account.
 Owner for every entry: Better Cloudflare security maintainers. Review and
 expiry date for every entry: 2026-10-30.
 
-Every entry is path-scoped to a named file or to a git-ignored generated tree.
-There is deliberately no entry that suppresses "anything under `test/`" or
-"anything that looks like a fixture": the repository's fixture credentials
+Every entry is path-scoped to a named file or to a git-ignored generated tree,
+apart from the single value-scoped entry recorded below it. There is
+deliberately no entry that suppresses "anything under `test/`" or "anything that
+looks like a fixture": the repository's fixture credentials
 (`e2e/auth-errors.spec.ts`, `e2e/login-key-management.spec.ts`, the Rust test
 tokens and the documentation examples) are written as obviously fake strings
 and are expected to survive a scan unsuppressed.
+
+> **Before adding a `paths` entry for a source file: don't.** `paths` in a
+> global allowlist is a _file filter_, not a qualifier. It does not mean "ignore
+> the reviewed value in this file", it means "stop scanning this file" — in a
+> `gitleaks dir` run the file is dropped before any rule executes, so every
+> credential shape in it goes unseen, including ones added later.
+> `condition = "AND"` does not contain it; AND constrains the git scan only.
+> Measured with Gitleaks 8.30.1: with `import.rs` named in a `paths` entry, a
+> Porkbun key planted in that file went **undetected** by `gitleaks dir` and the
+> scan read exactly 46142 fewer bytes — the size of the file. The entries below
+> are paths only where skipping the whole file is the intent. To silence one
+> value in real source, scope it by value, as the value-scoped entry does.
 
 | Path pattern                        | Class              | Rationale                                                                                                                                                                                                               |
 | ----------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -199,8 +212,37 @@ and are expected to survive a scan unsuppressed.
 | `^e2e/fixtures/demo-panels\.ts$`    | screenshot fixture | Same harness, same construction. Scoped to this exact file.                                                                                                                                                             |
 | `^\.github/gitleaks\.toml$`         | policy             | The policy necessarily spells out the credential shapes it detects.                                                                                                                                                     |
 
-Verified before the gate was wired in: Gitleaks 8.30.1 with this policy reports
-zero findings against both the full commit history and the working tree.
+#### Value-scoped entry
+
+One entry is scoped to a literal value rather than to a path. The regex is
+anchored to the whole secret, so it suppresses exactly one 44-byte string and
+nothing that merely contains it. No rule is disabled and no file is excluded.
+
+| Value                                            | Class        | Rationale                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$` | test fixture | The OPENPGPKEY row of the `(record type, sample content)` table that drives the DNS record-type validation tests in `src-tauri/crates/bc-dns-tools/src/import.rs`, inside that file's `#[cfg(test)] mod tests`. Not a credential: it decodes to the OpenPGP public-key packet header `99 02 0d 04` followed by the ASCII text `dandomKeyDataForTestingOnly`, so it carries no key material. |
+
+The entry deliberately carries no `paths` filter, and the validator refuses one,
+even though scoping it to `import.rs` reads as narrower. A `paths` filter in a
+global allowlist is a file filter, not a qualifier: in a `gitleaks dir` scan it
+drops the whole file before any rule runs. Measured with Gitleaks 8.30.1, a
+Porkbun key planted in `import.rs` goes undetected by `gitleaks dir` once that
+file is named in a `paths` entry, and the scan reads exactly the file's 46142
+bytes less. `condition = "AND"` does not prevent it; it constrains the git scan
+only. With the value-only entry, both `gitleaks git` and `gitleaks dir` still
+flag the planted key while the fixture stays suppressed.
+
+The value is suppressed rather than rewritten because the gate scans the full
+history on every push to `main`. The finding is attributed to the commit that
+introduced the line (`5972d00`, 2026-08-10), so editing the fixture today cannot
+clear it. Measured with Gitleaks 8.30.1: replacing the value produces two
+findings rather than none, because the historical one persists and a plainer
+base64 stand-in trips the same entropy rule on its own.
+
+Verified with Gitleaks 8.30.1 and this policy: the full commit history and the
+working tree both report zero findings. Between 2026-08-10 and this entry the
+history scan reported exactly one finding, the fixture above; the pull request
+scan was unaffected because it only covers the commits in the pull request.
 
 ## Explicit residual controls
 

@@ -47,6 +47,14 @@ APPROVED_RULES = {
 
 # Reviewed path allowlist. Nothing else may be suppressed, and every entry is
 # reproduced verbatim in the register document.
+#
+# Every entry here skips a whole file: `paths` in a global allowlist is a file
+# filter, not a qualifier, and a `gitleaks dir` run drops the file before any
+# rule executes (`condition = "AND"` does not contain that; it constrains the
+# git scan only). That is why this set holds only generated trees, lockfiles and
+# end-to-end fictional fixtures, and why `_reject_broad_path` guards it with
+# canaries. To silence one value in real source, add it to the value-scoped
+# allowlist below instead of naming the file here.
 APPROVED_ALLOWLIST_PATHS = {
     r"(^|/)node_modules/",
     r"(^|/)target/",
@@ -60,6 +68,23 @@ APPROVED_ALLOWLIST_PATHS = {
     r"^e2e/fixtures/demo-workspace\.ts$",
     r"^e2e/fixtures/demo-panels\.ts$",
     r"^\.github/gitleaks\.toml$",
+}
+
+# The single reviewed value-scoped global allowlist. It suppresses one exact
+# literal in one exact file: the OPENPGPKEY fixture in the bc-dns-tools record
+# type table, which is a fake OpenPGP packet carrying the ASCII text
+# "dandomKeyDataForTestingOnly". It is allowlisted rather than rewritten because
+# the history scan attributes the finding to the commit that introduced the line,
+# so editing the fixture today cannot clear it.
+#
+#
+# It carries no `paths` filter and must never gain one. A `paths` filter in a
+# global allowlist is a file filter: a `gitleaks dir` scan drops the whole file
+# before any rule runs, so scoping this entry to import.rs would stop that file
+# being scanned at all rather than narrowing what is hidden. `condition = "AND"`
+# does not prevent that either, so neither key is accepted here.
+APPROVED_VALUE_ALLOWLIST = {
+    "regexes": [r"^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$"],
 }
 
 # Only this rule may carry a value-shaped allowlist, and only for reserved
@@ -108,6 +133,7 @@ ALLOWED_RULE_KEYS = {
     "allowlists",
 }
 ALLOWED_ALLOWLIST_KEYS = {"description", "paths"}
+ALLOWED_VALUE_ALLOWLIST_KEYS = {"description", "regexes"}
 ALLOWED_RULE_ALLOWLIST_KEYS = {"description", "regexTarget", "regexes"}
 
 
@@ -199,18 +225,28 @@ def _validate_allowlists(allowlists: Any) -> set[str]:
         raise PolicyError("policy must declare a non-empty [[allowlists]] array")
 
     observed: set[str] = set()
+    value_scoped = 0
     for allowlist in allowlists:
         if not isinstance(allowlist, dict):
             raise PolicyError("each global allowlist must be a table")
+        description = allowlist.get("description")
+        if not isinstance(description, str) or len(description) < 40:
+            raise PolicyError("every global allowlist needs a reviewed justification")
+
+        # An entry carrying either value-shaped key is judged against the one
+        # reviewed value-scoped allowlist, never against the path rules, so a
+        # value allowlist can neither slip through nor silently widen.
+        if "regexes" in allowlist or "condition" in allowlist:
+            _validate_value_allowlist(allowlist)
+            value_scoped += 1
+            continue
+
         extra = set(allowlist) - ALLOWED_ALLOWLIST_KEYS
         if extra:
             raise PolicyError(
                 "global allowlists may only suppress by path, got: "
                 f"{sorted(extra)}"
             )
-        description = allowlist.get("description")
-        if not isinstance(description, str) or len(description) < 40:
-            raise PolicyError("every global allowlist needs a reviewed justification")
         paths = allowlist.get("paths")
         if not isinstance(paths, list) or not paths:
             raise PolicyError("every global allowlist must list paths")
@@ -227,7 +263,38 @@ def _validate_allowlists(allowlists: Any) -> set[str]:
     missing = sorted(APPROVED_ALLOWLIST_PATHS - observed)
     if missing:
         raise PolicyError(f"reviewed allowlist paths are missing: {missing}")
+    if value_scoped != 1:
+        raise PolicyError(
+            "exactly one reviewed value-scoped allowlist is approved, found "
+            f"{value_scoped}"
+        )
     return observed
+
+
+def _validate_value_allowlist(allowlist: dict[str, Any]) -> None:
+    """Hold a value-scoped allowlist to the reviewed entry, character for character."""
+    # `paths` and `condition` are refused outright rather than reviewed. A path
+    # filter here would skip the whole file in a `gitleaks dir` scan instead of
+    # narrowing the suppression, and `condition` is only ever needed to tame one.
+    extra = set(allowlist) - ALLOWED_VALUE_ALLOWLIST_KEYS
+    if extra:
+        raise PolicyError(
+            "global allowlists may only suppress by path; the one reviewed "
+            "value-scoped entry suppresses by value alone and may not narrow "
+            f"itself with {sorted(extra)}, which would skip whole files instead"
+        )
+    for key, expected in APPROVED_VALUE_ALLOWLIST.items():
+        if allowlist.get(key) != expected:
+            raise PolicyError(
+                "global allowlists may only suppress by path unless they "
+                "reproduce the reviewed value-scoped entry exactly; "
+                f"{key} drifted to {allowlist.get(key)!r}"
+            )
+    # Anchoring is what keeps the entry to one literal, so it is checked rather
+    # than trusted to the reviewed string above.
+    for regex in APPROVED_VALUE_ALLOWLIST["regexes"]:
+        if not regex.startswith("^") or not regex.endswith("$"):
+            raise PolicyError(f"value-scoped allowlist regex is not anchored: {regex}")
 
 
 def _reject_broad_path(path: str) -> None:
@@ -289,6 +356,11 @@ def _validate_review_document(today: dt.date) -> None:
     for path in APPROVED_ALLOWLIST_PATHS:
         if f"`{path}`" not in register:
             raise PolicyError(f"the register does not document allowlist path {path}")
+    for regex in APPROVED_VALUE_ALLOWLIST["regexes"]:
+        if f"`{regex}`" not in register:
+            raise PolicyError(
+                f"the register does not document the allowlisted value {regex}"
+            )
 
 
 def _step_block(text: str, needle: str, name: str) -> str:
@@ -428,6 +500,7 @@ def main() -> int:
     print(
         f"Secret scanning policy valid: {len(APPROVED_RULES)} reviewed rules, "
         f"{len(APPROVED_ALLOWLIST_PATHS)} path-scoped allowlist entries, "
+        f"{len(APPROVED_VALUE_ALLOWLIST['regexes'])} value-scoped allowlist entry, "
         f"Gitleaks {GITLEAKS_VERSION} pinned by digest"
     )
     return 0
