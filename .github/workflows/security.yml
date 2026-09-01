@@ -12,9 +12,17 @@ on:
 permissions:
   contents: read
 
+# Same rule as ci.yml, and for the same reason: superseded pull request runs
+# are cancelled, everything else is untouchable. `github.ref` alone did cancel
+# superseded PR analyses correctly, but it also made a push to main cancel the
+# previous main run and — because `schedule` and `workflow_dispatch` also carry
+# `refs/heads/main` — let a push abort the weekly full-history scan. Keying
+# non-PR runs by `github.run_id` isolates each one; a cancelled CodeQL run
+# uploads no SARIF, so those cancellations were silently eroding the security
+# dashboard rather than saving anything worth saving.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: security-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dependency_review:

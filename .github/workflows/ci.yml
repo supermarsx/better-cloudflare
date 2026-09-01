@@ -16,9 +16,25 @@ on:
 permissions:
   contents: read
 
+# Only pull request runs supersede themselves: pushing again to a PR branch
+# cancels the run that push obsoleted, which is what stops four simultaneous
+# PRs from each holding a stale ~20-minute Rust analysis on the runner pool.
+#
+# Every other event gets a group keyed by `github.run_id`, which is unique per
+# run. Such a run is alone in its group, so it can neither be cancelled by a
+# later run nor queued behind an earlier one, and `cancel-in-progress` is
+# independently false for it. That is deliberate and load-bearing twice over:
+#
+#   * `push` to main — main runs are the authoritative green-board record, and
+#     cancelling an intermediate commit's run destroys the evidence that that
+#     commit ever passed.
+#   * `workflow_dispatch` — the `release` job below calls autopublish.yml from
+#     inside this run, and cancelling a caller cancels its reusable-workflow
+#     jobs too. A push landing on main mid-publish must never be able to tear
+#     down a release between tag reservation and asset upload.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci_contract:
@@ -181,6 +197,54 @@ jobs:
           --
           -D warnings
 
+  # Every `#[cfg(windows)]` path in the workspace — the whole of
+  # `src-tauri/src/startup_guard.rs`, the WebView2 `ICoreWebView2` FFI, and the
+  # Windows arms of app_config, the audit command and the notification store —
+  # is invisible to the Linux jobs above: `cargo check` on Linux never parses
+  # the bodies it gates out. Until this job existed those paths first compiled
+  # during a release build, which is the worst possible place to learn they do
+  # not. This job builds them on the same runner image the release uses.
+  #
+  # The step pairing mirrors `native_reliability` exactly so the two platforms
+  # are held to one standard: workspace Clippy reports warnings without failing
+  # (`--all-targets` still type-checks every test and benchmark target), and the
+  # native error contract crates are the ones held to `-D warnings`. Tests are
+  # deliberately compiled but not executed here; the Linux job owns behaviour,
+  # this job owns "does the Windows-only code still build and lint".
+  windows_reliability:
+    name: Windows native reliability
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: "2"
+      TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install stable Rust with Clippy
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy
+          rustup default 1.97.1
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target"
+      - name: Check Windows workspace targets
+        run: cargo check --workspace --all-targets --locked
+      - name: Run incremental workspace Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Enforce strict Clippy for native error contracts
+        run: >-
+          cargo clippy
+          -p bc-error
+          -p bc-cloudflare-api
+          --all-targets
+          --locked
+          --
+          -D warnings
+
   format:
     name: Format Check
     uses: ./.github/workflows/format.yml
@@ -241,6 +305,7 @@ jobs:
       - unit_tests
       - e2e_reliability
       - native_reliability
+      - windows_reliability
       - format
       - lint
       - test_package
@@ -250,6 +315,7 @@ jobs:
       needs.unit_tests.result == 'success' &&
       needs.e2e_reliability.result == 'success' &&
       needs.native_reliability.result == 'success' &&
+      needs.windows_reliability.result == 'success' &&
       needs.format.result == 'success' &&
       needs.lint.result == 'success' &&
       needs.test_package.result == 'success' &&

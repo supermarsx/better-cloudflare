@@ -126,6 +126,69 @@ function workflowStep(job: string, stepName: string): string {
     .join("\n");
 }
 
+function workflowConcurrency(workflow: string): {
+  group: string;
+  cancelInProgress: string;
+} {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === "concurrency:");
+  assert.notEqual(start, -1, "Workflow has no top-level concurrency block");
+  assert.equal(
+    lines.indexOf("concurrency:", start + 1),
+    -1,
+    "Workflow declares more than one top-level concurrency block",
+  );
+
+  const entries = new Map<string, string>();
+  for (const line of lines.slice(start + 1)) {
+    const match = /^  ([a-z-]+):\s*(.*)$/.exec(line);
+    if (!match) break;
+    entries.set(match[1], match[2].trim());
+  }
+
+  const group = entries.get("group");
+  const cancelInProgress = entries.get("cancel-in-progress");
+  assert.ok(group, "Concurrency block has no group");
+  assert.ok(cancelInProgress, "Concurrency block has no cancel-in-progress");
+  return { group, cancelInProgress };
+}
+
+// The cancellation rule this repository runs on, expressed once: a superseded
+// pull request run may be cancelled, and nothing else ever may. Non-pull-request
+// runs are keyed by `github.run_id`, which is unique per run, so each of them is
+// the sole occupant of its group and is unreachable by any later run's
+// cancellation — belt to the braces of `cancel-in-progress` being false for
+// them. `cancel-in-progress: true` written literally would cancel push and
+// workflow_dispatch runs as well, so it is rejected outright.
+function assertPullRequestOnlyCancellation(
+  workflow: string,
+  prefix: string,
+): void {
+  const { group, cancelInProgress } = workflowConcurrency(workflow);
+
+  assert.equal(
+    cancelInProgress,
+    "${{ github.event_name == 'pull_request' }}",
+    `${prefix} runs other than pull requests must not be cancellable`,
+  );
+  const branches =
+    /^(.+)-\$\{\{ github\.event_name == 'pull_request' && (.+) \|\| (.+) \}\}$/.exec(
+      group,
+    );
+  assert.ok(branches, `${prefix} concurrency group is not event-conditional`);
+  assert.equal(branches[1], `${prefix}-\${{ github.workflow }}`);
+  assert.equal(
+    branches[2],
+    "format('pr-{0}', github.event.pull_request.number)",
+    `${prefix} pull request runs must group by pull request number so a new push supersedes the old run`,
+  );
+  assert.equal(
+    branches[3],
+    "format('{0}-{1}', github.event_name, github.run_id)",
+    `${prefix} non-pull-request runs must be alone in their concurrency group`,
+  );
+}
+
 function workflowNeeds(job: string): string[] {
   const lines = job.split(/\r?\n/);
   const needsLine = lines.findIndex((line) => line === "    needs:");
@@ -578,9 +641,17 @@ test("releasing is manual only and stays globally serialized and non-cancelling"
   const autopublish = read(".github/workflows/autopublish.yml");
   const publishJob = workflowJob(autopublish, "publish");
 
+  // A release runs *inside* a ci.yml run, so the caller's concurrency decides
+  // whether a publish can be torn down halfway. Two independent facts keep it
+  // safe, and both are asserted: only pull request runs are cancellable, and a
+  // release is reachable only from workflow_dispatch, which is never a pull
+  // request. Cancelling a caller cancels its reusable-workflow jobs too, so
+  // neither guarantee is redundant.
+  assertPullRequestOnlyCancellation(workflow, "ci");
   assert.match(
-    workflow,
-    /concurrency:\r?\n  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.sha \}\}\r?\n  cancel-in-progress: false/,
+    releaseJob,
+    /github\.ref == 'refs\/heads\/main'/,
+    "A release must be reachable only from main",
   );
   // Production-release deployment is disabled on push: merging to main must
   // never publish. The only way in is an explicit workflow_dispatch asking
@@ -604,6 +675,99 @@ test("releasing is manual only and stays globally serialized and non-cancelling"
     stepRun(workflowStep(publishJob, "Atomically reserve the next YY.N tag")),
     'node .github/scripts/release-contract.mjs reserve-tag "$RELEASE_SHA"',
   );
+});
+
+test("security analysis cancels only superseded pull request runs", () => {
+  // CodeQL is the longest job in the repository, so it is the one worth
+  // superseding — but a cancelled CodeQL run uploads no SARIF at all. Scheduled
+  // full-history scans and main-branch analyses must therefore survive whatever
+  // else lands while they run.
+  assertPullRequestOnlyCancellation(
+    read(".github/workflows/security.yml"),
+    "security",
+  );
+});
+
+test("Windows-only native code is compiled and linted by CI", () => {
+  const workflow = read(".github/workflows/ci.yml");
+  const windowsJob = workflowJob(workflow, "windows_reliability");
+
+  // Pinned to the same image the release matrix builds windows-x64 on, so this
+  // job fails where the release would have, not merely somewhere near it.
+  assert.match(workflow, /^  windows_reliability:$/m);
+  assert.match(windowsJob, /runs-on: windows-2025/);
+  assert.doesNotMatch(
+    windowsJob,
+    /runs-on: windows-latest/,
+    "The Windows runner image must be pinned, not a mutable channel",
+  );
+  assert.match(
+    windowsJob,
+    /TAURI_CONFIG: '\{"build":\{"frontendDist":"\.\.\/app"\}\}'/,
+  );
+  assert.equal(
+    stepUses(workflowStep(windowsJob, "Cache Rust build outputs")),
+    `Swatinem/rust-cache@${rustCacheRevision}`,
+  );
+  // `--all-targets` is what makes this meaningful: it type-checks the test and
+  // benchmark targets too, so a `#[cfg(windows)]` body that only a test reaches
+  // still has to compile.
+  assert.equal(
+    stepRun(workflowStep(windowsJob, "Check Windows workspace targets")),
+    "cargo check --workspace --all-targets --locked",
+  );
+  assert.equal(
+    stepRun(workflowStep(windowsJob, "Run incremental workspace Clippy")),
+    "cargo clippy --workspace --all-targets --locked",
+  );
+  // Held to exactly the standard native_reliability holds Linux to — no
+  // stricter, so the platforms cannot drift apart, and no looser, so
+  // bc-cloudflare-api's Windows arm is denied warnings like its Linux arm.
+  assert.deepEqual(
+    stepRun(
+      workflowStep(
+        windowsJob,
+        "Enforce strict Clippy for native error contracts",
+      ),
+    ).split(/\s+/),
+    [
+      "cargo",
+      "clippy",
+      "-p",
+      "bc-error",
+      "-p",
+      "bc-cloudflare-api",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings",
+    ],
+  );
+
+  // The job is worthless as a release gate unless the release actually waits
+  // for it, in `needs` and in the `if` that re-checks every result.
+  const releaseJob = workflowJob(workflow, "release");
+  assert.ok(workflowNeeds(releaseJob).includes("windows_reliability"));
+  assert.match(
+    releaseJob,
+    /needs\.windows_reliability\.result == 'success'/,
+    "The release condition must re-check the Windows gate",
+  );
+
+  // The Windows-gated code this job exists to compile. If these move, the job
+  // is still valid, but the claim in its comment is not.
+  for (const source of [
+    "src-tauri/src/startup_guard.rs",
+    "src-tauri/src/app_config.rs",
+    "src-tauri/crates/bc-cloudflare-api/src/lib.rs",
+  ]) {
+    assert.match(
+      read(source),
+      /#\[cfg\((?:windows|target_os = "windows")/,
+      `${source} no longer carries Windows-gated code`,
+    );
+  }
 });
 
 test("CI jobs structurally gate releases on static E2E and native checks", () => {
@@ -667,6 +831,7 @@ test("CI jobs structurally gate releases on static E2E and native checks", () =>
     "unit_tests",
     "e2e_reliability",
     "native_reliability",
+    "windows_reliability",
     "format",
     "lint",
     "test_package",
