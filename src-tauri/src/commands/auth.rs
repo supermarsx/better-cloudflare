@@ -477,6 +477,340 @@ mod tests {
         assert_eq!(value["operation"], "auth:verify_token");
         assert_eq!(value["retryable"], false);
     }
+
+    // ─── Biometric audit surface ────────────────────────────────────────────
+    //
+    // These exercise the real command bodies with the platform entry point
+    // substituted. Calling the genuine `BiometricAuth` functions from a test
+    // would touch the OS keychain — and on macOS raise a Touch ID prompt — so
+    // the commands take the platform call as a function pointer instead.
+
+    use bc_biometrics::BiometricError;
+
+    /// Stand-in for a released Cloudflare API token. Must never reach the log.
+    const TEST_SECRET: &str = "cf-token-do-not-log-3f9a2b";
+
+    fn memory_storage() -> Storage {
+        Storage::new(false)
+    }
+
+    async fn audit_entries(storage: &Storage) -> Vec<Value> {
+        storage
+            .get_audit_entries()
+            .await
+            .expect("audit entries must be readable")
+    }
+
+    async fn single_audit_entry(storage: &Storage) -> Value {
+        let mut entries = audit_entries(storage).await;
+        assert_eq!(entries.len(), 1, "expected exactly one audit entry");
+        entries.remove(0)
+    }
+
+    /// Every biometric entry must name the operation, carry a timestamp, and
+    /// contain nothing derived from the protected secret.
+    fn assert_entry_is_clean(entry: &Value, operation: &str, resource: &str) {
+        assert_eq!(entry["operation"], operation);
+        assert_eq!(entry["resource"], resource);
+        assert!(
+            entry["timestamp"].is_string(),
+            "audit entry must be timestamped: {entry}"
+        );
+        let serialized = serde_json::to_string(entry).expect("entry must serialize");
+        for forbidden in [TEST_SECRET, "do-not-log", "3f9a2b"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "audit entry leaked secret material: {serialized}"
+            );
+        }
+    }
+
+    fn assert_success(entry: &Value) {
+        assert_eq!(entry["success"], Value::Bool(true));
+        assert_eq!(
+            entry.get("error"),
+            None,
+            "successful entries must not carry an error field"
+        );
+    }
+
+    fn assert_failure(entry: &Value, expected_error: &str) {
+        assert_eq!(entry["success"], Value::Bool(false));
+        assert_eq!(entry["error"], expected_error);
+    }
+
+    fn fake_authenticate_ok(_reason: &str) -> Result<(), BiometricError> {
+        Ok(())
+    }
+
+    fn fake_authenticate_cancelled(_reason: &str) -> Result<(), BiometricError> {
+        Err(BiometricError::UserCancelled)
+    }
+
+    fn fake_store_ok(_service: &str, _account: &str, _secret: &[u8]) -> Result<(), BiometricError> {
+        Ok(())
+    }
+
+    fn fake_store_refused(
+        _service: &str,
+        _account: &str,
+        _secret: &[u8],
+    ) -> Result<(), BiometricError> {
+        Err(BiometricError::StoreError(
+            "keychain refused the item".into(),
+        ))
+    }
+
+    fn fake_get_ok(
+        _service: &str,
+        _account: &str,
+        _reason: &str,
+    ) -> Result<Vec<u8>, BiometricError> {
+        Ok(TEST_SECRET.as_bytes().to_vec())
+    }
+
+    fn fake_get_denied(
+        _service: &str,
+        _account: &str,
+        _reason: &str,
+    ) -> Result<Vec<u8>, BiometricError> {
+        Err(BiometricError::AuthenticationFailed(
+            "gesture not recognised".into(),
+        ))
+    }
+
+    fn fake_get_non_utf8(
+        _service: &str,
+        _account: &str,
+        _reason: &str,
+    ) -> Result<Vec<u8>, BiometricError> {
+        // A stored blob whose first invalid byte sits at a secret-dependent
+        // offset. `FromUtf8Error` would report that offset; we must not.
+        Ok(vec![b'c', b'f', 0xff, 0xfe])
+    }
+
+    fn fake_delete_ok(_service: &str, _account: &str) -> Result<(), BiometricError> {
+        Ok(())
+    }
+
+    fn fake_delete_missing(_service: &str, _account: &str) -> Result<(), BiometricError> {
+        Err(BiometricError::NotFound)
+    }
+
+    #[test]
+    fn biometric_audit_operations_are_distinct_and_namespaced() {
+        let operations = [
+            BIOMETRIC_OP_AUTHENTICATE,
+            BIOMETRIC_OP_STORE,
+            BIOMETRIC_OP_GET,
+            BIOMETRIC_OP_DELETE,
+        ];
+        for operation in operations {
+            assert!(operation.starts_with("biometric:"), "{operation}");
+        }
+        let unique: std::collections::BTreeSet<_> = operations.iter().collect();
+        assert_eq!(unique.len(), operations.len());
+    }
+
+    #[tokio::test]
+    async fn biometric_authenticate_audits_a_successful_gesture() {
+        let storage = memory_storage();
+        biometric_authenticate_with(&storage, "Unlock".into(), fake_authenticate_ok)
+            .await
+            .expect("authentication must succeed");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_AUTHENTICATE, "biometric");
+        assert_success(&entry);
+    }
+
+    #[tokio::test]
+    async fn biometric_authenticate_audits_a_refused_gesture() {
+        let storage = memory_storage();
+        let error =
+            biometric_authenticate_with(&storage, "Unlock".into(), fake_authenticate_cancelled)
+                .await
+                .expect_err("cancellation must propagate");
+        assert_eq!(error, "User cancelled biometric authentication");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_AUTHENTICATE, "biometric");
+        assert_failure(&entry, "User cancelled biometric authentication");
+    }
+
+    #[tokio::test]
+    async fn biometric_store_secret_audits_enrolment_without_the_secret() {
+        let storage = memory_storage();
+        biometric_store_secret_with(
+            &storage,
+            "key-1".into(),
+            TEST_SECRET.to_string(),
+            fake_store_ok,
+        )
+        .await
+        .expect("enrolment must succeed");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_STORE, "com.bettercloudflare.key-1");
+        assert_success(&entry);
+    }
+
+    #[tokio::test]
+    async fn biometric_store_secret_audits_a_failed_enrolment() {
+        let storage = memory_storage();
+        biometric_store_secret_with(
+            &storage,
+            "key-1".into(),
+            TEST_SECRET.to_string(),
+            fake_store_refused,
+        )
+        .await
+        .expect_err("store failure must propagate");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_STORE, "com.bettercloudflare.key-1");
+        assert_failure(
+            &entry,
+            "Keychain/credential store error: keychain refused the item",
+        );
+    }
+
+    #[tokio::test]
+    async fn biometric_get_secret_audits_the_release_without_the_secret() {
+        let storage = memory_storage();
+        let released =
+            biometric_get_secret_with(&storage, "key-1".into(), "Unlock key-1".into(), fake_get_ok)
+                .await
+                .expect("release must succeed");
+        assert_eq!(released, TEST_SECRET, "the caller still receives the token");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_GET, "com.bettercloudflare.key-1");
+        assert_success(&entry);
+    }
+
+    #[tokio::test]
+    async fn biometric_get_secret_audits_a_denied_release() {
+        let storage = memory_storage();
+        biometric_get_secret_with(
+            &storage,
+            "key-1".into(),
+            "Unlock key-1".into(),
+            fake_get_denied,
+        )
+        .await
+        .expect_err("a denied gesture must propagate");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_GET, "com.bettercloudflare.key-1");
+        assert_failure(
+            &entry,
+            "Biometric authentication failed: gesture not recognised",
+        );
+    }
+
+    #[tokio::test]
+    async fn biometric_get_secret_utf8_failure_discloses_no_offset() {
+        let storage = memory_storage();
+        biometric_get_secret_with(
+            &storage,
+            "key-1".into(),
+            "Unlock key-1".into(),
+            fake_get_non_utf8,
+        )
+        .await
+        .expect_err("a non-UTF-8 blob must propagate");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_GET, "com.bettercloudflare.key-1");
+        assert_failure(&entry, "Stored biometric secret is not valid UTF-8");
+        let serialized = serde_json::to_string(&entry).expect("entry must serialize");
+        for forbidden in ["index", "invalid utf-8 sequence"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "audit entry described the stored bytes: {serialized}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn biometric_delete_secret_audits_removal() {
+        let storage = memory_storage();
+        biometric_delete_secret_with(&storage, "key-1".into(), fake_delete_ok)
+            .await
+            .expect("removal must succeed");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_DELETE, "com.bettercloudflare.key-1");
+        assert_success(&entry);
+    }
+
+    #[tokio::test]
+    async fn biometric_delete_secret_audits_a_failed_removal() {
+        let storage = memory_storage();
+        biometric_delete_secret_with(&storage, "key-1".into(), fake_delete_missing)
+            .await
+            .expect_err("a missing record must propagate");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_DELETE, "com.bettercloudflare.key-1");
+        assert_failure(&entry, "Secret not found");
+    }
+
+    #[tokio::test]
+    async fn biometric_rejected_key_is_audited_without_echoing_the_key() {
+        let storage = memory_storage();
+        let probe = "../../../Login/some-other-app";
+        biometric_get_secret_with(&storage, probe.into(), "Unlock".into(), fake_get_ok)
+            .await
+            .expect_err("an invalid key must be rejected");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_entry_is_clean(&entry, BIOMETRIC_OP_GET, "<rejected-key>");
+        assert_failure(&entry, "Biometric key contains invalid characters");
+        let serialized = serde_json::to_string(&entry).expect("entry must serialize");
+        assert!(
+            !serialized.contains("some-other-app"),
+            "rejected input was echoed into the audit log: {serialized}"
+        );
+    }
+
+    #[tokio::test]
+    async fn biometric_operations_accumulate_in_order() {
+        let storage = memory_storage();
+        biometric_store_secret_with(
+            &storage,
+            "key-1".into(),
+            TEST_SECRET.to_string(),
+            fake_store_ok,
+        )
+        .await
+        .expect("enrolment must succeed");
+        biometric_get_secret_with(&storage, "key-1".into(), "Unlock".into(), fake_get_ok)
+            .await
+            .expect("release must succeed");
+        biometric_delete_secret_with(&storage, "key-1".into(), fake_delete_ok)
+            .await
+            .expect("removal must succeed");
+
+        let entries = audit_entries(&storage).await;
+        let operations: Vec<_> = entries
+            .iter()
+            .map(|entry| entry["operation"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            operations,
+            vec![BIOMETRIC_OP_STORE, BIOMETRIC_OP_GET, BIOMETRIC_OP_DELETE]
+        );
+        for entry in &entries {
+            assert_entry_is_clean(
+                entry,
+                entry["operation"].as_str().unwrap_or_default(),
+                "com.bettercloudflare.key-1",
+            );
+            assert_success(entry);
+        }
+    }
 }
 
 #[tauri::command]
@@ -937,44 +1271,241 @@ fn sanitize_biometric_key(key: &str) -> Result<String, String> {
     }
 }
 
+// ─── Biometric audit surface ────────────────────────────────────────────────
+//
+// Biometric unlock is a *parallel credential path*: a successful gesture
+// releases the plaintext Cloudflare API token without the vault password, by
+// design (the OS keychain ACL is the access control). The three operations
+// that create, use, or destroy that path — and the bare gesture prompt — are
+// therefore audited exactly like `session_login` and `auth:decrypt_api_key`.
+//
+// `biometric_status` and `biometric_has_secret` are deliberately *not* audited:
+// neither prompts, releases, or mutates anything, and both are polled on every
+// render of the login screen. Auditing them would evict real security events
+// from `bc_storage`'s `MAX_AUDIT_ENTRIES`-capped ring buffer, which would make
+// the audit log worse, not better.
+
+const BIOMETRIC_OP_AUTHENTICATE: &str = "biometric:authenticate";
+const BIOMETRIC_OP_STORE: &str = "biometric:store_secret";
+const BIOMETRIC_OP_GET: &str = "biometric:get_secret";
+const BIOMETRIC_OP_DELETE: &str = "biometric:delete_secret";
+
+/// Resource recorded for a gesture that names no stored key.
+const BIOMETRIC_RESOURCE_DEVICE: &str = "biometric";
+
+/// Resource recorded when the requested key failed [`sanitize_biometric_key`].
+///
+/// The raw key is rejected, attacker-controlled, unbounded input, so it is not
+/// echoed into the audit log; the rejection reason is recorded instead.
+const BIOMETRIC_RESOURCE_REJECTED: &str = "<rejected-key>";
+
+/// Platform entry points, taken as function pointers so tests can substitute
+/// them. The commands always pass the real [`bc_biometrics::BiometricAuth`]
+/// functions; nothing else in the process may.
+type BiometricAuthenticateFn = fn(&str) -> Result<(), bc_biometrics::BiometricError>;
+type BiometricStoreFn = fn(&str, &str, &[u8]) -> Result<(), bc_biometrics::BiometricError>;
+type BiometricGetFn = fn(&str, &str, &str) -> Result<Vec<u8>, bc_biometrics::BiometricError>;
+type BiometricDeleteFn = fn(&str, &str) -> Result<(), bc_biometrics::BiometricError>;
+
+/// Build the audit entry for one biometric operation.
+///
+/// The only variable-length input is `error`, which is always a
+/// [`bc_biometrics::BiometricError`] rendering — an OS status description, never
+/// key material. The secret is not a parameter and cannot become one:
+/// [`audited_biometric_op`] is generic over the success value `T` and never
+/// inspects it, so no caller can route a released token here by accident.
+fn biometric_audit_entry(
+    operation: &str,
+    resource: &str,
+    error: Option<&str>,
+) -> serde_json::Value {
+    match error {
+        None => serde_json::json!({
+            "operation": operation,
+            "resource": resource,
+            "success": true,
+        }),
+        Some(error) => serde_json::json!({
+            "operation": operation,
+            "resource": resource,
+            "success": false,
+            "error": error,
+        }),
+    }
+}
+
+/// Run a blocking biometric platform call and record its outcome.
+///
+/// Successes *and* failures are logged: a refused gesture is the more
+/// interesting of the two, and probing the IPC surface should leave a trail.
+/// The call is moved onto the blocking pool because it can sit on an OS
+/// biometric prompt for as long as the user takes to respond.
+async fn audited_biometric_op<T, F>(
+    storage: &Storage,
+    operation: &str,
+    resource: String,
+    job: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let result = match tauri::async_runtime::spawn_blocking(job).await {
+        Ok(result) => result,
+        Err(err) => Err(format!("Biometric worker failed: {err}")),
+    };
+    log_audit(
+        storage,
+        biometric_audit_entry(
+            operation,
+            &resource,
+            result.as_ref().err().map(String::as_str),
+        ),
+    )
+    .await;
+    result
+}
+
+/// Sanitize the requested key, then run and audit a keyed biometric operation.
+///
+/// A key rejected by [`sanitize_biometric_key`] never reaches the keychain, but
+/// the attempt is still recorded — that path is only reachable from a caller
+/// crafting its own IPC request.
+async fn audited_biometric_key_op<T, F>(
+    storage: &Storage,
+    operation: &str,
+    key: &str,
+    job: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(String) -> Result<T, String> + Send + 'static,
+{
+    let safe_key = match sanitize_biometric_key(key) {
+        Ok(safe_key) => safe_key,
+        Err(err) => {
+            log_audit(
+                storage,
+                biometric_audit_entry(operation, BIOMETRIC_RESOURCE_REJECTED, Some(&err)),
+            )
+            .await;
+            return Err(err);
+        }
+    };
+    let account = safe_key.clone();
+    audited_biometric_op(storage, operation, safe_key, move || job(account)).await
+}
+
 #[tauri::command]
 pub fn biometric_status() -> Result<serde_json::Value, String> {
     serde_json::to_value(bc_biometrics::BiometricAuth::status()).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn biometric_authenticate(reason: String) -> Result<(), String> {
-    bc_biometrics::BiometricAuth::authenticate(&reason).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn biometric_store_secret(key: String, secret: String) -> Result<(), String> {
-    let safe_key = sanitize_biometric_key(&key)?;
-    bc_biometrics::BiometricAuth::store_protected_secret(
-        bc_biometrics::DEFAULT_SERVICE,
-        &safe_key,
-        secret.as_bytes(),
+async fn biometric_authenticate_with(
+    storage: &Storage,
+    reason: String,
+    authenticate: BiometricAuthenticateFn,
+) -> Result<(), String> {
+    audited_biometric_op(
+        storage,
+        BIOMETRIC_OP_AUTHENTICATE,
+        BIOMETRIC_RESOURCE_DEVICE.to_string(),
+        move || authenticate(&reason).map_err(|e| e.to_string()),
     )
-    .map_err(|e| e.to_string())
+    .await
 }
 
 #[tauri::command]
-pub fn biometric_get_secret(key: String, reason: String) -> Result<String, String> {
-    let safe_key = sanitize_biometric_key(&key)?;
-    let data = bc_biometrics::BiometricAuth::get_protected_secret(
-        bc_biometrics::DEFAULT_SERVICE,
-        &safe_key,
-        &reason,
+pub async fn biometric_authenticate(
+    storage: State<'_, Storage>,
+    reason: String,
+) -> Result<(), String> {
+    biometric_authenticate_with(&storage, reason, bc_biometrics::BiometricAuth::authenticate).await
+}
+
+async fn biometric_store_secret_with(
+    storage: &Storage,
+    key: String,
+    secret: String,
+    store: BiometricStoreFn,
+) -> Result<(), String> {
+    audited_biometric_key_op(storage, BIOMETRIC_OP_STORE, &key, move |account| {
+        store(bc_biometrics::DEFAULT_SERVICE, &account, secret.as_bytes())
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn biometric_store_secret(
+    storage: State<'_, Storage>,
+    key: String,
+    secret: String,
+) -> Result<(), String> {
+    biometric_store_secret_with(
+        &storage,
+        key,
+        secret,
+        bc_biometrics::BiometricAuth::store_protected_secret,
     )
-    .map_err(|e| e.to_string())?;
-    String::from_utf8(data).map_err(|e| e.to_string())
+    .await
+}
+
+async fn biometric_get_secret_with(
+    storage: &Storage,
+    key: String,
+    reason: String,
+    get: BiometricGetFn,
+) -> Result<String, String> {
+    audited_biometric_key_op(storage, BIOMETRIC_OP_GET, &key, move |account| {
+        let data =
+            get(bc_biometrics::DEFAULT_SERVICE, &account, &reason).map_err(|e| e.to_string())?;
+        // Deliberately not `e.to_string()`: `FromUtf8Error` reports the byte
+        // offset and length of the offending sequence, which is a (small)
+        // disclosure about the stored secret, and this string is now audited.
+        String::from_utf8(data)
+            .map_err(|_| "Stored biometric secret is not valid UTF-8".to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn biometric_delete_secret(key: String) -> Result<(), String> {
-    let safe_key = sanitize_biometric_key(&key)?;
-    bc_biometrics::BiometricAuth::delete_protected_secret(bc_biometrics::DEFAULT_SERVICE, &safe_key)
-        .map_err(|e| e.to_string())
+pub async fn biometric_get_secret(
+    storage: State<'_, Storage>,
+    key: String,
+    reason: String,
+) -> Result<String, String> {
+    biometric_get_secret_with(
+        &storage,
+        key,
+        reason,
+        bc_biometrics::BiometricAuth::get_protected_secret,
+    )
+    .await
+}
+
+async fn biometric_delete_secret_with(
+    storage: &Storage,
+    key: String,
+    delete: BiometricDeleteFn,
+) -> Result<(), String> {
+    audited_biometric_key_op(storage, BIOMETRIC_OP_DELETE, &key, move |account| {
+        delete(bc_biometrics::DEFAULT_SERVICE, &account).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn biometric_delete_secret(
+    storage: State<'_, Storage>,
+    key: String,
+) -> Result<(), String> {
+    biometric_delete_secret_with(
+        &storage,
+        key,
+        bc_biometrics::BiometricAuth::delete_protected_secret,
+    )
+    .await
 }
 
 #[tauri::command]
