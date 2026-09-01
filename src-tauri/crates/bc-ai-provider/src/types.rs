@@ -27,7 +27,11 @@ pub struct Message {
 
 /// Message content — text, tool calls, or a combination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum MessageContent {
     /// Plain text content.
     Text { text: String },
@@ -222,4 +226,105 @@ pub struct Model {
     pub supports_tools: bool,
     /// Whether this model supports streaming.
     pub supports_streaming: bool,
+}
+
+#[cfg(test)]
+mod message_content_wire_tests {
+    use super::*;
+
+    fn tool_call() -> ToolCall {
+        ToolCall {
+            id: "call-1".into(),
+            name: "cf_list_zones".into(),
+            arguments: serde_json::json!({ "page": 1 }),
+        }
+    }
+
+    /// `MessageContent` reaches the frontend through `ai_get_conversation` and
+    /// `ai_export_conversation`. A tagged enum's `rename_all = "camelCase"` renames
+    /// variant tags only, so without `rename_all_fields` these fields ship as
+    /// `tool_calls` / `tool_call_id` / `is_error` while `src/types/ai.ts` declares
+    /// `toolCalls` / `toolCallId` / `isError`.
+    ///
+    /// This is safe to enforce because nothing deserializes `MessageContent` from an
+    /// external API body: every provider adapter hand-builds its outbound request
+    /// with `json!` and parses responses into `serde_json::Value` or adapter-local
+    /// types. The only `Deserialize` consumers are in-process round-trips of our own
+    /// output, which this test also covers.
+    #[test]
+    fn tool_use_serializes_fields_in_camel_case() {
+        let value = serde_json::to_value(MessageContent::ToolUse {
+            tool_calls: vec![tool_call()],
+        })
+        .expect("serializes");
+
+        assert_eq!(value["type"], "toolUse");
+        assert!(value.get("toolCalls").is_some(), "expected toolCalls: {value}");
+        assert!(
+            value.get("tool_calls").is_none(),
+            "snake_case field `tool_calls` leaked: {value}"
+        );
+    }
+
+    #[test]
+    fn tool_result_serializes_fields_in_camel_case() {
+        let value = serde_json::to_value(MessageContent::ToolResult {
+            tool_call_id: "call-1".into(),
+            content: "{}".into(),
+            is_error: true,
+        })
+        .expect("serializes");
+
+        assert_eq!(value["type"], "toolResult");
+        assert_eq!(value["toolCallId"], "call-1");
+        assert_eq!(value["isError"], true);
+        for snake in ["tool_call_id", "is_error"] {
+            assert!(
+                value.get(snake).is_none(),
+                "snake_case field `{snake}` leaked: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn message_content_round_trips_through_the_camel_case_wire_format() {
+        let variants = [
+            MessageContent::text("hello"),
+            MessageContent::ToolUse {
+                tool_calls: vec![tool_call()],
+            },
+            MessageContent::ToolResult {
+                tool_call_id: "call-1".into(),
+                content: "{}".into(),
+                is_error: false,
+            },
+        ];
+
+        for variant in variants {
+            let json = serde_json::to_string(&variant).expect("serializes");
+            let decoded: MessageContent = serde_json::from_str(&json).expect("deserializes");
+            let reencoded = serde_json::to_string(&decoded).expect("re-serializes");
+            assert_eq!(json, reencoded, "round trip changed the payload");
+        }
+    }
+
+    #[test]
+    fn enclosing_message_also_emits_camel_case() {
+        let mut message = Message::tool_result("call-1", "{}", false);
+        // Populate the optional field so it is actually serialized — it carries
+        // `skip_serializing_if = "Option::is_none"`, so a `None` would make the
+        // snake_case assertion below pass vacuously.
+        message.tool_call_id = Some("call-1".into());
+        let value = serde_json::to_value(&message).expect("serializes");
+
+        assert_eq!(value["toolCallId"], "call-1");
+        assert!(
+            value.get("tool_call_id").is_none(),
+            "Message leaked a snake_case field: {value}"
+        );
+        assert!(
+            value["content"].get("toolCallId").is_some(),
+            "nested content lost its camelCase field: {value}"
+        );
+    }
 }
