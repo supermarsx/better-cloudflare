@@ -10,7 +10,33 @@ rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+# WebAuthn relying-party verification.
+#
+# Version floor is deliberate. `GHSA-22w3-693w-x895` is an origin-validation
+# mismatch in `webauthn-rs-core` < 0.5.5 that is reachable only when a relying
+# party calls `WebauthnBuilder::allow_subdomains(true)`. 0.5.5 is the patched
+# release. This crate must build the `Webauthn` with `allow_subdomains(false)`
+# (the default) and must never call it with `true`: turning subdomains on
+# re-opens that class of hole, and no version bump alone makes it safe again.
+#
+# `default-features = false` drops the default-on `attestation` feature. The
+# conveyance policy for this app is `None` (there is no device allowlist and no
+# maintainable FIDO MDS trust store), so the `AttestationCaList` machinery is
+# unused. Registration is still bound by a server-issued single-use challenge,
+# an origin check, and an RP-ID-hash check — "no attestation" is not "no
+# verification".
+#
+# `danger-allow-state-serialisation`, `danger-credential-internals`, and
+# `danger-user-presence-only-security-keys` must stay OFF. Ceremony state never
+# leaves this process, so making it serialisable would only enable replay.
+webauthn-rs = { version = "0.5.5", default-features = false }
 bc-storage = { path = "../bc-storage" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+# In-process software authenticator (`SoftPasskey`) used to drive complete real
+# ceremonies in tests. Test-only: `softpasskey` pulls openssl through its
+# `crypto` feature, which must not reach the shipped binary.
+webauthn-authenticator-rs = { version = "0.5.5", features = ["softpasskey"] }
