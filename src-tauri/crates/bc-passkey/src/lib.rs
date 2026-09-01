@@ -6,6 +6,21 @@ use thiserror::Error;
 
 pub use bc_storage::Storage;
 
+/// Persistence schema for *verified* WebAuthn credentials.
+///
+/// This is storage only. Nothing here relaxes the fail-closed gate below: the
+/// store it defines is empty until a real registration ceremony writes to it,
+/// and `PasskeyManager` still refuses every ceremony and still mints no unlock
+/// token. Its purpose is to make the record a verified credential needs
+/// representable — and to let the app tell a dead legacy record apart from a
+/// live one — before the ceremonies that fill it exist.
+pub mod credential;
+
+pub use credential::{
+    classify_record, credential_storage_key, DeadCredential, DeadCredentialReason, RecordClass,
+    StoredCredential, StoredCredentialSchema, VerifiedCredentials, CREDENTIAL_SCHEMA_V1,
+};
+
 /// Legacy passkey records contain only untrusted browser JSON. They do not
 /// contain a public key produced by verified registration, trusted RP/origin
 /// policy, or an authoritative signature counter. No assertion can be securely
@@ -69,6 +84,8 @@ pub enum PasskeyError {
     SecureRegistrationUnavailable,
     #[error("Passkey credential not found")]
     NotFound,
+    #[error("This authenticator is already enrolled for this key")]
+    CredentialAlreadyEnrolled,
     #[error("Passkey storage error: {0}")]
     Storage(String),
 }

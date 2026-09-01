@@ -976,6 +976,33 @@ impl Storage {
         self.store_secret(key, &json).await
     }
 
+    /// Serialize a complete read-modify-write transaction over the typed list
+    /// stored under `key`.
+    ///
+    /// `set_typed_list` is a plain write, so a caller that reads, edits and
+    /// writes back races any concurrent writer: the last write wins and the
+    /// other one is lost. This takes the logical lock for `key` across the whole
+    /// transaction, so interleaved mutations compose instead of clobbering.
+    ///
+    /// With `delete_when_empty`, a mutation that empties the list removes the
+    /// stored record rather than leaving an empty-array secret behind.
+    ///
+    /// Callers must not acquire the same logical lock or call a locking public
+    /// low-level method (`get_secret`, `store_secret`, `delete_secret`, or
+    /// another `mutate_typed_list`) from inside `mutate`: the lock is not
+    /// re-entrant and doing so deadlocks.
+    pub async fn mutate_typed_list<T, R>(
+        &self,
+        key: &str,
+        delete_when_empty: bool,
+        mutate: impl FnOnce(&mut Vec<T>) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        self.mutate_json_list(key, delete_when_empty, mutate)
+    }
+
     /// Get a typed map stored under `key`.  Returns an empty map on miss.
     pub async fn get_typed_map<T: DeserializeOwned>(
         &self,

@@ -1382,6 +1382,176 @@ fn passkey_add_add_and_add_delete_are_serialized() {
         .any(|value| value["id"].as_str() == Some("doomed")));
 }
 
+/// A typed list entry, standing in for the verified WebAuthn credentials that
+/// `mutate_typed_list` exists to serialize.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct TypedEntry {
+    id: String,
+}
+
+fn typed_entries(storage: &Storage, key: &str) -> Vec<String> {
+    runtime()
+        .block_on(storage.get_typed_list::<TypedEntry>(key))
+        .expect("read typed list")
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect()
+}
+
+async fn add_typed_entry(storage: &Storage, key: &str, id: &str) {
+    let id = id.to_string();
+    storage
+        .mutate_typed_list(key, true, move |entries: &mut Vec<TypedEntry>| {
+            entries.push(TypedEntry { id });
+            Ok(())
+        })
+        .await
+        .expect("typed list add");
+}
+
+fn push_typed_entry(storage: &Storage, key: &str, id: &str) {
+    runtime().block_on(add_typed_entry(storage, key, id));
+}
+
+#[test]
+fn typed_list_add_add_and_add_delete_are_serialized() {
+    let _serial = lock_test_serial();
+    const KEY: &str = "webauthn_credentials:account";
+    let (backend, storage, peer_storage) = fake_storage_pair();
+
+    // Two concurrent read-modify-writes must compose. `set_typed_list` cannot
+    // do this: both callers would read the same list and the later write would
+    // drop the earlier entry.
+    run_concurrently(
+        &backend,
+        KEY,
+        storage.clone(),
+        peer_storage.clone(),
+        |storage| push_typed_entry(&storage, KEY, "left"),
+        |storage| push_typed_entry(&storage, KEY, "right"),
+    );
+    assert_eq!(typed_entries(&storage, KEY).len(), 2);
+
+    push_typed_entry(&storage, KEY, "doomed");
+    run_concurrently(
+        &backend,
+        KEY,
+        storage.clone(),
+        peer_storage,
+        |storage| push_typed_entry(&storage, KEY, "survivor"),
+        |storage| {
+            runtime()
+                .block_on(
+                    storage.mutate_typed_list(KEY, true, |entries: &mut Vec<TypedEntry>| {
+                        entries.retain(|entry| entry.id != "doomed");
+                        Ok(())
+                    }),
+                )
+                .expect("concurrent typed list delete");
+        },
+    );
+
+    let ids = typed_entries(&storage, KEY);
+    assert!(ids.iter().any(|id| id == "left"));
+    assert!(ids.iter().any(|id| id == "right"));
+    assert!(ids.iter().any(|id| id == "survivor"));
+    assert!(!ids.iter().any(|id| id == "doomed"));
+}
+
+#[tokio::test]
+async fn mutate_typed_list_deletes_the_record_when_the_list_empties() {
+    const KEY: &str = "webauthn_credentials:emptied";
+    let storage = Storage::new(false);
+    add_typed_entry(&storage, KEY, "only").await;
+    assert!(storage.get_secret(KEY).await.is_ok());
+
+    storage
+        .mutate_typed_list(KEY, true, |entries: &mut Vec<TypedEntry>| {
+            entries.clear();
+            Ok(())
+        })
+        .await
+        .expect("empty the typed list");
+
+    // An emptied list must remove the record rather than strand a `[]` secret,
+    // matching how `delete_passkey` already clears its key.
+    assert!(matches!(
+        storage.get_secret(KEY).await,
+        Err(StorageError::NotFound)
+    ));
+    assert!(storage
+        .get_typed_list::<TypedEntry>(KEY)
+        .await
+        .expect("read emptied typed list")
+        .is_empty());
+
+    // Without `delete_when_empty` the same mutation writes an empty list.
+    add_typed_entry(&storage, KEY, "only").await;
+    storage
+        .mutate_typed_list(KEY, false, |entries: &mut Vec<TypedEntry>| {
+            entries.clear();
+            Ok(())
+        })
+        .await
+        .expect("empty the typed list without deletion");
+    assert_eq!(
+        storage.get_secret(KEY).await.expect("retained record"),
+        "[]"
+    );
+}
+
+#[tokio::test]
+async fn mutate_typed_list_rejects_chunk_addressing_keys_and_writes_nothing() {
+    let storage = Storage::new(false);
+    for key in [
+        "",
+        "webauthn_credentials:a::chunk:0",
+        "webauthn_credentials:a::generation:g:chunk:0",
+    ] {
+        let result = storage
+            .mutate_typed_list(key, true, |entries: &mut Vec<TypedEntry>| {
+                entries.push(TypedEntry {
+                    id: "must not be written".to_string(),
+                });
+                Ok(())
+            })
+            .await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidKey)),
+            "'{key}' must be refused before the mutation runs"
+        );
+        assert!(matches!(
+            storage.get_secret(key).await,
+            Err(StorageError::NotFound) | Err(StorageError::InvalidKey)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn mutate_typed_list_leaves_the_record_untouched_when_the_mutation_fails() {
+    const KEY: &str = "webauthn_credentials:failing";
+    let storage = Storage::new(false);
+    add_typed_entry(&storage, KEY, "kept").await;
+
+    let result = storage
+        .mutate_typed_list(KEY, true, |entries: &mut Vec<TypedEntry>| {
+            entries.clear();
+            Err::<(), _>(StorageError::NotFound)
+        })
+        .await;
+    assert!(matches!(result, Err(StorageError::NotFound)));
+    let kept: Vec<TypedEntry> = storage
+        .get_typed_list(KEY)
+        .await
+        .expect("read typed list after a failed mutation");
+    assert_eq!(
+        kept,
+        vec![TypedEntry {
+            id: "kept".to_string()
+        }]
+    );
+}
+
 #[test]
 fn registrar_add_add_and_add_delete_are_serialized() {
     let _serial = lock_test_serial();
