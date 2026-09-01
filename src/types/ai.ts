@@ -7,16 +7,43 @@
 
 // ─── Provider Types ────────────────────────────────────────────────────────
 
-/** Supported LLM provider kinds. */
-export type ProviderKind = "openAi" | "anthropic" | "ollama";
+/**
+ * Supported LLM provider kinds.
+ *
+ * Rust is `#[serde(rename_all = "lowercase")]` on `ProviderKind`
+ * (`bc-ai-provider/src/config.rs:11-17`), so `OpenAi` is `"openai"` on the
+ * wire — not `"openAi"`. Five of the seventeen commands take a `kind` (or a
+ * `provider`) and reject any other spelling at deserialization time.
+ */
+export type ProviderKind = "openai" | "anthropic" | "ollama";
 
-/** Configuration for a provider connection. */
+/** Every provider kind, in the order the backend enumerates them. */
+export const PROVIDER_KINDS: readonly ProviderKind[] = [
+  "openai",
+  "anthropic",
+  "ollama",
+] as const;
+
+/**
+ * Configuration for a provider connection.
+ *
+ * Mirrors Rust `ProviderConfig` (`bc-ai-provider/src/config.rs:62-79`).
+ * `model`, `temperature` and `maxTokens` are **required** — they are plain
+ * fields with no `Option` and no `#[serde(default)]`, so omitting any of them
+ * fails `ai_configure_provider` before it reaches validation. There is no
+ * `orgId` field on the Rust side.
+ */
 export interface ProviderConfig {
   kind: ProviderKind;
+  /** Omitted entirely for providers that need no key (Ollama). Never echoed back by any command. */
   apiKey?: string;
+  /** Overrides `ProviderKind::default_base_url`; must be http(s). */
   baseUrl?: string;
-  model?: string;
-  orgId?: string;
+  model: string;
+  /** 0.0–2.0. */
+  temperature: number;
+  /** Bounded by `MAX_COMPLETION_TOKENS`. */
+  maxTokens: number;
 }
 
 /** Provider availability status. */
@@ -199,4 +226,67 @@ export interface Preset {
   name: string;
   description: string;
   systemPrompt: string;
+}
+
+// ─── Command errors ────────────────────────────────────────────────────────
+
+/**
+ * Optional detail bag on {@link AiCommandError}.
+ *
+ * Mirrors Rust `AiCommandErrorDetails` (`src-tauri/src/ai_commands.rs:37-53`).
+ * Every field is `skip_serializing_if = "Option::is_none"`, so an absent field
+ * means "not applicable", never "unknown".
+ */
+export interface AiCommandErrorDetails {
+  kind?: string;
+  /** Upstream HTTP status, when the failure came from a provider call. */
+  status?: number;
+  /** The offending input field, for validation failures. */
+  field?: string;
+  resource?: string;
+  /** The ceiling that was exceeded, paired with {@link actual}. */
+  limit?: number;
+  actual?: number;
+  /** Operator-facing next step. Render this alongside `message`. */
+  remediation?: string;
+}
+
+/**
+ * Structured failure returned by every fallible AI Tauri command.
+ *
+ * Mirrors Rust `AiCommandError` (`src-tauri/src/ai_commands.rs:26-35`). The
+ * message is passed through `sanitize_error_text`, so it is safe to display;
+ * it never carries an API key. Render `message` plus `details.remediation`,
+ * and offer a retry only when `retryable` is true.
+ */
+export interface AiCommandError {
+  /** Stable screaming-snake identifier, e.g. `AI_NOT_CONFIGURED`. */
+  code: string;
+  message: string;
+  /** Which layer failed, e.g. `provider`, `chat`, `agent`. */
+  source: string;
+  /** The command that failed, e.g. `ai:configure_provider`. */
+  operation: string;
+  retryable: boolean;
+  details: AiCommandErrorDetails;
+}
+
+/**
+ * Narrow an unknown rejection to an {@link AiCommandError}.
+ *
+ * Tauri rejects with the serialized error value itself, so a failed AI command
+ * surfaces as a plain object rather than an `Error` instance.
+ */
+export function isAiCommandError(value: unknown): value is AiCommandError {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<AiCommandError>;
+  return (
+    typeof candidate.code === "string" &&
+    typeof candidate.message === "string" &&
+    typeof candidate.source === "string" &&
+    typeof candidate.operation === "string" &&
+    typeof candidate.retryable === "boolean" &&
+    typeof candidate.details === "object" &&
+    candidate.details !== null
+  );
 }

@@ -18,9 +18,28 @@ import {
   clampNotificationSettings,
   type NotificationSettings,
 } from "@/lib/notifications/notification-settings";
+import type {
+  AgentConfig,
+  AgentEvent,
+  Conversation,
+  ConversationMeta,
+  Model,
+  Preset,
+  ProviderConfig,
+  ProviderKind,
+  ProviderStatus,
+} from "@/types/ai";
 
 const TAURI_UI_TIMEOUT_MS = 15_000;
 const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
+  // `ai_configure_provider` runs a live `health_check()` under a 30 s native
+  // bound (`PROVIDER_COMMAND_TIMEOUT`, `ai_commands.rs:23`); the default 15 s
+  // UI deadline would always fire first. `ai_test_provider`/`ai_list_models`
+  // are unbounded provider round-trips, and the export serialises up to 8 MiB.
+  ai_configure_provider: 60_000,
+  ai_export_conversation: 60_000,
+  ai_list_models: 60_000,
+  ai_test_provider: 60_000,
   check_dns_propagation: 60_000,
   create_bulk_dns_records: 60_000,
   export_dns_records: 60_000,
@@ -1647,6 +1666,164 @@ export class TauriClient {
       (event) => handler(event.payload),
     );
   }
+
+  // ─── AI assistant ────────────────────────────────────────────────────────
+  // The seventeen commands registered at `src-tauri/src/main.rs:322-338`,
+  // implemented in `src-tauri/src/ai_commands.rs`. Wire shapes are the serde
+  // camelCase forms of the `bc-ai-*` crates (see `src/types/ai.ts`); every one
+  // rejects with an `AiCommandError`, not a string. There is no HTTP fallback
+  // in `server-client.ts`, so each method throws `AI_DESKTOP_ONLY` off desktop
+  // rather than hanging on a missing bridge.
+
+  private static requireAiDesktop(): void {
+    if (!isDesktop()) throw new Error(AI_DESKTOP_ONLY);
+  }
+
+  /** Provider kinds and whether each is configured. Never returns a key. */
+  static async aiListProviders(): Promise<ProviderStatus[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_providers");
+  }
+
+  /**
+   * Save and verify a provider in one call: the backend validates, then runs a
+   * live `health_check()` before storing (`manager.rs:83-97`). A rejection
+   * therefore means "these credentials do not work", not merely "malformed".
+   *
+   * The config is held in RAM only and does not survive an app restart.
+   */
+  static async aiConfigureProvider(config: ProviderConfig): Promise<void> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_configure_provider", { config });
+  }
+
+  /** Health-check a configured provider and list its models. */
+  static async aiTestProvider(kind: ProviderKind): Promise<Model[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_test_provider", { kind });
+  }
+
+  /** List models for a configured provider (bounded to 1024 entries). */
+  static async aiListModels(kind: ProviderKind): Promise<Model[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_models", { kind });
+  }
+
+  /** Agent-loop settings. Cannot leak a provider key. */
+  static async aiGetConfig(): Promise<AgentConfig> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_config");
+  }
+
+  static async aiSetConfig(config: AgentConfig): Promise<void> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_set_config", { config });
+  }
+
+  static async aiCreateConversation(
+    provider: ProviderKind,
+    model: string,
+    title?: string,
+    systemPrompt?: string,
+  ): Promise<ConversationMeta> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_create_conversation", {
+      provider,
+      model,
+      title: title ?? null,
+      systemPrompt: systemPrompt ?? null,
+    });
+  }
+
+  static async aiListConversations(): Promise<ConversationMeta[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_conversations");
+  }
+
+  static async aiGetConversation(id: string): Promise<Conversation> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_conversation", { id });
+  }
+
+  static async aiDeleteConversation(id: string): Promise<boolean> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_delete_conversation", { id });
+  }
+
+  static async aiSetConversationTitle(
+    id: string,
+    title: string,
+  ): Promise<boolean> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_set_conversation_title", { id, title });
+  }
+
+  /**
+   * Push a user message and start the agent loop. Resolves with the **user**
+   * message id as soon as the turn is *started* — the assistant's reply
+   * arrives asynchronously on {@link AI_EVENT}, so a resolved promise is not a
+   * finished turn.
+   */
+  static async aiSendMessage(
+    conversationId: string,
+    text: string,
+    provider: ProviderKind,
+  ): Promise<string> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_send_message", { conversationId, text, provider });
+  }
+
+  /**
+   * Resume a turn paused on `toolApprovalRequired`.
+   *
+   * Tool dispatch is denied at a crate boundary in this build
+   * (`bc-mcp/src/tools/mod.rs:156-159`), so an approved call still fails; the
+   * UI must not offer an approve action. Exposed for completeness and for the
+   * defensive handling of an approval event that should never arrive.
+   */
+  static async aiApproveToolCall(
+    conversationId: string,
+    toolCallId: string,
+  ): Promise<void> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_approve_tool_call", { conversationId, toolCallId });
+  }
+
+  /** Cancel the in-flight turn. There is no per-tool reject command. */
+  static async aiCancelGeneration(conversationId: string): Promise<boolean> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_cancel_generation", { conversationId });
+  }
+
+  static async aiListPresets(): Promise<Preset[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_presets");
+  }
+
+  static async aiGetPreset(id: string): Promise<Preset> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_preset", { id });
+  }
+
+  /** Pretty-printed JSON. Exceeding the 8 MiB ceiling is an error, not a truncation. */
+  static async aiExportConversation(id: string): Promise<string> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_export_conversation", { id });
+  }
+
+  /**
+   * Subscribe to `ai:event`.
+   *
+   * One global channel carries every `AgentEvent` for **every** conversation —
+   * it is not scoped per conversation, so the handler must filter on
+   * `conversationId` itself.
+   */
+  static async onAiEvent(
+    handler: (payload: AgentEvent) => void,
+  ): Promise<UnlistenFn> {
+    TauriClient.requireAiDesktop();
+    return listen<AgentEvent>(AI_EVENT, (event) => handler(event.payload));
+  }
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -2000,6 +2177,17 @@ export interface BiometricStatus {
 
 // ── Notification types (mirror of `bc-notify`, serde camelCase) ─────────────
 
+// ── AI assistant constants ─────────────────────────────────────────────────
+
+/**
+ * The single Tauri event channel every `AgentEvent` is emitted on
+ * (`ai_commands.rs:655-663`). Exported so tests and e2e stubs emit on exactly
+ * the name the client listens to.
+ */
+export const AI_EVENT = "ai:event";
+export const AI_DESKTOP_ONLY =
+  "The AI assistant is only available in the desktop app.";
+
 export const NOTIFICATIONS_CHANGED_EVENT = "notifications://changed";
 export const NOTIFICATIONS_STATUS_EVENT = "notifications://status";
 export const NOTIFICATIONS_DESKTOP_ONLY =
@@ -2114,3 +2302,16 @@ export interface NotificationsChangedPayload {
 }
 
 export type { NotificationSettings, UnlistenFn };
+
+/** Re-exported so AI callers have a single import site, as for notifications. */
+export type {
+  AgentConfig,
+  AgentEvent,
+  Conversation,
+  ConversationMeta,
+  Model,
+  Preset,
+  ProviderConfig,
+  ProviderKind,
+  ProviderStatus,
+};
