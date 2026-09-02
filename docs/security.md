@@ -66,7 +66,9 @@ The practical consequence: in a browser context a key exists only in memory for 
 
 Passkey **registration and authentication work**, against a verified WebAuthn relying party.
 
-They did not for a period, and the reason matters. The implementation removed in `d05fe59` validated none of the things WebAuthn security depends on — not the clientDataJSON type or origin, not the RP ID hash, not the user-presence or user-verification flags, not the signature, not the authenticator counter. It compared the challenge it had issued against the challenge echoed back inside client-supplied JSON and called that verification. Rather than ship an authentication mechanism that only looked like one, it was removed and the whole path was made to fail closed.
+**Measured on Windows only.** A full register-then-authenticate round trip completes in the production WebView2 build at `http://tauri.localhost`, and the unlock token it mints releases a vault secret; a forged, replayed, or absent token does not. That was run against the shipped binary, not inferred from tests. What is written below about macOS and Linux is _expected_ rather than measured — see [Platforms](#platforms-what-is-verified-where).
+
+They did not work for a period, and the reason matters. The implementation removed in `d05fe59` validated none of the things WebAuthn security depends on — not the clientDataJSON type or origin, not the RP ID hash, not the user-presence or user-verification flags, not the signature, not the authenticator counter. It compared the challenge it had issued against the challenge echoed back inside client-supplied JSON and called that verification. Rather than ship an authentication mechanism that only looked like one, it was removed and the whole path was made to fail closed.
 
 What replaced it does not re-implement those checks either. `bc-passkey` drives both ceremonies through [`webauthn-rs`](https://github.com/kanidm/webauthn-rs)'s high-level API and stores what that library attests to: the COSE public key, the RP ID, and the signature counter. The type, origin, RP-ID-hash, flag, signature and counter checks are the library's, performed once, in one place. A parallel check alongside it could only ever be weaker than, or disagree with, the one that matters — hand-rolling them is exactly how the original flaw happened.
 
@@ -80,9 +82,48 @@ Around the library sit the parts a relying party has to get right itself:
 
 **Legacy credentials cannot sign in.** Records written before verified registration hold no public key, so nothing can be checked against them. They can be listed and deleted, and the UI says so and offers re-enrollment. That is not a migration that was skipped: the material verification needs was never captured.
 
-**A passkey still needs a platform authenticator.** Where the webview provides no WebAuthn client, or the machine has no user-verifying platform authenticator enrolled, the login screen names that specific reason rather than offering a button that fails:
+### Platforms: what is verified where
+
+The relying party is scoped to whatever origin the webview reports, and that string is not the same on every platform:
+
+| Context                           | Origin                   | RP ID             | State                                                                          |
+| --------------------------------- | ------------------------ | ----------------- | ------------------------------------------------------------------------------ |
+| Production, Windows (WebView2)    | `http://tauri.localhost` | `tauri.localhost` | **Verified working**, end to end                                               |
+| Development (`npm run tauri:dev`) | `http://localhost:3000`  | `localhost`       | Same code path; credentials enrolled here cannot be used in a production build |
+| Production, macOS / Linux         | `tauri://localhost`      | `localhost`       | Relying party configures; **the client is expected to refuse**                 |
+
+On macOS and Linux the backend is _not_ the thing that says no. `tauri://localhost` is a non-special scheme, but it still has a host, so a relying party builds and `status()` reports available. What decides is the frontend's own probe: a WebAuthn client that will not operate at an opaque origin makes `isUserVerifyingPlatformAuthenticatorAvailable()` fail or return false, and the login screen shows the `webview` cause below. **Nobody has run this on macOS or Linux** — the capability spike covered Windows only — so treat that row as the expected outcome and not as a measurement. It is stated this way deliberately: the honest failure mode of this design is that the UI depends on the client probe to avoid offering a button that cannot work, and that dependency has been exercised on one platform.
+
+Windows production shares its RP ID, `tauri.localhost`, with every other Tauri application on the machine. That is inherent to Tauri's WebView2 origin rather than something this app chose, and it sits outside the threat model here (a single user's own machine) — recorded so it is a known property rather than a surprise.
+
+### Four reasons passkeys can be unavailable, and four different messages
+
+Collapsing these into one "passkeys unavailable" banner would tell you nothing you could act on, so each has its own text and its own visual tone:
+
+| Cause                | What it means                                                                                                          | What you can do                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `backend`            | The relying party reports no capability — the origin could not be resolved into one. The message is the backend's own. | Nothing on this machine; it is a configuration fault                                    |
+| `webview`            | The backend is willing, but this webview provides no WebAuthn client. The standing expectation on macOS and Linux.     | Use a password, or a different platform                                                 |
+| `no-authenticator`   | Everything works, but no user-verifying platform authenticator is enrolled here.                                       | Enrol Windows Hello, Touch ID, or a device passcode                                     |
+| `legacy-credentials` | The passkeys on file predate verified registration.                                                                    | Register a new passkey — this is the one unavailable state that still offers the button |
+
+Only a resolution failure or a failed status call renders red. A platform limitation you cannot act on renders neutral, because painting it as a fault implies you could fix it.
+
+**A passkey still needs a platform authenticator.** Where one of the above applies, the login screen names that specific reason rather than offering a button that fails:
 
 <img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel">
+
+### The library is pinned to a pre-release, knowingly
+
+`bc-passkey` depends on `webauthn-rs = "=0.6.1-dev"`. **That is a pre-release crypto library in a credential-verification path, and it was accepted rather than resolved.** There is no released 0.6.x — `0.6.1-dev` (published 2026-04-30) is the only 0.6 publication in existence — so this is not a pin that could be tightened to a stable version today.
+
+It was chosen against a specific alternative, not by default. The 0.5 line depends on `openssl` and `openssl-sys` unconditionally, with no feature to opt out. In this workspace OpenSSL otherwise enters the build graph on **Linux only**, via `reqwest → hyper-tls → native-tls`; Windows uses schannel and macOS uses security-framework. Taking 0.5 would have made a native OpenSSL a first-time build requirement on two more platforms and linked it into the shipped binary — and `native-tls` is used here precisely so the platform decides what crypto the binary links. A passkey library smuggling a different answer in through the back door was judged the worse of the two risks. The 0.6 line replaces OpenSSL with RustCrypto.
+
+The `=` is exact for two independent reasons: Cargo will not select a pre-release from `version = "0.6"` at all, and even spelled without the `=` a caret requirement would drift to the next `-dev` publication — which carry no compatibility promise, in code that verifies credentials. The sibling crates (`webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca`) are not declared directly; upstream already pins each at exactly `=0.6.1-dev`, and `Cargo.lock` records them all.
+
+`default-features = false` drops the default-on `attestation` feature: the conveyance policy is `None`, with no device allowlist and no maintained FIDO MDS trust store, so that machinery is unused. **No attestation is not no verification** — registration is still bound by a server-issued single-use challenge, an origin check, and an RP-ID-hash check. The three `danger-*` features are off and must stay off.
+
+**Intended endpoint:** move to the stable 0.6.x when it ships, drop the `=` to a caret requirement, and re-run the full ceremony suite as part of that change. A related consequence is recorded under [dependency exceptions](../.github/RELEASE_SECURITY.md): `RUSTSEC-2023-0071` (`rsa`, Marvin timing side-channel) reaches this graph transitively through `webauthn-rs → crypto-glue`, has no patched release in any line, and is accepted on the grounds that a relying party holds no RSA private key and decrypts nothing.
 
 This is also the screen where the credential-unlock model is visible in one glance. Nothing is decrypted at rest by the act of selecting a key: you pick a stored credential from **API Key**, and the vault password you type is what derives the PBKDF2 key that unwraps it. The password is never stored — losing it means losing access to that key, which is the intended property.
 
