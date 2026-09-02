@@ -10,7 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { ServerClient } from "@/lib/api/server-client";
-import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
+import {
+  passkeyStatusReason,
+  type PasskeyStatusState,
+} from "@/lib/auth/passkey-status";
 import { passkeyErrorMessage } from "@/lib/auth/passkey-error";
 import {
   Fingerprint,
@@ -192,7 +195,7 @@ export function PasskeyManagerDialog({
               Passkeys temporarily unavailable
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {status?.reason ??
+              {passkeyStatusReason(status) ??
                 "Existing credentials require removal and future re-enrollment."}
             </p>
           </div>

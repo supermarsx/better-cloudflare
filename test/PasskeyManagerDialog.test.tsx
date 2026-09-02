@@ -17,6 +17,8 @@ const originalList = ServerClient.prototype.listPasskeys;
 const originalDelete = ServerClient.prototype.deletePasskey;
 const unavailableStatus: PasskeyStatusState = {
   kind: "unavailable",
+  cause: "backend",
+  registration: false,
   legacyRecoveryAvailable: true,
   reason:
     "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",

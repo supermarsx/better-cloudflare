@@ -4,8 +4,27 @@ import { test } from "node:test";
 import { passkeyErrorMessage } from "../src/lib/auth/passkey-error";
 import {
   failedPasskeyStatus,
-  unavailablePasskeyStatus,
+  passkeyStatusState,
+  passkeyStatusReason,
+  LEGACY_CREDENTIALS_REASON,
+  NO_AUTHENTICATOR_REASON,
+  WEBVIEW_UNSUPPORTED_REASON,
 } from "../src/lib/auth/passkey-status";
+import type { PasskeyStatus } from "../src/lib/api/tauri-client";
+
+const gateShut: PasskeyStatus = {
+  registrationAvailable: false,
+  authenticationAvailable: false,
+  legacyCredentialsRequireReregistration: true,
+  unavailableReason: "Platform authenticator is unavailable",
+};
+
+const backendReady: PasskeyStatus = {
+  registrationAvailable: true,
+  authenticationAvailable: true,
+  legacyCredentialsRequireReregistration: false,
+  unavailableReason: "",
+};
 
 test("passkey errors preserve the most useful backend explanation", () => {
   assert.equal(
@@ -40,18 +59,129 @@ test("passkey errors use a safe actionable fallback for unusable values", () => 
   assert.equal(passkeyErrorMessage(403), fallback);
 });
 
-test("unavailable passkey state carries backend recovery requirements", () => {
-  const status = unavailablePasskeyStatus({
-    available: false,
-    unavailableReason: "Platform authenticator is unavailable",
-    legacyCredentialsRequireReregistration: true,
-  } as Parameters<typeof unavailablePasskeyStatus>[0]);
+test("a shut backend gate reports the backend's own reason, whatever the client can do", () => {
+  // The gate is the thing standing in the way, and only the backend knows
+  // whether it is shut for verification or for a missing origin. Reporting a
+  // webview limitation instead would send the user chasing a fix that is not
+  // the problem.
+  for (const client of [
+    "available",
+    "no-authenticator",
+    "unsupported",
+  ] as const) {
+    assert.deepEqual(passkeyStatusState(gateShut, client), {
+      kind: "unavailable",
+      cause: "backend",
+      reason: "Platform authenticator is unavailable",
+      registration: false,
+      legacyRecoveryAvailable: true,
+    });
+  }
+});
 
-  assert.deepEqual(status, {
+test("a backend that reports unavailability without a reason still says something actionable", () => {
+  const state = passkeyStatusState(
+    { ...gateShut, unavailableReason: "   " },
+    "available",
+  );
+  assert.equal(state.kind, "unavailable");
+  assert.match(passkeyStatusReason(state) ?? "", /sign in with your password/i);
+});
+
+test("a webview with no WebAuthn client is named as the cause, not the backend", () => {
+  assert.deepEqual(passkeyStatusState(backendReady, "unsupported"), {
     kind: "unavailable",
-    reason: "Platform authenticator is unavailable",
-    legacyRecoveryAvailable: true,
+    cause: "webview",
+    reason: WEBVIEW_UNSUPPORTED_REASON,
+    registration: false,
+    legacyRecoveryAvailable: false,
   });
+});
+
+test("a device with no enrolled authenticator gets the enrolment message", () => {
+  assert.deepEqual(passkeyStatusState(backendReady, "no-authenticator"), {
+    kind: "unavailable",
+    cause: "no-authenticator",
+    reason: NO_AUTHENTICATOR_REASON,
+    registration: false,
+    legacyRecoveryAvailable: false,
+  });
+});
+
+test("legacy-only credentials block sign-in but leave registration open", () => {
+  // Registration is the way out of this state, so it must not be gated by the
+  // state it fixes.
+  assert.deepEqual(
+    passkeyStatusState(
+      {
+        registrationAvailable: true,
+        authenticationAvailable: false,
+        legacyCredentialsRequireReregistration: true,
+        unavailableReason: "",
+      },
+      "available",
+    ),
+    {
+      kind: "unavailable",
+      cause: "legacy-credentials",
+      reason: LEGACY_CREDENTIALS_REASON,
+      registration: true,
+      legacyRecoveryAvailable: true,
+    },
+  );
+});
+
+test("a working backend and a working client report availability", () => {
+  assert.deepEqual(passkeyStatusState(backendReady, "available"), {
+    kind: "available",
+    registration: true,
+    authentication: true,
+    legacyRecoveryAvailable: false,
+  });
+  assert.equal(
+    passkeyStatusReason(passkeyStatusState(backendReady, "available")),
+    null,
+  );
+});
+
+test("registration-only availability without legacy records is still available", () => {
+  assert.deepEqual(
+    passkeyStatusState(
+      {
+        registrationAvailable: true,
+        authenticationAvailable: false,
+        legacyCredentialsRequireReregistration: false,
+        unavailableReason: "",
+      },
+      "available",
+    ),
+    {
+      kind: "available",
+      registration: true,
+      authentication: false,
+      legacyRecoveryAvailable: false,
+    },
+  );
+});
+
+test("the four unavailable causes each carry a distinct message", () => {
+  const reasons = new Set(
+    [
+      passkeyStatusState(gateShut, "available"),
+      passkeyStatusState(backendReady, "unsupported"),
+      passkeyStatusState(backendReady, "no-authenticator"),
+      passkeyStatusState(
+        {
+          ...backendReady,
+          authenticationAvailable: false,
+          legacyCredentialsRequireReregistration: true,
+        },
+        "available",
+      ),
+    ].map((state) => passkeyStatusReason(state)),
+  );
+  assert.equal(reasons.size, 4);
+  assert.ok(!reasons.has(null));
 });
 
 test("failed passkey state always leaves legacy recovery available", () => {

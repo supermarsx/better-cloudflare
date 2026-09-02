@@ -8,6 +8,8 @@ import type { PasskeyStatusState } from "../src/lib/auth/passkey-status";
 
 const unavailableStatus: PasskeyStatusState = {
   kind: "unavailable",
+  cause: "backend",
+  registration: false,
   legacyRecoveryAvailable: true,
   reason:
     "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
@@ -103,4 +105,24 @@ test("LoginPasskeySection keeps legacy management available after status IPC fai
   assert.equal(recovery.hasAttribute("disabled"), false);
   recovery.click();
   assert.equal(managed, true);
+});
+
+test("LoginPasskeySection stops claiming unavailability once passkeys are available", () => {
+  render(
+    <LoginPasskeySection
+      onManagePasskeys={() => {}}
+      selectedKeyId="key1"
+      password="pw"
+      hasKeys={true}
+      status={{
+        kind: "available",
+        registration: true,
+        authentication: true,
+        legacyRecoveryAvailable: false,
+      }}
+    />,
+  );
+
+  assert.equal(screen.queryByRole("alert"), null);
+  assert.equal(screen.queryByText(/passkeys temporarily unavailable/i), null);
 });

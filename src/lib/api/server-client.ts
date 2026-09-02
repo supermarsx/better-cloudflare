@@ -179,6 +179,36 @@ function authHeaders(key: string, email?: string): HeadersInit {
 }
 
 /**
+ * One entry from `list_passkeys`.
+ *
+ * The desktop backend returns a union of three record kinds — verified
+ * credentials, verified-store records it could not read, and legacy records —
+ * and only the first carries a label or timestamps. `requiresReregistration`
+ * is the field that separates a passkey that can sign in from one the user has
+ * to replace.
+ */
+export interface PasskeyListEntry {
+  id: string;
+  counter?: number;
+  label?: string;
+  createdAt?: string;
+  lastUsedAt?: string;
+  requiresReregistration?: boolean;
+}
+
+/** The result of submitting an assertion to the relying party. */
+export interface PasskeyAuthenticationResult {
+  success: boolean;
+  /**
+   * Single-use unlock token, minted only on the success path of a verified
+   * assertion. Present only when `success` is true; never persist or log it.
+   */
+  token?: string;
+  /** Credential that produced the assertion. Not secret. */
+  credentialId?: string;
+}
+
+/**
  * Client for communicating with the local server API that proxies requests
  * to Cloudflare. The client handles authorization headers and JSON parsing
  * of responses and provides higher-level convenience methods.
@@ -680,7 +710,7 @@ export class ServerClient {
   async authenticatePasskey(
     id: string,
     assertion: unknown,
-  ): Promise<{ success: boolean; token?: string }> {
+  ): Promise<PasskeyAuthenticationResult> {
     /**
      * Submit a passkey assertion (authentication) to the server. The server
      * should verify the assertion and respond with success. This project
@@ -688,10 +718,10 @@ export class ServerClient {
      * verification before production use.
      */
     if (isDesktop()) {
-      return (await TauriClient.authenticatePasskey(id, assertion)) as {
-        success: boolean;
-        token?: string;
-      };
+      return (await TauriClient.authenticatePasskey(
+        id,
+        assertion,
+      )) as PasskeyAuthenticationResult;
     }
     return this.request(`/passkeys/authenticate/${id}`, {
       method: "POST",
@@ -702,15 +732,13 @@ export class ServerClient {
   async listPasskeys(
     id: string,
     signal?: AbortSignal,
-  ): Promise<{ id: string; counter?: number }[]> {
+  ): Promise<PasskeyListEntry[]> {
     if (isDesktop()) {
       if (signal === undefined) {
-        return TauriClient.listPasskeys(id) as Promise<
-          { id: string; counter?: number }[]
-        >;
+        return TauriClient.listPasskeys(id) as Promise<PasskeyListEntry[]>;
       }
       return TauriClient.listPasskeys(id, signal) as Promise<
-        { id: string; counter?: number }[]
+        PasskeyListEntry[]
       >;
     }
     return this.request(`/passkeys/${id}`, { method: "GET", signal });

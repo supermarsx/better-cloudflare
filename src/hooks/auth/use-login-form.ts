@@ -14,14 +14,19 @@ import type { ApiKey } from "@/types/dns";
 import { TauriClient } from "@/lib/api/tauri-client";
 import {
   failedPasskeyStatus,
-  unavailablePasskeyStatus,
+  passkeyStatusState,
   type PasskeyStatusState,
 } from "@/lib/auth/passkey-status";
 import {
+  createPasskeyCredential,
+  getPasskeyCredential,
+  probeWebauthnClient,
   serializeAuthenticationCredential,
   serializeRegistrationCredential,
   toCredentialCreationOptions,
   toCredentialRequestOptions,
+  unwrapCeremonyOptions,
+  WebauthnCeremonyTimeoutError,
 } from "@/lib/auth/webauthn";
 
 export function useLoginForm(
@@ -171,9 +176,13 @@ export function useLoginForm(
       };
     }
 
-    TauriClient.getPasskeyStatus()
-      .then((status) => {
-        if (current) setPasskeyStatus(unavailablePasskeyStatus(status));
+    // The backend reports what the relying party can do; only the frontend can
+    // answer whether this webview has a working WebAuthn client. Both halves
+    // are needed before the UI can say anything specific, so ask for them
+    // together. `probeWebauthnClient` never rejects.
+    Promise.all([TauriClient.getPasskeyStatus(), probeWebauthnClient()])
+      .then(([status, client]) => {
+        if (current) setPasskeyStatus(passkeyStatusState(status, client));
       })
       .catch((error) => {
         if (current) {
@@ -487,24 +496,13 @@ export function useLoginForm(
 
       const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
       const options = await sc2.getPasskeyRegistrationOptions(selectedKeyId);
-      const registrationOptionsRaw =
-        (options as { options?: unknown }).options ?? options;
-      const mergedRegistrationOptions =
-        typeof registrationOptionsRaw === "object" &&
-        registrationOptionsRaw !== null &&
-        "challenge" in (registrationOptionsRaw as Record<string, unknown>)
-          ? registrationOptionsRaw
-          : {
-              ...(registrationOptionsRaw as Record<string, unknown>),
-              challenge: (options as { challenge?: unknown }).challenge,
-            };
       const publicKey = toCredentialCreationOptions(
-        mergedRegistrationOptions as Parameters<
+        unwrapCeremonyOptions(options) as unknown as Parameters<
           typeof toCredentialCreationOptions
         >[0],
       );
 
-      const credential = await navigator.credentials.create({ publicKey });
+      const credential = await createPasskeyCredential(publicKey);
       if (credential) {
         const att = credential as PublicKeyCredential;
         await sc2.registerPasskey(
@@ -526,7 +524,15 @@ export function useLoginForm(
       const errorMsg = formatError(error);
       let userMessage = errorMsg;
 
-      if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
+      if (error instanceof WebauthnCeremonyTimeoutError) {
+        // Checked before the cancellation branch: our own abort surfaces as an
+        // AbortError, which is otherwise indistinguishable from the user
+        // dismissing the prompt.
+        userMessage = error.message;
+      } else if (
+        errorMsg.includes("NotAllowedError") ||
+        errorMsg.includes("abort")
+      ) {
         userMessage =
           "Registration was cancelled or not allowed by your device";
       } else if (errorMsg.includes("NotSupportedError")) {
@@ -581,21 +587,13 @@ export function useLoginForm(
     try {
       const scx = new ServerClient("", undefined);
       const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
-      const authOptionsRaw = (opts as { options?: unknown }).options ?? opts;
-      const mergedAuthOptions =
-        typeof authOptionsRaw === "object" &&
-        authOptionsRaw !== null &&
-        "challenge" in (authOptionsRaw as Record<string, unknown>)
-          ? authOptionsRaw
-          : {
-              ...(authOptionsRaw as Record<string, unknown>),
-              challenge: (opts as { challenge?: unknown }).challenge,
-            };
       const publicKey = toCredentialRequestOptions(
-        mergedAuthOptions as Parameters<typeof toCredentialRequestOptions>[0],
+        unwrapCeremonyOptions(opts) as unknown as Parameters<
+          typeof toCredentialRequestOptions
+        >[0],
       );
 
-      const assertion = await navigator.credentials.get({ publicKey });
+      const assertion = await getPasskeyCredential(publicKey);
 
       if (assertion) {
         const a = assertion as PublicKeyCredential;
@@ -642,7 +640,12 @@ export function useLoginForm(
       const errorMsg = formatError(error);
       let userMessage = errorMsg;
 
-      if (errorMsg.includes("NotAllowedError") || errorMsg.includes("abort")) {
+      if (error instanceof WebauthnCeremonyTimeoutError) {
+        userMessage = error.message;
+      } else if (
+        errorMsg.includes("NotAllowedError") ||
+        errorMsg.includes("abort")
+      ) {
         userMessage =
           "Authentication was cancelled or not allowed by your device";
       } else if (errorMsg.includes("NotSupportedError")) {

@@ -692,6 +692,24 @@ export class TauriClient {
   }
 
   // Passkey Operations
+  //
+  // The ceremony payloads cross this boundary as JSON produced and consumed by
+  // `webauthn-rs` 0.5, which means:
+  //
+  // - challenge responses arrive wrapped as `{ "publicKey": { … } }`, the shape
+  //   `navigator.credentials` takes directly — unwrap with
+  //   `unwrapCeremonyOptions` from `@/lib/auth/webauthn`, never by reaching for
+  //   a field;
+  // - every binary field is an **unpadded base64url string** in both
+  //   directions, which is what `normalizeBinary` decodes and what
+  //   `bufferToBase64url` produces;
+  // - the credential envelopes are the browser's own spelling. `extensions`
+  //   carries `alias = "clientExtensionResults"` on the Rust side, so the key
+  //   the browser emits is accepted as-is.
+  //
+  // The options are deliberately typed `unknown`: their shape belongs to the
+  // relying party, and the one function allowed to interpret it lives in
+  // `@/lib/auth/webauthn`.
   static async getPasskeyStatus(): Promise<PasskeyStatus> {
     return invoke("get_passkey_status");
   }
@@ -711,6 +729,10 @@ export class TauriClient {
     return invoke("get_passkey_auth_options", { id });
   }
 
+  /**
+   * Submit an assertion. On success the result carries a single-use unlock
+   * token; see `PasskeyAuthenticationResult` in `server-client.ts`.
+   */
   static async authenticatePasskey(
     id: string,
     assertion: unknown,
