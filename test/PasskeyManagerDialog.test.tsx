@@ -306,3 +306,56 @@ test("PasskeyManagerDialog remove action is a non-submit button", async () => {
   const remove = await screen.findByRole("button", { name: /remove/i });
   assert.equal(remove.getAttribute("type"), "button");
 });
+
+test("PasskeyManagerDialog stops claiming unavailability once passkeys work", async () => {
+  ServerClient.prototype.listPasskeys = async () => [
+    { id: "cred1", counter: 1, label: "cred1", requiresReregistration: true },
+  ];
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={{
+        kind: "available",
+        registration: true,
+        authentication: true,
+        legacyRecoveryAvailable: true,
+      }}
+    />,
+  );
+
+  await waitFor(() => assert.ok(screen.getByText("cred1")));
+  // The dialog is now being used the way it is meant to be — clearing legacy
+  // records so a working passkey can replace them — so the red banner would be
+  // a plain lie. Removal must still be offered.
+  assert.equal(screen.queryByText(/temporarily unavailable/i), null);
+  assert.ok(screen.getByText(/passkeys are available/i));
+  assert.ok(screen.getByRole("button", { name: /remove/i }));
+});
+
+test("PasskeyManagerDialog names the specific reason passkeys are unavailable", async () => {
+  ServerClient.prototype.listPasskeys = async () => [];
+  render(
+    <PasskeyManagerDialog
+      open={true}
+      onOpenChange={() => {}}
+      id="key"
+      apiKey="token"
+      status={{
+        kind: "unavailable",
+        cause: "no-authenticator",
+        registration: false,
+        legacyRecoveryAvailable: true,
+        reason:
+          "No passkey authenticator is set up on this device. Enrol Windows Hello, Touch ID, or a device passcode, then try again.",
+      }}
+    />,
+  );
+
+  await waitFor(() =>
+    assert.ok(screen.getByText(/no passkey authenticator on this device/i)),
+  );
+  assert.equal(screen.queryByText(/temporarily unavailable/i), null);
+});

@@ -71,6 +71,8 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
     setEncryptionSettings,
     benchmarkResult,
     passkeyStatus,
+    passkeyRegisterLoading,
+    passkeyAuthLoading,
     showManagePasskeys,
     setShowManagePasskeys,
     passkeyViewKey,
@@ -87,6 +89,8 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
     handleBenchmark,
     handleUpdateSettings,
     handleManagePasskeys,
+    handleRegisterPasskey,
+    handleUsePasskey,
     handleRemoveVaultSecret,
     biometricAvailable,
     biometricLabel,
@@ -145,6 +149,10 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
 
           <LoginPasskeySection
             onManagePasskeys={handleManagePasskeys}
+            onRegisterPasskey={handleRegisterPasskey}
+            onUsePasskey={handleUsePasskey}
+            registerLoading={passkeyRegisterLoading}
+            authLoading={passkeyAuthLoading}
             selectedKeyId={selectedKeyId}
             password={password}
             hasKeys={apiKeys.length > 0}

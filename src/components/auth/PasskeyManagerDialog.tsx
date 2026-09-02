@@ -10,16 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { ServerClient } from "@/lib/api/server-client";
+import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import {
-  passkeyStatusReason,
-  type PasskeyStatusState,
-} from "@/lib/auth/passkey-status";
+  PasskeyStatusNotice,
+  passkeyStatusNotice,
+} from "@/components/auth/PasskeyStatusNotice";
 import { passkeyErrorMessage } from "@/lib/auth/passkey-error";
 import {
   Fingerprint,
   Smartphone,
   Monitor,
   Shield,
+  ShieldCheck,
   Trash2,
   AlertTriangle,
 } from "lucide-react";
@@ -149,26 +151,28 @@ export function PasskeyManagerDialog({
     }
   };
 
+  const notice = passkeyStatusNotice(status);
+
   const getDeviceIcon = (label?: string) => {
     const lowerLabel = (label || "").toLowerCase();
     if (lowerLabel.includes("phone") || lowerLabel.includes("mobile")) {
-      return <Smartphone className="h-4 w-4" />;
+      return <Smartphone aria-hidden="true" className="h-4 w-4" />;
     }
     if (
       lowerLabel.includes("computer") ||
       lowerLabel.includes("desktop") ||
       lowerLabel.includes("laptop")
     ) {
-      return <Monitor className="h-4 w-4" />;
+      return <Monitor aria-hidden="true" className="h-4 w-4" />;
     }
     if (
       lowerLabel.includes("key") ||
       lowerLabel.includes("yubikey") ||
       lowerLabel.includes("security")
     ) {
-      return <Shield className="h-4 w-4" />;
+      return <Shield aria-hidden="true" className="h-4 w-4" />;
     }
-    return <Fingerprint className="h-4 w-4" />;
+    return <Fingerprint aria-hidden="true" className="h-4 w-4" />;
   };
 
   return (
@@ -176,7 +180,7 @@ export function PasskeyManagerDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-primary" />
+            <Shield aria-hidden="true" className="h-5 w-5 text-primary" />
             Legacy passkey recovery
           </DialogTitle>
           <DialogDescription>
@@ -186,19 +190,46 @@ export function PasskeyManagerDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div
-            className="rounded-md border border-destructive/60 bg-destructive/10 p-3 text-sm text-foreground"
-            role="alert"
-          >
-            <div className="flex items-center gap-2 font-semibold text-destructive">
-              <AlertTriangle className="h-4 w-4" />
-              Passkeys temporarily unavailable
+          {/* Three cases, and the banner used to claim the first one for all
+              three. `notice` covers every state that has something wrong to
+              report. An `available` status means this dialog is being used the
+              way it is meant to be — clearing out legacy records so a working
+              passkey can replace them — and saying "unavailable" there would be
+              a plain lie. A null status (the web build) is neither, so the
+              original wording stays. */}
+          {notice ? (
+            <PasskeyStatusNotice state={status} />
+          ) : status?.kind === "available" ? (
+            <div
+              className="rounded-md border border-border/60 bg-muted/40 p-3 text-sm text-foreground"
+              role="status"
+            >
+              <div className="flex items-center gap-2 font-semibold text-foreground">
+                <ShieldCheck aria-hidden="true" className="h-4 w-4 shrink-0" />
+                Passkeys are available
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Remove the legacy credentials below, then register a new passkey
+                from the login screen to replace them.
+              </p>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {passkeyStatusReason(status) ??
-                "Existing credentials require removal and future re-enrollment."}
-            </p>
-          </div>
+          ) : (
+            <div
+              className="rounded-md border border-destructive/60 bg-destructive/10 p-3 text-sm text-foreground"
+              role="alert"
+            >
+              <div className="flex items-center gap-2 font-semibold text-destructive">
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0"
+                />
+                Passkeys temporarily unavailable
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Existing credentials require removal and future re-enrollment.
+              </p>
+            </div>
+          )}
           {actionError && (
             <p className="text-sm text-destructive" role="alert">
               {actionError}
@@ -219,7 +250,10 @@ export function PasskeyManagerDialog({
                 </div>
               ) : !items || items.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground border-2 border-dashed rounded-lg">
-                  <Fingerprint className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                  <Fingerprint
+                    aria-hidden="true"
+                    className="h-12 w-12 mx-auto mb-2 opacity-50"
+                  />
                   <p className="text-sm font-medium">
                     No legacy passkeys found
                   </p>
@@ -261,7 +295,7 @@ export function PasskeyManagerDialog({
                         className="ml-4"
                         disabled={isRevoking}
                       >
-                        <Trash2 className="h-4 w-4 mr-1" />
+                        <Trash2 aria-hidden="true" className="h-4 w-4 mr-1" />
                         {isRevoking ? "Removing…" : "Remove"}
                       </Button>
                     </div>
@@ -273,7 +307,7 @@ export function PasskeyManagerDialog({
           {items.length > 0 && (
             <div className="pt-3 border-t">
               <p className="text-xs text-muted-foreground">
-                <Shield className="h-3 w-3 inline mr-1" />
+                <Shield aria-hidden="true" className="h-3 w-3 inline mr-1" />
                 Removing a legacy credential is permanent. Re-enroll only after
                 verified passkey registration is available.
               </p>
