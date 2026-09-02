@@ -330,3 +330,54 @@ test("a notifications action tab renders like the other non-zone tabs", () => {
   const tab = screen.getByRole("tab", { name: /Notifications/ });
   assert.equal(tab.getAttribute("aria-selected"), "true");
 });
+
+test("an assistant action tab renders like the other non-zone tabs", () => {
+  const items: DnsWorkspaceTabItem[] = [
+    { id: "a", label: "alpha.test", kind: "zone", status: "active" },
+    { id: "__assistant", label: "Assistant", kind: "assistant" },
+  ];
+  render(
+    <DnsWorkspaceTabs
+      items={items}
+      activeId="__assistant"
+      closeOnMiddleClick
+      onActivate={() => {}}
+      onClose={() => {}}
+      onOrderChange={() => {}}
+    />,
+  );
+  const tab = screen.getByRole("tab", { name: /Assistant/ });
+  assert.equal(tab.getAttribute("aria-selected"), "true");
+  // Non-zone tabs carry no status badge even if a status sneaks through.
+  assert.ok(screen.getByRole("button", { name: "Close tab: Assistant" }));
+});
+
+test("an assistant tab reorders and closes like any other tab", () => {
+  // `TabKind` and `DnsWorkspaceTabItem["kind"]` are two separate unions that
+  // must be kept in step by hand; this pins that the strip treats the new kind
+  // generically rather than special-casing it.
+  const closed: string[] = [];
+  const orders: string[][] = [];
+  const items: DnsWorkspaceTabItem[] = [
+    { id: "a", label: "alpha.test", kind: "zone", status: "active" },
+    { id: "__assistant", label: "Assistant", kind: "assistant" },
+  ];
+  render(
+    <DnsWorkspaceTabs
+      items={items}
+      activeId="__assistant"
+      closeOnMiddleClick
+      onActivate={() => {}}
+      onClose={(id) => closed.push(id)}
+      onOrderChange={(orderedIds) => orders.push(orderedIds)}
+    />,
+  );
+
+  const tab = screen.getByRole("tab", { name: /Assistant/ });
+  tab.focus();
+  fireEvent.keyDown(tab, { key: "ArrowLeft", ctrlKey: true, shiftKey: true });
+  assert.deepEqual(orders, [["__assistant", "a"]]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Close tab: Assistant" }));
+  assert.deepEqual(closed, ["__assistant"]);
+});

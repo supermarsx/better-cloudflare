@@ -395,3 +395,29 @@ test("the notifications bell and inbox item actions are announced by name", asyn
     );
   }
 });
+
+// ── t23: the assistant entry point in the command bar ──────────────────────
+
+test("the assistant command-bar button is announced by name", async () => {
+  const { DnsAppCommandBar } =
+    await import("../src/components/dns/DnsAppCommandBar");
+
+  render(
+    <DnsAppCommandBar
+      accountLabel="admin@example.test"
+      sessionLabel="Active session"
+      showAudit
+      showAssistant
+      onOpenAssistant={() => {}}
+      onOpenAudit={() => {}}
+      onOpenRegistry={() => {}}
+      onOpenSettings={() => {}}
+      onOpenTags={() => {}}
+      onLogout={() => {}}
+    />,
+  );
+
+  // The Sparkles glyph is `aria-hidden`, so without the label this control is
+  // an unnamed button — indistinguishable from the four beside it.
+  assert.ok(screen.getByRole("button", { name: "Assistant" }));
+});

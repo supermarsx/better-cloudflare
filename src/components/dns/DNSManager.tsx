@@ -72,6 +72,7 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
+import { AiAssistantPanel } from "@/components/ai/AiAssistantPanel";
 import { toastAllowed } from "@/lib/notifications/notification-settings";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import {
@@ -400,7 +401,13 @@ type ActionTab =
   | "zone-compare"
   | "reference";
 type TabKind =
-  "zone" | "settings" | "audit" | "tags" | "registry" | "notifications";
+  | "zone"
+  | "settings"
+  | "audit"
+  | "tags"
+  | "registry"
+  | "notifications"
+  | "assistant";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab =
@@ -640,6 +647,7 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
   tags: "Tags",
   registry: "Registry",
   notifications: "Notifications",
+  assistant: "Assistant",
 };
 
 /**
@@ -6707,6 +6715,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           showNotifications={isDesktop()}
           unreadCount={notificationsBadge ? notificationsUnread : 0}
           onOpenNotifications={() => openActionTab("notifications")}
+          showAssistant={isDesktop()}
+          onOpenAssistant={() => openActionTab("assistant")}
           onOpenAudit={() => openActionTab("audit")}
           onOpenRegistry={() => openActionTab("registry")}
           onOpenSettings={() => openActionTab("settings")}
@@ -10199,6 +10209,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   onRevealRecord={revealNotificationRecord}
                 />
               )}
+              {activeTab.kind === "assistant" && <AiAssistantPanel />}
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>

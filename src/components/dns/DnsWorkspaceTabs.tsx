@@ -22,7 +22,14 @@ import {
 export interface DnsWorkspaceTabItem {
   id: string;
   label: string;
-  kind: "zone" | "settings" | "audit" | "tags" | "registry" | "notifications";
+  kind:
+    | "zone"
+    | "settings"
+    | "audit"
+    | "tags"
+    | "registry"
+    | "notifications"
+    | "assistant";
   status?: string;
 }
 
