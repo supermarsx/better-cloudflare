@@ -10,7 +10,85 @@ rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+url = "2"
+# `v5` is the one the design needs: the WebAuthn user handle must be derived
+# deterministically from the account id (`Uuid::new_v5` over a fixed namespace),
+# never `new_v4`. A fresh random handle per enrolment would register a new
+# "user" each time on discoverable-credential authenticators and litter the
+# platform's passkey list. `v4` is kept for incidental identifier use.
+uuid = { version = "1", features = ["v4", "v5"] }
+# WebAuthn relying-party verification.
+#
+# ============================================================================
+# DO NOT "TIDY" THIS PIN INTO `version = "0.6"`. It will not resolve, and if a
+# future release makes it resolve, it will resolve to the wrong thing. Read on.
+# ============================================================================
+#
+# WHY THE 0.6 LINE: it replaces OpenSSL with RustCrypto (`crypto-glue`). The
+# 0.5 line depends on `openssl` / `openssl-sys` unconditionally through
+# `webauthn-rs-core` and `webauthn-attestation-ca`, with no feature to opt out
+# (`webauthn-rs-core` 0.5.5 exposes no features at all). `openssl-sys`
+# previously entered this workspace's build graph ONLY on Linux, via
+# `reqwest -> hyper-tls -> native-tls`; Windows used schannel and macOS used
+# security-framework. So 0.5 would have made a native OpenSSL a first-time
+# build requirement on Windows and macOS, and linked it into the shipped
+# binary. That was rejected deliberately: `native-tls` is used precisely so the
+# platform decides what TLS and crypto the binary links, and a passkey library
+# must not smuggle a different answer in through the back door.
+#
+# WHY A PRE-RELEASE, DELIBERATELY: there is no released 0.6.x. `0.6.1-dev`
+# (published 2026-04-30) is the only current 0.6 publication. Shipping a
+# pre-release crypto library in a credential path is an accepted, informed
+# trade — accepted against the alternative of statically vendoring OpenSSL into
+# that same path, or of taking a native OpenSSL build dependency on two more
+# platforms.
+#
+# WHY `=` AND NOT A RANGE — two independent reasons:
+#   1. Cargo will not select a pre-release from `version = "0.6"` at all. It
+#      errors with "if you are looking for the prerelease package it needs to
+#      be specified explicitly".
+#   2. Even spelled `"0.6.1-dev"`, a caret requirement would drift to the next
+#      `-dev` publication in this line. Within a pre-release line that is
+#      exactly the wrong behaviour: `-dev` publications carry no compatibility
+#      promise, and this is credential-verification code.
+#
+# The siblings (`webauthn-rs-core`, `webauthn-rs-proto`,
+# `webauthn-attestation-ca`) are NOT declared here on purpose — this crate does
+# not use them directly, and upstream already pins each of them at exactly
+# `=0.6.1-dev`, so they cannot float. `Cargo.lock` records all of them exactly.
+#
+# INTENDED ENDPOINT: move to the stable 0.6.x release when it ships, drop the
+# `=` to a normal caret requirement at that point, and re-run the full ceremony
+# test suite as part of that change. Tracked in `.orchestration/logs/t22-e1.md`.
+#
+# `GHSA-22w3-693w-x895` (origin-validation mismatch, `webauthn-rs-core` < 0.5.5)
+# does not affect this line, but its lesson does: the builder must use
+# `allow_subdomains(false)` (the default) and must never turn it on. Enabling
+# subdomains re-opens that class of hole, and no version bump makes it safe.
+#
+# `default-features = false` drops the default-on `attestation` feature. The
+# conveyance policy for this app is `None` (no device allowlist, no maintainable
+# FIDO MDS trust store), so the `AttestationCaList` machinery is unused.
+# Registration is still bound by a server-issued single-use challenge, an origin
+# check, and an RP-ID-hash check — "no attestation" is not "no verification".
+#
+# `danger-allow-state-serialisation`, `danger-credential-internals`, and
+# `danger-user-presence-only-security-keys` must stay OFF. Ceremony state never
+# leaves this process, so making it serialisable would only enable replay.
+webauthn-rs = { version = "=0.6.1-dev", default-features = false }
 bc-storage = { path = "../bc-storage" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+# In-process software authenticator (`SoftPasskey`) used to drive complete real
+# ceremonies in tests, so the ceremony checks are exercised against real keys
+# and real signatures rather than mocked. Pinned to match `webauthn-rs`; the
+# sibling crates depend on each other with `=` requirements.
+#
+# Note for test authors: in 0.6 `WebauthnAuthenticator` is a *trait*, blanket
+# implemented for every `AuthenticatorBackend`, not the 0.5 wrapper struct. Use
+# the backend directly with the trait in scope:
+#     let mut authenticator = SoftPasskey::new(true);
+#     let attestation = authenticator.do_registration(origin, ccr)?;
+#     let assertion = authenticator.do_authentication(origin, rcr)?;
+webauthn-authenticator-rs = { version = "=0.6.1-dev", features = ["softpasskey"] }

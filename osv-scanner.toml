@@ -1,4 +1,9 @@
 [[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2026-10-02
+reason = "classification=unpatched; package=rsa@0.9.10; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive through webauthn-rs 0.6.1-dev and crypto-glue 0.1.15, where the vulnerable rsa private-key surface is linked into the binary but never called because a relying party only verifies signatures with the authenticator public key; rationale=no patched rsa release exists in any line, so this clears only when RustSec publishes a fixed version or when webauthn-rs and crypto-glue drop rsa, and it must be re-verified on every webauthn-rs or crypto-glue bump because the waiver rests on current call paths rather than on absence of the vulnerable code"
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2024-0413"
 ignoreUntil = 2026-10-30
 reason = "classification=unmaintained; package=atk@0.18.2; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive through Tauri 2.11.1 GTK3 runtime; rationale=GTK3 bindings are archived and have no patched GTK3 release, while GTK4 requires an upstream Tauri runtime migration"
