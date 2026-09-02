@@ -36,6 +36,10 @@ REQUIRED_REASON_KEYS = {
 # These are the exact findings remaining after the graph-safe upgrades. Keeping
 # package/version/classification here makes policy drift and stale exceptions fail.
 APPROVED_EXCEPTIONS = {
+    # The only entry here that is a live vulnerability rather than a
+    # maintenance waiver, and the only one whose expiry is deliberately shorter
+    # than POLICY_REVIEW_DEADLINE. See RSA_MARVIN_RATIONALE below.
+    "RUSTSEC-2023-0071": ("rsa", "0.9.10", "unpatched"),
     "RUSTSEC-2024-0370": ("proc-macro-error", "1.0.4", "unmaintained"),
     "RUSTSEC-2024-0411": ("gdkwayland-sys", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0412": ("gdk", "0.18.2", "unmaintained"),
@@ -63,7 +67,21 @@ UNIC_RATIONALE = (
     "the advisory is maintenance-only and urlpattern 0.3 has no compatible "
     "release that removes the archived rust-unic stack"
 )
+RSA_MARVIN_REACHABILITY = (
+    "transitive through webauthn-rs 0.6.1-dev and crypto-glue 0.1.15, where the "
+    "vulnerable rsa private-key surface is linked into the binary but never "
+    "called because a relying party only verifies signatures with the "
+    "authenticator public key"
+)
+RSA_MARVIN_RATIONALE = (
+    "no patched rsa release exists in any line, so this clears only when RustSec "
+    "publishes a fixed version or when webauthn-rs and crypto-glue drop rsa, and "
+    "it must be re-verified on every webauthn-rs or crypto-glue bump because the "
+    "waiver rests on current call paths rather than on absence of the vulnerable "
+    "code"
+)
 APPROVED_JUSTIFICATIONS = {
+    "RUSTSEC-2023-0071": (RSA_MARVIN_REACHABILITY, RSA_MARVIN_RATIONALE),
     "RUSTSEC-2024-0370": (
         "transitive build dependency through GTK3 macros",
         "the advisory is maintenance-only and the current Tauri GTK3 stack has "
