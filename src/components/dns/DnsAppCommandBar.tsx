@@ -1,5 +1,13 @@
 import type { ReactNode } from "react";
-import { Bell, Globe, LogOut, Settings, Shield, Tags } from "lucide-react";
+import {
+  Bell,
+  Globe,
+  LogOut,
+  Settings,
+  Shield,
+  Sparkles,
+  Tags,
+} from "lucide-react";
 
 import { LanguageSelector } from "@/components/layout/LanguageSelector";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
@@ -15,6 +23,9 @@ interface DnsAppCommandBarProps {
   showNotifications?: boolean;
   unreadCount?: number;
   onOpenNotifications?: () => void;
+  /** Desktop only: the AI assistant. Every `ai_*` command is Tauri-only. */
+  showAssistant?: boolean;
+  onOpenAssistant?: () => void;
   onOpenAudit: () => void;
   onOpenRegistry: () => void;
   onOpenSettings: () => void;
@@ -52,6 +63,8 @@ export function DnsAppCommandBar({
   showNotifications = false,
   unreadCount = 0,
   onOpenNotifications,
+  showAssistant = false,
+  onOpenAssistant,
   onOpenAudit,
   onOpenRegistry,
   onOpenSettings,
@@ -96,6 +109,13 @@ export function DnsAppCommandBar({
               </span>
             ) : null}
           </span>
+        ) : null}
+        {showAssistant && onOpenAssistant ? (
+          <CommandAction
+            label={t("Assistant", "Assistant")}
+            icon={<Sparkles aria-hidden="true" className="h-4 w-4" />}
+            onClick={onOpenAssistant}
+          />
         ) : null}
         {showAudit ? (
           <CommandAction
