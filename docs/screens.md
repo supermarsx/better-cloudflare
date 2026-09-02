@@ -39,7 +39,7 @@ Pick a stored credential from **API Key**, type its vault password, and press **
 
 The three secondary buttons add a new key, edit or delete an existing one (deletion is confirm-gated), and open the encryption settings dialog. While authentication runs, a spinner overlay covers the card.
 
-The **Passkey security status** panel is the honest part of this screen: passkey registration and authentication are **disabled**, and the panel says so rather than offering a button that fails. See [Security](security.md#passkeys-are-disabled) for why. Biometric unlock appears only on macOS, where Touch ID is the sole implemented runtime.
+The **Passkey security status** panel is the honest part of this screen. Where passkeys are usable it offers **Register passkey** and **Use passkey**; where they are not it names the specific reason — a webview with no WebAuthn client, a machine with no authenticator enrolled, legacy credentials that must be re-registered, or a relying party that could not be configured — rather than offering a button that fails. See [Security](security.md#passkeys) for what is verified. Biometric unlock appears only on macOS, where Touch ID is the sole implemented runtime.
 
 ### Encryption settings
 
@@ -49,7 +49,7 @@ Tune how your stored API keys are protected. **PBKDF2 iterations** is the only f
 
 **Benchmark** times a derivation at the current setting and reports it, so you can raise iterations until unlock takes as long as you are willing to wait. **Update** applies the change.
 
-**Enable OS Vault** stores decrypted keys in the system vault. It exists to support passkey login, which is currently unavailable, so leaving it off costs you nothing today.
+**Enable OS Vault** stores decrypted keys in the system vault. It is what passkey login unlocks, so turn it on only if you intend to use one.
 
 <details>
 <summary>Light theme</summary>

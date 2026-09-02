@@ -5,7 +5,7 @@ use tokio::sync::Semaphore;
 
 use crate::cloudflare_api::CloudflareClient;
 use crate::crypto::{CryptoManager, EncryptionConfig};
-use crate::passkey::PasskeyManager;
+use crate::passkey::{PasskeyManager, PasskeyState};
 use crate::session::SessionManager;
 use crate::storage::{ApiKey, Storage};
 use bc_cloudflare_api::{CloudflareError, VerificationErrorSource, VerificationFailureKind};
@@ -826,11 +826,22 @@ mod tests {
     /// Stand-in for a passkey unlock token. Must never reach the log.
     const TEST_TOKEN: &str = "unlock-token-do-not-log-91c4de";
 
-    /// A fail-closed manager: `verify_token` returns `Ok(false)` for every
-    /// input, which is the state on `main` today. Every `get_vault_secret` call
-    /// therefore takes a refusal branch, which is exactly what needs auditing.
+    /// A manager with no relying party. It has verified no assertion and holds
+    /// no token, so `verify_token` refuses every input and every
+    /// `get_vault_secret` call below takes a refusal branch — which is exactly
+    /// what needs auditing.
     fn fail_closed_passkeys() -> PasskeyManager {
         PasskeyManager::default()
+    }
+
+    /// A manager with a real relying party, as the running app now has. It has
+    /// still verified no assertion, so it holds no token either: with the gate
+    /// open, what refuses a forged token is the token store being empty, not a
+    /// constant. Worth a separate fixture, because the two used to be the same
+    /// refusal and are no longer.
+    fn configured_passkeys() -> PasskeyManager {
+        let origin = url::Url::parse("http://tauri.localhost").expect("origin");
+        PasskeyManager::new("tauri.localhost", &origin).expect("relying party")
     }
 
     fn assert_vault_entry_is_clean(entry: &Value, operation: &str, resource: &str) {
@@ -849,9 +860,10 @@ mod tests {
         }
     }
 
-    /// The invariant that actually protects the API keys. It has been true
-    /// structurally — `verify_token` cannot return `true` — but it was never a
-    /// named test, so nothing would fail if that stopped being so by accident.
+    /// The invariant that actually protects the API keys. It was true
+    /// structurally while `verify_token` could not return `true`; now that it
+    /// can, this is the test carrying it, together with the configured-manager
+    /// case below.
     #[tokio::test]
     async fn get_vault_secret_refuses_an_attacker_supplied_token_and_audits_it() {
         let storage = memory_storage();
@@ -865,6 +877,34 @@ mod tests {
         let error = get_vault_secret_with(
             &storage,
             &fail_closed_passkeys(),
+            "key-1".into(),
+            Some(TEST_TOKEN.into()),
+        )
+        .await
+        .expect_err("a forged token must not release the secret");
+        assert_eq!(error, "Invalid passkey token");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_vault_entry_is_clean(&entry, VAULT_OP_GET, "key-1");
+        assert_failure(&entry, "Invalid passkey token");
+    }
+
+    /// The same refusal, from a manager that **is** configured — the state the
+    /// app runs in now that the origin is derived at startup and the gate is
+    /// open. Nothing about a working relying party makes a forged token
+    /// acceptable: the token store is empty until an assertion the library
+    /// verified mints an entry in it.
+    #[tokio::test]
+    async fn get_vault_secret_refuses_a_forged_token_against_a_configured_relying_party() {
+        let storage = memory_storage();
+        storage
+            .store_vault_secret("key-1", TEST_SECRET)
+            .await
+            .expect("seed a vault secret");
+
+        let error = get_vault_secret_with(
+            &storage,
+            &configured_passkeys(),
             "key-1".into(),
             Some(TEST_TOKEN.into()),
         )
@@ -1183,11 +1223,11 @@ pub async fn decrypt_api_key(
 // own siblings `store_vault_secret` and `delete_vault_secret` did.
 //
 // That was harmless only for as long as the command could never succeed:
-// `bc_passkey::PasskeyManager::verify_token` returns `Ok(false)` unconditionally
-// while the passkey gate is shut, so every call failed closed. The moment that
-// gate opens, an unaudited plaintext-key release path goes live. The audit is
-// added here, in the same change that builds the ceremony layer behind that
-// gate, so that it cannot be forgotten at the moment it starts mattering.
+// `bc_passkey::PasskeyManager::verify_token` returned `Ok(false)` unconditionally
+// while the passkey gate was shut, so every call failed closed. The gate is now
+// open — a token minted from a verified assertion is accepted — so this is a
+// live plaintext-key release path, and the audit that was added ahead of it is
+// what makes each release and each refusal traceable.
 //
 // Naming, decided deliberately rather than by accident: the operation names
 // keep the existing `vault:` prefix (`vault:store`, `vault:delete`, and now
@@ -1273,11 +1313,11 @@ async fn store_vault_secret_with(
 #[tauri::command]
 pub async fn get_vault_secret(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
     token: Option<String>,
 ) -> Result<String, String> {
-    get_vault_secret_with(&storage, &passkey_mgr, id, token).await
+    get_vault_secret_with(&storage, passkey_mgr.manager(), id, token).await
 }
 
 /// The body of [`get_vault_secret`], taking plain references so it is callable
@@ -1334,17 +1374,18 @@ async fn delete_vault_secret_with(storage: &Storage, id: String) -> Result<(), S
 // ─── Passkey Operations ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_passkey_status(passkey_mgr: State<'_, PasskeyManager>) -> bc_passkey::PasskeyStatus {
-    passkey_mgr.status()
+pub fn get_passkey_status(passkey_mgr: State<'_, PasskeyState>) -> bc_passkey::PasskeyStatus {
+    passkey_mgr.manager().status()
 }
 
 #[tauri::command]
 pub async fn get_passkey_registration_options(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     passkey_mgr
+        .manager()
         .get_registration_options(&storage, &id)
         .await
         .map_err(|e| e.to_string())
@@ -1353,11 +1394,12 @@ pub async fn get_passkey_registration_options(
 #[tauri::command]
 pub async fn register_passkey(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
     attestation: serde_json::Value,
 ) -> Result<(), String> {
     passkey_mgr
+        .manager()
         .register_passkey(&storage, &id, attestation)
         .await
         .map_err(|e| e.to_string())?;
@@ -1375,10 +1417,11 @@ pub async fn register_passkey(
 #[tauri::command]
 pub async fn get_passkey_auth_options(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     passkey_mgr
+        .manager()
         .get_auth_options(&storage, &id)
         .await
         .map_err(|e| e.to_string())
@@ -1387,11 +1430,12 @@ pub async fn get_passkey_auth_options(
 #[tauri::command]
 pub async fn authenticate_passkey(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
     assertion: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     match passkey_mgr
+        .manager()
         .authenticate_passkey(&storage, &id, assertion)
         .await
     {
@@ -1426,10 +1470,11 @@ pub async fn authenticate_passkey(
 #[tauri::command]
 pub async fn list_passkeys(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
     passkey_mgr
+        .manager()
         .list_passkeys(&storage, &id)
         .await
         .map_err(|e| e.to_string())
@@ -1438,11 +1483,12 @@ pub async fn list_passkeys(
 #[tauri::command]
 pub async fn delete_passkey(
     storage: State<'_, Storage>,
-    passkey_mgr: State<'_, PasskeyManager>,
+    passkey_mgr: State<'_, PasskeyState>,
     id: String,
     credential_id: String,
 ) -> Result<(), String> {
     passkey_mgr
+        .manager()
         .delete_passkey(&storage, &id, &credential_id)
         .await
         .map_err(|e| e.to_string())?;

@@ -17,7 +17,6 @@ mod storage;
 use crate::app_config::AppConfigStore;
 use crate::mcp_server::McpServerManager;
 use crate::notifications::NotificationManager;
-use crate::passkey::PasskeyManager;
 use crate::session::SessionManager;
 use crate::storage::Storage;
 use std::fs::{self, OpenOptions};
@@ -158,6 +157,13 @@ fn initialize_app_config_at(app_data_dir: PathBuf) -> AppConfigStore {
 fn initialize_app<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Managed first, before anything fallible: a command must never run against
+    // unmanaged state. `PasskeyState` needs only the app handle here — the
+    // relying party is scoped to the window's own origin, which is not readable
+    // yet (the window exists but has not navigated, so its URL is still
+    // `about:blank`), so it is derived on first use instead.
+    app.manage(passkey::PasskeyState::new(app.handle().clone()));
+
     let app_data_dir = app.path().app_data_dir()?;
     let notifications_dir = app_data_dir.join(notifications::STORE_DIRECTORY);
     app.manage(initialize_app_config_at(app_data_dir));
@@ -187,7 +193,8 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Storage::default())
-        .manage(PasskeyManager::default())
+        // `PasskeyState` is managed in `initialize_app` instead: it needs an
+        // `AppHandle` to reach the window whose origin scopes the relying party.
         .manage(McpServerManager::default())
         .manage(SessionManager::default())
         .manage(AgentManager::default())

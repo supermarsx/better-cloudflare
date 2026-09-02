@@ -1,22 +1,24 @@
 //! The gate, and the pieces of it that are only reachable from inside the
 //! crate.
 //!
-//! Two things force these tests to live here rather than in `tests/`:
+//! What forces these tests to live here rather than in `tests/` is expiry:
+//! it is measured with `Instant`, so a test that waited for it would take two
+//! minutes. The stores expose `#[cfg(test)]` helpers to age an entry, and
+//! [`crate::PasskeyManager::tokens`] is private.
 //!
-//! - [`PasskeyManager::verify_token`] is hardcoded to `Ok(false)` while
-//!   [`crate::TOKEN_VERIFICATION_ENABLED`] is `false`, so the token store's
-//!   rules cannot be observed through the public API. They are exercised
-//!   through the crate-private `verify_token_unguarded`, which is `#[cfg(test)]`
-//!   and therefore does not exist in the shipped binary — it cannot become a
-//!   way around the gate.
-//! - Expiry is measured with `Instant`, so a test that waited for it would take
-//!   two minutes. The stores expose `#[cfg(test)]` helpers to age an entry.
+//! Until the gate opened, these tests reached the token store through a
+//! crate-private `verify_token_unguarded`, because
+//! [`crate::PasskeyManager::verify_token`] was hardcoded to `Ok(false)` and the
+//! store's rules were not observable through the public API. That bypass is
+//! **gone**: every assertion below now goes through `verify_token` itself, so
+//! what these tests pin is what a caller — `get_vault_secret` in particular —
+//! actually gets.
 //!
 //! The most important test in this file is
-//! [`the_gate_refuses_even_a_genuinely_minted_token`]. Everything else
-//! here describes behaviour that is *ready*; that one describes behaviour that
-//! is still deliberately switched off, and it is what a reviewer should check
-//! is still passing before believing the gate is shut.
+//! [`the_open_gate_accepts_a_genuine_token_and_refuses_every_other_kind`]. It
+//! is the inverse of the test that stood here while the gate was shut, and it
+//! is what a reviewer should check is passing before believing that a passkey
+//! sign-in works and that nothing else does.
 
 use serde_json::Value;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -96,55 +98,121 @@ impl Fixture {
     }
 }
 
-// ─── The gate itself ────────────────────────────────────────────────────────
-
-/// While the gate is shut, a token minted from a **genuinely verified
-/// assertion** is still refused. This is what makes the rest of the ceremony
-/// layer safe to land ahead of the frontend: `get_vault_secret` calls
-/// `verify_token` and can therefore release nothing, exactly as before.
-#[tokio::test]
-async fn the_gate_refuses_even_a_genuinely_minted_token() {
-    let mut fixture = Fixture::new();
-    fixture.register(ACCOUNT).await;
-    let token = fixture.sign_in(ACCOUNT).await;
-
-    assert!(
-        !fixture
-            .manager
-            .verify_token(ACCOUNT, &token, true)
-            .await
-            .expect("verify_token must never return an error"),
-        "the gate is open: `verify_token` accepted a token"
-    );
-    // The refusal above must not have consumed it either — when the gate opens,
-    // the token that was minted is still the one that will be spent.
-    assert!(
-        fixture
-            .manager
-            .verify_token_unguarded(ACCOUNT, &token, true),
-        "the token store itself must hold a valid token"
-    );
+/// `verify_token` through the public API, which is now the only way in.
+///
+/// It is documented never to return `Err` — a caller might read an error as
+/// inconclusive rather than as a refusal — so a failure here is itself a
+/// finding, not a test-harness detail.
+async fn verify(manager: &PasskeyManager, account: &str, token: &str, consume: bool) -> bool {
+    manager
+        .verify_token(account, token, consume)
+        .await
+        .expect("verify_token must never return an error")
 }
 
-/// `status()` and `verify_token` must flip together. Reporting availability
-/// while the token gate is shut would produce a sign-in button that always
-/// fails; the reverse would hide a working feature.
+// ─── The gate itself ────────────────────────────────────────────────────────
+
+/// The inverse of the test that stood here while the gate was shut.
+///
+/// That test — `the_gate_refuses_even_a_genuinely_minted_token` — asserted that
+/// a token minted from a genuinely verified assertion was refused anyway. That
+/// behaviour changed **by design** when [`crate::TOKEN_VERIFICATION_ENABLED`]
+/// became `true`, so the test was rewritten rather than deleted: deleting it
+/// would have removed the only place that states, in one test, what opening the
+/// gate did and did not change.
+///
+/// What it now pins is both halves of that. A genuine token is accepted, so a
+/// passkey sign-in can release a vault secret. Nothing else is: not a forged
+/// token, not a bit-flipped version of the real one, not the real one for
+/// another account, not a token already spent, and not an expired one. Each
+/// negative below starts from the **genuinely minted** token, so it isolates
+/// one rule rather than merely re-testing that nonsense is rejected.
+#[tokio::test]
+async fn the_open_gate_accepts_a_genuine_token_and_refuses_every_other_kind() {
+    let mut fixture = Fixture::new();
+    fixture.register(ACCOUNT).await;
+    fixture.register(OTHER_ACCOUNT).await;
+    let token = fixture.sign_in(ACCOUNT).await;
+
+    // A forged token, and the genuine one tampered with in a single character.
+    assert!(
+        !verify(&fixture.manager, ACCOUNT, "attacker-controlled-token", true).await,
+        "a forged token was accepted"
+    );
+    let mut tampered = token.clone();
+    let last = tampered.pop().expect("a token is never empty");
+    tampered.push(if last == 'A' { 'B' } else { 'A' });
+    assert_ne!(tampered, token);
+    assert!(
+        !verify(&fixture.manager, ACCOUNT, &tampered, true).await,
+        "a tampered token was accepted"
+    );
+
+    // The genuine token, offered for a different account.
+    assert!(
+        !verify(&fixture.manager, OTHER_ACCOUNT, &token, true).await,
+        "a token minted for one key unlocked another key's vault"
+    );
+
+    // None of those refusals may have burned the real token: an attacker able
+    // to call the command must not be able to cancel a legitimate unlock.
+    assert!(
+        verify(&fixture.manager, ACCOUNT, &token, true).await,
+        "the gate is shut: `verify_token` refused a genuinely minted token"
+    );
+
+    // And it was spent by that acceptance, so a replay is refused.
+    assert!(
+        !verify(&fixture.manager, ACCOUNT, &token, true).await,
+        "a consumed token was accepted a second time"
+    );
+
+    // An expired token is refused even though it was never spent.
+    let fresh = fixture.sign_in(ACCOUNT).await;
+    fixture.manager.tokens.expire_now(ACCOUNT);
+    assert!(
+        !verify(&fixture.manager, ACCOUNT, &fresh, true).await,
+        "an expired token was accepted"
+    );
+    assert_eq!(fixture.manager.tokens.live_count(), 0);
+}
+
+/// `status()` and `verify_token` flip together. Reporting availability while
+/// the token gate is shut would produce a sign-in button that always fails; the
+/// reverse would hide a working feature.
+///
+/// Inverted with the test above: a configured manager now reports available,
+/// and an unconfigured one still does not — availability is `is_configured()`,
+/// not a constant, so the two cases must be checked separately.
 #[tokio::test]
 async fn the_status_report_agrees_with_the_gate() {
     let mut fixture = Fixture::new();
     let status = fixture.manager.status();
+    assert!(status.registration_available);
+    assert!(status.authentication_available);
+    assert!(
+        status.unavailable_reason.is_empty(),
+        "an available relying party must report no reason: {}",
+        status.unavailable_reason
+    );
+    assert!(
+        status.legacy_credentials_require_reregistration,
+        "pre-verification records still cannot assert, whatever the gate says"
+    );
+
+    // A working enrolment and sign-in do not change the report...
+    fixture.register(ACCOUNT).await;
+    let token = fixture.sign_in(ACCOUNT).await;
+    assert_eq!(fixture.manager.status(), status);
+    // ...and the capability it reports is real, not just claimed.
+    assert!(verify(&fixture.manager, ACCOUNT, &token, true).await);
+
+    // A manager with no relying party reports the opposite, with its reason.
+    let unconfigured = PasskeyManager::unavailable(crate::REASON_ORIGIN_UNRESOLVED);
+    let status = unconfigured.status();
     assert!(!status.registration_available);
     assert!(!status.authentication_available);
-    assert!(!status.unavailable_reason.is_empty());
-
-    // Even after a working enrolment and sign-in, the report is unchanged.
-    fixture.register(ACCOUNT).await;
-    fixture.sign_in(ACCOUNT).await;
-    assert_eq!(fixture.manager.status(), status);
-    assert!(
-        fixture.manager.is_configured(),
-        "the manager is configured; only the report is held back"
-    );
+    assert_eq!(status.unavailable_reason, crate::REASON_ORIGIN_UNRESOLVED);
 }
 
 // ─── Token rules, through a real assertion ──────────────────────────────────
@@ -156,9 +224,7 @@ async fn a_token_is_minted_only_by_a_verified_assertion() {
 
     // Nothing has succeeded yet, so no token exists for this account at all.
     assert_eq!(fixture.manager.tokens.live_count(), 0);
-    assert!(!fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, "attacker-controlled-token", true));
+    assert!(!verify(&fixture.manager, ACCOUNT, "attacker-controlled-token", true).await);
 
     // A failed assertion must not mint one either.
     let options = fixture
@@ -187,9 +253,7 @@ async fn a_token_is_minted_only_by_a_verified_assertion() {
 
     let token = fixture.sign_in(ACCOUNT).await;
     assert_eq!(fixture.manager.tokens.live_count(), 1);
-    assert!(fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, &token, true));
+    assert!(verify(&fixture.manager, ACCOUNT, &token, true).await);
 }
 
 #[tokio::test]
@@ -198,13 +262,9 @@ async fn a_token_is_spendable_once() {
     fixture.register(ACCOUNT).await;
     let token = fixture.sign_in(ACCOUNT).await;
 
-    assert!(fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, &token, true));
+    assert!(verify(&fixture.manager, ACCOUNT, &token, true).await);
     assert!(
-        !fixture
-            .manager
-            .verify_token_unguarded(ACCOUNT, &token, true),
+        !verify(&fixture.manager, ACCOUNT, &token, true).await,
         "a consumed token must not verify again"
     );
 }
@@ -217,15 +277,11 @@ async fn a_token_never_unlocks_another_account() {
     let token = fixture.sign_in(ACCOUNT).await;
 
     assert!(
-        !fixture
-            .manager
-            .verify_token_unguarded(OTHER_ACCOUNT, &token, true),
+        !verify(&fixture.manager, OTHER_ACCOUNT, &token, true).await,
         "a token minted for one key unlocked another key's vault"
     );
     assert!(
-        fixture
-            .manager
-            .verify_token_unguarded(ACCOUNT, &token, true),
+        verify(&fixture.manager, ACCOUNT, &token, true).await,
         "the cross-account rejection must not have burned the real token"
     );
 }
@@ -237,9 +293,7 @@ async fn an_expired_token_is_refused() {
     let token = fixture.sign_in(ACCOUNT).await;
 
     fixture.manager.tokens.expire_now(ACCOUNT);
-    assert!(!fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, &token, true));
+    assert!(!verify(&fixture.manager, ACCOUNT, &token, true).await);
     assert_eq!(fixture.manager.tokens.live_count(), 0);
 }
 
@@ -251,12 +305,8 @@ async fn a_second_sign_in_invalidates_the_first_token() {
     let second = fixture.sign_in(ACCOUNT).await;
 
     assert_ne!(first, second);
-    assert!(!fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, &first, true));
-    assert!(fixture
-        .manager
-        .verify_token_unguarded(ACCOUNT, &second, true));
+    assert!(!verify(&fixture.manager, ACCOUNT, &first, true).await);
+    assert!(verify(&fixture.manager, ACCOUNT, &second, true).await);
 }
 
 #[tokio::test]
@@ -416,5 +466,5 @@ async fn an_unconfigured_manager_runs_no_ceremony_and_holds_no_token() {
         PasskeyError::SecureVerificationUnavailable
     );
     assert_eq!(manager.tokens.live_count(), 0);
-    assert!(!manager.verify_token_unguarded(ACCOUNT, "anything", true));
+    assert!(!verify(&manager, ACCOUNT, "anything", true).await);
 }

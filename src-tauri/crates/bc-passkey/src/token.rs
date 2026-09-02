@@ -3,14 +3,21 @@
 //! # What this is, stated narrowly on purpose
 //!
 //! An unlock token **proves that a verified WebAuthn assertion completed
-//! moments ago, for this account, with this credential.** That is the whole
-//! claim. It is not, and given the process model cannot be, an authenticator of
-//! a remote caller: anything able to invoke a Tauri command is already inside
-//! the application's process boundary, and there is no server-side session
-//! identity to bind to. The achievable bindings are account id, credential id,
-//! single use, a sixty-second lifetime, and process memory — and those are all
-//! implemented below. A later reader should not infer a stronger guarantee than
-//! that from the word "token".
+//! moments ago, for this account.** That is the whole claim. It is not, and
+//! given the process model cannot be, an authenticator of a remote caller:
+//! anything able to invoke a Tauri command is already inside the application's
+//! process boundary, and there is no server-side session identity to bind to.
+//! The enforced bindings are account id, single use, a sixty-second lifetime,
+//! and process memory. A later reader should not infer a stronger guarantee
+//! than that from the word "token".
+//!
+//! **The credential id is recorded, not enforced.** `verify` never compares it
+//! — see the field comment on [`UnlockToken::credential_id`]. Nothing is missing
+//! as a result: at most one token is live per account, it was minted by exactly
+//! one credential, and no caller presents a credential id to check against, so
+//! a credential comparison could reject nothing that the account check and the
+//! single-use rule do not already reject. It is stated here because a reader
+//! who believed the binding were enforced might build on it.
 //!
 //! # Why it is the highest-risk component in the crate
 //!

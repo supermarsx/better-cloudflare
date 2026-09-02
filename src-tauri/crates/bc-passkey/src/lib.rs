@@ -1,19 +1,26 @@
 //! WebAuthn relying party for the desktop app.
 //!
-//! # The gate is still shut, deliberately
+//! # The gate is open
 //!
-//! This crate now contains a real relying-party implementation: a challenge
-//! store, both ceremonies driven through `webauthn-rs`'s high-level API, an
+//! This crate contains a real relying-party implementation: a challenge store,
+//! both ceremonies driven through `webauthn-rs`'s high-level API, an
 //! unlock-token store bound to a verified assertion, and per-credential RP-ID
-//! scoping. What it does **not** do is report itself as available.
+//! scoping. As of the change that set [`TOKEN_VERIFICATION_ENABLED`] to `true`
+//! it also *reports* that capability and honours the tokens it mints.
 //!
-//! [`PasskeyManager::status`] still reports unavailable and
-//! [`PasskeyManager::verify_token`] still returns `Ok(false)` for every input.
-//! `get_vault_secret` at the Tauri command boundary requires a token that
-//! `verify_token` accepts, so no stored vault or API secret can be released
-//! through the passkey path yet, exactly as before. Opening the gate is a
-//! separate, small, reviewable change — see the `TODO(gate)` comments on those
-//! two methods for what has to be true first.
+//! [`PasskeyManager::status`] now reports the manager's real state and
+//! [`PasskeyManager::verify_token`] consults the token store. What did **not**
+//! change is what a token has to be worth: it is minted only on the success
+//! path of an assertion the library verified, it is single-use, it expires in
+//! [`TOKEN_TTL`], and it is bound to one account (the credential that signed is
+//! recorded but not compared — see `token.rs`). So
+//! `get_vault_secret` — which requires a token `verify_token` accepts before it
+//! releases a decrypted API key — releases nothing without a genuine assertion.
+//!
+//! A manager built by [`PasskeyManager::unavailable`] or [`Default`] still
+//! reports unavailable and refuses every ceremony, because it has no relying
+//! party to verify against. Availability is `is_configured()`, never a
+//! constant.
 //!
 //! # What is not implemented here, on purpose
 //!
@@ -85,29 +92,24 @@ const USER_HANDLE_NAMESPACE: Uuid = Uuid::from_bytes([
 /// deleted, which is the dead end `94d74d1` fixed for legacy records.
 const DEAD_CREDENTIAL_HANDLE_PREFIX: &str = "dead_credential_";
 
-/// **The gate.** While this is `false`, [`PasskeyManager::verify_token`]
+/// **The gate, now open.** While this is `false`, [`PasskeyManager::verify_token`]
 /// refuses every token — including one it minted itself from a genuinely
 /// verified assertion — so `get_vault_secret` can release nothing through the
 /// passkey path.
 ///
 /// It is a compile-time constant, not a setting: there is no runtime path that
 /// can change it, and no configuration file, environment variable, or IPC
-/// message that reaches it. It exists in this shape so that the code behind it
-/// is compiled, linted and reviewed now, and so that opening the gate is a
-/// one-word diff a reviewer cannot miss rather than a rewrite of the function.
+/// message that reaches it. It kept the ceremony layer compiled, linted and
+/// tested for the releases that shipped before the frontend transport existed,
+/// and it remains the single switch that takes the passkey release path back
+/// out of service if one is ever needed.
 ///
-/// Do not set this to `true` without also making [`PasskeyManager::status`]
-/// report the manager's real capability. Reporting availability while this is
-/// `false` produces a sign-in button that always fails; setting this `true`
-/// while `status()` says unavailable hides a working feature. They flip
-/// together, in a change of their own.
-const TOKEN_VERIFICATION_ENABLED: bool = false;
-
-/// Reason reported while the gate is shut.
-///
-/// TODO(gate): replace with a reason derived from the manager's actual state
-/// once `status()` is allowed to report availability.
-const PASSKEYS_UNAVAILABLE: &str = "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material. Remove legacy credentials and re-enroll after verified passkey registration is available.";
+/// It and [`PasskeyManager::status`] flip **together**. Reporting availability
+/// while this is `false` produces a sign-in button that always fails; setting
+/// this `true` while `status()` says unavailable hides a working feature.
+/// `gate_tests::the_open_gate_accepts_a_genuine_token_and_refuses_every_other_kind`
+/// and `gate_tests::the_status_report_agrees_with_the_gate` pin both halves.
+const TOKEN_VERIFICATION_ENABLED: bool = true;
 
 /// Reason recorded by [`PasskeyManager::default`].
 pub const REASON_NOT_CONFIGURED: &str =
@@ -272,22 +274,26 @@ impl PasskeyManager {
 
     /// Capability report for the UI.
     ///
-    /// TODO(gate): this is still hardcoded to the fail-closed values. It may
-    /// report availability only once (a) the ceremony implementation below has
-    /// been reviewed, (b) `verify_token` is allowed to consult the token store,
-    /// and (c) `get_vault_secret` audits its releases — the audit is in place
-    /// as of this change. When that happens the values become
-    /// `registration_available: self.is_configured()`,
-    /// `authentication_available: self.is_configured()`, and
-    /// `unavailable_reason: self.unavailable_reason`. Reporting `true` while
-    /// `verify_token` still returns `Ok(false)` would produce a sign-in button
-    /// that always fails, so the two must flip together.
+    /// Computed, not hardcoded. Both capabilities are `self.is_configured()`:
+    /// a manager with a relying party can run both ceremonies, and one without
+    /// can run neither, so there is no state in which they differ. The reason
+    /// is the manager's own `unavailable_reason`, which is `""` when a relying
+    /// party is configured.
+    ///
+    /// `legacy_credentials_require_reregistration` stays `true`. It is not a
+    /// capability but a standing fact about the pre-`d05fe59` records: they
+    /// hold no public key, so they can never assert and the user's only route
+    /// is to remove them and enroll again. The frontend uses it to offer the
+    /// legacy-recovery affordance, which remains correct on every branch.
+    ///
+    /// This and [`TOKEN_VERIFICATION_ENABLED`] flip together — see that
+    /// constant.
     pub fn status(&self) -> PasskeyStatus {
         PasskeyStatus {
-            registration_available: false,
-            authentication_available: false,
+            registration_available: self.is_configured(),
+            authentication_available: self.is_configured(),
             legacy_credentials_require_reregistration: true,
-            unavailable_reason: PASSKEYS_UNAVAILABLE,
+            unavailable_reason: self.unavailable_reason,
         }
     }
 
@@ -598,18 +604,16 @@ impl PasskeyManager {
     /// and this is the single check standing in front of `get_vault_secret`,
     /// which releases a decrypted Cloudflare API key.
     ///
-    /// TODO(gate): [`TOKEN_VERIFICATION_ENABLED`] is still `false`, so this
-    /// refuses every token including a genuinely minted one. Setting it to
-    /// `true` — together with making [`PasskeyManager::status`] report the
-    /// manager's real capability — is the change that opens the gate, and it
-    /// should be reviewed on its own. What has to be true first:
+    /// [`TOKEN_VERIFICATION_ENABLED`] is `true`, so this consults the token
+    /// store. The three preconditions for that were met before it was set:
     ///
-    /// 1. the ceremony implementation above has been reviewed, in particular
-    ///    that `token.rs` has exactly one `UnlockToken` construction site;
-    /// 2. `get_vault_secret` audits its releases — **done**, in the same change
-    ///    that added this ceremony layer;
-    /// 3. the frontend transport exists, so a `true` status does not produce a
-    ///    sign-in button that always fails (plan `t22-e5`/`t22-e6`).
+    /// 1. the ceremony implementation above was reviewed, in particular that
+    ///    `token.rs` has exactly one `UnlockToken` construction site and that
+    ///    `TokenStore::mint` cannot be called without a `VerifiedAssertion`;
+    /// 2. `get_vault_secret` audits its releases, on success and on every
+    ///    refusal branch;
+    /// 3. the frontend transport and UI exist, so an available status does not
+    ///    produce a sign-in button that always fails.
     pub async fn verify_token(
         &self,
         id: &str,
@@ -622,21 +626,15 @@ impl PasskeyManager {
         Ok(self.tokens.verify(id, token, consume))
     }
 
-    /// The credential behind the live unlock token for `id`, for audit records.
-    /// Reveals nothing secret and authorises nothing.
+    /// The credential behind the live unlock token for `id`. Reveals nothing
+    /// secret and authorises nothing.
+    ///
+    /// **No production code calls this yet**, so no audit entry names the
+    /// credential that authorised a release. Whoever wires it in must call it
+    /// *before* [`PasskeyManager::verify_token`] with `consume = true`, which
+    /// removes the token and makes this return `None`.
     pub fn token_credential(&self, id: &str) -> Option<String> {
         self.tokens.credential_for(id)
-    }
-
-    /// Verify a token against the store, bypassing the gate above.
-    ///
-    /// Exists so the token store's rules can be tested end to end while
-    /// `verify_token` is still hardcoded to `Ok(false)`. Test-only: it is not
-    /// compiled into the shipped binary, so it cannot become a way around the
-    /// gate.
-    #[cfg(test)]
-    pub(crate) fn verify_token_unguarded(&self, id: &str, token: &str, consume: bool) -> bool {
-        self.tokens.verify(id, token, consume)
     }
 }
 
@@ -870,6 +868,9 @@ mod tests {
         assert!(storage.get_passkeys(ID).await.expect("passkeys").is_empty());
     }
 
+    /// `status()` is computed as of the change that opened the gate, but a
+    /// manager with no relying party still reports exactly what it reported
+    /// before — with its own reason instead of a shared constant.
     #[test]
     fn status_reports_fail_closed_capabilities_and_legacy_recovery() {
         assert_eq!(
@@ -878,7 +879,16 @@ mod tests {
                 registration_available: false,
                 authentication_available: false,
                 legacy_credentials_require_reregistration: true,
-                unavailable_reason: PASSKEYS_UNAVAILABLE,
+                unavailable_reason: REASON_NOT_CONFIGURED,
+            }
+        );
+        assert_eq!(
+            PasskeyManager::unavailable(REASON_ORIGIN_UNRESOLVED).status(),
+            PasskeyStatus {
+                registration_available: false,
+                authentication_available: false,
+                legacy_credentials_require_reregistration: true,
+                unavailable_reason: REASON_ORIGIN_UNRESOLVED,
             }
         );
     }
@@ -908,8 +918,14 @@ mod tests {
             .is_empty());
     }
 
+    /// Renamed when the gate opened: token verification is no longer incapable
+    /// of authorizing a release, so the old name
+    /// (`token_verification_can_never_authorize_secret_release`) would have
+    /// asserted something this build does not promise. What it does promise is
+    /// unchanged and is what this still checks — a manager that has verified no
+    /// assertion holds no token, so an attacker-supplied one is refused.
     #[tokio::test]
-    async fn token_verification_can_never_authorize_secret_release() {
+    async fn an_unconfigured_manager_refuses_an_attacker_supplied_token() {
         let manager = PasskeyManager::default();
         assert!(!manager
             .verify_token(ID, "attacker-controlled-token", true)

@@ -80,7 +80,7 @@ test("LoginForm derives the unavailable passkey UI from the desktop capability",
     authenticationAvailable: false,
     legacyCredentialsRequireReregistration: true,
     unavailableReason:
-      "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
+      "The passkey relying party has not been configured for this session.",
   }));
 
   render(<LoginForm onLogin={() => {}} desktop />);

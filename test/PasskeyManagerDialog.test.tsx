@@ -20,8 +20,7 @@ const unavailableStatus: PasskeyStatusState = {
   cause: "backend",
   registration: false,
   legacyRecoveryAvailable: true,
-  reason:
-    "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
+  reason: "The passkey relying party has not been configured for this session.",
 };
 
 afterEach(() => {

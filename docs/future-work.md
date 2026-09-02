@@ -52,7 +52,7 @@ This list has not been pruned as items landed, so a few are now historical; wher
 
 Three absences are deliberate, because they are limitations of the current design rather than backlog items:
 
-- **Passkey login** is not "planned work in progress" — it is [disabled by design](security.md#passkeys-are-disabled), and returning it requires a verified WebAuthn implementation, not a scheduled task.
+- **Passkey login** is implemented and enabled: both ceremonies are verified through `webauthn-rs`, and the unlock token they mint is what releases a vault secret. See [Security](security.md#passkeys). What remains genuinely unavailable is a passkey on a machine with no platform authenticator, which the login screen reports as its own state.
 - **Windows Hello and Linux biometrics** are [not implemented](security.md#biometrics); only macOS Touch ID is.
 - **An AI assistant in the UI.** Backend groundwork exists in four Rust crates and an unused React hook, but [nothing in the interface reaches it](architecture.md#the-ai-crates), and shipping it is not scheduled here.
 

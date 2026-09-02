@@ -151,7 +151,7 @@ Browser-context code paths still exist in `src/lib/storage`, because they back t
 
 ### What does not work
 
-- Passkey login and registration are disabled. `bc-passkey` fails both closed by design. The previous implementation validated none of the clientDataJSON type or origin, the RP ID hash, the UP/UV flags, the signature, or the authenticator counter, so it was removed rather than shipped insecure. Listing and deleting legacy credentials still works, for recovery.
+- Passkey login and registration work, verified end to end through `webauthn-rs`. The previous implementation validated none of the clientDataJSON type or origin, the RP ID hash, the UP/UV flags, the signature, or the authenticator counter, so it was removed rather than shipped insecure; the current one does not re-implement those checks either — it drives the library that performs them. Credentials enrolled before that change hold no public key and cannot sign in; they can be listed, deleted, and replaced by re-registering.
 - Biometrics are macOS Touch ID only. Windows Hello and Linux are not implemented; the non-macOS path returns `PlatformNotSupported` for every operation.
 - The auto-updater is disabled (`"updater": { "active": false }`), and no code signing or macOS notarization is configured. The bundles are not signed, not notarized and do not update themselves.
 - There is no AI assistant in the UI. Four Rust crates, Tauri commands and a `useAiChat` hook exist as backend groundwork, but no component imports the hook, so nothing is user-reachable.

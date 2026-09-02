@@ -32,7 +32,7 @@ Only the iteration count is yours to choose. The dialog below is the whole of th
 
 **Key length** and **algorithm** are rendered as disabled controls rather than hidden, so you can see what you are getting: 256-bit AES-GCM, not negotiable. **Iterations** is the free parameter, and the field is clamped to the range printed beneath it. **Benchmark** times one derivation at the current setting and reports the result, which is the honest way to pick a number — raise the count until unlock takes as long as you are willing to wait on the slowest machine you use, rather than copying a figure from a blog post.
 
-**Enable OS Vault** stores decrypted keys in the system vault. It exists to support passkey login, which is [currently unavailable](#passkeys-are-disabled), so leaving it off costs you nothing today.
+**Enable OS Vault** stores decrypted keys in the system vault. It is what [passkey login](#passkeys) unlocks, so turn it on only if you intend to use one.
 
 > **Limit: the iteration floor applies to encryption, not decryption.** A legacy decrypt path still reads older unversioned envelopes, which carry no AAD and may declare as few as one iteration. This exists so upgrades do not strand existing keys. Re-saving a key migrates it onto the `bc1:` envelope. Do not read "100,000 minimum" as a guarantee about data already on disk.
 
@@ -62,17 +62,27 @@ Worth knowing, because anyone reading `src/lib/storage` will find them: the fron
 
 The practical consequence: in a browser context a key exists only in memory for the session and is gone when the page closes. None of the guarantees above — keyring storage, chunked manifests, the encryption envelope at rest — apply there, because nothing is written at rest at all.
 
-## Passkeys are disabled
+## Passkeys
 
-Passkey **registration and authentication do not work**, by design.
+Passkey **registration and authentication work**, against a verified WebAuthn relying party.
 
-`bc-passkey` returns `SecureRegistrationUnavailable` and `SecureVerificationUnavailable` from all four relevant entry points. The prior implementation validated none of the things WebAuthn security depends on — not the clientDataJSON type or origin, not the RP ID hash, not the user-presence or user-verification flags, not the signature, not the authenticator counter. Rather than ship an authentication mechanism that only looked like one, it was removed.
+They did not for a period, and the reason matters. The implementation removed in `d05fe59` validated none of the things WebAuthn security depends on — not the clientDataJSON type or origin, not the RP ID hash, not the user-presence or user-verification flags, not the signature, not the authenticator counter. It compared the challenge it had issued against the challenge echoed back inside client-supplied JSON and called that verification. Rather than ship an authentication mechanism that only looked like one, it was removed and the whole path was made to fail closed.
 
-What still works, for recovery only: **listing** legacy credentials and **deleting** them. Every listed credential requires re-enrollment if verified support returns.
+What replaced it does not re-implement those checks either. `bc-passkey` drives both ceremonies through [`webauthn-rs`](https://github.com/kanidm/webauthn-rs)'s high-level API and stores what that library attests to: the COSE public key, the RP ID, and the signature counter. The type, origin, RP-ID-hash, flag, signature and counter checks are the library's, performed once, in one place. A parallel check alongside it could only ever be weaker than, or disagree with, the one that matters — hand-rolling them is exactly how the original flaw happened.
 
-The login screen states this outright, in a status panel, rather than presenting a button that fails:
+Around the library sit the parts a relying party has to get right itself:
 
-<img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel reporting that passkey registration and authentication are unavailable">
+- **Challenges** are server-issued and single-use — taken out of the store _before_ verification, so a failed attempt burns them — expire after 120 seconds, and are capped at 32 accounts in flight.
+- **The relying party is scoped to the window's own origin**, read on the Rust side and never nominated by the page. `allow_subdomains(false)` and `allow_any_port(false)` are set explicitly. The RP ID is recorded on every credential, and an assertion whose credential was enrolled under a different one is refused with a message saying to re-enroll — a credential enrolled in a dev build genuinely cannot be used in a production build, and no configuration changes that.
+- **The unlock token** a successful assertion produces is 32 bytes from the process CSPRNG, single-use, valid for 60 seconds, bound to one account, compared in constant time, never persisted and never logged. It has exactly one construction site, reachable only from the success path of an assertion the library verified — a compile-time obligation rather than a convention. The credential that signed is recorded alongside it but is not compared: at most one token is live per account and no caller presents a credential id, so there is nothing such a comparison could reject that the account check and single use do not.
+
+`get_vault_secret`, which releases a decrypted API key, requires such a token and spends it. Every outcome — the release and each refusal — is written to the audit log, which records the operation, resource and result and never the token or the secret.
+
+**Legacy credentials cannot sign in.** Records written before verified registration hold no public key, so nothing can be checked against them. They can be listed and deleted, and the UI says so and offers re-enrollment. That is not a migration that was skipped: the material verification needs was never captured.
+
+**A passkey still needs a platform authenticator.** Where the webview provides no WebAuthn client, or the machine has no user-verifying platform authenticator enrolled, the login screen names that specific reason rather than offering a button that fails:
+
+<img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel">
 
 This is also the screen where the credential-unlock model is visible in one glance. Nothing is decrypted at rest by the act of selecting a key: you pick a stored credential from **API Key**, and the vault password you type is what derives the PBKDF2 key that unwraps it. The password is never stored — losing it means losing access to that key, which is the intended property.
 

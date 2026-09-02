@@ -88,7 +88,7 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 | `bc-spf`                                                     | SPF parsing and expansion                                               |
 | `bc-domain-audit`                                            | Email, Security and Hygiene check engine                                |
 | `bc-topology`                                                | CNAME chain resolution, PTR, geolocation, service probes                |
-| `bc-passkey`                                                 | Passkey storage — registration and auth fail closed                     |
+| `bc-passkey`                                                 | Passkey relying party — verified WebAuthn registration and auth         |
 | `bc-biometrics`                                              | macOS Touch ID; every other platform returns `PlatformNotSupported`     |
 | `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com |
 | `bc-notify`                                                  | Notification monitor: expiry milestones, snapshot diff, inbox store     |

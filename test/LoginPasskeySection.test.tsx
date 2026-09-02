@@ -11,8 +11,7 @@ const unavailableStatus: PasskeyStatusState = {
   cause: "backend",
   registration: false,
   legacyRecoveryAvailable: true,
-  reason:
-    "Passkeys are temporarily unavailable because existing credentials lack verifiable registration material.",
+  reason: "The passkey relying party has not been configured for this session.",
 };
 
 afterEach(() => {
@@ -51,7 +50,7 @@ test("LoginPasskeySection shows the unavailable notice and disables only legacy 
     />,
   );
   assert.ok(screen.getByRole("alert"));
-  assert.ok(screen.getByText(/lack verifiable registration material/i));
+  assert.ok(screen.getByText(/relying party has not been configured/i));
   assert.equal(
     screen.queryByRole("button", { name: /register passkey/i }),
     null,
