@@ -26,7 +26,7 @@ async fn seed(storage: &Storage, records: Vec<Value>) {
 #[tokio::test]
 async fn records_of_any_json_shape_are_listed_instead_of_panicking() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     // Every JSON shape a corrupt or hand-edited record could take, including
     // values where `get("id")` is not even meaningful.
     seed(
@@ -99,7 +99,7 @@ async fn records_of_any_json_shape_are_listed_instead_of_panicking() {
 #[tokio::test]
 async fn an_empty_or_unmatched_credential_id_deletes_nothing() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     seed(
         &storage,
         vec![
@@ -132,7 +132,7 @@ async fn an_empty_or_unmatched_credential_id_deletes_nothing() {
 #[tokio::test]
 async fn deleting_one_credential_leaves_the_others_and_empties_the_record_exactly_once() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     seed(
         &storage,
         vec![
@@ -201,7 +201,7 @@ async fn credentials_spelled_in_different_alphabets_are_different_credentials() 
         ("ab+cde/g", "ab-cde_g"),
     ] {
         let storage = Storage::new(false);
-        let manager = PasskeyManager;
+        let manager = PasskeyManager::default();
         seed(&storage, vec![json!({ "id": stored })]).await;
 
         manager
@@ -248,7 +248,7 @@ async fn padding_and_whitespace_variants_of_one_spelling_still_match() {
         ("a+c=", "a+c"),
     ] {
         let storage = Storage::new(false);
-        let manager = PasskeyManager;
+        let manager = PasskeyManager::default();
         seed(&storage, vec![json!({ "id": stored })]).await;
 
         manager
@@ -273,7 +273,7 @@ async fn padding_and_whitespace_variants_of_one_spelling_still_match() {
 async fn a_record_with_a_blank_identifier_is_deletable_by_its_listed_handle() {
     for blank in ["", "   ", "\n"] {
         let storage = Storage::new(false);
-        let manager = PasskeyManager;
+        let manager = PasskeyManager::default();
         seed(
             &storage,
             vec![
@@ -317,7 +317,7 @@ async fn a_record_with_a_blank_identifier_is_deletable_by_its_listed_handle() {
 #[tokio::test]
 async fn a_blank_id_falls_through_to_raw_id_rather_than_a_synthetic_handle() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     seed(
         &storage,
         vec![json!({ "id": "", "rawId": "Y3JlZGVudGlhbC10d28" })],
@@ -346,7 +346,7 @@ async fn a_blank_id_falls_through_to_raw_id_rather_than_a_synthetic_handle() {
 #[tokio::test]
 async fn a_synthetic_handle_never_matches_a_record_that_has_an_identifier() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     seed(
         &storage,
         vec![
@@ -394,7 +394,7 @@ async fn a_synthetic_handle_never_matches_a_record_that_has_an_identifier() {
 #[tokio::test]
 async fn a_corrupt_stored_collection_is_surfaced_as_an_error_not_an_empty_list() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     // A readable but malformed record must not be reported as "no passkeys
     // enrolled": that reading would let the app quietly overwrite a user's only
     // remaining credential material.

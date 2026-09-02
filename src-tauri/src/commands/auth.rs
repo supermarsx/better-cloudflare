@@ -811,6 +811,178 @@ mod tests {
             assert_success(entry);
         }
     }
+
+    // ─── Vault audit surface ────────────────────────────────────────────────
+    //
+    // `get_vault_secret` is the passkey-gated release path for a decrypted
+    // Cloudflare API key. Until the change that added these tests it wrote no
+    // audit entry on any branch — not on success, and not on the three refusal
+    // branches that are the interesting ones, because reaching them means
+    // something called the IPC surface directly.
+    //
+    // The tests below deliberately assert on the *refusals*, and on what the
+    // entries do **not** contain.
+
+    /// Stand-in for a passkey unlock token. Must never reach the log.
+    const TEST_TOKEN: &str = "unlock-token-do-not-log-91c4de";
+
+    /// A fail-closed manager: `verify_token` returns `Ok(false)` for every
+    /// input, which is the state on `main` today. Every `get_vault_secret` call
+    /// therefore takes a refusal branch, which is exactly what needs auditing.
+    fn fail_closed_passkeys() -> PasskeyManager {
+        PasskeyManager::default()
+    }
+
+    fn assert_vault_entry_is_clean(entry: &Value, operation: &str, resource: &str) {
+        assert_eq!(entry["operation"], operation);
+        assert_eq!(entry["resource"], resource);
+        assert!(
+            entry["timestamp"].is_string(),
+            "audit entry must be timestamped: {entry}"
+        );
+        let serialized = serde_json::to_string(entry).expect("entry must serialize");
+        for forbidden in [TEST_SECRET, TEST_TOKEN, "do-not-log", "3f9a2b", "91c4de"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "audit entry leaked protected material: {serialized}"
+            );
+        }
+    }
+
+    /// The invariant that actually protects the API keys. It has been true
+    /// structurally — `verify_token` cannot return `true` — but it was never a
+    /// named test, so nothing would fail if that stopped being so by accident.
+    #[tokio::test]
+    async fn get_vault_secret_refuses_an_attacker_supplied_token_and_audits_it() {
+        let storage = memory_storage();
+        storage
+            .store_vault_secret("key-1", TEST_SECRET)
+            .await
+            .expect("seed a vault secret");
+        // Seeded through `bc_storage` directly, which writes no audit entry —
+        // only the command wrappers do — so the log starts empty.
+
+        let error = get_vault_secret_with(
+            &storage,
+            &fail_closed_passkeys(),
+            "key-1".into(),
+            Some(TEST_TOKEN.into()),
+        )
+        .await
+        .expect_err("a forged token must not release the secret");
+        assert_eq!(error, "Invalid passkey token");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_vault_entry_is_clean(&entry, VAULT_OP_GET, "key-1");
+        assert_failure(&entry, "Invalid passkey token");
+    }
+
+    #[tokio::test]
+    async fn get_vault_secret_refuses_a_missing_token_and_audits_it() {
+        let storage = memory_storage();
+        storage
+            .store_vault_secret("key-1", TEST_SECRET)
+            .await
+            .expect("seed a vault secret");
+        // Seeded through `bc_storage` directly, which writes no audit entry —
+        // only the command wrappers do — so the log starts empty.
+
+        let error = get_vault_secret_with(&storage, &fail_closed_passkeys(), "key-1".into(), None)
+            .await
+            .expect_err("a request with no token must be refused");
+        assert_eq!(error, "Passkey token required");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_vault_entry_is_clean(&entry, VAULT_OP_GET, "key-1");
+        assert_failure(&entry, "Passkey token required");
+    }
+
+    /// A failure inside storage is audited too, and its message must not carry
+    /// anything about the value it failed to read.
+    #[tokio::test]
+    async fn a_failed_vault_read_is_audited_without_describing_the_secret() {
+        let storage = memory_storage();
+        let error = get_vault_secret_with(
+            &storage,
+            &fail_closed_passkeys(),
+            "never-stored".into(),
+            Some(TEST_TOKEN.into()),
+        )
+        .await
+        .expect_err("an unknown id must fail");
+        // The token gate refuses first, so storage is never consulted — which
+        // is itself the correct ordering and worth pinning.
+        assert_eq!(error, "Invalid passkey token");
+
+        let entry = single_audit_entry(&storage).await;
+        assert_vault_entry_is_clean(&entry, VAULT_OP_GET, "never-stored");
+        assert_failure(&entry, "Invalid passkey token");
+    }
+
+    #[tokio::test]
+    async fn vault_writes_and_removals_are_audited_on_both_outcomes() {
+        let storage = memory_storage();
+
+        store_vault_secret_with(&storage, "key-1".into(), TEST_SECRET.into())
+            .await
+            .expect("store must succeed");
+        delete_vault_secret_with(&storage, "key-1".into())
+            .await
+            .expect("delete must succeed");
+        // A rejected key is the failure branch, which previously returned early
+        // and logged nothing at all — so a caller probing the IPC surface with
+        // chunk-addressing ids left no trace.
+        let error = store_vault_secret_with(
+            &storage,
+            "key-1::chunk:0".into(),
+            "chunk-addressing-probe".into(),
+        )
+        .await
+        .expect_err("a chunk-addressing id must be rejected");
+
+        let entries = audit_entries(&storage).await;
+        let operations: Vec<_> = entries
+            .iter()
+            .map(|entry| entry["operation"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            operations,
+            vec![VAULT_OP_STORE, VAULT_OP_DELETE, VAULT_OP_STORE]
+        );
+
+        assert_vault_entry_is_clean(&entries[0], VAULT_OP_STORE, "key-1");
+        assert_success(&entries[0]);
+        assert_vault_entry_is_clean(&entries[1], VAULT_OP_DELETE, "key-1");
+        assert_success(&entries[1]);
+        assert_vault_entry_is_clean(&entries[2], VAULT_OP_STORE, "key-1::chunk:0");
+        assert_failure(&entries[2], &error);
+        assert!(
+            !serde_json::to_string(&entries[2])
+                .expect("entry must serialize")
+                .contains("chunk-addressing-probe"),
+            "the rejected value was echoed into the audit log"
+        );
+    }
+
+    /// The audit helper is generic over the success value and never inspects
+    /// it, so a released secret cannot reach an entry even on the success path.
+    #[tokio::test]
+    async fn a_successful_vault_release_is_audited_without_the_released_value() {
+        let storage = memory_storage();
+        let released = audited_vault_op(
+            &storage,
+            VAULT_OP_GET,
+            "key-1",
+            Ok::<String, String>(TEST_SECRET.to_string()),
+        )
+        .await
+        .expect("the caller still receives the secret");
+        assert_eq!(released, TEST_SECRET);
+
+        let entry = single_audit_entry(&storage).await;
+        assert_vault_entry_is_clean(&entry, VAULT_OP_GET, "key-1");
+        assert_success(&entry);
+    }
 }
 
 #[tauri::command]
@@ -1004,6 +1176,78 @@ pub async fn decrypt_api_key(
 }
 
 // ─── Vault Operations ───────────────────────────────────────────────────────
+//
+// `get_vault_secret` releases a decrypted Cloudflare API key. It is the second
+// such release path in the app — `biometric_get_secret` is the first — and
+// until now it was the only one that wrote **no audit entry at all**, while its
+// own siblings `store_vault_secret` and `delete_vault_secret` did.
+//
+// That was harmless only for as long as the command could never succeed:
+// `bc_passkey::PasskeyManager::verify_token` returns `Ok(false)` unconditionally
+// while the passkey gate is shut, so every call failed closed. The moment that
+// gate opens, an unaudited plaintext-key release path goes live. The audit is
+// added here, in the same change that builds the ceremony layer behind that
+// gate, so that it cannot be forgotten at the moment it starts mattering.
+//
+// Naming, decided deliberately rather than by accident: the operation names
+// keep the existing `vault:` prefix (`vault:store`, `vault:delete`, and now
+// `vault:get`), and the *field shape* is the newer one PR #160 established for
+// the biometric commands — `success` on every entry, `error` on failures only.
+// `vault:store` and `vault:delete` are brought onto that shape too, and now
+// record their failures as well as their successes; they previously returned
+// early on error and logged nothing, so a failed vault write left no trace.
+//
+// Nothing derived from the secret or the passkey token may appear in an entry.
+// The only variable-length input is a `StorageError` rendering; a test asserts
+// that neither the secret nor the token reaches the log on any branch.
+
+const VAULT_OP_STORE: &str = "vault:store";
+const VAULT_OP_GET: &str = "vault:get";
+const VAULT_OP_DELETE: &str = "vault:delete";
+
+/// Build the audit entry for one vault operation.
+///
+/// The secret is not a parameter and cannot become one: the callers pass only
+/// the resource id and an error rendering, and the released value never enters
+/// this function.
+fn vault_audit_entry(operation: &str, resource: &str, error: Option<&str>) -> serde_json::Value {
+    match error {
+        None => serde_json::json!({
+            "operation": operation,
+            "resource": resource,
+            "success": true,
+        }),
+        Some(error) => serde_json::json!({
+            "operation": operation,
+            "resource": resource,
+            "success": false,
+            "error": error,
+        }),
+    }
+}
+
+/// Record the outcome of a vault operation, then hand the result back
+/// unchanged.
+///
+/// Generic over the success value and never inspecting it, so no caller can
+/// route a released secret into the log by accident.
+async fn audited_vault_op<T>(
+    storage: &Storage,
+    operation: &str,
+    resource: &str,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    log_audit(
+        storage,
+        vault_audit_entry(
+            operation,
+            resource,
+            result.as_ref().err().map(String::as_str),
+        ),
+    )
+    .await;
+    result
+}
 
 #[tauri::command]
 pub async fn store_vault_secret(
@@ -1011,19 +1255,19 @@ pub async fn store_vault_secret(
     id: String,
     secret: String,
 ) -> Result<(), String> {
-    storage
+    store_vault_secret_with(&storage, id, secret).await
+}
+
+async fn store_vault_secret_with(
+    storage: &Storage,
+    id: String,
+    secret: String,
+) -> Result<(), String> {
+    let result = storage
         .store_vault_secret(&id, &secret)
         .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "vault:store",
-            "resource": id,
-        }),
-    )
-    .await;
-    Ok(())
+        .map_err(|e| e.to_string());
+    audited_vault_op(storage, VAULT_OP_STORE, &id, result).await
 }
 
 #[tauri::command]
@@ -1033,35 +1277,58 @@ pub async fn get_vault_secret(
     id: String,
     token: Option<String>,
 ) -> Result<String, String> {
+    get_vault_secret_with(&storage, &passkey_mgr, id, token).await
+}
+
+/// The body of [`get_vault_secret`], taking plain references so it is callable
+/// from tests without a Tauri runtime.
+async fn get_vault_secret_with(
+    storage: &Storage,
+    passkey_mgr: &PasskeyManager,
+    id: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    let result = release_vault_secret(storage, passkey_mgr, &id, token).await;
+    audited_vault_op(storage, VAULT_OP_GET, &id, result).await
+}
+
+/// Every rejection branch here is audited by the caller. The refusals are the
+/// interesting entries: reaching them at all means something called the IPC
+/// surface directly, since the UI only asks for a secret with a token it has
+/// just been handed.
+async fn release_vault_secret(
+    storage: &Storage,
+    passkey_mgr: &PasskeyManager,
+    id: &str,
+    token: Option<String>,
+) -> Result<String, String> {
     let token = token.ok_or("Passkey token required")?;
+    // `consume = true`: the token is spent by this check, so a rejection here
+    // has already burned it.
     let ok = passkey_mgr
-        .verify_token(&id, &token, true)
+        .verify_token(id, &token, true)
         .await
         .map_err(|e| e.to_string())?;
     if !ok {
         return Err("Invalid passkey token".to_string());
     }
     storage
-        .get_vault_secret(&id)
+        .get_vault_secret(id)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_vault_secret(storage: State<'_, Storage>, id: String) -> Result<(), String> {
-    storage
+    delete_vault_secret_with(&storage, id).await
+}
+
+async fn delete_vault_secret_with(storage: &Storage, id: String) -> Result<(), String> {
+    let result = storage
         .delete_vault_secret(&id)
         .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "vault:delete",
-            "resource": id,
-        }),
-    )
-    .await;
-    Ok(())
+        .map_err(|e| e.to_string());
+    audited_vault_op(storage, VAULT_OP_DELETE, &id, result).await
 }
 
 // ─── Passkey Operations ─────────────────────────────────────────────────────

@@ -659,7 +659,7 @@ async fn credentials_are_filtered_by_the_rp_id_they_were_enrolled_under() {
 #[tokio::test]
 async fn the_verified_store_and_the_legacy_store_stay_separate() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
 
     storage
         .store_passkey(ACCOUNT, json!({ "id": "Y3JlZGVudGlhbC1pZA", "counter": 4 }))
@@ -669,15 +669,21 @@ async fn the_verified_store_and_the_legacy_store_stay_separate() {
         .await
         .expect("append a verified credential");
 
-    // The legacy recovery path sees exactly what it saw before.
+    // `list_passkeys` is now a union over both stores: verified credentials
+    // first, then legacy records. Updated when the ceremony layer landed — this
+    // test previously asserted the legacy record was the *only* entry, which
+    // was true only while nothing could write a verified credential. What it
+    // exists to prove is unchanged: the two stores do not see each other, and
+    // the legacy entry is reported byte for byte as it was before.
     let listed = manager
         .list_passkeys(&storage, ACCOUNT)
         .await
-        .expect("list legacy passkeys");
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["id"], json!("Y3JlZGVudGlhbC1pZA"));
-    assert_eq!(listed[0]["counter"], json!(4));
-    assert_eq!(listed[0]["requiresReregistration"], json!(true));
+        .expect("list passkeys");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["requiresReregistration"], json!(false));
+    assert_eq!(listed[1]["id"], json!("Y3JlZGVudGlhbC1pZA"));
+    assert_eq!(listed[1]["counter"], json!(4));
+    assert_eq!(listed[1]["requiresReregistration"], json!(true));
 
     // And the verified store sees exactly one credential, with no legacy
     // record leaking in as a dead entry.
@@ -690,11 +696,12 @@ async fn the_verified_store_and_the_legacy_store_stay_separate() {
         .delete_passkey(&storage, ACCOUNT, "Y3JlZGVudGlhbC1pZA")
         .await
         .expect("delete the legacy record");
-    assert!(manager
+    let listed = manager
         .list_passkeys(&storage, ACCOUNT)
         .await
-        .expect("list after delete")
-        .is_empty());
+        .expect("list after delete");
+    assert_eq!(listed.len(), 1, "only the verified credential must remain");
+    assert_eq!(listed[0]["requiresReregistration"], json!(false));
     assert_eq!(
         load_credentials(&storage, ACCOUNT)
             .await
@@ -712,7 +719,7 @@ async fn the_verified_store_and_the_legacy_store_stay_separate() {
 #[tokio::test]
 async fn persisting_a_verified_credential_does_not_relax_the_fail_closed_gate() {
     let storage = Storage::new(false);
-    let manager = PasskeyManager;
+    let manager = PasskeyManager::default();
     append_credential(&storage, ACCOUNT, stored(50))
         .await
         .expect("append");

@@ -187,7 +187,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Storage::default())
-        .manage(PasskeyManager)
+        .manage(PasskeyManager::default())
         .manage(McpServerManager::default())
         .manage(SessionManager::default())
         .manage(AgentManager::default())
