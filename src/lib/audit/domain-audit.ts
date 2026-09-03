@@ -1,5 +1,6 @@
 import type { DNSRecord } from "@/types/dns";
-import { ipMatchesCIDR, parseSPF } from "@/lib/dns/spf";
+import { unquoteCharacterString } from "@/lib/dns/character-string";
+import { ipMatchesCIDR, isSpfRecord, parseSPF } from "@/lib/dns/spf";
 import { parseSRV } from "@/lib/dns/dns-parsers";
 
 export type DomainAuditSeverity = "pass" | "info" | "warn" | "fail";
@@ -54,19 +55,28 @@ function normalizeTargetDomain(value: string, zoneName: string): string {
   return normalizeName(stripped, zoneName);
 }
 
-function getTxtContentsByName(records: DNSRecord[], name: string): string[] {
-  const needle = String(name ?? "")
-    .trim()
-    .toLowerCase();
+/**
+ * The logical value of a TXT record, with presentation quoting removed.
+ *
+ * Cloudflare and zone-file imports hand back the same record as `v=spf1 -all`,
+ * `"v=spf1 -all"` or `"v=spf1 " "-all"` depending on the path it came in
+ * through. Every content check below runs on this, so the audit never reports
+ * a record missing purely because of how it was written down.
+ */
+function txtValue(content: string | undefined): string {
+  return unquoteCharacterString(content).trim();
+}
+
+function getTxtContentsByName(
+  records: DNSRecord[],
+  name: string,
+  zoneName: string,
+): string[] {
+  const needle = normalizeName(name, zoneName);
   return records
     .filter((r) => r.type === "TXT")
-    .filter(
-      (r) =>
-        String(r.name ?? "")
-          .trim()
-          .toLowerCase() === needle,
-    )
-    .map((r) => String(r.content ?? "").trim())
+    .filter((r) => normalizeName(r.name, zoneName) === needle)
+    .map((r) => txtValue(r.content))
     .filter(Boolean);
 }
 
@@ -171,10 +181,6 @@ export function findSpecialIpRecords(
     if (issue) findings.push({ record, ip, issue });
   }
   return findings;
-}
-
-function isSpfRecord(txt: string): boolean {
-  return txt.trim().toLowerCase().startsWith("v=spf1");
 }
 
 function isDmarcRecord(txt: string): boolean {
@@ -304,24 +310,24 @@ export function runDomainAudit(
   const spfTxtAtApex = records
     .filter((r) => r.type === "TXT")
     .filter((r) => recordNameIsApex(r.name, normalizedZone))
-    .map((r) => String(r.content ?? "").trim())
+    .map((r) => txtValue(r.content))
     .filter(Boolean)
     .filter(isSpfRecord);
 
   const spfTypeRecords = records.filter((r) => r.type === "SPF");
 
   const dmarcName = `_dmarc.${normalizedZone}`;
-  const dmarcTxt = getTxtContentsByName(records, dmarcName).filter(
-    isDmarcRecord,
-  );
+  const dmarcTxt = getTxtContentsByName(
+    records,
+    dmarcName,
+    normalizedZone,
+  ).filter(isDmarcRecord);
 
   const hasAnyDkim = records
     .filter((r) => r.type === "TXT")
     .some((r) => {
       const name = normalizeName(r.name, normalizedZone);
-      return (
-        name.includes("._domainkey.") && isDkimRecord(String(r.content ?? ""))
-      );
+      return name.includes("._domainkey.") && isDkimRecord(txtValue(r.content));
     });
 
   const soaRecords = records.filter((r) => r.type === "SOA");

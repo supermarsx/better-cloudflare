@@ -9,7 +9,7 @@
 //! This is a pure-computation crate — no network or filesystem I/O.
 
 use bc_cloudflare_api::DNSRecord;
-use bc_dns_tools::parse_srv;
+use bc_dns_tools::{is_spf_record, parse_srv, unquote_character_string};
 use bc_spf::{ip_matches_cidr, parse_spf};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -133,13 +133,23 @@ fn normalize_target_domain(value: &str, zone_name: &str) -> String {
     normalize_name(stripped, zone_name)
 }
 
-fn get_txt_contents_by_name(records: &[DNSRecord], name: &str) -> Vec<String> {
-    let needle = name.trim().to_lowercase();
+/// The logical value of a TXT record, with presentation quoting removed.
+///
+/// Cloudflare and zone-file imports hand back the same record as
+/// `v=spf1 -all`, `"v=spf1 -all"` or `"v=spf1 " "-all"` depending on the path
+/// it came in through. Every content check below runs on this, so the audit
+/// never reports a record missing purely because of how it was written down.
+fn txt_value(content: &str) -> String {
+    unquote_character_string(content).trim().to_string()
+}
+
+fn get_txt_contents_by_name(records: &[DNSRecord], name: &str, zone_name: &str) -> Vec<String> {
+    let needle = normalize_name(name, zone_name);
     records
         .iter()
         .filter(|r| r.r#type == "TXT")
-        .filter(|r| r.name.trim().to_lowercase() == needle)
-        .map(|r| r.content.trim().to_string())
+        .filter(|r| normalize_name(&r.name, zone_name) == needle)
+        .map(|r| txt_value(&r.content))
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -222,10 +232,6 @@ fn classify_special_ip(ip: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn is_spf_record(txt: &str) -> bool {
-    txt.trim().to_lowercase().starts_with("v=spf1")
 }
 
 fn is_dmarc_record(txt: &str) -> bool {
@@ -428,7 +434,7 @@ pub fn run_domain_audit(
         .iter()
         .filter(|r| r.r#type == "TXT")
         .filter(|r| record_name_is_apex(&r.name, normalized_zone))
-        .map(|r| r.content.trim().to_string())
+        .map(|r| txt_value(&r.content))
         .filter(|s| !s.is_empty())
         .filter(|s| is_spf_record(s))
         .collect();
@@ -436,14 +442,14 @@ pub fn run_domain_audit(
     let spf_type_records: Vec<&DNSRecord> = records.iter().filter(|r| r.r#type == "SPF").collect();
 
     let dmarc_name = format!("_dmarc.{}", normalized_zone);
-    let dmarc_txt: Vec<String> = get_txt_contents_by_name(records, &dmarc_name)
+    let dmarc_txt: Vec<String> = get_txt_contents_by_name(records, &dmarc_name, normalized_zone)
         .into_iter()
         .filter(|s| is_dmarc_record(s))
         .collect();
 
     let has_any_dkim = records.iter().filter(|r| r.r#type == "TXT").any(|r| {
         let name = normalize_name(&r.name, normalized_zone);
-        name.contains("._domainkey.") && is_dkim_record(&r.content)
+        name.contains("._domainkey.") && is_dkim_record(&txt_value(&r.content))
     });
 
     let soa_records: Vec<&DNSRecord> = records.iter().filter(|r| r.r#type == "SOA").collect();
@@ -1749,5 +1755,158 @@ mod tests {
         assert_eq!(expiry.category, AuditCategory::Hygiene);
         assert_eq!(expiry.severity, AuditSeverity::Fail);
         assert!(expiry.details.contains("Renew immediately"));
+    }
+
+    // ── TXT presentation shapes ─────────────────────────────────────────────
+    //
+    // Regression: a published `v=spf1 mx -all` at the apex was reported as
+    // "SPF missing at apex" whenever the content arrived quoted, because the
+    // detector inspected the raw presentation text rather than the logical
+    // TXT value.
+
+    /// Every presentation shape of the same logical `v=spf1 mx -all` record.
+    const SPF_SHAPES: &[(&str, &str)] = &[
+        ("bare", "v=spf1 mx -all"),
+        ("quoted", "\"v=spf1 mx -all\""),
+        ("padded quoted", "  \"v=spf1 mx -all\"  "),
+        ("split character-strings", "\"v=spf1 \" \"mx -all\""),
+        ("quoted uppercase", "\"V=SPF1 MX -ALL\""),
+    ];
+
+    #[test]
+    fn apex_spf_is_detected_in_every_presentation_shape() {
+        for (label, content) in SPF_SHAPES {
+            let records = vec![record("TXT", ZONE, content)];
+            let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+            assert_eq!(
+                finding(&items, "spf-ok").severity,
+                AuditSeverity::Pass,
+                "expected spf-ok for {label} ({content})"
+            );
+            assert!(
+                !items.iter().any(|item| item.id == "spf-missing"),
+                "expected no spf-missing for {label} ({content})"
+            );
+        }
+    }
+
+    #[test]
+    fn apex_spf_is_detected_for_every_apex_owner_name() {
+        for name in ["example.com", "@", "example.com.", "EXAMPLE.COM"] {
+            let records = vec![record("TXT", name, "\"v=spf1 mx -all\"")];
+            let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+            assert_eq!(
+                finding(&items, "spf-ok").severity,
+                AuditSeverity::Pass,
+                "expected spf-ok for owner name {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_spf_still_reports_its_lookup_estimate() {
+        let records = vec![record("TXT", ZONE, "\"v=spf1 mx -all\"")];
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        assert!(finding(&items, "spf-lookups-estimate")
+            .details
+            .contains("mechanisms: 1"));
+    }
+
+    #[test]
+    fn a_txt_record_that_only_looks_like_spf_is_not_treated_as_spf() {
+        // RFC 7208 §4.5: `v=spf1` must be followed by whitespace or the end of
+        // the record, so `v=spf1foo` is a different record entirely.
+        let records = vec![record("TXT", ZONE, "v=spf1foo bar")];
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        assert_eq!(finding(&items, "spf-missing").severity, AuditSeverity::Warn);
+    }
+
+    #[test]
+    fn multiple_spf_records_are_counted_across_presentation_shapes() {
+        let records = vec![
+            record("TXT", ZONE, "v=spf1 mx -all"),
+            record("TXT", ZONE, "\"v=spf1 include:_spf.example.net -all\""),
+        ];
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        assert_eq!(
+            finding(&items, "spf-multiple").severity,
+            AuditSeverity::Fail
+        );
+    }
+
+    #[test]
+    fn dmarc_is_detected_in_every_presentation_shape() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("bare", "_dmarc.example.com", "v=DMARC1; p=reject"),
+            ("quoted", "_dmarc.example.com", "\"v=DMARC1; p=reject\""),
+            (
+                "split character-strings",
+                "_dmarc.example.com",
+                "\"v=DMARC1;\" \" p=reject\"",
+            ),
+            (
+                "absolute owner name",
+                "_dmarc.example.com.",
+                "v=DMARC1; p=reject",
+            ),
+            (
+                "uppercase owner name",
+                "_DMARC.EXAMPLE.COM",
+                "v=DMARC1; p=reject",
+            ),
+        ];
+
+        for (label, name, content) in cases {
+            let records = vec![record("TXT", name, content)];
+            let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+            assert_eq!(
+                finding(&items, "dmarc-ok").severity,
+                AuditSeverity::Pass,
+                "expected dmarc-ok for {label} ({name} / {content})"
+            );
+        }
+    }
+
+    #[test]
+    fn dkim_is_detected_in_every_presentation_shape() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "bare",
+                "sel._domainkey.example.com",
+                "v=DKIM1; k=rsa; p=key",
+            ),
+            (
+                "quoted",
+                "sel._domainkey.example.com",
+                "\"v=DKIM1; k=rsa; p=key\"",
+            ),
+            (
+                "split character-strings",
+                "sel._domainkey.example.com",
+                "\"v=DKIM1; k=rsa; \" \"p=key\"",
+            ),
+            (
+                "absolute owner name",
+                "sel._domainkey.example.com.",
+                "v=DKIM1; p=key",
+            ),
+        ];
+
+        for (label, name, content) in cases {
+            let records = vec![mx("mail.example.com", 10), record("TXT", name, content)];
+            let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+            assert_eq!(
+                finding(&items, "dkim-missing").severity,
+                AuditSeverity::Pass,
+                "expected DKIM detection for {label} ({name} / {content})"
+            );
+        }
     }
 }

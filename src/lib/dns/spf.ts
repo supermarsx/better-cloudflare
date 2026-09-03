@@ -87,6 +87,26 @@ export interface SPFRecord {
 }
 
 /**
+ * RFC 7208 §4.5 version section: `v=spf1` followed by whitespace or the end of
+ * the record. `v=spf1foo` is a different TXT record that merely shares a
+ * prefix, so the boundary is part of the test.
+ */
+const SPF_VERSION = /^v=spf1(\s|$)/i;
+
+/**
+ * Whether a TXT payload is an SPF record.
+ *
+ * The single detector for the whole app — the audit, the topology graph and
+ * anything else that has to decide "is this the zone's SPF record?" must agree,
+ * or one surface reports a record missing while another draws it. Content may
+ * be bare, quoted, or split into adjacent character-strings
+ * (`"v=spf1 " "mx -all"`); all forms answer identically.
+ */
+export function isSpfRecord(content?: string): boolean {
+  return SPF_VERSION.test(unquoteCharacterString(content).trim());
+}
+
+/**
  * Parse SPF content into mechanisms and modifiers.
  *
  * Content may be given bare, quoted, or as adjacent quoted character-strings

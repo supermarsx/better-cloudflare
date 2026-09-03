@@ -5,6 +5,14 @@
  * present in the zone (`lookupTxt`) and stops at `SPF_INCLUDE_MAX_DEPTH`.
  */
 import type { DNSRecord } from "@/types/dns";
+import { isSpfRecord } from "@/lib/dns/spf";
+
+/**
+ * Re-exported so the topology graph and the domain audit answer "is this the
+ * SPF record?" with the same code. Two local copies of that test are how the
+ * audit came to report a published `v=spf1 mx -all` as missing.
+ */
+export { isSpfRecord };
 
 export const SPF_INCLUDE_MAX_DEPTH = 2;
 
@@ -98,10 +106,6 @@ const SPF_MECHANISMS = new Set<SpfMechanismType>([
   "ip6",
   "exists",
 ]);
-
-export function isSpfRecord(content: string): boolean {
-  return /^v=spf1(\s|$)/i.test(joinTxtStrings(content));
-}
 
 export function parseSpf(content: string): SpfRecord {
   const text = joinTxtStrings(content);
