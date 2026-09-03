@@ -569,7 +569,8 @@ const FINDING_EXPLANATIONS: &[(&str, &str)] = &[
     ("dmarc-missing", "A DMARC record tells receiving servers what to do with mail that fails your SPF and DKIM checks, and asks them to send you reports on who is sending as your domain. Without one, receivers decide for themselves and most will still deliver the mail, and you get no reports, so you cannot see whether anyone is sending as you."),
     ("dmarc-multiple", "A domain may publish only one DMARC record. Receivers that find several ignore the policy entirely, so the effect is the same as publishing none."),
     ("dmarc-missing-policy", "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it."),
-    ("dmarc-policy-none", "p=none asks receivers to change nothing and, where the record carries an rua= address, to send you aggregate reports. Those reports are the point of it: they show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain."),
+    ("dmarc-policy-none", "p=none asks receivers to change nothing: mail that fails your checks is delivered exactly as it would be with no DMARC record at all. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain."),
+    ("dmarc-no-rua", "An rua= address is where receivers send the daily summaries naming every server that sent mail as your domain and whether it passed. Without one nothing is sent anywhere, so there is no way to find out which of your senders would fail — or, once receivers are enforcing, which of your legitimate mail is being quarantined or thrown away."),
     ("dkim-missing", "DKIM adds a signature to outgoing mail that receivers verify against a public key published in your DNS, showing the message really came from your mail system and was not altered on the way. Without it your mail rests on SPF alone, which breaks when a message is forwarded. Selectors are chosen by the mail provider, so this may instead mean yours publishes them somewhere this zone cannot see."),
     ("mx-single", "MX records name the servers that accept mail for your domain, in priority order. With only one, delivery depends entirely on that host being reachable; senders retry for a while, so mail queues rather than arriving. Many providers cover this behind a single name that resolves to several hosts."),
     ("mx-too-many", "MX records name the servers that accept mail for your domain. An unusually long list often means old entries were never removed, and a retired host still listed collects delivery attempts until senders give up on it."),
@@ -1597,7 +1598,11 @@ fn audit_email(
         let dmarc = &dmarc_txt[0];
         let tags = parse_tag_record(dmarc);
         let p = tags.get("p").map(|s| s.to_lowercase()).unwrap_or_default();
+        let has_rua = tags.get("rua").map(|v| !v.trim().is_empty()) == Some(true);
         if p.is_empty() {
+            // Receivers ignore a record with no p= at all, so there is nothing
+            // to say about its reporting: the record is not in effect either
+            // way.
             items.push(item(
                 "dmarc-missing-policy",
                 AuditCategory::Email,
@@ -1605,34 +1610,52 @@ fn audit_email(
                 "DMARC missing policy (p=)",
                 "DMARC must include a p= policy tag.",
             ));
-        } else if p == "none" && !mx_at_apex.is_empty() {
-            // p=none only does anything if reports are actually going
-            // somewhere. A bare `v=DMARC1; p=none;` — the usual thing people
-            // paste to "turn DMARC on" — monitors nothing at all, and the
-            // audit has no separate finding to say so, so this one has to.
-            let has_rua = tags.get("rua").map(|v| !v.trim().is_empty()) == Some(true);
-            items.push(item(
-                "dmarc-policy-none",
-                AuditCategory::Email,
-                AuditSeverity::Warn,
-                "DMARC policy is p=none",
-                if has_rua {
-                    "Consider moving to quarantine/reject once aligned."
-                } else {
-                    "No rua= address is set, so no aggregate reports are being sent anywhere. Consider moving to quarantine/reject once aligned."
-                },
-            ));
         } else {
-            items.push(item(
-                "dmarc-ok",
-                AuditCategory::Email,
-                AuditSeverity::Pass,
-                "DMARC present",
-                format!(
-                    "DMARC is configured with p={}.",
-                    if p.is_empty() { "?" } else { &p }
-                ),
-            ));
+            // Reporting is a separate question from policy strength, and it is
+            // the one the audit used to be silent about. A record with no rua=
+            // sends nothing anywhere: under p=none that makes it inert, and
+            // under an enforcing policy it means receivers are acting on mail
+            // the domain cannot see. Both deserve saying once, here, rather
+            // than in fragments attached to the policy findings.
+            if !has_rua {
+                items.push(item(
+                    "dmarc-no-rua",
+                    AuditCategory::Email,
+                    AuditSeverity::Warn,
+                    "DMARC has no report address (rua=)",
+                    if p == "none" {
+                        format!(
+                            "No rua= address is set at {}, so no aggregate reports are being sent. With p=none receivers are also asked to change nothing, so the record currently has no observable effect.",
+                            dmarc_name
+                        )
+                    } else {
+                        format!(
+                            "No rua= address is set at {}, so no aggregate reports are being sent. Receivers are acting on mail that fails your checks under p={}, and you have no way to see which mail that is.",
+                            dmarc_name, p
+                        )
+                    },
+                ));
+            }
+            if p == "none" && !mx_at_apex.is_empty() {
+                items.push(item(
+                    "dmarc-policy-none",
+                    AuditCategory::Email,
+                    AuditSeverity::Warn,
+                    "DMARC policy is p=none",
+                    "Consider moving to quarantine/reject once aligned.",
+                ));
+            } else if has_rua {
+                items.push(item(
+                    "dmarc-ok",
+                    AuditCategory::Email,
+                    AuditSeverity::Pass,
+                    "DMARC present",
+                    format!(
+                        "DMARC is configured with p={} and an aggregate report address.",
+                        p
+                    ),
+                ));
+            }
         }
     }
 
@@ -1728,7 +1751,11 @@ mod tests {
             record("A", "mail1.example.com", "1.1.1.1"),
             record("A", "mail2.example.com", "8.8.8.8"),
             record("TXT", ZONE, "v=spf1 -all"),
-            record("TXT", "_dmarc.example.com", "v=DMARC1; p=reject"),
+            record(
+                "TXT",
+                "_dmarc.example.com",
+                "v=DMARC1; p=reject; rua=mailto:dmarc@example.com",
+            ),
             record(
                 "TXT",
                 "selector._domainkey.example.com",
@@ -1939,22 +1966,30 @@ mod tests {
     #[test]
     fn dmarc_is_detected_in_every_presentation_shape() {
         let cases: &[(&str, &str, &str)] = &[
-            ("bare", "_dmarc.example.com", "v=DMARC1; p=reject"),
-            ("quoted", "_dmarc.example.com", "\"v=DMARC1; p=reject\""),
+            (
+                "bare",
+                "_dmarc.example.com",
+                "v=DMARC1; p=reject; rua=mailto:dmarc@example.com",
+            ),
+            (
+                "quoted",
+                "_dmarc.example.com",
+                "\"v=DMARC1; p=reject; rua=mailto:dmarc@example.com\"",
+            ),
             (
                 "split character-strings",
                 "_dmarc.example.com",
-                "\"v=DMARC1;\" \" p=reject\"",
+                "\"v=DMARC1; p=reject;\" \" rua=mailto:dmarc@example.com\"",
             ),
             (
                 "absolute owner name",
                 "_dmarc.example.com.",
-                "v=DMARC1; p=reject",
+                "v=DMARC1; p=reject; rua=mailto:dmarc@example.com",
             ),
             (
                 "uppercase owner name",
                 "_DMARC.EXAMPLE.COM",
-                "v=DMARC1; p=reject",
+                "v=DMARC1; p=reject; rua=mailto:dmarc@example.com",
             ),
         ];
 
@@ -2100,23 +2135,23 @@ mod tests {
     }
 
     #[test]
-    fn p_none_without_rua_says_no_reports_are_being_sent() {
-        // The common paste-to-turn-DMARC-on record. There is no separate
-        // missing-rua finding, so if this one implies reports are flowing,
-        // nothing corrects it.
+    fn the_reporting_statement_lives_on_the_reporting_finding() {
+        // This invariant used to sit on dmarc-policy-none, which carried a
+        // conditional rua clause. It moved to its own finding rather than
+        // disappearing.
         let records = vec![
             mx("mail.example.com", 10),
             record("TXT", "_dmarc.example.com", "v=DMARC1; p=none;"),
         ];
         let items = run_domain_audit(ZONE, &records, &options(true, false, false));
 
-        let details = &finding(&items, "dmarc-policy-none").details;
-        assert!(details.contains("no aggregate reports are being sent anywhere"));
-        assert!(!details.contains("and only send you reports"));
+        assert!(finding(&items, "dmarc-no-rua")
+            .details
+            .contains("no aggregate reports are being sent"));
     }
 
     #[test]
-    fn p_none_with_rua_does_not_claim_reports_are_missing() {
+    fn p_none_with_rua_is_not_told_its_reports_are_missing() {
         let records = vec![
             mx("mail.example.com", 10),
             record(
@@ -2127,8 +2162,130 @@ mod tests {
         ];
         let items = run_domain_audit(ZONE, &records, &options(true, false, false));
 
-        let details = &finding(&items, "dmarc-policy-none").details;
-        assert!(!details.contains("no aggregate reports"));
-        assert!(details.contains("Consider moving to quarantine/reject"));
+        assert!(!items.iter().any(|item| item.id == "dmarc-no-rua"));
+        assert!(finding(&items, "dmarc-policy-none")
+            .details
+            .contains("Consider moving to quarantine/reject once aligned"));
+    }
+
+    // ── DMARC reporting visibility ──────────────────────────────────────────
+    //
+    // A record with no `rua=` sends no reports anywhere. Under an enforcing
+    // policy receivers are quarantining or destroying mail that fails the
+    // domain's checks and the domain cannot see which mail that is. The audit
+    // used to call that `dmarc-ok`/Pass.
+
+    fn dmarc_items(dmarc: &str, with_mx: bool) -> Vec<AuditItem> {
+        let mut records = vec![record("TXT", "_dmarc.example.com", dmarc)];
+        if with_mx {
+            records.insert(0, mx("mail.example.com", 10));
+        }
+        run_domain_audit(ZONE, &records, &options(true, false, false))
+    }
+
+    fn severity_of(dmarc: &str, id: &str, with_mx: bool) -> Option<AuditSeverity> {
+        dmarc_items(dmarc, with_mx)
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(|item| item.severity)
+    }
+
+    fn details_of(dmarc: &str, id: &str, with_mx: bool) -> String {
+        dmarc_items(dmarc, with_mx)
+            .into_iter()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("expected finding {id} for {dmarc}"))
+            .details
+    }
+
+    #[test]
+    fn enforcing_without_a_report_address_is_reported_not_passed() {
+        for policy in ["reject", "quarantine"] {
+            let dmarc = format!("v=DMARC1; p={policy};");
+
+            assert_eq!(
+                severity_of(&dmarc, "dmarc-no-rua", true),
+                Some(AuditSeverity::Warn),
+                "enforcing with no report address should warn ({policy})"
+            );
+            assert_eq!(
+                severity_of(&dmarc, "dmarc-ok", true),
+                None,
+                "a domain enforcing blind is not a clean DMARC pass ({policy})"
+            );
+
+            let details = details_of(&dmarc, "dmarc-no-rua", true);
+            assert!(details.contains("no aggregate reports are being sent"));
+            assert!(details.contains("no way to see which mail that is"));
+            assert!(details.contains(&format!("p={policy}")));
+        }
+    }
+
+    #[test]
+    fn monitoring_without_a_report_address_says_it_does_nothing_observable() {
+        let details = details_of("v=DMARC1; p=none;", "dmarc-no-rua", true);
+
+        assert!(details.contains("no aggregate reports are being sent"));
+        assert!(details.contains("no observable effect"));
+    }
+
+    #[test]
+    fn a_report_address_is_required_regardless_of_apex_mx() {
+        // The p=none policy finding is gated on an apex MX; the reporting
+        // finding must not be.
+        assert_eq!(
+            severity_of("v=DMARC1; p=none;", "dmarc-no-rua", false),
+            Some(AuditSeverity::Warn)
+        );
+        assert_eq!(severity_of("v=DMARC1; p=none;", "dmarc-ok", false), None);
+    }
+
+    #[test]
+    fn a_policy_with_a_report_address_still_passes() {
+        let dmarc = "v=DMARC1; p=reject; rua=mailto:dmarc@example.com";
+
+        assert_eq!(severity_of(dmarc, "dmarc-no-rua", true), None);
+        assert_eq!(
+            severity_of(dmarc, "dmarc-ok", true),
+            Some(AuditSeverity::Pass)
+        );
+    }
+
+    #[test]
+    fn an_empty_rua_value_counts_as_no_report_address() {
+        assert_eq!(
+            severity_of("v=DMARC1; p=reject; rua=", "dmarc-no-rua", true),
+            Some(AuditSeverity::Warn)
+        );
+        assert_eq!(
+            severity_of("v=DMARC1; p=reject; rua=   ", "dmarc-no-rua", true),
+            Some(AuditSeverity::Warn)
+        );
+    }
+
+    #[test]
+    fn a_quoted_dmarc_record_is_read_the_same_way() {
+        assert_eq!(
+            severity_of("\"v=DMARC1; p=reject;\"", "dmarc-no-rua", true),
+            Some(AuditSeverity::Warn)
+        );
+    }
+
+    #[test]
+    fn the_policy_none_finding_no_longer_talks_about_reports() {
+        let details = details_of("v=DMARC1; p=none;", "dmarc-policy-none", true);
+
+        assert!(!details.contains("rua"));
+        assert!(!details.to_lowercase().contains("report"));
+        assert!(details.contains("Consider moving to quarantine/reject once aligned"));
+    }
+
+    #[test]
+    fn a_record_missing_p_is_reported_for_the_policy_not_the_reporting() {
+        assert_eq!(
+            severity_of("v=DMARC1;", "dmarc-missing-policy", true),
+            Some(AuditSeverity::Fail)
+        );
+        assert_eq!(severity_of("v=DMARC1;", "dmarc-no-rua", true), None);
     }
 }

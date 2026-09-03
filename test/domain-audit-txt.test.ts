@@ -122,12 +122,26 @@ test("SPF records are still counted per zone, not per presentation shape", () =>
 
 // ── DMARC ───────────────────────────────────────────────────────────────────
 
+const DMARC_RUA = "rua=mailto:dmarc@example.com";
+
 const DMARC_CASES: [label: string, name: string, content: string][] = [
-  ["bare", "_dmarc.example.com", "v=DMARC1; p=reject"],
-  ["quoted", "_dmarc.example.com", '"v=DMARC1; p=reject"'],
-  ["split character-strings", "_dmarc.example.com", '"v=DMARC1;" " p=reject"'],
-  ["absolute owner name", "_dmarc.example.com.", "v=DMARC1; p=reject"],
-  ["uppercase owner name", "_DMARC.EXAMPLE.COM", "v=DMARC1; p=reject"],
+  ["bare", "_dmarc.example.com", `v=DMARC1; p=reject; ${DMARC_RUA}`],
+  ["quoted", "_dmarc.example.com", `"v=DMARC1; p=reject; ${DMARC_RUA}"`],
+  [
+    "split character-strings",
+    "_dmarc.example.com",
+    `"v=DMARC1; p=reject;" " ${DMARC_RUA}"`,
+  ],
+  [
+    "absolute owner name",
+    "_dmarc.example.com.",
+    `v=DMARC1; p=reject; ${DMARC_RUA}`,
+  ],
+  [
+    "uppercase owner name",
+    "_DMARC.EXAMPLE.COM",
+    `v=DMARC1; p=reject; ${DMARC_RUA}`,
+  ],
 ];
 
 for (const [label, name, content] of DMARC_CASES) {

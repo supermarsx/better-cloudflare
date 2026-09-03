@@ -79,7 +79,9 @@ export const FINDING_EXPLANATIONS: Readonly<Record<string, string>> = {
   "dmarc-missing-policy":
     "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it.",
   "dmarc-policy-none":
-    "p=none asks receivers to change nothing and, where the record carries an rua= address, to send you aggregate reports. Those reports are the point of it: they show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain.",
+    "p=none asks receivers to change nothing: mail that fails your checks is delivered exactly as it would be with no DMARC record at all. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain.",
+  "dmarc-no-rua":
+    "An rua= address is where receivers send the daily summaries naming every server that sent mail as your domain and whether it passed. Without one nothing is sent anywhere, so there is no way to find out which of your senders would fail — or, once receivers are enforcing, which of your legitimate mail is being quarantined or thrown away.",
 
   // ── Email: DKIM ───────────────────────────────────────────────────────────
   "dkim-missing":
@@ -1236,7 +1238,10 @@ export function runDomainAudit(
       const dmarc = dmarcTxt[0];
       const tags = parseTagRecord(dmarc);
       const p = (tags.p ?? "").toLowerCase();
+      const hasRua = Boolean((tags.rua ?? "").trim());
       if (!p) {
+        // Receivers ignore a record with no p= at all, so there is nothing to
+        // say about its reporting: the record is not in effect either way.
         items.push({
           id: "dmarc-missing-policy",
           category: "email",
@@ -1244,29 +1249,42 @@ export function runDomainAudit(
           title: "DMARC missing policy (p=)",
           details: "DMARC must include a p= policy tag.",
         });
-      } else if (p === "none" && mxAtApex.length > 0) {
-        // p=none only does anything if reports are actually going somewhere.
-        // A bare `v=DMARC1; p=none;` — the usual thing people paste to "turn
-        // DMARC on" — monitors nothing at all, and the audit has no separate
-        // finding to say so, so this one has to.
-        const hasRua = Boolean((tags.rua ?? "").trim());
-        items.push({
-          id: "dmarc-policy-none",
-          category: "email",
-          severity: "warn",
-          title: "DMARC policy is p=none",
-          details: hasRua
-            ? "Consider moving to quarantine/reject once aligned."
-            : "No rua= address is set, so no aggregate reports are being sent anywhere. Consider moving to quarantine/reject once aligned.",
-        });
       } else {
-        items.push({
-          id: "dmarc-ok",
-          category: "email",
-          severity: "pass",
-          title: "DMARC present",
-          details: `DMARC is configured with p=${p || "?"}.`,
-        });
+        // Reporting is a separate question from policy strength, and it is the
+        // one the audit used to be silent about. A record with no rua= sends
+        // nothing anywhere: under p=none that makes it inert, and under an
+        // enforcing policy it means receivers are acting on mail the domain
+        // cannot see. Both deserve saying once, here, rather than in fragments
+        // attached to the policy findings.
+        if (!hasRua) {
+          items.push({
+            id: "dmarc-no-rua",
+            category: "email",
+            severity: "warn",
+            title: "DMARC has no report address (rua=)",
+            details:
+              p === "none"
+                ? `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent. With p=none receivers are also asked to change nothing, so the record currently has no observable effect.`
+                : `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent. Receivers are acting on mail that fails your checks under p=${p}, and you have no way to see which mail that is.`,
+          });
+        }
+        if (p === "none" && mxAtApex.length > 0) {
+          items.push({
+            id: "dmarc-policy-none",
+            category: "email",
+            severity: "warn",
+            title: "DMARC policy is p=none",
+            details: "Consider moving to quarantine/reject once aligned.",
+          });
+        } else if (hasRua) {
+          items.push({
+            id: "dmarc-ok",
+            category: "email",
+            severity: "pass",
+            title: "DMARC present",
+            details: `DMARC is configured with p=${p} and an aggregate report address.`,
+          });
+        }
       }
     }
 
