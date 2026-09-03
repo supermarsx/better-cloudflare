@@ -10,6 +10,18 @@ Linux, macOS, and Windows on x64 and arm64.
 | macOS    | `.dmg`                                     |
 | Windows  | NSIS `-setup.exe`, `.msi`, portable `.exe` |
 
+Asset names carry the release tag: `better-cloudflare-<tag>-<platform>-<arch>`
+plus the format's extension, as in
+`better-cloudflare-26.11-windows-arm64-setup.exe`. The tag is only reserved
+once every platform has built, so build jobs stage unversioned names into their
+isolated artifact and the publish job renames them while aggregating. The
+mapping between the two lives in one function, and the contract test pins the
+complete thirty-two-name set at a representative tag.
+
+Because the names now vary per release, a fixed
+`/releases/latest/download/<name>` URL no longer resolves. Read the asset list
+from the releases API rather than hard-coding a file name.
+
 The Windows portable `.exe` is the unpackaged binary: it runs without
 installation but, unlike the two installers, cannot install the Microsoft Edge
 WebView2 runtime, which must already be present. The app checks for that

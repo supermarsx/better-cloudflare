@@ -91,7 +91,9 @@ Prebuilt packages for every [release](https://github.com/supermarsx/better-cloud
 | macOS    | `.dmg`                                       |
 | Windows  | `-setup.exe` (NSIS), `.msi`, portable `.exe` |
 
-Each one ships a `.sha256` file and a build-provenance attestation; see [release security](.github/RELEASE_SECURITY.md) for how to verify them.
+Every asset carries its release version in the file name — `better-cloudflare-26.11-linux-x64.AppImage` — so downloads from different releases stay distinguishable once they are on your disk. Each one ships a `.sha256` file and a build-provenance attestation; see [release security](.github/RELEASE_SECURITY.md) for how to verify them.
+
+> Asset names changed in the release after `26.11`. A script that fetched a fixed name from `/releases/latest/download/` needs updating: that path requires the exact file name, which now differs per release. Query the GitHub releases API for the asset list instead of hard-coding a name.
 
 The `.deb`, `.rpm`, and Flatpak builds use the system WebKitGTK rather than carrying their own copy, so they are far smaller than the self-contained AppImage. The `.deb` and `.rpm` declare that requirement (WebKitGTK 4.1, GTK 3, OpenSSL 3), so your package manager pulls it in. The AppImage needs nothing installed.
 

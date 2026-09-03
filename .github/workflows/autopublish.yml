@@ -213,12 +213,27 @@ jobs:
           pattern: native-*
           path: release-artifacts
           merge-multiple: false
+      # Published assets carry the tag in their file name, so the tag has to be
+      # reserved before aggregation renames the staged files. Reservation is
+      # idempotent per commit, and the recovery step below cleans up a tag
+      # reserved for a run that then fails.
+      - name: Atomically reserve the next YY.N tag
+        id: tag
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: node .github/scripts/release-contract.mjs reserve-tag "$RELEASE_SHA"
       - name: Validate isolated platform artifacts
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: >-
           node .github/scripts/release-contract.mjs aggregate
-          release-artifacts release-assets
+          release-artifacts release-assets "$RELEASE_TAG"
       - name: Require every native asset and valid checksums
-        run: node .github/scripts/release-contract.mjs validate release-assets
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: >-
+          node .github/scripts/release-contract.mjs validate
+          release-assets "$RELEASE_TAG"
       - name: Require release commit to remain current main
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
@@ -238,11 +253,6 @@ jobs:
               --source-digest "$RELEASE_SHA" \
               --source-ref "refs/heads/main"
           done
-      - name: Atomically reserve the next YY.N tag
-        id: tag
-        env:
-          RELEASE_SHA: ${{ inputs.commit_sha }}
-        run: node .github/scripts/release-contract.mjs reserve-tag "$RELEASE_SHA"
       - name: Upload a complete draft, verify it, then publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -265,7 +275,8 @@ jobs:
 
           verify_downloaded_release() {
             local directory="$1"
-            node .github/scripts/release-contract.mjs validate "$directory"
+            node .github/scripts/release-contract.mjs validate \
+              "$directory" "$RELEASE_TAG"
             for local_asset in release-assets/*; do
               asset_name="$(basename "$local_asset")"
               cmp -- "$local_asset" "$directory/$asset_name"

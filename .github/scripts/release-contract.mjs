@@ -27,6 +27,14 @@ import { pathToFileURL } from "node:url";
 // `bundle/` tree; `outputs[].fromExecutable` instead publishes the unpackaged
 // binary next to that tree, which is how the Windows portable build ships.
 //
+// `outputs[].asset` is the *base* name. Published release assets carry the
+// resolved YY.N tag as well — `better-cloudflare-26.11-linux-x64.AppImage` —
+// but that tag is only reserved in the publish job, long after the build jobs
+// have staged their files. Build jobs therefore stage base names into their
+// per-pair artifact, and `aggregate` renames to the published name once the
+// tag exists. `versionedAssetName` is the single place that mapping is
+// defined, so staging, aggregation, and validation cannot drift apart.
+//
 // Flatpak is not a Tauri bundler target. The Linux jobs wrap their own `.deb`
 // with `flatpak-builder` and drop the single-file bundle into
 // `bundle/flatpak/` so it stages exactly like a native target.
@@ -166,6 +174,8 @@ const EXPECTED_PAIRS = Object.freeze([
   "windows-x64",
   "windows-arm64",
 ]);
+// Every asset name begins with this; the resolved tag is spliced in after it.
+const RELEASE_ASSET_PREFIX = "better-cloudflare-";
 const MAX_RELEASE_ASSET_BYTES = 1024 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES = 256;
 const MAX_STDIN_BYTES = 64 * 1024;
@@ -394,6 +404,16 @@ export function assertMatrixContract(matrix = RELEASE_MATRIX) {
           `Release matrix output ${output.asset} must set exactly one of suffix or fromExecutable.`,
         );
       }
+      // The published name splices the tag in after this prefix, so an asset
+      // that does not carry it could not be versioned.
+      if (
+        !output.asset.startsWith(RELEASE_ASSET_PREFIX) ||
+        output.asset.length === RELEASE_ASSET_PREFIX.length
+      ) {
+        fail(
+          `Release matrix output ${output.asset} must start with "${RELEASE_ASSET_PREFIX}" and name something after it.`,
+        );
+      }
     }
 
     const suffixes = entry.outputs
@@ -416,10 +436,44 @@ export function assertMatrixContract(matrix = RELEASE_MATRIX) {
   return true;
 }
 
-export function expectedAssetNames(matrix = RELEASE_MATRIX) {
+// The published name is a pure function of the base name and the resolved tag,
+// so the same version produces the same 32 names on every runner and in the
+// contract test.
+export function assertReleaseVersion(version) {
+  // The strict-equality check alone would let `undefined` through, because
+  // parseReleaseTag returns undefined for it too. A missing CLI argument must
+  // fail rather than silently name every asset "undefined".
+  if (
+    typeof version !== "string" ||
+    parseReleaseTag(version)?.tag !== version
+  ) {
+    fail(
+      `Release version must be a bare YY.N tag; received "${String(version)}".`,
+    );
+  }
+  return version;
+}
+
+export function versionedAssetName(asset, version) {
+  assertReleaseVersion(version);
+  if (
+    typeof asset !== "string" ||
+    !asset.startsWith(RELEASE_ASSET_PREFIX) ||
+    asset.length === RELEASE_ASSET_PREFIX.length
+  ) {
+    fail(`Release asset name is not versionable: "${String(asset)}".`);
+  }
+  return `${RELEASE_ASSET_PREFIX}${version}-${asset.slice(RELEASE_ASSET_PREFIX.length)}`;
+}
+
+export function expectedAssetNames(version, matrix = RELEASE_MATRIX) {
   assertMatrixContract(matrix);
+  assertReleaseVersion(version);
   return matrix.flatMap(({ outputs }) =>
-    outputs.flatMap(({ asset }) => [asset, `${asset}.sha256`]),
+    outputs.flatMap(({ asset }) => {
+      const published = versionedAssetName(asset, version);
+      return [published, `${published}.sha256`];
+    }),
   );
 }
 
@@ -946,8 +1000,8 @@ export function stageNativeAsset(
   }));
 }
 
-export function validateAssetNames(names, matrix = RELEASE_MATRIX) {
-  const expected = expectedAssetNames(matrix).sort();
+export function validateAssetNames(names, version, matrix = RELEASE_MATRIX) {
+  const expected = expectedAssetNames(version, matrix).sort();
   const actual = [...names].sort();
 
   if (new Set(actual).size !== actual.length) {
@@ -964,7 +1018,11 @@ export function validateAssetNames(names, matrix = RELEASE_MATRIX) {
   return true;
 }
 
-export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
+export function validateReleaseAssets(
+  directory,
+  version,
+  matrix = RELEASE_MATRIX,
+) {
   const root = resolve(directory);
   return withRealDirectory(root, "Release asset directory", () => {
     const entries = readdirSync(root, { withFileTypes: true });
@@ -973,17 +1031,19 @@ export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
     }
     validateAssetNames(
       entries.map((entry) => entry.name),
+      version,
       matrix,
     );
 
     for (const { outputs } of matrix) {
       for (const { asset } of outputs) {
-        const assetPath = join(root, asset);
+        const published = versionedAssetName(asset, version);
+        const assetPath = join(root, published);
         withReleaseFile(assetPath, { label: "Release asset" }, (file, size) => {
-          const expectedChecksum = `${sha256(file, size, assetPath)}  ${asset}`;
+          const expectedChecksum = `${sha256(file, size, assetPath)}  ${published}`;
           const actualChecksum = readChecksum(`${assetPath}.sha256`);
           if (actualChecksum !== expectedChecksum) {
-            fail(`SHA-256 checksum does not match ${asset}.`);
+            fail(`SHA-256 checksum does not match ${published}.`);
           }
         });
       }
@@ -993,12 +1053,18 @@ export function validateReleaseAssets(directory, matrix = RELEASE_MATRIX) {
   });
 }
 
+// Renames each staged base name to its published, tag-bearing name. The bytes
+// are copied unchanged, so the build-provenance attestation created over the
+// staged file still verifies: `gh attestation verify` binds to the artifact
+// digest, not to its file name.
 export function aggregateNativeArtifacts(
   artifactRoot,
   outputDirectory,
+  version,
   matrix = RELEASE_MATRIX,
 ) {
   assertMatrixContract(matrix);
+  assertReleaseVersion(version);
   const root = resolve(artifactRoot);
   const destination = resolve(outputDirectory);
   withRealDirectory(root, "Native artifact root", () => {
@@ -1067,7 +1133,8 @@ export function aggregateNativeArtifacts(
                     )
                       .toString("utf8")
                       .trimEnd();
-                    const copiedPath = join(stage, asset);
+                    const published = versionedAssetName(asset, version);
+                    const copiedPath = join(stage, published);
                     const copied = copyOpenedFile(
                       file,
                       size,
@@ -1075,6 +1142,8 @@ export function aggregateNativeArtifacts(
                       copiedPath,
                     );
                     track(copied, copiedPath);
+                    // The platform artifact's sidecar still names the staged
+                    // base file; the republished one names the release asset.
                     if (actualChecksum !== `${copied.digest}  ${asset}`) {
                       fail(
                         `SHA-256 checksum does not match ${asset} in its platform artifact.`,
@@ -1084,7 +1153,7 @@ export function aggregateNativeArtifacts(
                     track(
                       writeOpenedFile(
                         stagedChecksum,
-                        `${copied.digest}  ${asset}\n`,
+                        `${copied.digest}  ${published}\n`,
                       ),
                       stagedChecksum,
                     );
@@ -1433,9 +1502,9 @@ function usage() {
     "  release-contract.mjs verify-runner <platform> <arch>",
     "  release-contract.mjs verify-executable <path> <platform> <arch>",
     "  release-contract.mjs stage <bundle-root> <platform> <arch> <output-dir> [executable]",
-    "  release-contract.mjs aggregate <artifact-root> <output-dir>",
-    "  release-contract.mjs validate <asset-dir>",
-    "  release-contract.mjs validate-names",
+    "  release-contract.mjs aggregate <artifact-root> <output-dir> <tag>",
+    "  release-contract.mjs validate <asset-dir> <tag>",
+    "  release-contract.mjs validate-names <tag>",
     "  release-contract.mjs assert-main <commit-sha>",
     "  release-contract.mjs verify-tag <tag> <commit-sha>",
     "  release-contract.mjs validate-release-json <tag> <commit-sha> <draft|published>",
@@ -1484,20 +1553,20 @@ function main() {
       break;
     }
     case "aggregate":
-      aggregateNativeArtifacts(arguments_[0], arguments_[1]);
+      aggregateNativeArtifacts(arguments_[0], arguments_[1], arguments_[2]);
       console.log(
-        `All ${RELEASE_MATRIX.length} isolated platform artifacts were validated and aggregated.`,
+        `All ${RELEASE_MATRIX.length} isolated platform artifacts were validated and aggregated as ${arguments_[2]} assets.`,
       );
       break;
     case "validate":
-      validateReleaseAssets(arguments_[0]);
+      validateReleaseAssets(arguments_[0], arguments_[1]);
       console.log(
-        `All ${expectedAssetNames().length / 2} native assets and checksums are present and valid.`,
+        `All ${expectedAssetNames(arguments_[1]).length / 2} native ${arguments_[1]} assets and checksums are present and valid.`,
       );
       break;
     case "validate-names": {
       const names = readStdinBounded().split(/\r?\n/).filter(Boolean);
-      validateAssetNames(names);
+      validateAssetNames(names, arguments_[0]);
       console.log("Published release asset names match the contract.");
       break;
     }

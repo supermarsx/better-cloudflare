@@ -32,7 +32,13 @@ import {
   validateReleaseAssets,
   verifyExecutableArchitecture,
   verifyRunnerArchitecture,
+  versionedAssetName,
 } from "./release-contract.mjs";
+
+// A representative resolved tag. Published names are a pure function of the
+// tag, so pinning the full 32-name set at one version is exactly as strict as
+// the fixed list this contract used before names carried a version.
+const RELEASE_VERSION = "26.11";
 
 const RELEASE_CONTRACT_SCRIPT = fileURLToPath(
   new URL("./release-contract.mjs", import.meta.url),
@@ -128,17 +134,24 @@ function withPatchedFs(name, replacement, operation) {
   }
 }
 
-function writeReleaseAssets(root) {
+// A published release directory: every name carries the resolved tag.
+function writeReleaseAssets(root, version = RELEASE_VERSION) {
   for (const { outputs } of RELEASE_MATRIX) {
     for (const { asset } of outputs) {
+      const published = versionedAssetName(asset, version);
       const contents = `native-${asset}`;
       const hash = createHash("sha256").update(contents).digest("hex");
-      writeFileSync(join(root, asset), contents);
-      writeFileSync(join(root, `${asset}.sha256`), `${hash}  ${asset}\n`);
+      writeFileSync(join(root, published), contents);
+      writeFileSync(
+        join(root, `${published}.sha256`),
+        `${hash}  ${published}\n`,
+      );
     }
   }
 }
 
+// A per-pair build artifact, exactly as `stage` leaves it: base names, with no
+// version, because the tag does not exist yet when the build jobs run.
 function writeIsolatedArtifacts(root) {
   for (const { platform, arch, outputs } of RELEASE_MATRIX) {
     const directory = join(root, `native-${platform}-${arch}`);
@@ -265,7 +278,110 @@ test("release asset names are deterministic", () => {
     ],
   );
   // 16 assets, each with a .sha256 sidecar.
-  assert.equal(expectedAssetNames().length, 32);
+  assert.equal(expectedAssetNames(RELEASE_VERSION).length, 32);
+});
+
+test("published asset names carry the resolved release tag", () => {
+  // Pinned in full at a representative tag: a dropped asset, an extra one, a
+  // reordering, or a misplaced version all fail here.
+  assert.deepEqual(expectedAssetNames("26.11"), [
+    "better-cloudflare-26.11-linux-x64.AppImage",
+    "better-cloudflare-26.11-linux-x64.AppImage.sha256",
+    "better-cloudflare-26.11-linux-x64.deb",
+    "better-cloudflare-26.11-linux-x64.deb.sha256",
+    "better-cloudflare-26.11-linux-x64.rpm",
+    "better-cloudflare-26.11-linux-x64.rpm.sha256",
+    "better-cloudflare-26.11-linux-x64.flatpak",
+    "better-cloudflare-26.11-linux-x64.flatpak.sha256",
+    "better-cloudflare-26.11-linux-arm64.AppImage",
+    "better-cloudflare-26.11-linux-arm64.AppImage.sha256",
+    "better-cloudflare-26.11-linux-arm64.deb",
+    "better-cloudflare-26.11-linux-arm64.deb.sha256",
+    "better-cloudflare-26.11-linux-arm64.rpm",
+    "better-cloudflare-26.11-linux-arm64.rpm.sha256",
+    "better-cloudflare-26.11-linux-arm64.flatpak",
+    "better-cloudflare-26.11-linux-arm64.flatpak.sha256",
+    "better-cloudflare-26.11-macos-x64.dmg",
+    "better-cloudflare-26.11-macos-x64.dmg.sha256",
+    "better-cloudflare-26.11-macos-arm64.dmg",
+    "better-cloudflare-26.11-macos-arm64.dmg.sha256",
+    "better-cloudflare-26.11-windows-x64-setup.exe",
+    "better-cloudflare-26.11-windows-x64-setup.exe.sha256",
+    "better-cloudflare-26.11-windows-x64.msi",
+    "better-cloudflare-26.11-windows-x64.msi.sha256",
+    "better-cloudflare-26.11-windows-x64-portable.exe",
+    "better-cloudflare-26.11-windows-x64-portable.exe.sha256",
+    "better-cloudflare-26.11-windows-arm64-setup.exe",
+    "better-cloudflare-26.11-windows-arm64-setup.exe.sha256",
+    "better-cloudflare-26.11-windows-arm64.msi",
+    "better-cloudflare-26.11-windows-arm64.msi.sha256",
+    "better-cloudflare-26.11-windows-arm64-portable.exe",
+    "better-cloudflare-26.11-windows-arm64-portable.exe.sha256",
+  ]);
+
+  // A different tag moves every name and nothing else, so the set stays the
+  // same size and no base name survives unversioned.
+  const other = expectedAssetNames("09.1234");
+  assert.equal(other.length, 32);
+  assert.equal(new Set(other).size, 32);
+  for (const name of other) {
+    assert.ok(
+      name.startsWith("better-cloudflare-09.1234-"),
+      `${name} does not carry its release tag`,
+    );
+  }
+  assert.equal(
+    other.filter((name) => name.endsWith(".sha256")).length,
+    16,
+    "every published asset must keep exactly one checksum sidecar",
+  );
+
+  // Every base name in the matrix must appear, versioned, exactly once. This
+  // is what keeps a new bundle target from being published unversioned.
+  for (const { outputs } of RELEASE_MATRIX) {
+    for (const { asset } of outputs) {
+      const published = versionedAssetName(asset, "26.11");
+      assert.ok(
+        expectedAssetNames("26.11").includes(published),
+        `${asset} is not published as ${published}`,
+      );
+      assert.equal(published.includes("26.11"), true);
+    }
+  }
+});
+
+test("asset naming rejects a version that is not a bare YY.N tag", () => {
+  for (const version of [
+    undefined,
+    "",
+    "26",
+    "2026.1",
+    "26.01",
+    "v26.1",
+    "refs/tags/26.1",
+    "26.1.2",
+    "../26.1",
+    "26.1/../etc",
+    "26.1\n26.2",
+    "26.1 ",
+    "２６.1",
+    "26.-1",
+    "26.1e1",
+  ]) {
+    assert.throws(
+      () => expectedAssetNames(version),
+      /bare YY\.N tag/,
+      `version ${JSON.stringify(version)} must be rejected`,
+    );
+    assert.throws(
+      () => versionedAssetName("better-cloudflare-linux-x64.deb", version),
+      /bare YY\.N tag/,
+    );
+  }
+  // A name the version cannot be spliced into is rejected rather than mangled.
+  for (const asset of ["", "better-cloudflare-", "cloudflare-linux-x64.deb"]) {
+    assert.throws(() => versionedAssetName(asset, "26.11"), /not versionable/);
+  }
 });
 
 test("every platform builds the bundle targets its assets are staged from", () => {
@@ -916,11 +1032,23 @@ test("aggregate validation fails on missing assets and verifies all checksums", 
   try {
     writeReleaseAssets(root);
 
-    assert.equal(validateReleaseAssets(root), true);
-    assert.equal(validateAssetNames(expectedAssetNames()), true);
+    assert.equal(validateReleaseAssets(root, RELEASE_VERSION), true);
+    assert.equal(
+      validateAssetNames(expectedAssetNames(RELEASE_VERSION), RELEASE_VERSION),
+      true,
+    );
 
-    rmSync(join(root, "better-cloudflare-windows-arm64-setup.exe.sha256"));
-    assert.throws(() => validateReleaseAssets(root), /Missing:/);
+    // A directory of correctly named assets for a different tag is a wrong
+    // set, not a near miss.
+    assert.throws(() => validateReleaseAssets(root, "26.12"), /Missing:/);
+
+    rmSync(
+      join(root, "better-cloudflare-26.11-windows-arm64-setup.exe.sha256"),
+    );
+    assert.throws(
+      () => validateReleaseAssets(root, RELEASE_VERSION),
+      /Missing:/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -934,7 +1062,7 @@ test("release validation rejects a symlinked checksum", () => {
     writeReleaseAssets(assets);
     const checksum = join(
       assets,
-      "better-cloudflare-linux-x64.AppImage.sha256",
+      "better-cloudflare-26.11-linux-x64.AppImage.sha256",
     );
     rmSync(checksum);
     if (process.platform === "win32") {
@@ -948,7 +1076,7 @@ test("release validation rejects a symlinked checksum", () => {
       symlinkSync(outside, checksum, "file");
     }
     assert.throws(
-      () => validateReleaseAssets(assets),
+      () => validateReleaseAssets(assets, RELEASE_VERSION),
       /must contain files only/,
     );
   } finally {
@@ -961,11 +1089,11 @@ test("correct release names with changed bytes are rejected", () => {
   try {
     writeReleaseAssets(root);
     writeFileSync(
-      join(root, "better-cloudflare-linux-x64.AppImage"),
+      join(root, "better-cloudflare-26.11-linux-x64.AppImage"),
       "substituted-binary",
     );
     assert.throws(
-      () => validateReleaseAssets(root),
+      () => validateReleaseAssets(root, RELEASE_VERSION),
       /SHA-256 checksum does not match/,
     );
   } finally {
@@ -979,7 +1107,30 @@ test("platform artifacts remain isolated and cross-platform injection is rejecte
     const artifacts = join(root, "artifacts");
     const output = join(root, "output");
     writeIsolatedArtifacts(artifacts);
-    assert.equal(aggregateNativeArtifacts(artifacts, output), true);
+    assert.equal(
+      aggregateNativeArtifacts(artifacts, output, RELEASE_VERSION),
+      true,
+    );
+
+    // Aggregation is where unversioned staged names become published ones, so
+    // its output must be exactly the release contract for this tag, with each
+    // sidecar naming the renamed file rather than the file it was copied from.
+    assert.deepEqual(
+      readdirSync(output).sort(),
+      [...expectedAssetNames(RELEASE_VERSION)].sort(),
+    );
+    assert.equal(validateReleaseAssets(output, RELEASE_VERSION), true);
+    for (const { outputs } of RELEASE_MATRIX) {
+      for (const { asset } of outputs) {
+        const published = versionedAssetName(asset, RELEASE_VERSION);
+        const contents = `native-${asset}`;
+        assert.equal(readFileSync(join(output, published), "utf8"), contents);
+        assert.equal(
+          readFileSync(join(output, `${published}.sha256`), "utf8"),
+          `${createHash("sha256").update(contents).digest("hex")}  ${published}\n`,
+        );
+      }
+    }
 
     const injected = join(root, "injected");
     const rejectedOutput = join(root, "rejected-output");
@@ -993,7 +1144,28 @@ test("platform artifacts remain isolated and cross-platform injection is rejecte
       "cross-platform-injection",
     );
     assert.throws(
-      () => aggregateNativeArtifacts(injected, rejectedOutput),
+      () => aggregateNativeArtifacts(injected, rejectedOutput, RELEASE_VERSION),
+      /must contain only/,
+    );
+    // Platform artifacts are produced before any tag exists, so aggregation
+    // must keep reading base names rather than versioned ones. Renaming one
+    // input to its published name is therefore a contract violation, not a
+    // shortcut that quietly works.
+    const versionedInput = join(root, "versioned-input");
+    const versionedOutput = join(root, "versioned-output");
+    writeIsolatedArtifacts(versionedInput);
+    const macos = join(versionedInput, "native-macos-x64");
+    renameSync(
+      join(macos, "better-cloudflare-macos-x64.dmg"),
+      join(macos, "better-cloudflare-26.11-macos-x64.dmg"),
+    );
+    assert.throws(
+      () =>
+        aggregateNativeArtifacts(
+          versionedInput,
+          versionedOutput,
+          RELEASE_VERSION,
+        ),
       /must contain only/,
     );
   } finally {
@@ -1376,7 +1548,7 @@ test("publication is globally serialized and never merges or clobbers assets", (
   );
   assert.match(
     AUTOPUBLISH_WORKFLOW,
-    /release-contract\.mjs aggregate\s+release-artifacts release-assets/,
+    /release-contract\.mjs aggregate\s+release-artifacts release-assets "\$RELEASE_TAG"/,
   );
   for (const requirement of [
     '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml"',
@@ -1390,6 +1562,60 @@ test("publication is globally serialized and never merges or clobbers assets", (
       `Every provenance verification must enforce ${requirement}`,
     );
   }
+});
+
+test("the tag is reserved before any step that needs a versioned asset name", () => {
+  const reserve = workflowStep("Atomically reserve the next YY.N tag");
+  assert.match(reserve, /id: tag/);
+  assert.match(reserve, /release-contract\.mjs reserve-tag "\$RELEASE_SHA"/);
+
+  // Aggregation renames staged files to their published names, so a tag that
+  // is reserved after it would leave the release unversioned.
+  const reserveAt = AUTOPUBLISH_WORKFLOW.indexOf(reserve);
+  for (const step of [
+    "Validate isolated platform artifacts",
+    "Require every native asset and valid checksums",
+    "Upload a complete draft, verify it, then publish",
+  ]) {
+    assert.ok(
+      reserveAt < AUTOPUBLISH_WORKFLOW.indexOf(workflowStep(step)),
+      `"${step}" must run after the tag is reserved`,
+    );
+  }
+  assert.equal(
+    AUTOPUBLISH_WORKFLOW.match(/release-contract\.mjs reserve-tag/g)?.length,
+    1,
+    "the tag must be reserved exactly once",
+  );
+
+  // Every gate that builds or checks asset names must be told which tag.
+  for (const step of [
+    "Validate isolated platform artifacts",
+    "Require every native asset and valid checksums",
+  ]) {
+    const body = workflowStep(step);
+    assert.match(body, /RELEASE_TAG: \$\{\{ steps\.tag\.outputs\.tag \}\}/);
+    assert.match(body, /"\$RELEASE_TAG"/);
+  }
+  assert.match(
+    workflowStep("Upload a complete draft, verify it, then publish"),
+    /release-contract\.mjs validate \\\n\s+"\$directory" "\$RELEASE_TAG"/,
+  );
+  // A bare `validate <dir>` would silently fall back to no contract at all.
+  assert.doesNotMatch(
+    AUTOPUBLISH_WORKFLOW,
+    /release-contract\.mjs validate release-assets$/m,
+  );
+
+  // Cleanup still covers a tag reserved for a run that then fails.
+  const recovery = workflowStep(
+    "Recover a failed draft and newly reserved tag",
+  );
+  assert.match(
+    recovery,
+    /if: \$\{\{ failure\(\) && steps\.tag\.outputs\.tag != '' \}\}/,
+  );
+  assert.match(recovery, /release-contract\.mjs cleanup-tag/);
 });
 
 test("CI and release toolchains are exact rather than mutable channels", () => {
