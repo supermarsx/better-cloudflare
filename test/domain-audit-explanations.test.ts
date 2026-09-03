@@ -146,7 +146,7 @@ test("p=none with an rua is not told its reports are missing", () => {
   );
   assert.match(
     detailsOf(withRua, "dmarc-policy-none"),
-    /Consider moving to quarantine\/reject/,
+    /Only quarantine and reject ask receivers to act/,
   );
 });
 

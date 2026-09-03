@@ -9,10 +9,18 @@
  * as the SPF false negative these files ship alongside.
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { runDomainAudit } from "../src/lib/audit/domain-audit";
 import type { DNSRecord } from "../src/types/dns";
+
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 const ZONE = "example.com";
 
@@ -84,11 +92,19 @@ for (const policy of ["reject", "quarantine"]) {
 
 // ── Monitoring without reporting ────────────────────────────────────────────
 
-test("p=none with no rua says the record has no observable effect", () => {
-  const details = detailsOf("v=DMARC1; p=none;", "dmarc-no-rua");
+test("p=none with no rua reports the two halves without repeating either", () => {
+  // Between them the findings say the record sends nothing and changes
+  // nothing. Neither says both: dmarc-policy-none now fires for every p=none
+  // domain, so restating the policy inside the reporting finding would put
+  // the same clause in two adjacent findings.
+  const reporting = detailsOf("v=DMARC1; p=none;", "dmarc-no-rua");
+  const policy = detailsOf("v=DMARC1; p=none;", "dmarc-policy-none");
 
-  assert.match(details, /no aggregate reports are being sent/);
-  assert.match(details, /no observable effect/);
+  assert.match(reporting, /no aggregate reports are being sent/);
+  assert.doesNotMatch(reporting, /p=none/);
+
+  assert.match(policy, /Only quarantine and reject ask receivers to act/);
+  assert.match(policy, /delivered just as it would be if it had passed/);
 });
 
 test("p=none with no rua and no MX is still reported", () => {
@@ -151,6 +167,36 @@ test("an enforcing policy on a domain with no MX still passes", () => {
   assert.equal(severityOf(dmarc, "dmarc-ok", false), "pass");
 });
 
+// ── Register ────────────────────────────────────────────────────────────────
+
+test("no finding's details opens with a bare instruction", () => {
+  // A finding states what is true and what follows; the severity carries the
+  // weight and the explanation carries the consequence. An opening imperative
+  // is the shape that drifts back in — `dmarc-policy-none` read "Consider
+  // moving to quarantine/reject once aligned." while its own explanation was
+  // already framed as consequence. The explanation table has had this rule
+  // since it was written; this extends it to the line above.
+  const source = fs.readFileSync(
+    path.join(REPO_ROOT, "src/lib/audit/domain-audit.ts"),
+    "utf8",
+  );
+  const body = source.slice(source.indexOf("export function runDomainAudit"));
+  const literals = [
+    ...body.matchAll(/"([^"\\\n]{8,})"/g),
+    ...body.matchAll(/`([^`\\]{8,})`/g),
+  ].map((m) => m[1]);
+
+  const imperative =
+    /^(Consider|Ensure|Renew|Keep|Combine|Publish|Use|Add|Remove|Set|Verify|Check|Prefer|Move)\b/;
+  const offenders = literals.filter((text) => imperative.test(text.trim()));
+
+  assert.deepEqual(
+    offenders,
+    [],
+    "a finding's details should state the consequence, not issue an instruction",
+  );
+});
+
 // ── The reporting statement lives in exactly one finding ────────────────────
 
 test("the p=none policy finding no longer talks about reports", () => {
@@ -160,7 +206,7 @@ test("the p=none policy finding no longer talks about reports", () => {
 
   assert.doesNotMatch(details, /rua/);
   assert.doesNotMatch(details, /report/i);
-  assert.match(details, /Consider moving to quarantine\/reject once aligned/);
+  assert.match(details, /Only quarantine and reject ask receivers to act/);
 });
 
 test("a record missing p= is reported for the policy, not the reporting", () => {

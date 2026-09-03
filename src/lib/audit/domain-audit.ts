@@ -79,7 +79,7 @@ export const FINDING_EXPLANATIONS: Readonly<Record<string, string>> = {
   "dmarc-missing-policy":
     "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it.",
   "dmarc-policy-none":
-    "p=none asks receivers to change nothing: mail that fails your checks is delivered exactly as it would be with no DMARC record at all. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain.",
+    "p=none asks receivers to change nothing: mail that fails your checks is delivered just as it would be if it had passed. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain.",
   "dmarc-no-rua":
     "An rua= address is where receivers send the daily summaries naming every server that sent mail as your domain and whether it passed. Without one nothing is sent anywhere, so there is no way to find out which of your senders would fail — or, once receivers are enforcing, which of your legitimate mail is being quarantined or thrown away.",
 
@@ -1262,9 +1262,13 @@ export function runDomainAudit(
             category: "email",
             severity: "warn",
             title: "DMARC has no report address (rua=)",
+            // Reporting consequence only. What p=none does to delivery is
+            // dmarc-policy-none's job, and that finding now fires for every
+            // p=none domain, so repeating it here would say the same thing
+            // twice in adjacent findings.
             details:
               p === "none"
-                ? `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent. With p=none receivers are also asked to change nothing, so the record currently has no observable effect.`
+                ? `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent.`
                 : `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent. Receivers are acting on mail that fails your checks under p=${p}, and you have no way to see which mail that is.`,
           });
         }
@@ -1278,7 +1282,11 @@ export function runDomainAudit(
             category: "email",
             severity: "warn",
             title: "DMARC policy is p=none",
-            details: "Consider moving to quarantine/reject once aligned.",
+            // Consequence, not instruction: name the two policies that would
+            // change what receivers do, and let the reader decide. The
+            // severity already carries the weight.
+            details:
+              "Only quarantine and reject ask receivers to act on mail that fails your checks.",
           });
         } else if (hasRua) {
           items.push({

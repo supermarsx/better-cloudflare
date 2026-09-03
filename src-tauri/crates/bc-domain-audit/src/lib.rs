@@ -569,7 +569,7 @@ const FINDING_EXPLANATIONS: &[(&str, &str)] = &[
     ("dmarc-missing", "A DMARC record tells receiving servers what to do with mail that fails your SPF and DKIM checks, and asks them to send you reports on who is sending as your domain. Without one, receivers decide for themselves and most will still deliver the mail, and you get no reports, so you cannot see whether anyone is sending as you."),
     ("dmarc-multiple", "A domain may publish only one DMARC record. Receivers that find several ignore the policy entirely, so the effect is the same as publishing none."),
     ("dmarc-missing-policy", "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it."),
-    ("dmarc-policy-none", "p=none asks receivers to change nothing: mail that fails your checks is delivered exactly as it would be with no DMARC record at all. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain."),
+    ("dmarc-policy-none", "p=none asks receivers to change nothing: mail that fails your checks is delivered just as it would be if it had passed. It is a reasonable place to start while you confirm your own senders pass, but on its own it does not stop anyone sending as your domain."),
     ("dmarc-no-rua", "An rua= address is where receivers send the daily summaries naming every server that sent mail as your domain and whether it passed. Without one nothing is sent anywhere, so there is no way to find out which of your senders would fail — or, once receivers are enforcing, which of your legitimate mail is being quarantined or thrown away."),
     ("dkim-missing", "DKIM adds a signature to outgoing mail that receivers verify against a public key published in your DNS, showing the message really came from your mail system and was not altered on the way. Without it your mail rests on SPF alone, which breaks when a message is forwarded. Selectors are chosen by the mail provider, so this may instead mean yours publishes them somewhere this zone cannot see."),
     ("mx-single", "MX records name the servers that accept mail for your domain, in priority order. With only one, delivery depends entirely on that host being reachable; senders retry for a while, so mail queues rather than arriving. Many providers cover this behind a single name that resolves to several hosts."),
@@ -1623,9 +1623,13 @@ fn audit_email(
                     AuditCategory::Email,
                     AuditSeverity::Warn,
                     "DMARC has no report address (rua=)",
+                    // Reporting consequence only. What p=none does to
+                    // delivery is dmarc-policy-none's job, and that finding now
+                    // fires for every p=none domain, so repeating it here would
+                    // say the same thing twice in adjacent findings.
                     if p == "none" {
                         format!(
-                            "No rua= address is set at {}, so no aggregate reports are being sent. With p=none receivers are also asked to change nothing, so the record currently has no observable effect.",
+                            "No rua= address is set at {}, so no aggregate reports are being sent.",
                             dmarc_name
                         )
                     } else {
@@ -1647,7 +1651,10 @@ fn audit_email(
                     AuditCategory::Email,
                     AuditSeverity::Warn,
                     "DMARC policy is p=none",
-                    "Consider moving to quarantine/reject once aligned.",
+                    // Consequence, not instruction: name the two policies
+                    // that would change what receivers do, and let the reader
+                    // decide. The severity already carries the weight.
+                    "Only quarantine and reject ask receivers to act on mail that fails your checks.",
                 ));
             } else if has_rua {
                 items.push(item(
@@ -2170,7 +2177,7 @@ mod tests {
         assert!(!items.iter().any(|item| item.id == "dmarc-no-rua"));
         assert!(finding(&items, "dmarc-policy-none")
             .details
-            .contains("Consider moving to quarantine/reject once aligned"));
+            .contains("Only quarantine and reject ask receivers to act"));
     }
 
     // ── DMARC reporting visibility ──────────────────────────────────────────
@@ -2227,11 +2234,11 @@ mod tests {
     }
 
     #[test]
-    fn monitoring_without_a_report_address_says_it_does_nothing_observable() {
+    fn monitoring_without_a_report_address_reports_only_the_reporting_half() {
         let details = details_of("v=DMARC1; p=none;", "dmarc-no-rua", true);
 
         assert!(details.contains("no aggregate reports are being sent"));
-        assert!(details.contains("no observable effect"));
+        assert!(!details.contains("p=none"));
     }
 
     #[test]
@@ -2282,7 +2289,7 @@ mod tests {
 
         assert!(!details.contains("rua"));
         assert!(!details.to_lowercase().contains("report"));
-        assert!(details.contains("Consider moving to quarantine/reject once aligned"));
+        assert!(details.contains("Only quarantine and reject ask receivers to act"));
     }
 
     #[test]
