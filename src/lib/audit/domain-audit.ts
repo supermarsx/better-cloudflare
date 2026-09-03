@@ -1268,7 +1268,11 @@ export function runDomainAudit(
                 : `No rua= address is set at ${dmarcName}, so no aggregate reports are being sent. Receivers are acting on mail that fails your checks under p=${p}, and you have no way to see which mail that is.`,
           });
         }
-        if (p === "none" && mxAtApex.length > 0) {
+        // Not gated on an apex MX. DMARC governs what receivers do with mail
+        // *claiming* to be from the domain; whether the domain *accepts* mail
+        // is a separate question. Parked and web-only domains are attractive
+        // spoofing targets precisely because nobody is watching them.
+        if (p === "none") {
           items.push({
             id: "dmarc-policy-none",
             category: "email",

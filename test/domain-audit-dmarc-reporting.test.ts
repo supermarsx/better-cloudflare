@@ -124,6 +124,33 @@ test("a quoted DMARC record is read the same way", () => {
   assert.equal(severityOf(dmarc, "dmarc-no-rua"), "warn");
 });
 
+// ── Policy findings are not gated on receiving mail ─────────────────────────
+
+test("p=none is reported on a domain with no MX", () => {
+  // DMARC governs what receivers do with mail *claiming* to be from the
+  // domain. Whether the domain *accepts* mail is a separate question, and
+  // parked or web-only domains are attractive spoofing targets precisely
+  // because nobody is watching them.
+  const dmarc = "v=DMARC1; p=none; rua=mailto:dmarc@example.com";
+
+  assert.equal(severityOf(dmarc, "dmarc-policy-none", false), "warn");
+  assert.equal(severityOf(dmarc, "dmarc-ok", false), undefined);
+});
+
+test("p=none is still reported on a domain that does receive mail", () => {
+  const dmarc = "v=DMARC1; p=none; rua=mailto:dmarc@example.com";
+
+  assert.equal(severityOf(dmarc, "dmarc-policy-none", true), "warn");
+});
+
+test("an enforcing policy on a domain with no MX still passes", () => {
+  // Removing the MX gate must not turn every no-MX domain into a finding.
+  const dmarc = "v=DMARC1; p=reject; rua=mailto:dmarc@example.com";
+
+  assert.equal(severityOf(dmarc, "dmarc-policy-none", false), undefined);
+  assert.equal(severityOf(dmarc, "dmarc-ok", false), "pass");
+});
+
 // ── The reporting statement lives in exactly one finding ────────────────────
 
 test("the p=none policy finding no longer talks about reports", () => {

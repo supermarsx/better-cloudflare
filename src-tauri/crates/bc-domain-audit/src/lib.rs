@@ -1636,7 +1636,12 @@ fn audit_email(
                     },
                 ));
             }
-            if p == "none" && !mx_at_apex.is_empty() {
+            // Not gated on an apex MX. DMARC governs what receivers do with
+            // mail *claiming* to be from the domain; whether the domain
+            // *accepts* mail is a separate question. Parked and web-only
+            // domains are attractive spoofing targets precisely because nobody
+            // is watching them.
+            if p == "none" {
                 items.push(item(
                     "dmarc-policy-none",
                     AuditCategory::Email,
@@ -2287,5 +2292,36 @@ mod tests {
             Some(AuditSeverity::Fail)
         );
         assert_eq!(severity_of("v=DMARC1;", "dmarc-no-rua", true), None);
+    }
+
+    #[test]
+    fn policy_findings_are_not_gated_on_receiving_mail() {
+        // DMARC governs what receivers do with mail *claiming* to be from the
+        // domain. Whether the domain *accepts* mail is a separate question,
+        // and parked or web-only domains are attractive spoofing targets
+        // precisely because nobody is watching them.
+        let dmarc = "v=DMARC1; p=none; rua=mailto:dmarc@example.com";
+
+        assert_eq!(
+            severity_of(dmarc, "dmarc-policy-none", false),
+            Some(AuditSeverity::Warn)
+        );
+        assert_eq!(severity_of(dmarc, "dmarc-ok", false), None);
+        assert_eq!(
+            severity_of(dmarc, "dmarc-policy-none", true),
+            Some(AuditSeverity::Warn)
+        );
+    }
+
+    #[test]
+    fn an_enforcing_policy_without_an_apex_mx_still_passes() {
+        // Removing the MX gate must not turn every no-MX domain into a finding.
+        let dmarc = "v=DMARC1; p=reject; rua=mailto:dmarc@example.com";
+
+        assert_eq!(severity_of(dmarc, "dmarc-policy-none", false), None);
+        assert_eq!(
+            severity_of(dmarc, "dmarc-ok", false),
+            Some(AuditSeverity::Pass)
+        );
     }
 }
