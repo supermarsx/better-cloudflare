@@ -77,9 +77,9 @@ export const FINDING_EXPLANATIONS: Readonly<Record<string, string>> = {
   "dmarc-multiple":
     "A domain may publish only one DMARC record. Receivers that find several ignore the policy entirely, so the effect is the same as publishing none.",
   "dmarc-missing-policy":
-    "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers disregard the record — including any reporting addresses set alongside it.",
+    "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it.",
   "dmarc-policy-none":
-    "p=none asks receivers to change nothing and only send you reports. That is the right place to start, because the reports show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain.",
+    "p=none asks receivers to change nothing and, where the record carries an rua= address, to send you aggregate reports. Those reports are the point of it: they show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain.",
 
   // ── Email: DKIM ───────────────────────────────────────────────────────────
   "dkim-missing":
@@ -1245,13 +1245,19 @@ export function runDomainAudit(
           details: "DMARC must include a p= policy tag.",
         });
       } else if (p === "none" && mxAtApex.length > 0) {
+        // p=none only does anything if reports are actually going somewhere.
+        // A bare `v=DMARC1; p=none;` — the usual thing people paste to "turn
+        // DMARC on" — monitors nothing at all, and the audit has no separate
+        // finding to say so, so this one has to.
+        const hasRua = Boolean((tags.rua ?? "").trim());
         items.push({
           id: "dmarc-policy-none",
           category: "email",
           severity: "warn",
           title: "DMARC policy is p=none",
-          details:
-            "p=none is monitoring-only. Consider moving to quarantine/reject once aligned.",
+          details: hasRua
+            ? "Consider moving to quarantine/reject once aligned."
+            : "No rua= address is set, so no aggregate reports are being sent anywhere. Consider moving to quarantine/reject once aligned.",
         });
       } else {
         items.push({

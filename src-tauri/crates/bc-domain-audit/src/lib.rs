@@ -568,8 +568,8 @@ const FINDING_EXPLANATIONS: &[(&str, &str)] = &[
     ("spf-type-deprecated", "The dedicated SPF record type was retired by RFC 7208 in 2014. Receivers look for SPF policies in TXT records and most never query the SPF type at all, so a policy published only under this type is effectively invisible."),
     ("dmarc-missing", "A DMARC record tells receiving servers what to do with mail that fails your SPF and DKIM checks, and asks them to send you reports on who is sending as your domain. Without one, receivers decide for themselves and most will still deliver the mail, and you get no reports, so you cannot see whether anyone is sending as you."),
     ("dmarc-multiple", "A domain may publish only one DMARC record. Receivers that find several ignore the policy entirely, so the effect is the same as publishing none."),
-    ("dmarc-missing-policy", "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers disregard the record — including any reporting addresses set alongside it."),
-    ("dmarc-policy-none", "p=none asks receivers to change nothing and only send you reports. That is the right place to start, because the reports show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain."),
+    ("dmarc-missing-policy", "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers ignore the record — including any reporting addresses set alongside it."),
+    ("dmarc-policy-none", "p=none asks receivers to change nothing and, where the record carries an rua= address, to send you aggregate reports. Those reports are the point of it: they show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain."),
     ("dkim-missing", "DKIM adds a signature to outgoing mail that receivers verify against a public key published in your DNS, showing the message really came from your mail system and was not altered on the way. Without it your mail rests on SPF alone, which breaks when a message is forwarded. Selectors are chosen by the mail provider, so this may instead mean yours publishes them somewhere this zone cannot see."),
     ("mx-single", "MX records name the servers that accept mail for your domain, in priority order. With only one, delivery depends entirely on that host being reachable; senders retry for a while, so mail queues rather than arriving. Many providers cover this behind a single name that resolves to several hosts."),
     ("mx-too-many", "MX records name the servers that accept mail for your domain. An unusually long list often means old entries were never removed, and a retired host still listed collects delivery attempts until senders give up on it."),
@@ -1606,12 +1606,21 @@ fn audit_email(
                 "DMARC must include a p= policy tag.",
             ));
         } else if p == "none" && !mx_at_apex.is_empty() {
+            // p=none only does anything if reports are actually going
+            // somewhere. A bare `v=DMARC1; p=none;` — the usual thing people
+            // paste to "turn DMARC on" — monitors nothing at all, and the
+            // audit has no separate finding to say so, so this one has to.
+            let has_rua = tags.get("rua").map(|v| !v.trim().is_empty()) == Some(true);
             items.push(item(
                 "dmarc-policy-none",
                 AuditCategory::Email,
                 AuditSeverity::Warn,
                 "DMARC policy is p=none",
-                "p=none is monitoring-only. Consider moving to quarantine/reject once aligned.",
+                if has_rua {
+                    "Consider moving to quarantine/reject once aligned."
+                } else {
+                    "No rua= address is set, so no aggregate reports are being sent anywhere. Consider moving to quarantine/reject once aligned."
+                },
             ));
         } else {
             items.push(item(
@@ -2088,5 +2097,38 @@ mod tests {
         }
         assert!(!seen.contains("special-a"));
         assert!(!seen.contains("special-aaaa"));
+    }
+
+    #[test]
+    fn p_none_without_rua_says_no_reports_are_being_sent() {
+        // The common paste-to-turn-DMARC-on record. There is no separate
+        // missing-rua finding, so if this one implies reports are flowing,
+        // nothing corrects it.
+        let records = vec![
+            mx("mail.example.com", 10),
+            record("TXT", "_dmarc.example.com", "v=DMARC1; p=none;"),
+        ];
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        let details = &finding(&items, "dmarc-policy-none").details;
+        assert!(details.contains("no aggregate reports are being sent anywhere"));
+        assert!(!details.contains("and only send you reports"));
+    }
+
+    #[test]
+    fn p_none_with_rua_does_not_claim_reports_are_missing() {
+        let records = vec![
+            mx("mail.example.com", 10),
+            record(
+                "TXT",
+                "_dmarc.example.com",
+                "v=DMARC1; p=none; rua=mailto:dmarc@example.com",
+            ),
+        ];
+        let items = run_domain_audit(ZONE, &records, &options(true, false, false));
+
+        let details = &finding(&items, "dmarc-policy-none").details;
+        assert!(!details.contains("no aggregate reports"));
+        assert!(details.contains("Consider moving to quarantine/reject"));
     }
 }

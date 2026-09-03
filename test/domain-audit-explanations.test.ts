@@ -113,6 +113,51 @@ test("explanations state the consequence rather than issuing instructions", () =
   }
 });
 
+// ── p=none without a report address ─────────────────────────────────────────
+
+test("p=none with no rua says plainly that no reports are being sent", () => {
+  // The common paste-to-turn-DMARC-on record. The audit has no separate
+  // missing-rua finding, so if this one implies reports are flowing, nothing
+  // corrects it — and this is exactly the domain that believes it is
+  // monitoring and is not.
+  const details = detailsOf(
+    [
+      mx("mail.example.com", 10),
+      record("TXT", "_dmarc.example.com", "v=DMARC1; p=none;"),
+    ],
+    "dmarc-policy-none",
+  );
+
+  assert.match(details, /no aggregate reports are being sent anywhere/);
+  assert.doesNotMatch(details, /and only send you reports/);
+});
+
+test("p=none with an rua does not claim reports are missing", () => {
+  const details = detailsOf(
+    [
+      mx("mail.example.com", 10),
+      record(
+        "TXT",
+        "_dmarc.example.com",
+        "v=DMARC1; p=none; rua=mailto:dmarc@example.com",
+      ),
+    ],
+    "dmarc-policy-none",
+  );
+
+  assert.doesNotMatch(details, /no aggregate reports/);
+  assert.match(details, /Consider moving to quarantine\/reject/);
+});
+
+test("the p=none explanation never asserts reports are flowing", () => {
+  // It is appended to both the rua and no-rua cases, so it has to stay true
+  // when there is no report address at all.
+  const explanation = FINDING_EXPLANATIONS["dmarc-policy-none"];
+
+  assert.match(explanation, /where the record carries an rua= address/);
+  assert.doesNotMatch(explanation, /and only send you reports/);
+});
+
 // ── Application rules ───────────────────────────────────────────────────────
 
 test("a passing finding carries no explanation", () => {
