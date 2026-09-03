@@ -1,5 +1,5 @@
 import type { ChangeEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { unquoteCharacterString } from "@/lib/dns/character-string";
 import { KNOWN_TLDS } from "@/lib/dns/tlds";
+import { cn } from "@/lib/utils";
 
 import {
   BuilderFieldLabel,
@@ -59,6 +60,151 @@ export type DmarcFields = {
   fo: string;
   rf: string;
   ri: number | undefined;
+};
+
+/**
+ * The tags a preset decides. Deliberately only the *policy* tags: report
+ * addresses and reporting preferences describe the operator's own
+ * infrastructure, so a preset must never overwrite or invent them.
+ */
+export type DmarcPresetValues = Pick<
+  DmarcFields,
+  "policy" | "subdomainPolicy" | "adkim" | "aspf" | "pct"
+>;
+
+export type DmarcPreset = {
+  id: string;
+  /** Names the posture, not a ranking: the list is ordered, not scored. */
+  name: string;
+  /** How much legitimate mail this can cost if the domain is not ready. */
+  risk: string;
+  severity: "high" | "medium" | "low" | "none";
+  values: DmarcPresetValues;
+  /** What this actually does to mail, in plain terms. */
+  consequence: string;
+  /** The situation in which this is the right choice. */
+  suitedFor: string;
+};
+
+/**
+ * Policy presets, ordered strictest first.
+ *
+ * The order is a spectrum of enforcement, **not** a quality ranking: the first
+ * entry destroys the most legitimate mail on a domain whose senders are not yet
+ * aligned, and the last is the only safe place to start from scratch. Every
+ * entry therefore carries its own consequence text, shown at the point of
+ * choice rather than left to documentation.
+ *
+ * `subdomainPolicy` is set explicitly on every preset (to `""` where the intent
+ * is "inherit p=") so that choosing a preset can never leave a stale `sp=none`
+ * behind quietly exempting every subdomain from the policy just picked.
+ */
+export const DMARC_PRESETS: readonly DmarcPreset[] = [
+  {
+    id: "strict",
+    name: "Strict enforcement",
+    risk: "Highest risk",
+    severity: "high",
+    values: {
+      policy: "reject",
+      subdomainPolicy: "reject",
+      adkim: "s",
+      aspf: "s",
+      pct: 100,
+    },
+    consequence:
+      "Receiving servers throw away every message that fails your checks, including legitimate mail you have not yet authorised — it bounces rather than landing in spam. Strict alignment additionally fails any sender that signs with its own domain instead of yours, which most bulk-mail, ticketing and helpdesk services do.",
+    suitedFor:
+      "A domain where months of aggregate reports have come back clean and every sender is known to be aligned exactly.",
+  },
+  {
+    id: "enforce",
+    name: "Enforce",
+    risk: "High risk",
+    severity: "high",
+    values: {
+      policy: "reject",
+      subdomainPolicy: "",
+      adkim: "r",
+      aspf: "r",
+      pct: 100,
+    },
+    consequence:
+      "Receiving servers throw away every message that fails your checks. Relaxed alignment forgives senders using a subdomain of yours, so it breaks far fewer services than strict — but unauthorised legitimate mail is still destroyed rather than quarantined.",
+    suitedFor:
+      "A domain whose senders all pass at the organizational-domain level, after a spell at quarantine with no surprises in the reports.",
+  },
+  {
+    id: "quarantine",
+    name: "Quarantine",
+    risk: "Medium risk",
+    severity: "medium",
+    values: {
+      policy: "quarantine",
+      subdomainPolicy: "",
+      adkim: "r",
+      aspf: "r",
+      pct: 100,
+    },
+    consequence:
+      "Failing mail is delivered to the spam or junk folder instead of being thrown away. Mistakes stay recoverable, because a recipient can still go and find the message, which is what makes this the usual first step into enforcement.",
+    suitedFor:
+      "A domain whose reports look clean and which is ready to act on failures without losing mail outright.",
+  },
+  {
+    id: "rollout",
+    name: "Partial rollout",
+    risk: "Lower risk",
+    severity: "low",
+    values: {
+      policy: "quarantine",
+      subdomainPolicy: "",
+      adkim: "r",
+      aspf: "r",
+      pct: 25,
+    },
+    consequence:
+      "Roughly a quarter of failing messages are quarantined and the rest are delivered as normal, so you see what enforcement does to a sample of your mail before it applies to all of it. Receivers decide which messages fall in the sample.",
+    suitedFor:
+      "A first cautious step past monitoring, or a large domain rolling enforcement out gradually.",
+  },
+  {
+    id: "monitor",
+    name: "Monitor only",
+    risk: "No delivery risk",
+    severity: "none",
+    values: {
+      policy: "none",
+      subdomainPolicy: "",
+      adkim: "r",
+      aspf: "r",
+      pct: undefined,
+    },
+    consequence:
+      "Nothing at all changes about how your mail is delivered. Receivers simply send you reports on who is sending as your domain and what passes, which is the information every stricter option depends on. Without an rua= address below it does nothing whatsoever.",
+    suitedFor:
+      "The correct starting point for any domain that has never published a DMARC record.",
+  },
+];
+
+/**
+ * The policy tags a preset writes, in the order {@link buildDMARC} emits them,
+ * for display on the preset itself. Kept in step with `buildDMARC` by test.
+ */
+export function dmarcPresetTagLine(values: DmarcPresetValues) {
+  const parts = [`p=${values.policy}`];
+  if (values.subdomainPolicy) parts.push(`sp=${values.subdomainPolicy}`);
+  parts.push(`adkim=${values.adkim}`, `aspf=${values.aspf}`);
+  if (values.pct !== undefined) parts.push(`pct=${values.pct}`);
+  return parts.join("; ");
+}
+
+const PRESET_SEVERITY_CLASS: Record<DmarcPreset["severity"], string> = {
+  high: "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400",
+  medium:
+    "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  low: "border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+  none: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
 };
 
 /** Human phrase for the delivery action a DMARC policy asks receivers to take. */
@@ -470,7 +616,7 @@ export function parseDMARC(value: string | undefined) {
   return { policy, subdomainPolicy, adkim, aspf, pct, rua, ruf, fo, rf, ri };
 }
 
-function buildDMARC(fields: {
+export function buildDMARC(fields: {
   policy: "none" | "quarantine" | "reject";
   rua: string;
   ruf: string;
@@ -530,6 +676,22 @@ export function DmarcBuilder({
     "ri",
     "rf",
   ] as const);
+
+  /**
+   * Apply a preset's policy tags to the form.
+   *
+   * Only the policy tags move: report addresses and reporting preferences are
+   * the operator's own and are left exactly as they were. Every policy tag is
+   * assigned unconditionally, including `subdomainPolicy`, so a preset can
+   * never inherit a stale value from the posture it replaced.
+   */
+  const applyPreset = useCallback((values: DmarcPresetValues) => {
+    setPolicy(values.policy);
+    setSubdomainPolicy(values.subdomainPolicy);
+    setAdkim(values.adkim);
+    setAspf(values.aspf);
+    setPct(values.pct);
+  }, []);
 
   useEffect(() => {
     if (record.type !== "TXT") return;
@@ -663,7 +825,7 @@ export function DmarcBuilder({
             controlId={fieldIds.policy}
             descriptionId={helpIds.policy}
             label="p= (policy)"
-            help="Controls handling for messages that fail DMARC: monitor, quarantine, or reject."
+            help="What receivers do with mail claiming to be from your domain that fails your checks. none changes nothing and only gathers reports; quarantine diverts failures to spam; reject makes receivers throw them away. Set reject before your real senders are authorised and legitimate mail is destroyed, not delayed."
           />
           <Select
             value={policy}
@@ -691,7 +853,7 @@ export function DmarcBuilder({
             controlId={fieldIds.rua}
             descriptionId={helpIds.rua}
             label="rua= (aggregate reports)"
-            help="Comma-separated mailto: destinations for aggregate reports; external domains may require authorization."
+            help="Where receivers send the daily summaries of who is sending as your domain and whether it passed. Leave it empty and you are publishing a policy blind, with no way to know whether tightening it is safe. An address on another domain only receives reports if that domain publishes a record authorising yours."
           />
           <Input
             id={fieldIds.rua}
@@ -709,7 +871,7 @@ export function DmarcBuilder({
             controlId={fieldIds.ruf}
             descriptionId={helpIds.ruf}
             label="ruf= (forensic reports)"
-            help="Optional destinations for detailed failure reports; support is limited and reports may contain sensitive data."
+            help="Where receivers send reports about individual failed messages instead of a daily summary. These can include message content and recipient addresses, so treat the mailbox as sensitive; most large receivers never send them. Safe to leave empty."
           />
           <Input
             id={fieldIds.ruf}
@@ -727,7 +889,7 @@ export function DmarcBuilder({
             controlId={fieldIds.adkim}
             descriptionId={helpIds.adkim}
             label="adkim="
-            help="Relaxed aligns organizational domains; strict requires the exact DKIM signing domain."
+            help="How closely the DKIM signing domain must match the From: address. Relaxed accepts any subdomain of yours, so mail signed by mail.example.com passes for example.com. Strict demands an exact match and will fail senders that sign with their own domain, as most bulk-mail providers do."
           />
           <Select
             value={adkim}
@@ -754,7 +916,7 @@ export function DmarcBuilder({
             controlId={fieldIds.aspf}
             descriptionId={helpIds.aspf}
             label="aspf="
-            help="Relaxed aligns organizational domains; strict requires the exact SPF-authenticated domain."
+            help="How closely the SPF-checked envelope domain must match the From: address. Relaxed accepts any subdomain of yours; strict demands an exact match, which commonly fails because services send with their own bounce domain in the envelope."
           />
           <Select
             value={aspf}
@@ -781,7 +943,7 @@ export function DmarcBuilder({
             controlId={fieldIds.pct}
             descriptionId={helpIds.pct}
             label="pct="
-            help="Percentage of failing messages subject to quarantine or reject, from 0 to 100; the default is 100."
+            help="The share of failing messages the quarantine or reject policy is actually applied to, so you can roll enforcement out gradually. The rest get the next weaker treatment: under reject they are quarantined, under quarantine they are delivered. It does nothing when the policy is none. Empty means the default, 100."
           />
           <Input
             id={fieldIds.pct}
@@ -805,7 +967,7 @@ export function DmarcBuilder({
             controlId={fieldIds.subdomainPolicy}
             descriptionId={helpIds.subdomainPolicy}
             label="sp= (subdomain policy)"
-            help="Policy for subdomains. Omit it to inherit p=, or choose a separate enforcement policy."
+            help="A separate policy for mail from your subdomains. Omit it and they inherit p=, which is usually what you want. Setting it to none exempts every subdomain, so anyone who can send as one bypasses your policy completely."
           />
           <Select
             value={subdomainPolicy || "__omit__"}
@@ -835,7 +997,7 @@ export function DmarcBuilder({
             controlId={fieldIds.fo}
             descriptionId={helpIds.fo}
             label="fo= (optional)"
-            help="Failure-report options are 0, 1, d, or s; combine them with colons and use them with ruf=."
+            help="Which failures earn a per-message report: 0 when everything fails, 1 when any check fails to pass aligned, d for a broken DKIM signature, s for an SPF failure. Combine with colons, as in 1:d. It has no effect unless ruf= is also set."
           />
           <Input
             id={fieldIds.fo}
@@ -853,7 +1015,7 @@ export function DmarcBuilder({
             controlId={fieldIds.ri}
             descriptionId={helpIds.ri}
             label="ri= (optional)"
-            help="Requested aggregate-report interval in seconds; 86400 is typical and receivers may choose another interval."
+            help="How often you would like aggregate reports, in seconds; 86400 is one day and is what nearly everyone uses. Receivers treat it as a request rather than a rule and commonly report daily whatever you ask for."
           />
           <Input
             id={fieldIds.ri}
@@ -876,7 +1038,7 @@ export function DmarcBuilder({
             controlId={fieldIds.rf}
             descriptionId={helpIds.rf}
             label="rf= (optional)"
-            help="Failure-report format. AFRF is the common default; IODEF support varies by receiver."
+            help="The file format for the per-message failure reports that ruf= asks for. AFRF is the near-universal default and IODEF is rarely supported, so leave it omitted unless a report processor asks for something specific."
           />
           <Select
             value={rf.trim().toLowerCase() || "__omit__"}
@@ -948,22 +1110,62 @@ export function DmarcBuilder({
 
       <div className="mt-3 rounded-lg border border-border/60 bg-background/15 p-3">
         <div className="text-xs font-semibold text-muted-foreground">
-          Recommendations
+          Policy presets
         </div>
-        <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-muted-foreground">
-          <li>
-            Start with <code>p=none</code> while monitoring reports, then move
-            to <code>quarantine</code>/<code>reject</code>.
-          </li>
-          <li>
-            Add <code>rua=mailto:</code> so you actually receive aggregate
-            reports.
-          </li>
-          <li>
-            Use strict alignment (<code>adkim=s</code>, <code>aspf=s</code>)
-            only when you’re sure all senders are aligned.
-          </li>
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          Ordered strictest first. Strictest is not best: <code>p=reject</code>{" "}
+          on a domain whose real senders are not yet aligned silently destroys
+          legitimate mail rather than delaying it. Work down this list, and move
+          up it only once your aggregate reports come back clean.
+        </p>
+        {!rua.trim() ? (
+          <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-foreground/85">
+            No <code>rua=</code> address is set yet. Every preset below is
+            guesswork without one: aggregate reports are the only way to learn
+            which of your senders would fail before you enforce anything.
+          </p>
+        ) : null}
+        <ul className="mt-2 space-y-2">
+          {DMARC_PRESETS.map((preset) => (
+            <li key={preset.id}>
+              <button
+                type="button"
+                onClick={() => applyPreset(preset.values)}
+                className="glass-surface w-full rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-xs font-semibold">{preset.name}</span>
+                  <span
+                    className={cn(
+                      "rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
+                      PRESET_SEVERITY_CLASS[preset.severity],
+                    )}
+                  >
+                    {preset.risk}
+                  </span>
+                </span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
+                  {preset.consequence}
+                </span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
+                  <span className="font-semibold">Use when:</span>{" "}
+                  {preset.suitedFor}
+                </span>
+                <code className="mt-1 block break-all text-[11px] text-foreground/80">
+                  {dmarcPresetTagLine(preset.values)}
+                </code>
+              </button>
+            </li>
+          ))}
         </ul>
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          A preset is a starting point, not a mode: it fills in the policy tags
+          above and every field stays editable afterwards. Your report addresses
+          and any <code>fo=</code>, <code>rf=</code> or <code>ri=</code>{" "}
+          settings are left untouched. Choose{" "}
+          <span className="font-semibold">Build DMARC TXT</span> to write the
+          result into the record.
+        </p>
       </div>
 
       {(diagnostics.nameIssues.length > 0 || diagnostics.issues.length > 0) && (
