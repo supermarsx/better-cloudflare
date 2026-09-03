@@ -265,6 +265,18 @@ test("wide regions own a horizontal scroller instead of being clipped by the she
   assert.match(segmentGroup, /overflow-x:\s*auto/);
   assert.match(segmentGroup, /white-space:\s*nowrap/);
 
+  // A one-row strip must pin its block axis. Left at the default `visible`,
+  // CSS computes it to `auto` because the inline axis scrolls, and the row's
+  // fractional height then rounds into a phantom pixel of vertical overflow -
+  // enough for Chromium to paint a full vertical scrollbar over the tabs.
+  assert.match(segmentGroup, /overflow-y:\s*hidden/);
+  // ...and with no vertical scrollbar to reserve for, `.scrollbar-themed`'s
+  // stable gutter would only steal inline space from the tabs.
+  assert.match(
+    segmentGroup,
+    /\.ui-segment-group\.scrollbar-themed\s*\{[^}]*scrollbar-gutter:\s*auto/s,
+  );
+
   const table = css.slice(
     css.indexOf("  .ui-table {"),
     css.indexOf("  .ui-table-head {"),

@@ -822,7 +822,28 @@
     border-radius: 0.9rem;
     max-width: 100%;
     overflow-x: auto;
+    /* A single row must never scroll vertically. `overflow-y` is left at
+       `visible` by default, but CSS computes that to `auto` as soon as the
+       other axis scrolls, which quietly turned this strip into a vertical
+       scroller too. Its height is fractional (`.ui-segment` pads by 0.4rem, so
+       the row lands on 34.78px), and Chromium rounds `clientHeight` down while
+       rounding `scrollHeight` up - a permanent 1px of phantom vertical
+       overflow, enough to paint a full vertical scrollbar and, because
+       `.scrollbar-themed` asks for `scrollbar-gutter: stable`, to reserve its
+       gutter at every window width. Pinning the axis costs nothing: every
+       segment already fits inside the padding box, so nothing is clipped, and
+       horizontal overflow keeps its own scrollbar. */
+    overflow-y: hidden;
     white-space: nowrap;
+  }
+
+  /* Every strip that carries this class also carries `.scrollbar-themed`, whose
+     `scrollbar-gutter: stable` reserves inline space for a vertical scrollbar.
+     There is no vertical scrollbar here any more, so the reservation only stole
+     ~10px from the tabs at every window width. `.scrollbar-themed` is declared
+     further down this file, so undoing it takes the class pair. */
+  .ui-segment-group.scrollbar-themed {
+    scrollbar-gutter: auto;
   }
 
   .ui-segment {
