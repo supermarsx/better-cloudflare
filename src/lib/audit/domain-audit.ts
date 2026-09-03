@@ -24,6 +24,139 @@ export type DomainAuditOptions = {
   domainExpiresAt?: string | null;
 };
 
+/**
+ * What each flagged record actually does, and what follows from its absence or
+ * misconfiguration — appended to the finding's `details`.
+ *
+ * Written for a domain owner who knows DNS but not email authentication. The
+ * register is deliberately flat: state the consequence and let the severity the
+ * audit already assigns carry the weight. A missing SPF record does not mean
+ * mail *will* be spoofed, it means nothing prevents it and receivers have less
+ * to go on — overstating that in a tool the user is trusting to describe their
+ * own zone is worse than saying nothing.
+ *
+ * Keyed by finding id and applied only to non-`pass` findings, so an id whose
+ * `pass` variant reuses the same key (`caa-analysis`, `dkim-missing`,
+ * `cname-conflicts`, `spf-type-deprecated`, …) stays silent when it passes.
+ *
+ * `special-a` / `special-aaaa` are deliberately absent: they report a record
+ * that exists with a bad address rather than an absence, and the UI renders
+ * `SpecialIpAuditFindings` in place of `details` for them, so text added here
+ * would never be shown.
+ *
+ * **This table is the source of truth and is mirrored verbatim into
+ * `bc-domain-audit`'s `FINDING_EXPLANATIONS`.** The two must not drift:
+ * `test/domain-audit-explanations.test.ts` reads the Rust source and fails if
+ * either side gains, loses or reworks an entry the other does not.
+ */
+export const FINDING_EXPLANATIONS: Readonly<Record<string, string>> = {
+  // ── Email: SPF ────────────────────────────────────────────────────────────
+  "spf-missing":
+    "An SPF record lists the servers allowed to send mail using your domain. " +
+    "Without one, receiving servers have nothing to check a sender against, so mail claiming to come from your domain is harder for them to tell apart from mail that genuinely does, and your own mail has one less signal working in its favour.",
+  "spf-multiple":
+    "A domain may publish only one SPF record. When receivers find more than one they are required to treat the result as a permanent error, so none of your SPF rules apply at all — the effect is the same as publishing no SPF record.",
+  "spf-all-missing":
+    "The all mechanism at the end of an SPF record says what receivers should do about servers the record did not list. Without it they treat unlisted senders as neutral, so the record documents your own senders without asking receivers to act on anyone else.",
+  "spf-too-permissive":
+    "+all tells receivers that any server on the internet is authorised to send as your domain. That is broader than publishing no SPF record at all, because it actively vouches for senders you do not control.",
+  "spf-neutral":
+    "?all asks receivers to treat unlisted senders as neither authorised nor unauthorised, which is the answer they would reach with no SPF record at all. Listed servers still pass; nothing is asked about anyone else.",
+  "spf-softfail":
+    "~all asks receivers to accept mail from unlisted servers but mark it as suspect. It is the usual setting while you are still learning which of your senders would fail. -all asks receivers to reject them outright, once you are confident the list is complete.",
+  "spf-ptr":
+    "The ptr mechanism asks receivers to look up the sending server's address in reverse and check the name it returns. RFC 7208 discourages it: the lookups are slow, the answers are controlled by whoever owns the address block, and some receivers skip the mechanism entirely.",
+  "spf-lookups-estimate":
+    "Each include, a, mx, ptr, exists and redirect term makes receivers perform another DNS lookup, and SPF allows ten in total. Past that limit receivers stop evaluating and return a permanent error, at which point the record authorises nothing — including the senders listed before the limit was reached.",
+  "spf-type-deprecated":
+    "The dedicated SPF record type was retired by RFC 7208 in 2014. Receivers look for SPF policies in TXT records and most never query the SPF type at all, so a policy published only under this type is effectively invisible.",
+
+  // ── Email: DMARC ──────────────────────────────────────────────────────────
+  "dmarc-missing":
+    "A DMARC record tells receiving servers what to do with mail that fails your SPF and DKIM checks, and asks them to send you reports on who is sending as your domain. Without one, receivers decide for themselves and most will still deliver the mail, and you get no reports, so you cannot see whether anyone is sending as you.",
+  "dmarc-multiple":
+    "A domain may publish only one DMARC record. Receivers that find several ignore the policy entirely, so the effect is the same as publishing none.",
+  "dmarc-missing-policy":
+    "The p= tag is what tells receivers how to treat mail that fails your checks. A DMARC record without it is incomplete, and receivers disregard the record — including any reporting addresses set alongside it.",
+  "dmarc-policy-none":
+    "p=none asks receivers to change nothing and only send you reports. That is the right place to start, because the reports show which of your senders would fail before enforcement can destroy their mail. On its own it does not stop anyone sending as your domain.",
+
+  // ── Email: DKIM ───────────────────────────────────────────────────────────
+  "dkim-missing":
+    "DKIM adds a signature to outgoing mail that receivers verify against a public key published in your DNS, showing the message really came from your mail system and was not altered on the way. Without it your mail rests on SPF alone, which breaks when a message is forwarded. Selectors are chosen by the mail provider, so this may instead mean yours publishes them somewhere this zone cannot see.",
+
+  // ── Email: MX ─────────────────────────────────────────────────────────────
+  "mx-single":
+    "MX records name the servers that accept mail for your domain, in priority order. With only one, delivery depends entirely on that host being reachable; senders retry for a while, so mail queues rather than arriving. Many providers cover this behind a single name that resolves to several hosts.",
+  "mx-too-many":
+    "MX records name the servers that accept mail for your domain. An unusually long list often means old entries were never removed, and a retired host still listed collects delivery attempts until senders give up on it.",
+  "mx-cname-target":
+    "An MX record must point at a hostname that has its own A or AAAA record. Pointing it at an alias is not permitted by the DNS specification, and some receiving servers decline to deliver rather than follow it.",
+  "mx-duplicate-priority":
+    "The priority number decides which mail server senders try first, and equal numbers leave them free to choose between those hosts. That is how round-robin delivery is set up deliberately; if it was not intended, mail will not favour the server you expect.",
+  "mx-no-resolution":
+    "Senders reach a mail server by resolving its hostname to an address. These targets have no A or AAAA record in this zone, which is fine if they resolve elsewhere, but if nothing answers for them anywhere then mail has nowhere to go.",
+
+  // ── Security: CAA ─────────────────────────────────────────────────────────
+  "caa-analysis":
+    "CAA records name the certificate authorities allowed to issue certificates for your domain. Where no CAA record applies, any public authority may issue for the name, subject only to its own validation checks. CAA does not affect certificates that have already been issued.",
+
+  // ── Hygiene: delegation and zone structure ────────────────────────────────
+  "ns-missing":
+    "NS records delegate the zone to the name servers that answer for it. Cloudflare serves these itself and does not always list them among the editable records, so their absence here usually reflects that rather than a delegation problem — what actually decides delegation is the set of name servers recorded at your registrar.",
+  "ns-single":
+    "NS records tell the rest of the internet which servers answer for your domain. With one listed, every lookup depends on that server; if it stops answering, the domain stops resolving altogether rather than slowing down. Two or more give resolvers somewhere to fall back to.",
+  "soa-missing":
+    "The SOA record carries the zone's administrative parameters: the primary name server, the contact address, and the timers other servers use when refreshing or caching it. Cloudflare generates and serves this automatically, so it is normal for it not to appear among the editable records.",
+  "soa-multiple":
+    "A zone has exactly one SOA record by definition. More than one means resolvers may read different administrative parameters depending on which they get, and some will treat the zone as malformed.",
+  "soa-review":
+    "The SOA timers govern how long other servers wait before refreshing the zone, how long they keep serving it when the primary is unreachable, and how long a negative answer stays cached. Values well outside the usual ranges mainly affect how quickly your changes propagate and how long a stale copy survives an outage.",
+  "apex-single-ip":
+    "The A records at the apex are what the bare domain resolves to. With a single address, reachability rests entirely on that host and resolvers have nothing to fall back to if it stops answering. One address is normal when a proxy or load balancer sits in front of it.",
+  "apex-single-ipv6":
+    "The AAAA records at the apex are what the bare domain resolves to over IPv6. With a single address, IPv6 reachability rests entirely on that host. One address is normal when a proxy or load balancer sits in front of it.",
+
+  // ── Hygiene: TTL ──────────────────────────────────────────────────────────
+  "ttl-critical":
+    "The TTL is how long resolvers may cache an answer before asking again. Under 30 seconds they ask constantly, which puts steady load on the authoritative servers and leaves almost no cached copy to serve if those servers briefly stop answering. Very short TTLs earn their keep in the hours around a planned change, less so as a standing setting.",
+  "ttl-hygiene":
+    "The TTL is how long resolvers may cache an answer before asking again. Longer values mean fewer lookups and a zone that rides out brief outages; shorter ones make changes take effect sooner. The values listed here are only unusual relative to the rest of this zone, which is often deliberate.",
+
+  // ── Hygiene: CNAME ────────────────────────────────────────────────────────
+  "cname-conflicts":
+    "A CNAME makes a name an alias for another name, and RFC 1034 requires that no other data exist at that name. Where it does, servers and resolvers disagree about which answer to return, so what a client gets back depends on which server it happens to ask.",
+  "cname-at-apex":
+    "A CNAME at the apex is not permitted by the DNS specification, because the apex has to carry SOA and NS records too. Cloudflare works around this by answering with the target's addresses directly, so it behaves correctly here; the constraint returns if the zone moves to a provider that does not do the same.",
+  "cname-chains-fail":
+    "Each CNAME in a chain costs a resolver another lookup before it reaches an address, and a cycle never reaches one at all. Resolvers abandon chains they judge too long, so the name fails to resolve rather than resolving slowly.",
+  "cname-chains-warn":
+    "Each CNAME hop is another lookup a resolver makes before it reaches an address. That adds delay to every request that is not already cached, and one more link that can break the chain.",
+
+  // ── Hygiene: TXT and SRV ──────────────────────────────────────────────────
+  "txt-sprawl":
+    "All TXT records at a name are returned together, and each service picks out the one it recognises by its prefix. Several at one name is not an error in itself, but it makes it easy to leave behind verification strings for services you no longer use.",
+  "srv-review":
+    "An SRV record tells clients which host and port serve a particular service, along with the priority and weight used to choose between several. Where the fields are malformed, clients that cannot read the record fall back to whatever default they have, or do not find the service at all.",
+
+  // ── Hygiene: registration ─────────────────────────────────────────────────
+  "domain-expiry":
+    "Domain registration is separate from the DNS hosting configured here. If the registration lapses, the registry stops delegating the domain and it stops resolving regardless of the records in this zone. Registrars differ in how long they hold an expired name before it is released.",
+};
+
+/**
+ * Append the explanation for a finding, if one applies.
+ *
+ * Only non-`pass` findings are explained: a passing check has nothing whose
+ * absence needs describing.
+ */
+function explainFinding(item: DomainAuditItem): DomainAuditItem {
+  if (item.severity === "pass") return item;
+  const explanation = FINDING_EXPLANATIONS[item.id];
+  if (!explanation) return item;
+  return { ...item, details: `${item.details}\n\n${explanation}` };
+}
+
 function parseDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const ms = Date.parse(value);
@@ -1154,5 +1287,5 @@ export function runDomainAudit(
     }
   }
 
-  return items;
+  return items.map(explainFinding);
 }
