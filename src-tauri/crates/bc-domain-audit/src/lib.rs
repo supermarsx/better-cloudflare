@@ -367,6 +367,27 @@ fn parse_mx_record(record: &DNSRecord, zone_name: &str) -> (Option<u16>, Option<
     }
 }
 
+/// Whether a ten-digit SOA serial reads as a plausible `YYYYMMDDnn` date.
+///
+/// Serials shorter or longer than ten digits are not read as dates at all, so
+/// they are plausible by default — `SOA serial should be numeric` already
+/// covers a serial that is not a number.
+///
+/// Mirrors the TypeScript test
+/// `/^20\d{2}(0[1-9]|1[0-2])([0-2]\d|3[01])\d{2}$/`, whose day alternation
+/// spans `00`–`31`.
+fn serial_date_is_plausible(serial: &str) -> bool {
+    if serial.len() != 10 || !serial.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    if !serial.starts_with("20") {
+        return false;
+    }
+    let month: u32 = serial[4..6].parse().unwrap_or(0);
+    let day: u32 = serial[6..8].parse().unwrap_or(99);
+    (1..=12).contains(&month) && day <= 31
+}
+
 fn item(
     id: &str,
     cat: AuditCategory,
@@ -1072,6 +1093,20 @@ fn audit_hygiene(
             if serial.len() < 6 || !serial.chars().all(|c| c.is_ascii_digit()) {
                 issues.push("SOA serial should be numeric (often YYYYMMDDnn).".to_string());
             }
+            if !serial_date_is_plausible(serial) {
+                issues.push(
+                    "SOA serial looks like YYYYMMDDnn but the date part is unusual.".to_string(),
+                );
+            }
+            // The range checks below read each timer as a `u32`, so a field that
+            // is not a number at all disappears into `None` and skips every one
+            // of them. Report it instead of falling silent.
+            if [parts[3], parts[4], parts[5], parts[6]]
+                .iter()
+                .any(|field| !field.parse::<f64>().is_ok_and(|n| n.is_finite()))
+            {
+                issues.push("SOA timers must be numeric.".to_string());
+            }
             if let Some(r) = refresh {
                 if r < 3600 {
                     issues.push(
@@ -1185,10 +1220,28 @@ fn audit_hygiene(
             }
             let parsed = parse_srv(&r.content);
             if parsed.priority.is_none() || parsed.weight.is_none() || parsed.port.is_none() {
-                issues.push(format!(
-                    "SRV {}: content should be \"priority weight port target\".",
-                    name
-                ));
+                // `parse_srv` yields `Option<u16>`, so a port outside the u16
+                // range is indistinguishable from a missing one. TypeScript's
+                // `Number()` has no such ceiling and names the port, so recover
+                // that case from the raw field rather than blaming the layout.
+                //
+                // Only when the record has all four fields: with fewer than
+                // four the layout really is the problem, and `parse_srv` hands
+                // back the whole content as the target rather than splitting it.
+                let mut fields = r.content.split_whitespace();
+                let port_field = fields.nth(2);
+                let has_target = fields.next().is_some();
+                if has_target
+                    && parsed.port.is_none()
+                    && port_field.is_some_and(|field| field.parse::<i64>().is_ok())
+                {
+                    issues.push(format!("SRV {}: port out of range.", name));
+                } else {
+                    issues.push(format!(
+                        "SRV {}: content should be \"priority weight port target\".",
+                        name
+                    ));
+                }
                 continue;
             }
             let tgt = parsed.target.trim();
@@ -2330,5 +2383,138 @@ mod tests {
             severity_of(dmarc, "dmarc-ok", false),
             Some(AuditSeverity::Pass)
         );
+    }
+
+    // ── Checks TypeScript had and this crate did not ────────────────────────
+    //
+    // Found by `test/domain-audit-parity.test.ts`, which pins every `details`
+    // literal in this file against `src/lib/audit/domain-audit.ts`. Each of the
+    // three strings below existed only in TypeScript, so this crate could never
+    // report the condition at all.
+
+    fn hygiene_details(records: Vec<DNSRecord>, id: &str) -> String {
+        let items = run_domain_audit(ZONE, &records, &options(false, false, true));
+        finding(&items, id).details.clone()
+    }
+
+    #[test]
+    fn a_ten_digit_soa_serial_with_an_impossible_date_is_reported() {
+        // 2024130101 is ten digits, so it reads as YYYYMMDDnn, but there is no
+        // thirteenth month. TypeScript reported this; this crate did not.
+        let details = hygiene_details(
+            vec![record(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024130101 7200 700 604800 3600",
+            )],
+            "soa-review",
+        );
+
+        assert!(
+            details.contains("SOA serial looks like YYYYMMDDnn but the date part is unusual."),
+            "got: {details}"
+        );
+    }
+
+    #[test]
+    fn a_plausible_ten_digit_soa_serial_is_not_reported() {
+        let details = hygiene_details(
+            vec![record(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024013101 7200 700 604800 3600",
+            )],
+            "soa-review",
+        );
+
+        assert!(
+            !details.contains("the date part is unusual"),
+            "got: {details}"
+        );
+    }
+
+    #[test]
+    fn non_numeric_soa_timers_are_reported() {
+        // `parse().ok()` turned an unparseable timer into `None`, and every
+        // timer check is guarded by `if let Some(..)`, so a non-numeric timer
+        // silently skipped every check instead of being reported.
+        let details = hygiene_details(
+            vec![record(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024010101 abc 700 604800 3600",
+            )],
+            "soa-review",
+        );
+
+        assert!(
+            details.contains("SOA timers must be numeric."),
+            "got: {details}"
+        );
+    }
+
+    #[test]
+    fn numeric_soa_timers_are_not_reported_as_non_numeric() {
+        let details = hygiene_details(
+            vec![record(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024010101 7200 700 604800 3600",
+            )],
+            "soa-review",
+        );
+
+        assert!(!details.contains("must be numeric"), "got: {details}");
+    }
+
+    #[test]
+    fn an_srv_port_above_the_u16_range_is_reported_as_out_of_range() {
+        // `parse_srv` returns `Option<u16>`, so it cannot represent 70000 and
+        // returns `None` — the same answer it gives for a missing field. This
+        // crate therefore blamed the content layout; TypeScript, whose
+        // `Number()` has no such limit, named the port.
+        let details = hygiene_details(
+            vec![record(
+                "SRV",
+                "_sip._tcp.example.com",
+                "10 5 70000 sip.example.com",
+            )],
+            "srv-review",
+        );
+
+        assert!(
+            details.contains("SRV _sip._tcp.example.com: port out of range."),
+            "got: {details}"
+        );
+        assert!(
+            !details.contains("content should be"),
+            "the layout is fine; only the port is wrong: {details}"
+        );
+    }
+
+    #[test]
+    fn an_srv_record_with_too_few_fields_still_blames_the_layout() {
+        // The out-of-range branch must not swallow the genuine layout error.
+        let details = hygiene_details(
+            vec![record("SRV", "_sip._tcp.example.com", "10 5 5060")],
+            "srv-review",
+        );
+
+        assert!(details.contains("content should be"), "got: {details}");
+        assert!(!details.contains("port out of range"), "got: {details}");
+    }
+
+    #[test]
+    fn an_in_range_srv_port_is_not_reported() {
+        let details = hygiene_details(
+            vec![record(
+                "SRV",
+                "_sip._tcp.example.com",
+                "10 5 5060 sip.example.com",
+            )],
+            "srv-review",
+        );
+
+        assert!(!details.contains("port out of range"), "got: {details}");
     }
 }
