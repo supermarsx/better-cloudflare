@@ -506,23 +506,60 @@ const TS_ONLY = new Map<string, string>();
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
+/**
+ * How much text this file is currently comparing.
+ *
+ * Pinned exactly rather than as a floor. The two set-equality tests below catch
+ * any *asymmetric* change, but they cannot see coverage shrinking on both sides
+ * at once — text deleted from both implementations, or an extraction change
+ * that stops matching in both. That failure is quieter than success: the suite
+ * stays green while guarding less, which is the worst shape a guard can fail in.
+ *
+ * A floor does not close it either. At `>= 150` against an actual 173, twenty
+ * three strings could leave without a word.
+ *
+ * So these numbers are expected to change, and changing them is the point: it
+ * turns a silent reduction in coverage into a line someone has to write on
+ * purpose. Raised by t32-e1, which spotted that the floor left exactly this gap.
+ */
+const EXPECTED_TS_STRINGS = 173;
+/** One higher than TypeScript: the chrono format string in {@link RUST_ONLY}. */
+const EXPECTED_RS_STRINGS = 174;
+const EXPECTED_FINDING_IDS = 45;
+
+function coverageMessage(
+  language: string,
+  actual: number,
+  expected: number,
+): string {
+  const direction = actual < expected ? "fewer" : "more";
+  return (
+    `${language}: comparing ${actual} user-facing strings, expected ${expected} — ` +
+    `${Math.abs(actual - expected)} ${direction} than when this was last pinned. ` +
+    `If the change is intended, update the constant; if it is not, coverage has ` +
+    `moved without anyone deciding to move it.`
+  );
+}
+
 test("the extraction still finds the text it is supposed to guard", () => {
   // A lexer that silently stopped matching would turn this file into a test
   // that always passes. Assert the shape of what it found, not just that it
   // found something.
-  assert.ok(
-    tsProse.size >= 150,
-    `expected at least 150 user-facing strings in the TypeScript audit, found ${tsProse.size}`,
+  assert.equal(
+    tsProse.size,
+    EXPECTED_TS_STRINGS,
+    coverageMessage("TypeScript", tsProse.size, EXPECTED_TS_STRINGS),
   );
-  assert.ok(
-    rsProse.size >= 150,
-    `expected at least 150 user-facing strings in the Rust audit, found ${rsProse.size}`,
+  assert.equal(
+    rsProse.size,
+    EXPECTED_RS_STRINGS,
+    coverageMessage("Rust", rsProse.size, EXPECTED_RS_STRINGS),
   );
-  assert.ok(
-    tsAnchors.length >= 40,
-    "no finding ids found in the TypeScript audit",
+  assert.equal(
+    new Set(tsAnchors.map((a) => a.id)).size,
+    EXPECTED_FINDING_IDS,
+    `the audit now emits ${new Set(tsAnchors.map((a) => a.id)).size} distinct finding ids, not ${EXPECTED_FINDING_IDS}`,
   );
-  assert.ok(rsAnchors.length >= 40, "no finding ids found in the Rust audit");
 
   // Spot-check one plain string and one interpolated one, so that a change to
   // the fingerprinting that quietly dropped either shape would be caught.
