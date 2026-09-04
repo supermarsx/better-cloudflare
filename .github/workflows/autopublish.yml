@@ -238,21 +238,43 @@ jobs:
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
+      # An attestation binds to a digest, so every file has to be verified in
+      # the form the build job attested. Aggregation copies release artifacts
+      # through byte-for-byte, so those are verified where they now sit; it
+      # rewrites each .sha256 sidecar to name the published file, so those are
+      # verified as the staged bytes they were derived from. Handing the
+      # rewritten sidecar to `gh attestation verify` asks for an attestation
+      # over bytes nothing ever signed, and is what broke the 26.12 publish.
+      # The published sidecars are not left unchecked: `validate` above already
+      # required each one to equal the SHA-256 of the artifact verified here,
+      # and runs again over the downloaded release below.
       - name: Verify build provenance attestations
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ inputs.commit_sha }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          for asset in release-assets/*; do
-            gh attestation verify "$asset" \
+          node .github/scripts/release-contract.mjs attestation-subjects \
+            release-artifacts release-assets "$RELEASE_TAG" \
+            > attestation-subjects.txt
+          node .github/scripts/release-contract.mjs attestation-subjects \
+            release-artifacts release-assets "$RELEASE_TAG" --published \
+            > published-attestation-subjects.txt
+          if [ ! -s attestation-subjects.txt ] ||
+             [ ! -s published-attestation-subjects.txt ]; then
+            echo "::error::Refusing to publish with an empty attestation subject list."
+            exit 1
+          fi
+          while IFS= read -r subject || [ -n "$subject" ]; do
+            gh attestation verify "$subject" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml" \
               --signer-digest "$RELEASE_SHA" \
               --source-digest "$RELEASE_SHA" \
               --source-ref "refs/heads/main"
-          done
+          done < attestation-subjects.txt
       - name: Upload a complete draft, verify it, then publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -273,20 +295,31 @@ jobs:
                 validate-release-json "$RELEASE_TAG" "$RELEASE_SHA" "$state"
           }
 
+          # Every downloaded file is compared byte-for-byte against the local
+          # copy, and `validate` re-derives each sidecar from the artifact it
+          # names. Attestations are then checked over the subjects the previous
+          # step resolved -- the published artifacts, which are the files whose
+          # bytes the build job attested. A downloaded sidecar cannot be
+          # attestation-verified because aggregation rewrote it; `cmp` plus
+          # `validate` are what tie it to the attested artifact digest.
           verify_downloaded_release() {
             local directory="$1"
+            local local_asset asset_name subject subject_name
             node .github/scripts/release-contract.mjs validate \
               "$directory" "$RELEASE_TAG"
             for local_asset in release-assets/*; do
               asset_name="$(basename "$local_asset")"
               cmp -- "$local_asset" "$directory/$asset_name"
-              gh attestation verify "$directory/$asset_name" \
+            done
+            while IFS= read -r subject || [ -n "$subject" ]; do
+              subject_name="$(basename "$subject")"
+              gh attestation verify "$directory/$subject_name" \
                 --repo "$GITHUB_REPOSITORY" \
                 --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/autopublish.yml" \
                 --signer-digest "$RELEASE_SHA" \
                 --source-digest "$RELEASE_SHA" \
                 --source-ref "refs/heads/main"
-            done
+            done < published-attestation-subjects.txt
           }
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

@@ -1169,6 +1169,98 @@ export function aggregateNativeArtifacts(
   return true;
 }
 
+function releaseFileDigest(path, label, maximumBytes) {
+  return withReleaseFile(path, { label, maximumBytes }, (file, size) =>
+    sha256(file, size, path),
+  );
+}
+
+// A build-provenance attestation binds to a digest, never to a file name, so a
+// file stays verifiable exactly as long as its bytes are the bytes the build
+// job attested. `aggregate` copies each release artifact through unchanged --
+// renaming it to carry the tag is free -- but it *rewrites* every `.sha256`
+// sidecar so the sidecar names the published file rather than the staged base
+// name. Those rewritten bytes were never attested, and asking GitHub for an
+// attestation over them is a guaranteed 404. Release 26.12 failed at publish
+// for precisely that reason.
+//
+// This resolves, from the two directories themselves, the form of every file in
+// which it was attested: a published artifact when its bytes survived
+// aggregation untouched, and the staged original of a sidecar when they did
+// not. A release artifact that is *not* byte-identical to its staged original
+// is refused outright -- that would mean the published binary is not the built
+// binary, which is the one thing the attestation exists to rule out. Rewritten
+// sidecars are returned separately as `derived`: their published bytes carry no
+// attestation of their own, and `validateReleaseAssets` is what binds them back
+// to the artifact digest that does.
+export function attestationSubjects(
+  artifactRoot,
+  assetDirectory,
+  version,
+  matrix = RELEASE_MATRIX,
+) {
+  assertMatrixContract(matrix);
+  assertReleaseVersion(version);
+  const root = resolve(artifactRoot);
+  const assets = resolve(assetDirectory);
+  const attested = [];
+  const derived = [];
+
+  withRealDirectory(root, "Native artifact root", () =>
+    withRealDirectory(assets, "Release asset directory", () => {
+      for (const entry of matrix) {
+        const platformDirectory = join(
+          root,
+          `native-${entry.platform}-${entry.arch}`,
+        );
+        for (const { asset } of entry.outputs) {
+          const published = versionedAssetName(asset, version);
+          const files = [
+            {
+              staged: join(platformDirectory, asset),
+              published: join(assets, published),
+              label: "Release asset",
+              artifact: true,
+            },
+            {
+              staged: join(platformDirectory, `${asset}.sha256`),
+              published: join(assets, `${published}.sha256`),
+              label: "Checksum file",
+              maximumBytes: MAX_CHECKSUM_BYTES,
+              artifact: false,
+            },
+          ];
+          for (const file of files) {
+            const stagedDigest = releaseFileDigest(
+              file.staged,
+              file.label,
+              file.maximumBytes,
+            );
+            const publishedDigest = releaseFileDigest(
+              file.published,
+              file.label,
+              file.maximumBytes,
+            );
+            if (stagedDigest === publishedDigest) {
+              attested.push(file.published);
+              continue;
+            }
+            if (file.artifact) {
+              fail(
+                `Published ${basename(file.published)} is not byte-identical to the attested build output.`,
+              );
+            }
+            attested.push(file.staged);
+            derived.push(file.published);
+          }
+        }
+      }
+    }),
+  );
+
+  return { attested, derived };
+}
+
 export function verifyRunnerArchitecture(
   platform,
   arch,
@@ -1504,6 +1596,7 @@ function usage() {
     "  release-contract.mjs stage <bundle-root> <platform> <arch> <output-dir> [executable]",
     "  release-contract.mjs aggregate <artifact-root> <output-dir> <tag>",
     "  release-contract.mjs validate <asset-dir> <tag>",
+    "  release-contract.mjs attestation-subjects <artifact-root> <asset-dir> <tag> [--published]",
     "  release-contract.mjs validate-names <tag>",
     "  release-contract.mjs assert-main <commit-sha>",
     "  release-contract.mjs verify-tag <tag> <commit-sha>",
@@ -1564,6 +1657,30 @@ function main() {
         `All ${expectedAssetNames(arguments_[1]).length / 2} native ${arguments_[1]} assets and checksums are present and valid.`,
       );
       break;
+    case "attestation-subjects": {
+      // A mistyped flag must not quietly widen the list back to every
+      // published file, which is the shape that failed the 26.12 release.
+      if (arguments_[3] !== undefined && arguments_[3] !== "--published") {
+        fail(`Unknown attestation-subjects option: "${arguments_[3]}".`);
+      }
+      const { attested, derived } = attestationSubjects(
+        arguments_[0],
+        arguments_[1],
+        arguments_[2],
+      );
+      const assets = resolve(arguments_[1]);
+      const publishedOnly = arguments_[3] === "--published";
+      const subjects = publishedOnly
+        ? attested.filter((path) => dirname(path) === assets)
+        : attested;
+      for (const subject of subjects) {
+        console.log(subject);
+      }
+      console.error(
+        `${subjects.length} attestation subjects; ${derived.length} republished checksum sidecars are revalidated against their attested artifact instead.`,
+      );
+      break;
+    }
     case "validate-names": {
       const names = readStdinBounded().split(/\r?\n/).filter(Boolean);
       validateAssetNames(names, arguments_[0]);

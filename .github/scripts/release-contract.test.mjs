@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import {
   RELEASE_MATRIX,
   aggregateNativeArtifacts,
+  attestationSubjects,
   assertReleaseCommitIsCurrentMain,
   assertMatrixContract,
   assertResourceHeadroom,
@@ -1171,6 +1172,154 @@ test("platform artifacts remain isolated and cross-platform injection is rejecte
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// Release 26.12 failed at publish with `HTTP 404` from the attestations API
+// for sha256:9fab9330..., which is the SHA-256 of the *republished* body
+// "<digest>  better-cloudflare-26.12-linux-arm64.AppImage\n". Aggregation
+// rewrites every sidecar to name the published file, so its bytes stop being
+// the bytes the build job attested, and the publish job asked GitHub to
+// verify an attestation that by construction cannot exist. Attestation
+// verification only means anything while every subject it names is a file
+// something actually signed, so that is what this pins.
+test("every attestation subject is bytes the build job attested", () => {
+  const root = mkdtempSync(join(tmpdir(), "better-cloudflare-attested-"));
+  try {
+    const artifacts = join(root, "artifacts");
+    const output = join(root, "output");
+    writeIsolatedArtifacts(artifacts);
+
+    // `actions/attest` receives exactly the staged platform directories, so
+    // these are the only digests that carry a build-provenance attestation.
+    const attestedDigests = new Set();
+    for (const directory of readdirSync(artifacts)) {
+      for (const name of readdirSync(join(artifacts, directory))) {
+        attestedDigests.add(
+          createHash("sha256")
+            .update(readFileSync(join(artifacts, directory, name)))
+            .digest("hex"),
+        );
+      }
+    }
+
+    assert.equal(
+      aggregateNativeArtifacts(artifacts, output, RELEASE_VERSION),
+      true,
+    );
+    const { attested, derived } = attestationSubjects(
+      artifacts,
+      output,
+      RELEASE_VERSION,
+    );
+
+    const published = expectedAssetNames(RELEASE_VERSION);
+    const sidecars = published.filter((name) => name.endsWith(".sha256"));
+    const binaries = published.filter((name) => !name.endsWith(".sha256"));
+
+    // The regression itself: a subject whose bytes nobody signed is a 404
+    // waiting to happen, and it only happens during a real release.
+    for (const subject of attested) {
+      assert.ok(
+        attestedDigests.has(
+          createHash("sha256").update(readFileSync(subject)).digest("hex"),
+        ),
+        `${basename(subject)} is offered for attestation verification but was never attested`,
+      );
+    }
+
+    // Nothing may be quietly dropped from the attestation surface either.
+    // Every published binary is verified where it now sits, and every
+    // rewritten sidecar is verified as the staged bytes it came from.
+    assert.equal(attested.length, published.length);
+    assert.deepEqual(
+      [...derived].sort(),
+      sidecars.map((name) => join(output, name)).sort(),
+    );
+    for (const name of binaries) {
+      assert.ok(
+        attested.includes(join(output, name)),
+        `${name} must be attestation-verified in its published form`,
+      );
+    }
+    for (const { platform, arch, outputs } of RELEASE_MATRIX) {
+      for (const { asset } of outputs) {
+        assert.ok(
+          attested.includes(
+            join(artifacts, `native-${platform}-${arch}`, `${asset}.sha256`),
+          ),
+          `${asset}.sha256 must be attestation-verified in its staged form`,
+        );
+      }
+    }
+
+    // A published binary that is not the built binary is the one thing the
+    // attestation exists to rule out, so it must stop the release rather than
+    // be reclassified as a derived file that verification skips.
+    writeFileSync(join(output, binaries[0]), "substituted-binary");
+    assert.throws(
+      () => attestationSubjects(artifacts, output, RELEASE_VERSION),
+      /not byte-identical to the attested build output/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the publish job verifies attestations only over attested subjects", () => {
+  const verify = workflowStep("Verify build provenance attestations");
+  assert.match(verify, /RELEASE_TAG: \$\{\{ steps\.tag\.outputs\.tag \}\}/);
+  assert.match(
+    verify,
+    /release-contract\.mjs attestation-subjects[\s\\]+release-artifacts release-assets "\$RELEASE_TAG"[\s\\]+> attestation-subjects\.txt/,
+  );
+  assert.match(
+    verify,
+    /release-contract\.mjs attestation-subjects[\s\\]+release-artifacts release-assets "\$RELEASE_TAG" --published[\s\\]+> published-attestation-subjects\.txt/,
+  );
+  // An empty subject list would verify nothing while still exiting zero.
+  assert.match(verify, /! -s attestation-subjects\.txt/);
+  assert.match(verify, /! -s published-attestation-subjects\.txt/);
+
+  // Both loops must draw their subjects from those lists. Iterating the
+  // published directory directly is exactly what broke 26.12: it hands the
+  // rewritten sidecars to `gh attestation verify`, which cannot succeed.
+  assert.deepEqual(
+    [...AUTOPUBLISH_WORKFLOW.matchAll(/gh attestation verify "([^"]+)"/g)].map(
+      (match) => match[1],
+    ),
+    ["$subject", "$directory/$subject_name"],
+  );
+  assert.equal(
+    AUTOPUBLISH_WORKFLOW.match(
+      /done < (?:published-)?attestation-subjects\.txt/g,
+    )?.length,
+    2,
+  );
+  assert.doesNotMatch(
+    AUTOPUBLISH_WORKFLOW,
+    /for \w+ in release-assets\/\*; do\s+[^\n]*\n\s+gh attestation verify/,
+  );
+
+  // A subject list read with a bare `read` silently drops a final line that
+  // carries no newline, which would skip one asset without failing.
+  assert.equal(
+    AUTOPUBLISH_WORKFLOW.match(
+      /while IFS= read -r subject \|\| \[ -n "\$subject" \]; do/g,
+    )?.length,
+    2,
+  );
+
+  // The published sidecars are unattested by construction, so the checks that
+  // bind them to an attested artifact digest must still run over the release
+  // that was actually downloaded back from GitHub.
+  const publish = workflowStep(
+    "Upload a complete draft, verify it, then publish",
+  );
+  assert.match(
+    publish,
+    /release-contract\.mjs validate \\\n\s+"\$directory" "\$RELEASE_TAG"/,
+  );
+  assert.match(publish, /cmp -- "\$local_asset" "\$directory\/\$asset_name"/);
 });
 
 test("release metadata rejects a release that targets another commit", () => {
