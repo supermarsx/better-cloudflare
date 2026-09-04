@@ -404,8 +404,35 @@ function display(text: string): string {
 
 // ── The two inventories ─────────────────────────────────────────────────────
 
-const tsSource = fs.readFileSync(AUDIT_TS, "utf8");
-const rsSourceFull = fs.readFileSync(AUDIT_RS, "utf8");
+/**
+ * Read a source with its line endings normalised.
+ *
+ * This test compares text extracted from source files, so how the repository is
+ * checked out is part of its input. A literal written across physical lines
+ * gains a `\r` under CRLF that its counterpart in the other language may not
+ * have, and the two fingerprints then differ for a reason that has nothing to
+ * do with what a user is told.
+ *
+ * **Measured, not assumed:** under a CRLF checkout today exactly one literal's
+ * text changes — the `format!("{}\n\n{}")` in `explain_finding`, written across
+ * lines in the Rust source. Its fingerprint is whitespace-only, so the prose
+ * filter drops it either way, and the pinned inventories come out byte-identical
+ * under LF and CRLF. So this normalisation fixes no current failure.
+ *
+ * It is here because that tolerance is a coincidence. It holds only while no
+ * prose literal spans physical lines, and one `format!` wrapped across lines in
+ * either implementation would end it silently. The alternative was to rely on
+ * `.gitattributes` (`* text=auto eol=lf`, which overrides `core.autocrlf=true`
+ * on Windows) — load-bearing configuration a long way from the code needing it,
+ * that nobody editing it would connect to this file. Normalising removes the
+ * dependency instead of documenting it.
+ */
+function readSource(file: string): string {
+  return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+}
+
+const tsSource = readSource(AUDIT_TS);
+const rsSourceFull = readSource(AUDIT_RS);
 
 const testModuleAt = rsSourceFull.indexOf("#[cfg(test)]");
 assert.notEqual(
