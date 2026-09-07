@@ -47,8 +47,8 @@ bc-notify = { path = "crates/bc-notify" }
 # top-level navigations (src/startup_guard.rs). Both crates are already in the
 # dependency tree through tauri and wry; no new packages.
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation"] }
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
