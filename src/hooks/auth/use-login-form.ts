@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/request-error";
 import type { ApiKey } from "@/types/dns";
 import { TauriClient } from "@/lib/api/tauri-client";
+import { webauthnCeremonyMessage } from "@/lib/auth/passkey-error";
 import {
   failedPasskeyStatus,
   passkeyStatusState,
@@ -521,26 +522,13 @@ export function useLoginForm(
         });
       }
     } catch (error) {
-      const errorMsg = formatError(error);
-      let userMessage = errorMsg;
-
-      if (error instanceof WebauthnCeremonyTimeoutError) {
-        // Checked before the cancellation branch: our own abort surfaces as an
-        // AbortError, which is otherwise indistinguishable from the user
-        // dismissing the prompt.
-        userMessage = error.message;
-      } else if (
-        errorMsg.includes("NotAllowedError") ||
-        errorMsg.includes("abort")
-      ) {
-        userMessage =
-          "Registration was cancelled or not allowed by your device";
-      } else if (errorMsg.includes("NotSupportedError")) {
-        userMessage = "Passkeys are not supported on this device or browser";
-      } else if (errorMsg.includes("SecurityError")) {
-        userMessage =
-          "Security error: Please ensure you're using HTTPS or localhost";
-      }
+      // Our own deadline is checked first: it aborts the ceremony, and the
+      // browser reports that as an AbortError indistinguishable from the user
+      // dismissing the prompt.
+      const userMessage =
+        error instanceof WebauthnCeremonyTimeoutError
+          ? error.message
+          : (webauthnCeremonyMessage(error, "register") ?? formatError(error));
 
       toast({
         title: "Passkey Registration Failed",
@@ -638,27 +626,20 @@ export function useLoginForm(
       }
     } catch (error) {
       const errorMsg = formatError(error);
-      let userMessage = errorMsg;
+      // The client-side DOMException names are matched first. The vault miss
+      // below is matched on text because it arrives over IPC as a string, and
+      // text is all there is to match on.
+      let userMessage =
+        error instanceof WebauthnCeremonyTimeoutError
+          ? error.message
+          : (webauthnCeremonyMessage(error, "authenticate") ?? errorMsg);
 
-      if (error instanceof WebauthnCeremonyTimeoutError) {
-        userMessage = error.message;
-      } else if (
-        errorMsg.includes("NotAllowedError") ||
-        errorMsg.includes("abort")
-      ) {
-        userMessage =
-          "Authentication was cancelled or not allowed by your device";
-      } else if (errorMsg.includes("NotSupportedError")) {
-        userMessage = "Passkeys are not supported on this device or browser";
-      } else if (
-        errorMsg.includes("No secret") ||
-        errorMsg.includes("not found")
+      if (
+        userMessage === errorMsg &&
+        (errorMsg.includes("No secret") || errorMsg.includes("not found"))
       ) {
         userMessage =
           "No passkey registered for this API key. Please register one first.";
-      } else if (errorMsg.includes("SecurityError")) {
-        userMessage =
-          "Security error: Please ensure you're using HTTPS or localhost";
       }
 
       toast({
