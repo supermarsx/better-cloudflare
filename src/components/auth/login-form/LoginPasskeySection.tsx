@@ -5,8 +5,6 @@ import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { Fingerprint, KeyRound, Shield } from "lucide-react";
 
 interface LoginPasskeySectionProps {
-  /** Open the legacy credential review dialog. */
-  onManagePasskeys: () => void;
   /** Start a registration ceremony for the selected key. */
   onRegisterPasskey: () => void;
   /** Start an authentication ceremony for the selected key. */
@@ -22,7 +20,6 @@ interface LoginPasskeySectionProps {
 }
 
 export function LoginPasskeySection({
-  onManagePasskeys,
   onRegisterPasskey,
   onUsePasskey,
   registerLoading,
@@ -33,8 +30,6 @@ export function LoginPasskeySection({
   status,
 }: LoginPasskeySectionProps) {
   if (!hasKeys || !status) return null;
-
-  const legacyRecoveryAvailable = status.legacyRecoveryAvailable;
 
   // Registration is offered whenever the state says registration is open. That
   // is the `available` branch, and also the `legacy-credentials` branch — where
@@ -104,19 +99,6 @@ export function LoginPasskeySection({
             </Button>
           )}
         </div>
-      )}
-
-      {legacyRecoveryAvailable && (
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={onManagePasskeys}
-          disabled={!selectedKeyId || !password}
-          className="w-full"
-        >
-          Review legacy passkeys
-        </Button>
       )}
     </div>
   );

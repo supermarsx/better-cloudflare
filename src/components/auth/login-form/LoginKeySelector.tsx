@@ -8,10 +8,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Plus } from "lucide-react";
 import { useI18n } from "@/hooks/use-i18n";
 import type { ApiKey } from "@/types/dns";
 import { useState } from "react";
+
+/**
+ * The value carried by the "Add new key" row.
+ *
+ * It is a real `SelectItem` rather than a button appended under the list so
+ * that keyboard users reach it the same way they reach a key — Radix owns
+ * arrow-key movement and typeahead inside the listbox, and a stray `button`
+ * in there is reachable by mouse only. The cost is that it is announced as an
+ * option, which is why `onValueChange` filters it out before it can ever be
+ * mistaken for a selected key.
+ *
+ * Exported so a test can name the row without hard-coding the string.
+ */
+export const ADD_KEY_OPTION_VALUE = "__add-new-key__";
 
 interface LoginKeySelectorProps {
   apiKeys: ApiKey[];
@@ -21,6 +35,11 @@ interface LoginKeySelectorProps {
   onPasswordChange: (value: string) => void;
   onLogin: () => void;
   isLoading: boolean;
+  /**
+   * Open the add-key dialog straight from the list. Optional so the component
+   * still renders standalone; the row is only offered when it is supplied.
+   */
+  onAddKey?: () => void;
 }
 
 export function LoginKeySelector({
@@ -31,6 +50,7 @@ export function LoginKeySelector({
   onPasswordChange,
   onLogin,
   isLoading,
+  onAddKey,
 }: LoginKeySelectorProps) {
   const { t } = useI18n();
   const hasKeys = apiKeys.length > 0;
@@ -51,7 +71,13 @@ export function LoginKeySelector({
         </Label>
         <Select
           value={selectedKeyId}
-          onValueChange={onSelectKey}
+          onValueChange={(value) => {
+            if (value === ADD_KEY_OPTION_VALUE) {
+              onAddKey?.();
+              return;
+            }
+            onSelectKey(value);
+          }}
           disabled={!hasKeys || isLoading}
         >
           <SelectTrigger
@@ -74,6 +100,19 @@ export function LoginKeySelector({
                 </div>
               </SelectItem>
             ))}
+            {onAddKey && (
+              <SelectItem
+                value={ADD_KEY_OPTION_VALUE}
+                className="mt-1 cursor-pointer border-t border-border/60 text-muted-foreground focus:bg-primary/10 focus:text-foreground hover:bg-primary/5"
+              >
+                <div className="flex items-center gap-2">
+                  <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+                  <span className="font-medium">
+                    {t("Add new key", "Add new key")}
+                  </span>
+                </div>
+              </SelectItem>
+            )}
           </SelectContent>
         </Select>
       </div>

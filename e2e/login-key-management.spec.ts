@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
+import {
+  openAddKeyDialog,
+  openLoginSettingsMenu,
+} from "./fixtures/preferences-dock";
 
 type RuntimeFailures = {
   console: string[];
@@ -205,17 +209,42 @@ async function selectDesktopKey(page: Page) {
 }
 
 async function openManageAction(page: Page, action: "Edit" | "Delete") {
-  const manage = page.getByRole("button", { name: "Manage Key" });
+  await openLoginSettingsMenu(page);
+
+  const manage = page.getByRole("menuitem", { name: "Manage Key" });
+  await expect(manage).toBeVisible();
   await manage.click();
 
-  const menu = page.getByRole("menu");
-  await expect(menu).toBeVisible();
+  const item = page.getByRole("menuitem", { name: action });
+  await expect(item).toBeVisible();
+  // The submenu must stay up on its own rather than flickering shut, which is
+  // what a mis-wired open handler looks like from the outside.
   await page.waitForTimeout(250);
-  await expect(menu).toBeVisible();
-  await expect(menu).toHaveCSS("visibility", "visible");
-  await expect(page.getByRole("menu")).toHaveCount(1);
+  await expect(item).toBeVisible();
+  await expect(item).toHaveCSS("visibility", "visible");
 
-  await page.getByRole("menuitem", { name: action }).click();
+  await item.click();
+}
+
+/** The settings dialog, which now carries key maintenance too. */
+async function openSettingsDialog(page: Page) {
+  await openLoginSettingsMenu(page);
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Encryption Settings" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+/**
+ * Open legacy passkey review, which now lives inside the settings dialog.
+ *
+ * The settings dialog closes as the review opens, so only one dialog is ever
+ * on screen — the callers assert exactly that.
+ */
+async function openLegacyPasskeyReview(page: Page) {
+  await openSettingsDialog(page);
+  await page.getByRole("button", { name: "Review legacy passkeys" }).click();
 }
 
 async function dismissViaBackdrop(page: Page) {
@@ -272,10 +301,7 @@ test("auth and nested modal scroll owners use the themed scrollbar", async ({
   await page.keyboard.press("Escape");
   await expect(selectScrollRegion).toBeHidden();
 
-  await page.getByRole("button", { name: "Add New Key" }).click();
-  await expect(
-    page.getByRole("dialog", { name: "Add New API Key" }),
-  ).toBeVisible();
+  await openAddKeyDialog(page);
   const dialogScrollRegion = page.locator("[data-dialog-scroll-region]");
   await expect(dialogScrollRegion).toHaveClass(/\bscrollbar-themed\b/);
   const dialogEvidence = await dialogScrollRegion.evaluate((element) => {
@@ -312,16 +338,15 @@ test("Manage Key hands off to persistent Edit and Delete dialogs", async ({
     await expect(dialog).toBeVisible();
     await expect(page.getByRole("dialog")).toHaveCount(1);
 
-    await expect(page.getByRole("button", { name: "Manage Key" })).toHaveCount(
-      0,
-    );
-    const backgroundManageButton = page
-      .locator("button")
-      .filter({ hasText: /^Manage Key$/ })
+    await expect(
+      page.getByRole("button", { name: "Keys and settings" }),
+    ).toHaveCount(0);
+    const backgroundTrigger = page
+      .locator('button[aria-label="Keys and settings"]')
       .first();
-    await backgroundManageButton.evaluate((button) => button.focus());
+    await backgroundTrigger.evaluate((button) => button.focus());
     await expect(dialog).toBeVisible();
-    await expect(backgroundManageButton).not.toBeFocused();
+    await expect(backgroundTrigger).not.toBeFocused();
     await expect
       .poll(() =>
         page.evaluate(() =>
@@ -367,11 +392,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   await selectDesktopKey(page);
   await page.locator("#password").fill("password");
 
-  const review = page.getByRole("button", {
-    name: "Review legacy passkeys",
-  });
-  await expect(review).toBeEnabled();
-  await review.click();
+  await openLegacyPasskeyReview(page);
 
   const dialog = page.getByRole("dialog", {
     name: "Legacy passkey recovery",
@@ -382,14 +403,15 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
     "Loading legacy passkeys",
   );
 
-  await expect(page.getByRole("button", { name: "Manage Key" })).toHaveCount(0);
-  const backgroundManageButton = page
-    .locator("button")
-    .filter({ hasText: /^Manage Key$/ })
+  await expect(
+    page.getByRole("button", { name: "Keys and settings" }),
+  ).toHaveCount(0);
+  const backgroundTrigger = page
+    .locator('button[aria-label="Keys and settings"]')
     .first();
-  await backgroundManageButton.evaluate((button) => button.focus());
+  await backgroundTrigger.evaluate((button) => button.focus());
   await expect(dialog).toBeVisible();
-  await expect(backgroundManageButton).not.toBeFocused();
+  await expect(backgroundTrigger).not.toBeFocused();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -403,7 +425,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   await page.waitForTimeout(350);
   await expect(page.getByText("Credential 1")).toHaveCount(0);
 
-  await review.click();
+  await openLegacyPasskeyReview(page);
   await expect(dialog).toBeVisible();
   await expect(page.getByText("Credential 2")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
@@ -411,7 +433,7 @@ test("passkey manager survives focus changes and ignores stale closed loads", as
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  await review.click();
+  await openLegacyPasskeyReview(page);
   await expect(dialog).toBeVisible();
   await expect(page.getByText("Credential 3")).toBeVisible();
   await dismissViaBackdrop(page);

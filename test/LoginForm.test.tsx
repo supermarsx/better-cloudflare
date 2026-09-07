@@ -92,7 +92,6 @@ test("LoginForm derives the unavailable passkey UI from the desktop capability",
       null,
     );
     assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
-    assert.ok(screen.getByRole("button", { name: /review legacy passkeys/i }));
   });
 });
 
@@ -123,7 +122,6 @@ test("LoginForm shows the passkey security notice and recovery path when status 
         /use legacy passkey recovery until the desktop service is restored/i,
       ),
     );
-    assert.ok(screen.getByRole("button", { name: /review legacy passkeys/i }));
     assert.equal(
       screen.queryByRole("button", { name: /register passkey/i }),
       null,
@@ -420,20 +418,22 @@ test("useLoginForm warns that turning the vault off leaves the stored secret beh
   assert.match(message, /Remove Vault Secret/);
 });
 
-test("LoginForm keeps the vault removal control reachable once the vault is off", async () => {
+test("LoginForm mounts the preferences dock that now carries key management", async () => {
+  // The controls themselves are tested against EncryptionSettingsDialog, and
+  // the click-through route is driven for real in
+  // e2e/login-key-management.spec.ts. What is worth pinning here is that the
+  // login screen still mounts the menu at all: nothing else on this card
+  // reaches the add-key, manage-key or settings dialogs any more.
   mockDesktopLoginBootstrap();
   render(<LoginForm onLogin={() => {}} desktop />);
 
-  await waitFor(() => {
-    assert.ok(screen.getByText("Desktop key"));
-    // Hiding this button when the preference is off was the trap: it is the
-    // only control that deletes a secret the app already wrote.
-    assert.ok(screen.getByRole("button", { name: /remove vault secret/i }));
-    assert.match(
-      screen.getByTestId("vault-disabled-notice").textContent ?? "",
-      /remains in the system keychain/,
-    );
-  });
+  await waitFor(() => assert.ok(screen.getByText("Desktop key")));
+  assert.ok(screen.getByRole("button", { name: /keys and settings/i }));
+  // And that they are no longer duplicated on the card itself.
+  assert.equal(
+    screen.queryByRole("button", { name: /remove vault secret/i }),
+    null,
+  );
 });
 
 test("useLoginForm does not report a vault preference as enabled before persistence succeeds", async () => {

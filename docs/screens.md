@@ -33,13 +33,13 @@ Screens are shown in the default **sunset** dark theme. A light-theme gallery cl
 
 ### Login
 
-![Authentication card with an API Key dropdown, a masked password field, a Login button, Add New Key / Manage Key / Settings buttons, and a passkey security status panel](screenshots/dark/login.png)
+![Authentication card with an API Key dropdown, a masked password field and a Login button, with a passkey security status panel below and a collapsed preferences dock at the top left](screenshots/dark/login.png)
 
-Pick a stored credential from **API Key**, type its vault password, and press **Login** (Enter submits). The eye button unmasks the field while you check a typo.
+Pick a stored credential from **API Key**, type its vault password, and press **Login** (Enter submits). The eye button unmasks the field while you check a typo. The **API Key** list ends with **Add new key**, which is the quickest way to add one without leaving the field you are already in.
 
-The three secondary buttons add a new key, edit or delete an existing one (deletion is confirm-gated), and open the encryption settings dialog. While authentication runs, a spinner overlay covers the card.
+Key and application settings live in the **preferences dock** — the collapsed pill at the top left that also holds the language and theme toggles. Hover it and the gear opens a menu with **Add New Key**, **Manage Key** (edit or delete the selected key; deletion is confirm-gated) and **Settings**. They moved off the card because they are used once or twice in the life of an install and were costing a third of its height.
 
-The **Passkey security status** panel is the honest part of this screen. Where passkeys are usable it offers **Register passkey** and **Use passkey**; where they are not it names the specific reason — a webview with no WebAuthn client, a machine with no authenticator enrolled, legacy credentials that must be re-registered, or a relying party that could not be configured — rather than offering a button that fails. See [Security](security.md#passkeys) for what is verified. Biometric unlock appears only on macOS, where Touch ID is the sole implemented runtime.
+The **Passkey security status** panel is the honest part of this screen. Where passkeys are usable it offers **Register passkey** and **Use passkey**. Where they are not it names the specific reason — a webview with no WebAuthn client, an origin that is not a secure context, legacy credentials that must be re-registered, or a relying party that could not be configured — rather than offering a button that fails. Where no authenticator could be _detected_ it says so and still offers both buttons, because a security key or a passkey on your phone cannot be detected in advance and works anyway. See [Security](security.md#passkeys) for what is verified. Biometric unlock appears only on macOS, where Touch ID is the sole implemented runtime.
 
 ### Encryption settings
 
@@ -50,6 +50,8 @@ Tune how your stored API keys are protected. **PBKDF2 iterations** is the only f
 **Benchmark** times a derivation at the current setting and reports it, so you can raise iterations until unlock takes as long as you are willing to wait. **Update** applies the change.
 
 **Enable OS Vault** stores decrypted keys in the system vault. It is what passkey login unlocks, so turn it on only if you intend to use one.
+
+**Key maintenance** at the bottom holds the two rare, one-off actions: **Review legacy passkeys**, which lists credentials that predate verified registration so you can remove them, and **Remove Vault Secret**, which deletes this key's secret from the system keychain. Both decrypt the selected key, so both need a key selected on the login screen and its password typed; without that they are disabled and say so. Removing the vault secret stays available while the vault is switched off, because switching it off does not erase what is already in the keychain.
 
 <details>
 <summary>Light theme</summary>

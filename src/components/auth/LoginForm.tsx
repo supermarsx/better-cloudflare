@@ -6,11 +6,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useState } from "react";
 import { LoginHeader } from "./login-form/LoginHeader";
 import { LoginKeySelector } from "./login-form/LoginKeySelector";
-import { LoginActionButtons } from "./login-form/LoginActionButtons";
+import { LoginSettingsMenu } from "./login-form/LoginSettingsMenu";
 import { LoginPasskeySection } from "./login-form/LoginPasskeySection";
 import { LoginBiometricSection } from "./login-form/LoginBiometricSection";
-import { LoginVaultSection } from "./login-form/LoginVaultSection";
 import { LoginDialogs } from "./login-form/LoginDialogs";
+import { PreferencesDock } from "@/components/layout/PreferencesDock";
 import {
   Dialog,
   DialogContent,
@@ -103,6 +103,10 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
   const selectedKey = apiKeys.find((key) => key.id === selectedKeyId) ?? null;
   const [deleteTarget, setDeleteTarget] = useState<typeof selectedKey>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  // Every maintenance action in the settings dialog decrypts the selected key
+  // first, so both halves are the precondition for offering them.
+  const canUseSelectedKey = Boolean(selectedKeyId && password);
 
   const requestDeleteKey = (id: string) => {
     const target = apiKeys.find((key) => key.id === id) ?? null;
@@ -122,6 +126,18 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
       {/* Background effects are handled in index.html, but we add a local glow here */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(255,80,0,0.08),transparent_70%)]" />
 
+      <PreferencesDock desktop={desktop} keepOpen={settingsMenuOpen}>
+        <LoginSettingsMenu
+          onAddKey={() => setShowAddKey(true)}
+          onSettings={() => setShowSettings(true)}
+          hasKeys={apiKeys.length > 0}
+          selectedKey={selectedKey}
+          onEditKey={handleEditKeyInit}
+          onDeleteKey={requestDeleteKey}
+          onOpenChange={setSettingsMenuOpen}
+        />
+      </PreferencesDock>
+
       <Card
         className="relative z-10 w-full max-w-md overflow-hidden border border-border/60 bg-card/80 shadow-[0_0_18px_rgba(0,0,0,0.12)] backdrop-blur-xl"
         data-testid="auth-card"
@@ -136,19 +152,10 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             onPasswordChange={setPassword}
             onLogin={handleLogin}
             isLoading={isLoading}
-          />
-
-          <LoginActionButtons
             onAddKey={() => setShowAddKey(true)}
-            onSettings={() => setShowSettings(true)}
-            hasKeys={apiKeys.length > 0}
-            selectedKey={selectedKey}
-            onEditKey={handleEditKeyInit}
-            onDeleteKey={requestDeleteKey}
           />
 
           <LoginPasskeySection
-            onManagePasskeys={handleManagePasskeys}
             onRegisterPasskey={handleRegisterPasskey}
             onUsePasskey={handleUsePasskey}
             registerLoading={passkeyRegisterLoading}
@@ -173,11 +180,6 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             desktop={desktop}
           />
 
-          <LoginVaultSection
-            vaultEnabled={vaultEnabled}
-            onRemoveVaultSecret={handleRemoveVaultSecret}
-          />
-
           <LoginDialogs
             showAddKey={showAddKey}
             setShowAddKey={setShowAddKey}
@@ -199,6 +201,9 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             benchmarkResult={benchmarkResult}
             vaultEnabled={vaultEnabled}
             setVaultEnabled={setVaultEnabled}
+            handleRemoveVaultSecret={handleRemoveVaultSecret}
+            handleManagePasskeys={handleManagePasskeys}
+            canUseSelectedKey={canUseSelectedKey}
             showManagePasskeys={showManagePasskeys}
             setShowManagePasskeys={setShowManagePasskeys}
             selectedKeyId={selectedKeyId}

@@ -21,7 +21,6 @@ afterEach(() => {
 test("LoginPasskeySection hides when no keys", () => {
   const { container } = render(
     <LoginPasskeySection
-      onManagePasskeys={() => {}}
       onRegisterPasskey={() => {}}
       onUsePasskey={() => {}}
       registerLoading={false}
@@ -35,10 +34,9 @@ test("LoginPasskeySection hides when no keys", () => {
   assert.equal(container.firstChild, null);
 });
 
-test("LoginPasskeySection shows the unavailable notice and disables only legacy recovery without a key", () => {
+test("LoginPasskeySection shows the unavailable notice and withholds both ceremonies", () => {
   render(
     <LoginPasskeySection
-      onManagePasskeys={() => {}}
       onRegisterPasskey={() => {}}
       onUsePasskey={() => {}}
       registerLoading={false}
@@ -56,46 +54,14 @@ test("LoginPasskeySection shows the unavailable notice and disables only legacy 
     null,
   );
   assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
-  assert.equal(
-    screen
-      .getByRole("button", { name: /review legacy passkeys/i })
-      .hasAttribute("disabled"),
-    true,
-  );
 });
 
-test("LoginPasskeySection keeps legacy recovery reachable when a key is selected", () => {
-  let managed = false;
+test("LoginPasskeySection still explains a status IPC failure", () => {
+  // Legacy recovery itself now lives in the settings dialog, but the reason it
+  // is on offer has to reach the user somewhere, and this is the surface they
+  // are looking at when a ceremony they expected is missing.
   render(
     <LoginPasskeySection
-      onManagePasskeys={() => {
-        managed = true;
-      }}
-      onRegisterPasskey={() => {}}
-      onUsePasskey={() => {}}
-      registerLoading={false}
-      authLoading={false}
-      selectedKeyId="key1"
-      password="pw"
-      hasKeys={true}
-      status={unavailableStatus}
-    />,
-  );
-  const recovery = screen.getByRole("button", {
-    name: /review legacy passkeys/i,
-  });
-  assert.equal(recovery.hasAttribute("disabled"), false);
-  recovery.click();
-  assert.equal(managed, true);
-});
-
-test("LoginPasskeySection keeps legacy management available after status IPC failure", () => {
-  let managed = false;
-  render(
-    <LoginPasskeySection
-      onManagePasskeys={() => {
-        managed = true;
-      }}
       onRegisterPasskey={() => {}}
       onUsePasskey={() => {}}
       registerLoading={false}
@@ -114,18 +80,11 @@ test("LoginPasskeySection keeps legacy management available after status IPC fai
 
   assert.ok(screen.getByRole("alert"));
   assert.ok(screen.getByText(/legacy credential recovery remains available/i));
-  const recovery = screen.getByRole("button", {
-    name: /review legacy passkeys/i,
-  });
-  assert.equal(recovery.hasAttribute("disabled"), false);
-  recovery.click();
-  assert.equal(managed, true);
 });
 
 test("LoginPasskeySection stops claiming unavailability once passkeys are available", () => {
   render(
     <LoginPasskeySection
-      onManagePasskeys={() => {}}
       onRegisterPasskey={() => {}}
       onUsePasskey={() => {}}
       registerLoading={false}
@@ -151,9 +110,9 @@ test("LoginPasskeySection stops claiming unavailability once passkeys are availa
 // ── The available branch, and the causes that are not the backend's ─────────
 //
 // The point of the status union is that these situations have different
-// remedies. A test that only asserted "some alert is shown" would
-// pass just as well against the single generic message the union replaced, so
-// each of these pins the specific wording its own state produces.
+// remedies. A test that only asserted "some alert is shown" would pass just as
+// well against the single generic message the union replaced, so each of these
+// pins the specific wording its own state produces.
 
 const availableStatus: PasskeyStatusState = {
   kind: "available",
@@ -167,7 +126,6 @@ function renderSection(
   overrides: Partial<React.ComponentProps<typeof LoginPasskeySection>> = {},
 ) {
   const props: React.ComponentProps<typeof LoginPasskeySection> = {
-    onManagePasskeys: () => {},
     onRegisterPasskey: () => {},
     onUsePasskey: () => {},
     registerLoading: false,
@@ -256,7 +214,6 @@ test("LoginPasskeySection hides sign-in but keeps registration for legacy creden
   // Registering is the way out of this state, so it must not be gated by it.
   assert.ok(screen.getByRole("button", { name: /register passkey/i }));
   assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
-  assert.ok(screen.getByRole("button", { name: /review legacy passkeys/i }));
   assert.ok(screen.getByText(/need re-registering/i));
 });
 

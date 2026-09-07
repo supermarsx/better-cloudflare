@@ -134,7 +134,7 @@ Only a resolution failure or a failed status call renders red. A platform limita
 
 Where a genuine unavailable cause applies, the login screen names that specific reason rather than offering a button that fails:
 
-<img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel">
+<img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, and a Passkey security status panel. Add New Key, Manage Key and Settings live in the preferences dock at the top left.">
 
 ### The library is pinned to a pre-release, knowingly
 

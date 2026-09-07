@@ -815,7 +815,14 @@ const SCREENS: Screen[] = [
     authenticated: false,
     stage: async (page) => {
       await requireVisible(page, '[data-testid="auth-card"]', "the login card");
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // Settings moved into the preferences dock, which expands on hover — a
+      // click on the collapsed chevron would open and immediately re-close it.
+      const dockToggle = page.getByRole("button", { name: "Preferences" });
+      await dockToggle.hover();
+      await page.getByRole("button", { name: "Keys and settings" }).click();
+      await page
+        .getByRole("menuitem", { name: "Settings", exact: true })
+        .click();
       await requireVisible(
         page,
         '[role="dialog"][aria-label="Encryption Settings"], [role="dialog"]:has-text("Encryption Settings")',

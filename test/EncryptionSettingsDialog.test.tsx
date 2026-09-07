@@ -1,87 +1,124 @@
+/**
+ * The key-maintenance half of the settings dialog.
+ *
+ * "Review legacy passkeys" and "Remove Vault Secret" used to sit on the login
+ * card. They are rare, one-off actions and one of them is destructive, so they
+ * moved in here — which makes this the file that has to prove they are still
+ * offered, still gated, and still explain themselves.
+ */
 import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, test } from "node:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
+
 import { EncryptionSettingsDialog } from "../src/components/auth/EncryptionSettingsDialog";
-import {
-  MAX_PBKDF2_ITERATIONS,
-  MIN_PBKDF2_ITERATIONS,
-  type EncryptionConfig,
-} from "../src/types/dns";
+import type { EncryptionConfig } from "../src/types/dns";
 
 afterEach(() => {
   cleanup();
 });
 
-const validSettings: EncryptionConfig = {
-  iterations: MIN_PBKDF2_ITERATIONS,
+const settings: EncryptionConfig = {
+  iterations: 100_000,
   keyLength: 256,
   algorithm: "AES-GCM",
 };
 
 function renderDialog(
-  settings: EncryptionConfig,
-  onSettingsChange: (settings: EncryptionConfig) => void = () => {},
+  overrides: Partial<
+    React.ComponentProps<typeof EncryptionSettingsDialog>
+  > = {},
 ) {
-  return render(
-    <EncryptionSettingsDialog
-      open
-      onOpenChange={() => {}}
-      settings={settings}
-      onSettingsChange={onSettingsChange}
-      onBenchmark={() => {}}
-      onUpdate={() => {}}
-      benchmarkResult={null}
-      vaultEnabled={false}
-      onVaultEnabledChange={() => {}}
-    />,
-  );
+  const props: React.ComponentProps<typeof EncryptionSettingsDialog> = {
+    open: true,
+    onOpenChange: () => {},
+    settings,
+    onSettingsChange: () => {},
+    onBenchmark: () => {},
+    onUpdate: () => {},
+    benchmarkResult: null,
+    vaultEnabled: true,
+    onVaultEnabledChange: () => {},
+    onRemoveVaultSecret: () => {},
+    onManagePasskeys: () => {},
+    legacyRecoveryAvailable: true,
+    canUseSelectedKey: true,
+    ...overrides,
+  };
+  return render(<EncryptionSettingsDialog {...props} />);
 }
 
-test("encryption settings expose only bounded PBKDF2 values", () => {
-  const changes: EncryptionConfig[] = [];
-  renderDialog(validSettings, (settings) => changes.push(settings));
-
-  const input = screen.getByLabelText(/pbkdf2 iterations/i);
-  assert.equal(input.getAttribute("min"), String(MIN_PBKDF2_ITERATIONS));
-  assert.equal(input.getAttribute("max"), String(MAX_PBKDF2_ITERATIONS));
-  assert.equal(
-    screen.getByRole("button", { name: "Benchmark" }).disabled,
-    false,
-  );
-  assert.equal(screen.getByRole("button", { name: "Update" }).disabled, false);
-
-  fireEvent.change(input, {
-    target: { value: String(MIN_PBKDF2_ITERATIONS - 1) },
+test("EncryptionSettingsDialog offers both maintenance actions for a usable key", () => {
+  let managed = 0;
+  let removed = 0;
+  renderDialog({
+    onManagePasskeys: () => {
+      managed += 1;
+    },
+    onRemoveVaultSecret: () => {
+      removed += 1;
+    },
   });
-  fireEvent.change(input, {
-    target: { value: String(MAX_PBKDF2_ITERATIONS + 1) },
-  });
-  assert.equal(changes.length, 0);
 
-  fireEvent.change(input, {
-    target: { value: String(MAX_PBKDF2_ITERATIONS) },
+  const review = screen.getByRole("button", {
+    name: /review legacy passkeys/i,
   });
-  assert.equal(changes.length, 1);
-  assert.equal(changes[0].iterations, MAX_PBKDF2_ITERATIONS);
+  const remove = screen.getByRole("button", { name: /remove vault secret/i });
+  assert.equal(review.hasAttribute("disabled"), false);
+  assert.equal(remove.hasAttribute("disabled"), false);
+
+  review.click();
+  remove.click();
+  assert.equal(managed, 1);
+  assert.equal(removed, 1);
 });
 
-test("invalid or legacy settings cannot be benchmarked or persisted", () => {
-  renderDialog({
-    iterations: MAX_PBKDF2_ITERATIONS + 1,
-    keyLength: 128,
-    algorithm: "AES-CBC",
-  });
+test("EncryptionSettingsDialog disables maintenance without a decryptable key", () => {
+  // Both actions decrypt the selected key before they can do anything, so
+  // offering them live without a password would only produce a failure toast.
+  renderDialog({ canUseSelectedKey: false });
 
   assert.equal(
-    screen.getByRole("button", { name: "Benchmark" }).disabled,
+    screen
+      .getByRole("button", { name: /review legacy passkeys/i })
+      .hasAttribute("disabled"),
     true,
   );
-  assert.equal(screen.getByRole("button", { name: "Update" }).disabled, true);
   assert.equal(
-    (screen.getByLabelText(/pbkdf2 iterations/i) as HTMLInputElement).value,
-    String(MIN_PBKDF2_ITERATIONS),
+    screen
+      .getByRole("button", { name: /remove vault secret/i })
+      .hasAttribute("disabled"),
+    true,
   );
-  assert.match(document.body.textContent ?? "", /AES-GCM/);
-  assert.doesNotMatch(document.body.textContent ?? "", /128|192/);
+  assert.ok(screen.getByText(/select a key and enter its password/i));
+});
+
+test("EncryptionSettingsDialog hides legacy review when there is nothing to review", () => {
+  renderDialog({ legacyRecoveryAvailable: false });
+
+  assert.equal(
+    screen.queryByRole("button", { name: /review legacy passkeys/i }),
+    null,
+  );
+  // Vault removal is not conditional on it — the secret can be there either way.
+  assert.ok(screen.getByRole("button", { name: /remove vault secret/i }));
+});
+
+test("EncryptionSettingsDialog keeps vault removal reachable once the vault is off", () => {
+  // Hiding this when the preference is off was the trap: it is the only
+  // control that deletes a secret the app already wrote, and switching the
+  // vault off does not erase it.
+  renderDialog({ vaultEnabled: false });
+
+  assert.ok(screen.getByRole("button", { name: /remove vault secret/i }));
+  assert.match(
+    screen.getByTestId("vault-disabled-notice").textContent ?? "",
+    /remains in the system keychain/,
+  );
+});
+
+test("EncryptionSettingsDialog shows no vault warning while the vault is on", () => {
+  renderDialog({ vaultEnabled: true });
+
+  assert.equal(screen.queryByTestId("vault-disabled-notice"), null);
 });

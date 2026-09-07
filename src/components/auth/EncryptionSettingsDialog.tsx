@@ -54,6 +54,21 @@ export interface EncryptionSettingsDialogProps {
   vaultEnabled: boolean;
   /** Toggle OS Vault enable state */
   onVaultEnabledChange: (enabled: boolean) => void;
+  /** Delete this key's secret from the OS keychain. */
+  onRemoveVaultSecret: () => void;
+  /** Open the legacy passkey review dialog. */
+  onManagePasskeys: () => void;
+  /**
+   * Whether any legacy credential recovery is on offer. False hides the
+   * control rather than showing one that opens an empty list.
+   */
+  legacyRecoveryAvailable: boolean;
+  /**
+   * Whether a key is selected *and* its password has been typed. Both
+   * controls below decrypt the selected key before they can do anything, so
+   * without it they can only fail.
+   */
+  canUseSelectedKey: boolean;
 }
 
 /**
@@ -70,6 +85,10 @@ export function EncryptionSettingsDialog({
   benchmarkResult,
   vaultEnabled,
   onVaultEnabledChange,
+  onRemoveVaultSecret,
+  onManagePasskeys,
+  legacyRecoveryAvailable,
+  canUseSelectedKey,
 }: EncryptionSettingsDialogProps) {
   const [useVault, setUseVault] = useState(vaultEnabled);
   const safeIterations =
@@ -187,6 +206,61 @@ export function EncryptionSettingsDialog({
               Last benchmark: {benchmarkResult.toFixed(2)}ms
             </p>
           )}
+
+          {/* Both of these decrypt the selected key, and both are rare,
+              one-off maintenance actions. They sat on the login card, where
+              they took permanent space and put a destructive button a stray
+              click away from the password field. */}
+          <div className="space-y-3 border-t border-border/60 pt-4">
+            <div className="space-y-0.5">
+              <Label>Key maintenance</Label>
+              <p className="text-xs text-muted-foreground">
+                These act on the key selected on the login screen, and need its
+                password.
+              </p>
+            </div>
+
+            {!canUseSelectedKey && (
+              <p className="text-xs text-muted-foreground/80">
+                Select a key and enter its password to enable these.
+              </p>
+            )}
+
+            {legacyRecoveryAvailable && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={onManagePasskeys}
+                disabled={!canUseSelectedKey}
+                className="w-full"
+              >
+                Review legacy passkeys
+              </Button>
+            )}
+
+            {!vaultEnabled && (
+              <p
+                data-testid="vault-disabled-notice"
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
+              >
+                The OS vault is off, so passkey login is unavailable. An API key
+                saved to the vault earlier remains in the system keychain until
+                you remove it here.
+              </p>
+            )}
+
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={onRemoveVaultSecret}
+              disabled={!canUseSelectedKey}
+              className="w-full"
+            >
+              Remove Vault Secret
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

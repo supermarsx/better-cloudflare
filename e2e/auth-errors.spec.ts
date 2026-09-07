@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
+import { openAddKeyDialog } from "./fixtures/preferences-dock";
 
 type AuthFailureMode = "invalid" | "provider-object" | "provider-json";
 
@@ -264,7 +265,7 @@ test("missing web backend fails locally with visible configuration guidance", as
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Add New Key" }).click();
+  await openAddKeyDialog(page);
   await page.locator("#new-label").fill("Test key");
   await page.locator("#new-api-key").fill("web-secret-never-render");
   await page.locator("#new-password").fill("password");

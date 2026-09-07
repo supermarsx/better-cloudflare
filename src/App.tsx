@@ -3,8 +3,6 @@ import { LoginForm } from "@/components/auth/LoginForm";
 import { DNSManager } from "@/components/dns/DNSManager";
 import { Toaster } from "@/components/ui/toaster";
 import { storageManager } from "@/lib/storage/storage";
-import { LanguageSelector } from "@/components/layout/LanguageSelector";
-import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import {
   TITLEBAR_HEIGHT_PX,
   WindowTitleBar,
@@ -14,7 +12,6 @@ import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import i18n from "@/i18n";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { cn } from "@/lib/utils";
-import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary";
 import { RuntimeDiagnosticDetails } from "@/components/layout/RuntimeDiagnosticDetails";
@@ -83,10 +80,8 @@ function App() {
   const [activeView, setActiveView] = useState<"login" | "app">("login");
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const [prefsDockOpen, setPrefsDockOpen] = useState(false);
   const prefersReducedMotion = usePrefersReducedMotion();
   const runtimeResourcesRef = useRef<TrackedRuntimeResources | null>(null);
-  const prefsDockHideTimeout = useRef<number | null>(null);
   const transitionInFlight = useRef(false);
 
   if (!runtimeResourcesRef.current) {
@@ -156,24 +151,9 @@ function App() {
   useEffect(() => {
     return () => {
       runtimeResources.dispose();
-      prefsDockHideTimeout.current = null;
       transitionInFlight.current = false;
     };
   }, [runtimeResources]);
-
-  const clearPrefsDockHideTimer = () => {
-    if (prefsDockHideTimeout.current === null) return;
-    runtimeResources.clearTimeout(prefsDockHideTimeout.current);
-    prefsDockHideTimeout.current = null;
-  };
-
-  const schedulePrefsDockHide = () => {
-    clearPrefsDockHideTimer();
-    prefsDockHideTimeout.current = runtimeResources.setTimeout(() => {
-      setPrefsDockOpen(false);
-      prefsDockHideTimeout.current = null;
-    }, 1800);
-  };
 
   const beginTransition = (nextView: "login" | "app") => {
     if (transitionInFlight.current || isTransitioning) return;
@@ -223,53 +203,11 @@ function App() {
   };
 
   const showingAuthenticatedApp = activeView === "app" && isAuthenticated;
-  const languageSelectorTop = isDesktopEnv ? "top-12" : "top-3";
   const mainOffset = isDesktopEnv ? TITLEBAR_HEIGHT_PX : 0;
 
   return (
     <div className="h-screen overflow-hidden bg-background text-foreground">
       {isDesktopEnv ? <WindowTitleBar /> : null}
-      {!showingAuthenticatedApp ? (
-        <div className={`absolute left-3 z-20 ${languageSelectorTop}`}>
-          <div
-            className="flex items-center rounded-full border border-transparent bg-transparent px-1 py-0.5 text-[10px] text-muted-foreground/35 opacity-80 backdrop-blur-sm transition hover:opacity-100"
-            onMouseEnter={() => {
-              clearPrefsDockHideTimer();
-              setPrefsDockOpen(true);
-            }}
-            onMouseLeave={schedulePrefsDockHide}
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              className="ui-icon-button h-6 w-6"
-              aria-label="Preferences"
-              onClick={() => {
-                clearPrefsDockHideTimer();
-                setPrefsDockOpen((prev) => !prev);
-              }}
-            >
-              <ChevronRight
-                className={cn(
-                  "h-3 w-3 transition-transform duration-200",
-                  prefsDockOpen && "rotate-90",
-                )}
-              />
-            </Button>
-            <div
-              className={cn(
-                "flex items-center gap-2 overflow-hidden transition-all duration-300",
-                prefsDockOpen
-                  ? "ml-1 max-w-[140px] opacity-100"
-                  : "ml-0 max-w-0 opacity-0 pointer-events-none",
-              )}
-            >
-              <LanguageSelector compact />
-              <ThemeToggle compact />
-            </div>
-          </div>
-        </div>
-      ) : null}
       <main
         data-testid="app-viewport"
         className="absolute inset-x-0 bottom-0 flex min-h-0 overflow-hidden"

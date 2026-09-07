@@ -28,6 +28,9 @@ interface LoginDialogsProps {
   benchmarkResult: number | null;
   vaultEnabled: boolean;
   setVaultEnabled: (enabled: boolean) => void;
+  handleRemoveVaultSecret: () => void;
+  handleManagePasskeys: () => void;
+  canUseSelectedKey: boolean;
 
   showManagePasskeys: boolean;
   setShowManagePasskeys: (open: boolean) => void;
@@ -73,6 +76,9 @@ export function LoginDialogs({
   benchmarkResult,
   vaultEnabled,
   setVaultEnabled,
+  handleRemoveVaultSecret,
+  handleManagePasskeys,
+  canUseSelectedKey,
 
   showManagePasskeys,
   setShowManagePasskeys,
@@ -95,6 +101,15 @@ export function LoginDialogs({
   setEditPassword,
   handleUpdateKey,
 }: LoginDialogsProps) {
+  // Legacy review is reached from inside the settings dialog, so the settings
+  // dialog has to get out of the way first. Two stacked modals would leave the
+  // review sitting on an overlay the user cannot see past, and would put a
+  // second dismissable layer between it and Escape.
+  const handleManagePasskeysFromSettings = useCallback(() => {
+    setShowSettings(false);
+    handleManagePasskeys();
+  }, [handleManagePasskeys, setShowSettings]);
+
   const handlePasskeyOpenChange = useCallback(
     (open: boolean) => {
       setShowManagePasskeys(open);
@@ -132,6 +147,12 @@ export function LoginDialogs({
         benchmarkResult={benchmarkResult}
         vaultEnabled={vaultEnabled}
         onVaultEnabledChange={setVaultEnabled}
+        onRemoveVaultSecret={handleRemoveVaultSecret}
+        onManagePasskeys={handleManagePasskeysFromSettings}
+        legacyRecoveryAvailable={Boolean(
+          passkeyStatus?.legacyRecoveryAvailable,
+        )}
+        canUseSelectedKey={canUseSelectedKey}
       />
 
       <PasskeyManagerDialog
