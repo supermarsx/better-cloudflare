@@ -6,10 +6,16 @@ import {
   failedPasskeyStatus,
   passkeyStatusState,
   passkeyStatusReason,
+  INSECURE_ORIGIN_REASON,
   LEGACY_CREDENTIALS_REASON,
-  NO_AUTHENTICATOR_REASON,
+  NO_PLATFORM_AUTHENTICATOR_REASON,
   WEBVIEW_UNSUPPORTED_REASON,
 } from "../src/lib/auth/passkey-status";
+import type {
+  WebauthnClientCapability,
+  WebauthnClientProbe,
+  WebauthnClientSignals,
+} from "../src/lib/auth/webauthn";
 import type { PasskeyStatus } from "../src/lib/api/tauri-client";
 
 const gateShut: PasskeyStatus = {
@@ -59,17 +65,47 @@ test("passkey errors use a safe actionable fallback for unusable values", () => 
   assert.equal(passkeyErrorMessage(403), fallback);
 });
 
+/**
+ * A probe result carrying `capability`, with signals that say nothing.
+ *
+ * The reducer only ever reads `capability` and — for the advisory detail —
+ * passes the signals through `describeWebauthnSignals`, so an all-`null` set
+ * keeps each case about the branch it is testing.
+ */
+function probe(
+  capability: WebauthnClientCapability,
+  signals: Partial<WebauthnClientSignals> = {},
+): WebauthnClientProbe {
+  return {
+    capability,
+    signals: {
+      secureContext: null,
+      publicKeyCredential: true,
+      credentialsCreate: true,
+      credentialsGet: true,
+      platformAuthenticator: null,
+      hybridTransport: null,
+      passkeyPlatformAuthenticator: null,
+      conditionalGet: null,
+      source: "none",
+      probeError: null,
+      ...signals,
+    },
+  };
+}
+
 test("a shut backend gate reports the backend's own reason, whatever the client can do", () => {
   // The gate is the thing standing in the way, and only the backend knows
   // whether it is shut for verification or for a missing origin. Reporting a
   // webview limitation instead would send the user chasing a fix that is not
   // the problem.
-  for (const client of [
+  for (const capability of [
     "available",
-    "no-authenticator",
+    "no-platform-authenticator",
+    "insecure-origin",
     "unsupported",
   ] as const) {
-    assert.deepEqual(passkeyStatusState(gateShut, client), {
+    assert.deepEqual(passkeyStatusState(gateShut, probe(capability)), {
       kind: "unavailable",
       cause: "backend",
       reason: "Platform authenticator is unavailable",
@@ -82,14 +118,14 @@ test("a shut backend gate reports the backend's own reason, whatever the client 
 test("a backend that reports unavailability without a reason still says something actionable", () => {
   const state = passkeyStatusState(
     { ...gateShut, unavailableReason: "   " },
-    "available",
+    probe("available"),
   );
   assert.equal(state.kind, "unavailable");
   assert.match(passkeyStatusReason(state) ?? "", /sign in with your password/i);
 });
 
 test("a webview with no WebAuthn client is named as the cause, not the backend", () => {
-  assert.deepEqual(passkeyStatusState(backendReady, "unsupported"), {
+  assert.deepEqual(passkeyStatusState(backendReady, probe("unsupported")), {
     kind: "unavailable",
     cause: "webview",
     reason: WEBVIEW_UNSUPPORTED_REASON,
@@ -98,14 +134,43 @@ test("a webview with no WebAuthn client is named as the cause, not the backend",
   });
 });
 
-test("a device with no enrolled authenticator gets the enrolment message", () => {
-  assert.deepEqual(passkeyStatusState(backendReady, "no-authenticator"), {
+test("an insecure origin is separated from a webview that has no WebAuthn at all", () => {
+  // Same symptom — no API — but only one of the two has a cause the user can
+  // be told about, so they must not share a message.
+  assert.deepEqual(passkeyStatusState(backendReady, probe("insecure-origin")), {
     kind: "unavailable",
-    cause: "no-authenticator",
-    reason: NO_AUTHENTICATOR_REASON,
+    cause: "insecure-origin",
+    reason: INSECURE_ORIGIN_REASON,
     registration: false,
     legacyRecoveryAvailable: false,
   });
+});
+
+test("no detected authenticator leaves both ceremonies on offer", () => {
+  // The regression this pins: this state used to be `unavailable` with
+  // `registration: false`, which disabled both passkey buttons whenever
+  // isUserVerifyingPlatformAuthenticatorAvailable() said false. A security key
+  // or a phone passkey answers no probe and works anyway, so withholding the
+  // ceremony was never justified by what the probe actually knows.
+  const state = passkeyStatusState(
+    backendReady,
+    probe("no-platform-authenticator", { platformAuthenticator: false }),
+  );
+
+  assert.equal(state.kind, "available");
+  assert.equal(state.kind === "available" && state.registration, true);
+  assert.equal(state.kind === "available" && state.authentication, true);
+  assert.equal(
+    state.kind === "available" && state.advisory?.cause,
+    "no-platform-authenticator",
+  );
+  assert.equal(passkeyStatusReason(state), NO_PLATFORM_AUTHENTICATOR_REASON);
+  // The advisory carries what the probe saw, so a user who is sure Hello is
+  // enrolled has something to check rather than a flat contradiction.
+  assert.match(
+    (state.kind === "available" && state.advisory?.detail) || "",
+    /built-in authenticator: no/,
+  );
 });
 
 test("legacy-only credentials block sign-in but leave registration open", () => {
@@ -119,7 +184,7 @@ test("legacy-only credentials block sign-in but leave registration open", () => 
         legacyCredentialsRequireReregistration: true,
         unavailableReason: "",
       },
-      "available",
+      probe("available"),
     ),
     {
       kind: "unavailable",
@@ -131,15 +196,16 @@ test("legacy-only credentials block sign-in but leave registration open", () => 
   );
 });
 
-test("a working backend and a working client report availability", () => {
-  assert.deepEqual(passkeyStatusState(backendReady, "available"), {
+test("a working backend and a working client report availability with no advisory", () => {
+  assert.deepEqual(passkeyStatusState(backendReady, probe("available")), {
     kind: "available",
     registration: true,
     authentication: true,
     legacyRecoveryAvailable: false,
+    advisory: null,
   });
   assert.equal(
-    passkeyStatusReason(passkeyStatusState(backendReady, "available")),
+    passkeyStatusReason(passkeyStatusState(backendReady, probe("available"))),
     null,
   );
 });
@@ -153,34 +219,36 @@ test("registration-only availability without legacy records is still available",
         legacyCredentialsRequireReregistration: false,
         unavailableReason: "",
       },
-      "available",
+      probe("available"),
     ),
     {
       kind: "available",
       registration: true,
       authentication: false,
       legacyRecoveryAvailable: false,
+      advisory: null,
     },
   );
 });
 
-test("the four unavailable causes each carry a distinct message", () => {
+test("every reason the UI can show is distinct from every other", () => {
   const reasons = new Set(
     [
-      passkeyStatusState(gateShut, "available"),
-      passkeyStatusState(backendReady, "unsupported"),
-      passkeyStatusState(backendReady, "no-authenticator"),
+      passkeyStatusState(gateShut, probe("available")),
+      passkeyStatusState(backendReady, probe("unsupported")),
+      passkeyStatusState(backendReady, probe("insecure-origin")),
+      passkeyStatusState(backendReady, probe("no-platform-authenticator")),
       passkeyStatusState(
         {
           ...backendReady,
           authenticationAvailable: false,
           legacyCredentialsRequireReregistration: true,
         },
-        "available",
+        probe("available"),
       ),
     ].map((state) => passkeyStatusReason(state)),
   );
-  assert.equal(reasons.size, 4);
+  assert.equal(reasons.size, 5);
   assert.ok(!reasons.has(null));
 });
 

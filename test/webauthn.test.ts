@@ -7,6 +7,7 @@ import {
   createPasskeyCredential,
   getPasskeyCredential,
   isBase64url,
+  describeWebauthnSignals,
   probeWebauthnClient,
   toCredentialCreationOptions,
   toCredentialRequestOptions,
@@ -363,6 +364,7 @@ type CredentialsStub = {
 function withWebauthnClient(
   publicKeyCredential: unknown,
   credentials: CredentialsStub | undefined,
+  secureContext?: boolean,
 ): () => void {
   // The probe reads `window.PublicKeyCredential`, and under jsdom `window` is
   // not the same object as `globalThis` — setting the global would leave the
@@ -374,6 +376,10 @@ function withWebauthnClient(
     navigator,
     "credentials",
   );
+  const previousSecureContext = Object.getOwnPropertyDescriptor(
+    window,
+    "isSecureContext",
+  );
 
   if (publicKeyCredential === undefined) delete target.PublicKeyCredential;
   else target.PublicKeyCredential = publicKeyCredential;
@@ -383,6 +389,13 @@ function withWebauthnClient(
     value: credentials,
   });
 
+  if (secureContext !== undefined) {
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: secureContext,
+    });
+  }
+
   return () => {
     if (hadPkc) target.PublicKeyCredential = previousPkc;
     else delete target.PublicKeyCredential;
@@ -391,14 +404,26 @@ function withWebauthnClient(
     } else {
       delete (navigator as unknown as Record<string, unknown>).credentials;
     }
+    if (secureContext !== undefined) {
+      if (previousSecureContext) {
+        Object.defineProperty(window, "isSecureContext", previousSecureContext);
+      } else {
+        delete (window as unknown as Record<string, unknown>).isSecureContext;
+      }
+    }
   };
 }
 
 function fakePublicKeyCredential(
   isUserVerifyingPlatformAuthenticatorAvailable: unknown,
+  extras: Record<string, unknown> = {},
 ): unknown {
   const ctor = function PublicKeyCredential() {};
-  Object.assign(ctor, { isUserVerifyingPlatformAuthenticatorAvailable });
+  Object.assign(
+    ctor,
+    { isUserVerifyingPlatformAuthenticatorAvailable },
+    extras,
+  );
   return ctor;
 }
 
@@ -408,13 +433,29 @@ const workingCredentials: CredentialsStub = {
 };
 
 test("the probe reports unsupported when the webview has no WebAuthn client", async () => {
-  // This is the standing situation on macOS and Linux, where Tauri serves an
-  // opaque tauri://localhost origin. jsdom has no WebAuthn either, which is
-  // why every untouched test in the suite sees this branch.
-  const restore = withWebauthnClient(undefined, undefined);
+  // jsdom has no WebAuthn, which is why every untouched test in the suite sees
+  // this branch.
+  const restore = withWebauthnClient(undefined, undefined, true);
   try {
-    assert.equal(await probeWebauthnClient(), "unsupported");
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "unsupported");
+    assert.equal(probe.signals.publicKeyCredential, false);
     assert.equal(await webauthnClientAvailable(), false);
+  } finally {
+    restore();
+  }
+});
+
+test("a missing API outside a secure context is reported as the insecure origin it is", async () => {
+  // The standing situation on macOS and Linux, where Tauri serves an opaque
+  // tauri://localhost origin. "Not a secure context" is the actual cause and
+  // is the one thing that distinguishes it from a webview with no WebAuthn
+  // build at all, so it must not be flattened into "unsupported".
+  const restore = withWebauthnClient(undefined, undefined, false);
+  try {
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "insecure-origin");
+    assert.equal(probe.signals.secureContext, false);
   } finally {
     restore();
   }
@@ -424,25 +465,33 @@ test("the probe reports unsupported when the credential methods are missing", as
   const restore = withWebauthnClient(
     fakePublicKeyCredential(async () => true),
     { get: async () => null },
+    true,
   );
   try {
-    assert.equal(await probeWebauthnClient(), "unsupported");
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "unsupported");
+    assert.equal(probe.signals.credentialsCreate, false);
+    assert.equal(probe.signals.credentialsGet, true);
   } finally {
     restore();
   }
 });
 
-test("the probe separates an unenrolled device from an unsupported webview", async () => {
-  // Measured behaviour on a Windows host with no platform authenticator:
-  // the API is complete and isUserVerifyingPlatformAuthenticatorAvailable()
-  // resolves false. Enrolling Windows Hello fixes it, so it must not be
-  // reported as "this platform cannot do WebAuthn".
+test("no platform authenticator is advice, not a refusal", async () => {
+  // Measured behaviour on a Windows host with no platform authenticator: the
+  // API is complete and isUserVerifyingPlatformAuthenticatorAvailable()
+  // resolves false. It used to disable both passkey buttons. It must not: a
+  // USB security key answers none of these probes and works anyway.
   const restore = withWebauthnClient(
     fakePublicKeyCredential(async () => false),
     workingCredentials,
+    true,
   );
   try {
-    assert.equal(await probeWebauthnClient(), "no-authenticator");
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "no-platform-authenticator");
+    assert.equal(probe.signals.platformAuthenticator, false);
+    assert.equal(probe.signals.source, "legacy-probe");
     assert.equal(await webauthnClientAvailable(), false);
   } finally {
     restore();
@@ -453,24 +502,123 @@ test("the probe reports available when an authenticator is enrolled", async () =
   const restore = withWebauthnClient(
     fakePublicKeyCredential(async () => true),
     workingCredentials,
+    true,
   );
   try {
-    assert.equal(await probeWebauthnClient(), "available");
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "available");
+    assert.equal(probe.signals.platformAuthenticator, true);
     assert.equal(await webauthnClientAvailable(), true);
   } finally {
     restore();
   }
 });
 
-test("a probe that throws fails closed rather than enabling the buttons", async () => {
+test("getClientCapabilities is preferred, and hybrid transport alone is enough", async () => {
+  // The case the old probe could not see at all: no built-in authenticator,
+  // but the client can reach a passkey on the user's phone over QR.
+  const restore = withWebauthnClient(
+    fakePublicKeyCredential(async () => false, {
+      getClientCapabilities: async () => ({
+        userVerifyingPlatformAuthenticator: false,
+        hybridTransport: true,
+        conditionalGet: true,
+      }),
+    }),
+    workingCredentials,
+    true,
+  );
+  try {
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "available");
+    assert.equal(probe.signals.source, "client-capabilities");
+    assert.equal(probe.signals.hybridTransport, true);
+    assert.equal(probe.signals.conditionalGet, true);
+  } finally {
+    restore();
+  }
+});
+
+test("a capability map returned as a Map is read the same as a plain object", async () => {
+  const restore = withWebauthnClient(
+    fakePublicKeyCredential(undefined, {
+      getClientCapabilities: async () =>
+        new Map<string, unknown>([
+          ["passkeyPlatformAuthenticator", true],
+          // Non-boolean entries are dropped rather than coerced: a truthy
+          // string here would otherwise become a capability claim.
+          ["hybridTransport", "yes"],
+        ]),
+    }),
+    workingCredentials,
+    true,
+  );
+  try {
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "available");
+    assert.equal(probe.signals.passkeyPlatformAuthenticator, true);
+    assert.equal(probe.signals.hybridTransport, null);
+  } finally {
+    restore();
+  }
+});
+
+test("a capability map that omits a key falls back to the standalone call", async () => {
+  const restore = withWebauthnClient(
+    fakePublicKeyCredential(async () => true, {
+      getClientCapabilities: async () => ({ conditionalGet: false }),
+    }),
+    workingCredentials,
+    true,
+  );
+  try {
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "available");
+    assert.equal(probe.signals.platformAuthenticator, true);
+    assert.equal(probe.signals.conditionalGet, false);
+  } finally {
+    restore();
+  }
+});
+
+test("a probe that throws records the failure and still offers the ceremony", async () => {
+  // This reverses the old behaviour deliberately. Failing closed here disabled
+  // a working ceremony on the strength of one advisory call, which is exactly
+  // how a machine with Windows Hello enrolled was told it had no authenticator.
   const restore = withWebauthnClient(
     fakePublicKeyCredential(() => {
       throw new Error("probe exploded");
     }),
     workingCredentials,
+    true,
   );
   try {
-    assert.equal(await probeWebauthnClient(), "unsupported");
+    const probe = await probeWebauthnClient();
+    assert.equal(probe.capability, "no-platform-authenticator");
+    assert.equal(probe.signals.platformAuthenticator, null);
+    assert.equal(probe.signals.probeError, "probe exploded");
+    assert.match(describeWebauthnSignals(probe.signals), /probe error/);
+  } finally {
+    restore();
+  }
+});
+
+test("the signal description names the API that answered", async () => {
+  const restore = withWebauthnClient(
+    fakePublicKeyCredential(async () => true),
+    workingCredentials,
+    true,
+  );
+  try {
+    const probe = await probeWebauthnClient();
+    const described = describeWebauthnSignals(probe.signals);
+    assert.match(described, /secure context: yes/);
+    assert.match(described, /built-in authenticator: yes/);
+    assert.match(described, /phone over hybrid: not reported/);
+    assert.match(
+      described,
+      /source: isUserVerifyingPlatformAuthenticatorAvailable\(\)/,
+    );
   } finally {
     restore();
   }

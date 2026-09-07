@@ -321,6 +321,7 @@ test("PasskeyManagerDialog stops claiming unavailability once passkeys work", as
         registration: true,
         authentication: true,
         legacyRecoveryAvailable: true,
+        advisory: null,
       }}
     />,
   );
@@ -344,17 +345,17 @@ test("PasskeyManagerDialog names the specific reason passkeys are unavailable", 
       apiKey="token"
       status={{
         kind: "unavailable",
-        cause: "no-authenticator",
+        cause: "insecure-origin",
         registration: false,
         legacyRecoveryAvailable: true,
         reason:
-          "No passkey authenticator is set up on this device. Enrol Windows Hello, Touch ID, or a device passcode, then try again.",
+          "This window is not a secure context, so the browser withholds WebAuthn entirely. Passkeys cannot be used here. Sign in with your password instead.",
       }}
     />,
   );
 
   await waitFor(() =>
-    assert.ok(screen.getByText(/no passkey authenticator on this device/i)),
+    assert.ok(screen.getByText(/passkeys need a secure context/i)),
   );
   assert.equal(screen.queryByText(/temporarily unavailable/i), null);
 });

@@ -92,24 +92,47 @@ The relying party is scoped to whatever origin the webview reports, and that str
 | Development (`npm run tauri:dev`) | `http://localhost:3000`  | `localhost`       | Same code path; credentials enrolled here cannot be used in a production build |
 | Production, macOS / Linux         | `tauri://localhost`      | `localhost`       | Relying party configures; **the client is expected to refuse**                 |
 
-On macOS and Linux the backend is _not_ the thing that says no. `tauri://localhost` is a non-special scheme, but it still has a host, so a relying party builds and `status()` reports available. What decides is the frontend's own probe: a WebAuthn client that will not operate at an opaque origin makes `isUserVerifyingPlatformAuthenticatorAvailable()` fail or return false, and the login screen shows the `webview` cause below. **Nobody has run this on macOS or Linux** — the capability spike covered Windows only — so treat that row as the expected outcome and not as a measurement. It is stated this way deliberately: the honest failure mode of this design is that the UI depends on the client probe to avoid offering a button that cannot work, and that dependency has been exercised on one platform.
+On macOS and Linux the backend is _not_ the thing that says no. `tauri://localhost` is a non-special scheme, but it still has a host, so a relying party builds and `status()` reports available. What decides is the frontend's own probe: a WebAuthn client that will not operate at an opaque origin exposes no `PublicKeyCredential` at all, and the login screen shows the `webview` cause — or `insecure-origin`, when the client also reports `isSecureContext === false`, which is the more specific spelling of the same refusal. **Nobody has run this on macOS or Linux** — the capability spike covered Windows only — so treat that row as the expected outcome and not as a measurement.
 
 Windows production shares its RP ID, `tauri.localhost`, with every other Tauri application on the machine. That is inherent to Tauri's WebView2 origin rather than something this app chose, and it sits outside the threat model here (a single user's own machine) — recorded so it is a known property rather than a surprise.
 
-### Four reasons passkeys can be unavailable, and four different messages
+### Tauri capabilities do not gate WebAuthn
+
+Worth stating plainly, because it is the first place people look when passkeys do not work: there is nothing to add to `src-tauri/capabilities/main.json` for passkeys, and nothing missing from it. Capabilities gate Tauri's own IPC commands — `core:window:allow-close` and the like. `navigator.credentials` is a webview API and never passes through the Tauri command layer, so no permission entry can enable or disable it.
+
+What does decide whether the client half works is the origin: a secure context, which `http://tauri.localhost` and `http://localhost:3000` are and `tauri://localhost` is not. That is a property of the platform's webview, set out in the table above, and not something a config file here changes.
+
+### The client probe reports; it does not refuse
+
+The login screen asks this webview what it can do before offering a ceremony. It used to ask one question — `isUserVerifyingPlatformAuthenticatorAvailable()` — and treat a `false` as "no passkey is possible on this device", which withheld both buttons.
+
+That was wrong twice over. The call reports only _built-in_ authenticators, so a USB security key, an NFC key, and a passkey on the user's own phone over hybrid transport were all read as "no authenticator" — while the relying party would have accepted every one of them, because `start_passkey_registration` sets no `authenticatorAttachment` at all. And the same call returns `false` on webviews where a platform authenticator does in fact work, which left users with Windows Hello enrolled and working being told their device had none.
+
+There is no API that reports a roaming authenticator before a ceremony starts, and there never will be — that is what makes withholding the button on probe evidence unsound rather than merely cautious. So `probeWebauthnClient` now gathers everything the client will answer, and the answer decides what is _said_, not what is _offered_:
+
+| Signal                                                                                       | Source                                                        |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `secureContext`                                                                              | `window.isSecureContext`                                      |
+| `platformAuthenticator`, `hybridTransport`, `conditionalGet`, `passkeyPlatformAuthenticator` | `PublicKeyCredential.getClientCapabilities()` where available |
+| `platformAuthenticator`, `conditionalGet`                                                    | the standalone calls, for a client without the capability map |
+
+Any one of a platform authenticator, hybrid transport, or the client's own `passkeyPlatformAuthenticator` resolves to `available`. None of them resolves to `no-platform-authenticator`, which is an **advisory**: the notice explains what was and was not detected, prints the raw signals underneath it so a user who is certain Hello is enrolled has something to check, and leaves both buttons live. A probe call that throws is recorded in that line rather than failing the whole probe closed — failing closed is what disabled a working ceremony on the strength of one advisory call.
+
+### The reasons passkeys can be unavailable, and their separate messages
 
 Collapsing these into one "passkeys unavailable" banner would tell you nothing you could act on, so each has its own text and its own visual tone:
 
-| Cause                | What it means                                                                                                          | What you can do                                                                         |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `backend`            | The relying party reports no capability — the origin could not be resolved into one. The message is the backend's own. | Nothing on this machine; it is a configuration fault                                    |
-| `webview`            | The backend is willing, but this webview provides no WebAuthn client. The standing expectation on macOS and Linux.     | Use a password, or a different platform                                                 |
-| `no-authenticator`   | Everything works, but no user-verifying platform authenticator is enrolled here.                                       | Enrol Windows Hello, Touch ID, or a device passcode                                     |
-| `legacy-credentials` | The passkeys on file predate verified registration.                                                                    | Register a new passkey — this is the one unavailable state that still offers the button |
+| Cause                       | What it means                                                                                                          | What you can do                                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `backend`                   | The relying party reports no capability — the origin could not be resolved into one. The message is the backend's own. | Nothing on this machine; it is a configuration fault                                    |
+| `webview`                   | The backend is willing, but this webview provides no WebAuthn client.                                                  | Use a password, or a different platform                                                 |
+| `insecure-origin`           | The API is absent _and_ this is not a secure context — the specific reason it is absent. Expected on macOS and Linux.  | Use a password, or a different platform                                                 |
+| `legacy-credentials`        | The passkeys on file predate verified registration.                                                                    | Register a new passkey — this is the one unavailable state that still offers the button |
+| `no-platform-authenticator` | **Advisory, not a refusal.** No built-in authenticator and no hybrid transport were detected. Both buttons stay live.  | Try it — a security key or a phone passkey works and cannot be detected in advance      |
 
-Only a resolution failure or a failed status call renders red. A platform limitation you cannot act on renders neutral, because painting it as a fault implies you could fix it.
+Only a resolution failure or a failed status call renders red. A platform limitation you cannot act on renders neutral, because painting it as a fault implies you could fix it; so does the advisory, whose buttons work.
 
-**A passkey still needs a platform authenticator.** Where one of the above applies, the login screen names that specific reason rather than offering a button that fails:
+Where a genuine unavailable cause applies, the login screen names that specific reason rather than offering a button that fails:
 
 <img src="screenshots/dark/login.png" width="620" alt="The authentication card: an API Key dropdown, a masked vault password field with an unmask button, a Login button, secondary Add New Key / Manage Key / Settings buttons, and a Passkey security status panel">
 

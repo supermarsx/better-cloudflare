@@ -1,6 +1,9 @@
 import type { PasskeyStatus } from "@/lib/api/tauri-client";
 import { passkeyErrorMessage } from "@/lib/auth/passkey-error";
-import type { WebauthnClientCapability } from "@/lib/auth/webauthn";
+import {
+  describeWebauthnSignals,
+  type WebauthnClientProbe,
+} from "@/lib/auth/webauthn";
 
 /**
  * Why passkeys cannot be used right now.
@@ -14,17 +17,47 @@ import type { WebauthnClientCapability } from "@/lib/auth/webauthn";
  *   session. Nothing the user does on this machine changes it; the reason text
  *   comes from the backend, which knows which of those it is.
  * - `"webview"` — the backend is willing but this webview has no WebAuthn
- *   client. That is the standing situation on macOS and Linux, where Tauri
- *   serves an opaque `tauri://localhost` origin. Not a fault and not
- *   configurable — the remedy is a different platform, or a password.
- * - `"no-authenticator"` — everything works, but this machine has no
- *   user-verifying platform authenticator enrolled. Enrolling one fixes it.
+ *   client at all. Not a fault and not configurable — the remedy is a
+ *   different platform, or a password.
+ * - `"insecure-origin"` — the WebAuthn API is absent *and* this is not a
+ *   secure context, which is the specific reason it is absent. The standing
+ *   situation on macOS and Linux, where Tauri serves an opaque
+ *   `tauri://localhost` origin.
  * - `"legacy-credentials"` — the passkeys on file predate verified
  *   registration, so they cannot be used to sign in. Registration is still
  *   open, and re-enrolling is the way out.
+ *
+ * Note what is *not* here any more: the absence of a platform authenticator.
+ * That is now {@link PasskeyAdvisory} — see it for why.
  */
 export type PasskeyUnavailableCause =
-  "backend" | "webview" | "no-authenticator" | "legacy-credentials";
+  "backend" | "webview" | "insecure-origin" | "legacy-credentials";
+
+/**
+ * Something worth warning about that is **not** a reason to withhold the
+ * button.
+ *
+ * `"no-platform-authenticator"` used to be an unavailable cause, and that was
+ * a bug with real consequences: it disabled both passkey buttons whenever
+ * `isUserVerifyingPlatformAuthenticatorAvailable()` returned false. That call
+ * reports only *built-in* authenticators, so a USB security key, an NFC key,
+ * and a passkey on the user's phone were all treated as "no authenticator on
+ * this device" — while the relying party would have accepted every one of
+ * them. Worse, the same call returns false on webviews where a platform
+ * authenticator does in fact work, which stranded users who had Windows Hello
+ * enrolled and working.
+ *
+ * The probe cannot see a roaming authenticator and never will: there is no API
+ * that reports one before a ceremony starts. So the honest design is to say
+ * what was detected, offer the ceremony anyway, and let a real failure carry
+ * the real reason.
+ */
+export interface PasskeyAdvisory {
+  cause: "no-platform-authenticator";
+  reason: string;
+  /** What the probe actually saw, for a user who needs to check something. */
+  detail: string | null;
+}
 
 /**
  * What the login UI knows about passkeys, combining the relying party's own
@@ -39,6 +72,8 @@ export type PasskeyStatusState =
       registration: boolean;
       authentication: boolean;
       legacyRecoveryAvailable: boolean;
+      /** Non-null when the ceremony is offered with a caveat attached. */
+      advisory: PasskeyAdvisory | null;
     }
   | {
       kind: "unavailable";
@@ -61,8 +96,11 @@ export type PasskeyStatusState =
 export const WEBVIEW_UNSUPPORTED_REASON =
   "This platform's webview does not provide WebAuthn, so passkeys cannot be used in this app. Sign in with your password instead.";
 
-export const NO_AUTHENTICATOR_REASON =
-  "No passkey authenticator is set up on this device. Enrol Windows Hello, Touch ID, or a device passcode, then try again.";
+export const INSECURE_ORIGIN_REASON =
+  "This window is not a secure context, so the browser withholds WebAuthn entirely. Passkeys cannot be used here. Sign in with your password instead.";
+
+export const NO_PLATFORM_AUTHENTICATOR_REASON =
+  "No built-in authenticator was detected on this device. You can still register and sign in with a security key, or with a passkey on your phone — and if Windows Hello or Touch ID is set up, it may work even though it was not reported. Try it; a real failure will say what went wrong.";
 
 export const LEGACY_CREDENTIALS_REASON =
   "Your existing passkeys were enrolled before verified registration and can no longer be used to sign in. Register a new passkey to replace them.";
@@ -84,10 +122,15 @@ const UNEXPLAINED_BACKEND_REASON =
  * user cannot act on either, and the backend's own reason is the specific one.
  * Only once the backend is willing do the client-side causes become the thing
  * standing in the way.
+ *
+ * Exactly one client-side cause still withholds the ceremony — the webview
+ * having no WebAuthn client, in either of its two spellings. Everything the
+ * probe reports about *authenticators* is advice, because none of it can rule
+ * out a roaming key.
  */
 export function passkeyStatusState(
   status: PasskeyStatus,
-  client: WebauthnClientCapability,
+  client: WebauthnClientProbe,
 ): PasskeyStatusState {
   const legacyRecoveryAvailable = status.legacyCredentialsRequireReregistration;
 
@@ -101,21 +144,15 @@ export function passkeyStatusState(
     };
   }
 
-  if (client === "unsupported") {
+  if (
+    client.capability === "unsupported" ||
+    client.capability === "insecure-origin"
+  ) {
+    const insecure = client.capability === "insecure-origin";
     return {
       kind: "unavailable",
-      cause: "webview",
-      reason: WEBVIEW_UNSUPPORTED_REASON,
-      registration: false,
-      legacyRecoveryAvailable,
-    };
-  }
-
-  if (client === "no-authenticator") {
-    return {
-      kind: "unavailable",
-      cause: "no-authenticator",
-      reason: NO_AUTHENTICATOR_REASON,
+      cause: insecure ? "insecure-origin" : "webview",
+      reason: insecure ? INSECURE_ORIGIN_REASON : WEBVIEW_UNSUPPORTED_REASON,
       registration: false,
       legacyRecoveryAvailable,
     };
@@ -136,19 +173,30 @@ export function passkeyStatusState(
     registration: status.registrationAvailable,
     authentication: status.authenticationAvailable,
     legacyRecoveryAvailable,
+    advisory:
+      client.capability === "no-platform-authenticator"
+        ? {
+            cause: "no-platform-authenticator",
+            reason: NO_PLATFORM_AUTHENTICATOR_REASON,
+            detail: describeWebauthnSignals(client.signals),
+          }
+        : null,
   };
 }
 
 /**
- * The explanation to show the user, or `null` when passkeys are usable and
- * there is nothing to explain. Narrowing the union in one place keeps every
+ * The explanation to show the user, or `null` when there is nothing to say.
+ *
+ * An `available` state with an advisory still has something to say, so this
+ * returns the advisory's own text. Narrowing the union in one place keeps every
  * consumer from having to.
  */
 export function passkeyStatusReason(
   state: PasskeyStatusState | null,
 ): string | null {
   if (!state) return null;
-  return state.kind === "available" ? null : state.reason;
+  if (state.kind === "available") return state.advisory?.reason ?? null;
+  return state.reason;
 }
 
 export function failedPasskeyStatus(error: unknown): PasskeyStatusState {

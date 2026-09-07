@@ -2,15 +2,20 @@
  * The one place that turns a {@link PasskeyStatusState} into something a user
  * reads.
  *
- * `passkeyStatusState` distinguishes four reasons passkeys cannot be used
- * right now, and each has a different remedy — a different build, a different
- * platform, enrolling a fingerprint, or re-registering. Showing one generic
- * "passkeys unavailable" line for all four would throw that distinction away at
- * the last step, so each cause gets its own heading, icon and tone here. Only
- * the body text comes from the state (the backend supplies its own for
- * `"backend"`), so the two components that show this notice cannot drift apart.
+ * `passkeyStatusState` distinguishes several reasons passkeys are not working
+ * the way the user expects, and each has a different remedy — a different
+ * build, a different platform, enrolling a fingerprint, re-registering, or
+ * nothing at all because the ceremony is still worth trying. Showing one
+ * generic "passkeys unavailable" line for all of them would throw that
+ * distinction away at the last step, so each cause gets its own heading, icon
+ * and tone here. Only the body text comes from the state (the backend supplies
+ * its own for `"backend"`), so the two components that show this notice cannot
+ * drift apart.
  */
-import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
+import type {
+  PasskeyStatusState,
+  PasskeyAdvisory,
+} from "@/lib/auth/passkey-status";
 import { passkeyStatusReason } from "@/lib/auth/passkey-status";
 import { cn } from "@/lib/utils";
 import {
@@ -18,6 +23,7 @@ import {
   Fingerprint,
   KeyRound,
   MonitorOff,
+  ShieldOff,
   type LucideIcon,
 } from "lucide-react";
 
@@ -27,8 +33,9 @@ import {
  * - `critical` — something is wrong or shut off: the app's own gate, or a
  *   status call that failed.
  * - `warning` — nothing is broken, but the user must act before passkeys work.
- * - `info` — a standing platform limitation with no action available. Painting
- *   it red would imply a fault the user could fix.
+ * - `info` — a standing platform limitation with no action available, or
+ *   advice attached to a control that still works. Painting either red would
+ *   imply a fault the user could fix.
  */
 export type PasskeyNoticeTone = "critical" | "warning" | "info";
 
@@ -37,27 +44,47 @@ export interface PasskeyNotice {
   title: string;
   /** The explanation, from the state (backend text included). */
   reason: string;
+  /** What the probe saw, shown small under the reason. Advisories only. */
+  detail: string | null;
   tone: PasskeyNoticeTone;
   icon: LucideIcon;
 }
 
+function advisoryNotice(advisory: PasskeyAdvisory): PasskeyNotice {
+  return {
+    title: "No built-in authenticator detected",
+    reason: advisory.reason,
+    detail: advisory.detail,
+    // Info, not warning: the buttons beside this notice work, and a security
+    // key or phone passkey will complete the ceremony. An amber banner over a
+    // control that works reads as a fault, and this is not one.
+    tone: "info",
+    icon: Fingerprint,
+  };
+}
+
 /**
  * The notice to show for `state`, or `null` when there is nothing to say —
- * either because passkeys are usable or because the status is not known yet.
+ * either because passkeys are usable with no caveat, or because the status is
+ * not known yet.
  */
 export function passkeyStatusNotice(
   state: PasskeyStatusState | null,
 ): PasskeyNotice | null {
   // `passkeyStatusReason` is the single place that knows which variants carry a
-  // message; the `kind` check repeats its `available` case only so TypeScript
-  // narrows the union for the `cause` switch below.
+  // message; the `kind` checks below repeat it only so TypeScript narrows.
   const reason = passkeyStatusReason(state);
-  if (!state || reason === null || state.kind === "available") return null;
+  if (!state || reason === null) return null;
+
+  if (state.kind === "available") {
+    return state.advisory ? advisoryNotice(state.advisory) : null;
+  }
 
   if (state.kind === "error") {
     return {
       title: "Passkey status could not be read",
       reason,
+      detail: null,
       tone: "critical",
       icon: AlertTriangle,
     };
@@ -68,20 +95,23 @@ export function passkeyStatusNotice(
       return {
         title: "Passkeys are not supported on this platform",
         reason,
+        detail: null,
         tone: "info",
         icon: MonitorOff,
       };
-    case "no-authenticator":
+    case "insecure-origin":
       return {
-        title: "No passkey authenticator on this device",
+        title: "Passkeys need a secure context",
         reason,
-        tone: "warning",
-        icon: Fingerprint,
+        detail: null,
+        tone: "info",
+        icon: ShieldOff,
       };
     case "legacy-credentials":
       return {
         title: "Your passkeys need re-registering",
         reason,
+        detail: null,
         tone: "warning",
         icon: KeyRound,
       };
@@ -90,6 +120,7 @@ export function passkeyStatusNotice(
       return {
         title: "Passkeys temporarily unavailable",
         reason,
+        detail: null,
         tone: "critical",
         icon: AlertTriangle,
       };
@@ -114,11 +145,12 @@ interface PasskeyStatusNoticeProps {
 }
 
 /**
- * Renders {@link passkeyStatusNotice}, or nothing when passkeys are usable.
+ * Renders {@link passkeyStatusNotice}, or nothing when passkeys are usable
+ * with no caveat.
  *
- * `role="alert"` is kept for every tone: the notice always explains why a
- * security control the user is reaching for is not there, and a screen reader
- * user who cannot see the button's absence is exactly who needs to be told.
+ * `role="alert"` is used for the tones that report something standing in the
+ * user's way. An advisory is `role="status"` instead: the control beside it
+ * works, and interrupting a screen reader to say so would misrepresent it.
  */
 export function PasskeyStatusNotice({
   state,
@@ -128,6 +160,7 @@ export function PasskeyStatusNotice({
   if (!notice) return null;
 
   const Icon = notice.icon;
+  const advisory = state?.kind === "available";
 
   return (
     <div
@@ -136,7 +169,7 @@ export function PasskeyStatusNotice({
         TONE_SURFACE[notice.tone],
         className,
       )}
-      role="alert"
+      role={advisory ? "status" : "alert"}
     >
       <div
         className={cn(
@@ -148,6 +181,11 @@ export function PasskeyStatusNotice({
         {notice.title}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{notice.reason}</p>
+      {notice.detail && (
+        <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
+          {notice.detail}
+        </p>
+      )}
     </div>
   );
 }

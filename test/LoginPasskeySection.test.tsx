@@ -138,19 +138,20 @@ test("LoginPasskeySection stops claiming unavailability once passkeys are availa
         registration: true,
         authentication: true,
         legacyRecoveryAvailable: false,
+        advisory: null,
       }}
     />,
   );
 
   assert.equal(screen.queryByRole("alert"), null);
+  assert.equal(screen.queryByRole("status"), null);
   assert.equal(screen.queryByText(/passkeys temporarily unavailable/i), null);
 });
 
-// ── The available branch, and the three unavailable causes that are not the
-// backend's ───────────────────────────────────────────────────────────────────
+// ── The available branch, and the causes that are not the backend's ─────────
 //
-// The point of the status union is that these four situations have four
-// different remedies. A test that only asserted "some alert is shown" would
+// The point of the status union is that these situations have different
+// remedies. A test that only asserted "some alert is shown" would
 // pass just as well against the single generic message the union replaced, so
 // each of these pins the specific wording its own state produces.
 
@@ -159,6 +160,7 @@ const availableStatus: PasskeyStatusState = {
   registration: true,
   authentication: true,
   legacyRecoveryAvailable: false,
+  advisory: null,
 };
 
 function renderSection(
@@ -279,22 +281,58 @@ test("LoginPasskeySection names the platform limitation rather than a generic fa
   assert.equal(screen.queryByRole("button", { name: /use passkey/i }), null);
 });
 
-test("LoginPasskeySection tells an unenrolled device what to enrol", () => {
+test("LoginPasskeySection separates an insecure origin from an absent WebAuthn build", () => {
   renderSection({
     status: {
       kind: "unavailable",
-      cause: "no-authenticator",
+      cause: "insecure-origin",
       registration: false,
       legacyRecoveryAvailable: false,
       reason:
-        "No passkey authenticator is set up on this device. Enrol Windows Hello, Touch ID, or a device passcode, then try again.",
+        "This window is not a secure context, so the browser withholds WebAuthn entirely. Passkeys cannot be used here. Sign in with your password instead.",
     },
   });
 
-  assert.ok(screen.getByText(/no passkey authenticator on this device/i));
-  assert.ok(screen.getByText(/enrol windows hello/i));
+  assert.ok(screen.getByText(/passkeys need a secure context/i));
+  assert.equal(screen.queryByText(/not supported on this platform/i), null);
+});
+
+test("LoginPasskeySection keeps both ceremonies live under the no-authenticator advisory", () => {
+  // The regression this pins. An undetected authenticator used to remove both
+  // buttons; a security key or a phone passkey works regardless, so the state
+  // is now advice printed beside two live controls.
+  renderSection({
+    status: {
+      kind: "available",
+      registration: true,
+      authentication: true,
+      legacyRecoveryAvailable: false,
+      advisory: {
+        cause: "no-platform-authenticator",
+        reason:
+          "No built-in authenticator was detected on this device. You can still register and sign in with a security key, or with a passkey on your phone.",
+        detail: "built-in authenticator: no; phone over hybrid: not reported",
+      },
+    },
+  });
+
+  assert.ok(screen.getByText(/no built-in authenticator detected/i));
+  assert.ok(screen.getByText(/security key/i));
+  assert.ok(screen.getByText(/phone over hybrid: not reported/i));
+
+  // Advice, not an alarm: the controls beside it work.
+  assert.equal(screen.queryByRole("alert"), null);
+  assert.ok(screen.getByRole("status"));
   assert.equal(
-    screen.queryByRole("button", { name: /register passkey/i }),
-    null,
+    screen
+      .getByRole("button", { name: /register passkey/i })
+      .hasAttribute("disabled"),
+    false,
+  );
+  assert.equal(
+    screen
+      .getByRole("button", { name: /use passkey/i })
+      .hasAttribute("disabled"),
+    false,
   );
 });
