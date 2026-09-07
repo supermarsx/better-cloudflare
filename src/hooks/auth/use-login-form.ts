@@ -5,6 +5,7 @@ import { storageBackend } from "@/lib/storage/storage-util";
 import i18next from "i18next";
 import { cryptoManager } from "@/lib/auth/crypto";
 import { ServerClient } from "@/lib/api/server-client";
+import type { PasskeyAuthenticationResult } from "@/lib/api/server-client";
 import {
   formatRequestError,
   normalizeRequestError,
@@ -105,6 +106,10 @@ export function useLoginForm(
   const [passkeyStatus, setPasskeyStatus] = useState<PasskeyStatusState | null>(
     null,
   );
+  // Whether the backend runs the ceremony itself. Read from the same status
+  // call the UI is built from, so the two can never disagree about which
+  // client is about to run.
+  const [passkeyNative, setPasskeyNative] = useState(false);
   const [showManagePasskeys, setShowManagePasskeys] = useState(false);
   const [passkeyViewKey, setPasskeyViewKey] = useState("");
   const [passkeyViewEmail, setPasskeyViewEmail] = useState<string | undefined>(
@@ -172,6 +177,7 @@ export function useLoginForm(
     let current = true;
     if (!desktop) {
       setPasskeyStatus(null);
+      setPasskeyNative(false);
       return () => {
         current = false;
       };
@@ -183,11 +189,14 @@ export function useLoginForm(
     // together. `probeWebauthnClient` never rejects.
     Promise.all([TauriClient.getPasskeyStatus(), probeWebauthnClient()])
       .then(([status, client]) => {
-        if (current) setPasskeyStatus(passkeyStatusState(status, client));
+        if (!current) return;
+        setPasskeyNative(status.nativeCeremony === true);
+        setPasskeyStatus(passkeyStatusState(status, client));
       })
       .catch((error) => {
         if (current) {
           console.error("Failed to load passkey capabilities:", error);
+          setPasskeyNative(false);
           setPasskeyStatus(failedPasskeyStatus(error));
         }
       });
@@ -459,8 +468,9 @@ export function useLoginForm(
     // Show initial guidance toast
     toast({
       title: "Passkey Registration",
-      description:
-        "Follow the prompts from your device to register a new passkey...",
+      description: passkeyNative
+        ? "Your system will ask how you want to save this passkey — Windows Hello, a security key, or your phone."
+        : "Follow the prompts from your device to register a new passkey...",
     });
 
     try {
@@ -493,6 +503,18 @@ export function useLoginForm(
           variant: "destructive",
           persistent: true,
         });
+      }
+
+      // The native path is one call: the challenge is built, the OS runs the
+      // ceremony, and the result is verified without any of it crossing into
+      // the webview. There is nothing here to serialise or unwrap.
+      if (passkeyNative) {
+        await TauriClient.registerPasskeyNative(selectedKeyId);
+        toast({
+          title: "✓ Passkey Registered",
+          description: "You can now use this passkey for passwordless login",
+        });
+        return;
       }
 
       const sc2 = new ServerClient(decryptedKey, undefined, decryptedEmail);
@@ -568,59 +590,75 @@ export function useLoginForm(
     // Show guidance toast
     toast({
       title: "Passkey Authentication",
-      description:
-        "Use your device's biometric or security key to authenticate...",
+      description: passkeyNative
+        ? "Your system will ask you to confirm — with Windows Hello, a security key, or your phone."
+        : "Use your device's biometric or security key to authenticate...",
     });
 
     try {
       const scx = new ServerClient("", undefined);
-      const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
-      const publicKey = toCredentialRequestOptions(
-        unwrapCeremonyOptions(opts) as unknown as Parameters<
-          typeof toCredentialRequestOptions
-        >[0],
-      );
 
-      const assertion = await getPasskeyCredential(publicKey);
-
-      if (assertion) {
-        const a = assertion as PublicKeyCredential;
-        const serverResp = await scx.authenticatePasskey(
+      // Both paths end with the same envelope — success flag and unlock token
+      // — because the backend mints it the same way whichever client ran the
+      // ceremony. Only the way it is obtained differs: one call, or three.
+      let serverResp: PasskeyAuthenticationResult | null;
+      if (passkeyNative) {
+        serverResp = (await TauriClient.authenticatePasskeyNative(
           selectedKeyId,
-          serializeAuthenticationCredential(a),
+        )) as PasskeyAuthenticationResult;
+      } else {
+        const opts = await scx.getPasskeyAuthOptions(selectedKeyId);
+        const publicKey = toCredentialRequestOptions(
+          unwrapCeremonyOptions(opts) as unknown as Parameters<
+            typeof toCredentialRequestOptions
+          >[0],
         );
-        if (serverResp?.success) {
-          const secret = await scx.getVaultSecret(
-            selectedKeyId,
-            serverResp.token,
-          );
-          if (secret) {
-            const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
-            storageManager.setCurrentSession(selectedKeyId);
-            await onLogin(secret, selectedKey?.email);
-            toast({
-              title: "✓ Login Successful",
-              description: "Authenticated using passkey",
-            });
-          } else {
-            toast({
-              title: "Error",
-              description:
-                "No API key found in vault. Please register a passkey first.",
-              variant: "destructive",
-            });
-          }
+
+        const assertion = await getPasskeyCredential(publicKey);
+        // A null credential is the webview client's way of saying the user
+        // dismissed the prompt. The native path throws instead, and lands in
+        // the catch below with the reason the OS gave.
+        serverResp = assertion
+          ? await scx.authenticatePasskey(
+              selectedKeyId,
+              serializeAuthenticationCredential(
+                assertion as PublicKeyCredential,
+              ),
+            )
+          : null;
+      }
+
+      if (!serverResp) {
+        toast({
+          title: "Authentication Cancelled",
+          description: "Passkey authentication was not completed",
+          variant: "destructive",
+        });
+      } else if (serverResp.success) {
+        const secret = await scx.getVaultSecret(
+          selectedKeyId,
+          serverResp.token,
+        );
+        if (secret) {
+          const selectedKey = apiKeys.find((k) => k.id === selectedKeyId);
+          storageManager.setCurrentSession(selectedKeyId);
+          await onLogin(secret, selectedKey?.email);
+          toast({
+            title: "✓ Login Successful",
+            description: "Authenticated using passkey",
+          });
         } else {
           toast({
-            title: "Authentication Failed",
-            description: "Passkey verification failed. Please try again.",
+            title: "Error",
+            description:
+              "No API key found in vault. Please register a passkey first.",
             variant: "destructive",
           });
         }
       } else {
         toast({
-          title: "Authentication Cancelled",
-          description: "Passkey authentication was not completed",
+          title: "Authentication Failed",
+          description: "Passkey verification failed. Please try again.",
           variant: "destructive",
         });
       }

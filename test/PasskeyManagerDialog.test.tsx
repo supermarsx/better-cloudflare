@@ -321,6 +321,7 @@ test("PasskeyManagerDialog stops claiming unavailability once passkeys work", as
         registration: true,
         authentication: true,
         legacyRecoveryAvailable: true,
+        native: false,
         advisory: null,
       }}
     />,

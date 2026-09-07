@@ -414,6 +414,21 @@ export interface PasskeyStatus {
   authenticationAvailable: boolean;
   legacyCredentialsRequireReregistration: boolean;
   unavailableReason: string;
+  /**
+   * Whether the backend can run the ceremony itself, against the operating
+   * system's own authenticator broker, instead of this webview running it.
+   *
+   * When true the frontend must not call `navigator.credentials` at all: it
+   * calls one command and the backend does the whole ceremony. Everything the
+   * webview client's own capability probe reports becomes irrelevant, because
+   * none of it describes the client that will actually run.
+   *
+   * Optional because a desktop build older than this field will not send it,
+   * and `undefined` must read as "no native client".
+   */
+  nativeCeremony?: boolean;
+  /** Which broker that is, e.g. `"windows-webauthn"`. Descriptive only. */
+  nativeClient?: string | null;
 }
 
 export class TauriClient {
@@ -716,6 +731,26 @@ export class TauriClient {
 
   static async getPasskeyRegistrationOptions(id: string): Promise<unknown> {
     return invoke("get_passkey_registration_options", { id });
+  }
+
+  /**
+   * Enrol a passkey with the ceremony running in the backend.
+   *
+   * One call, not three: no options round trip, and no challenge left waiting
+   * in a store between them.
+   */
+  static async registerPasskeyNative(id: string): Promise<void> {
+    return invoke("register_passkey_native", { id });
+  }
+
+  /**
+   * Sign in with the ceremony running in the backend.
+   *
+   * Resolves to the same shape as {@link authenticatePasskey}, unlock token
+   * included.
+   */
+  static async authenticatePasskeyNative(id: string): Promise<unknown> {
+    return invoke("authenticate_passkey_native", { id });
   }
 
   static async registerPasskey(

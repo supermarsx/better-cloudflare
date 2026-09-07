@@ -44,6 +44,11 @@ export function LoginPasskeySection({
   const busy = registerLoading || authLoading;
   const offersCeremony = canRegister || canAuthenticate;
 
+  // Worth saying out loud, because it changes what the user is about to see:
+  // the system's own credential picker rather than the browser's, and with it
+  // security keys and phone passkeys the webview client could not reach here.
+  const native = status.kind === "available" && status.native;
+
   return (
     <div className="space-y-2 pt-4 border-t border-border">
       <div className="flex items-center gap-2 pl-1">
@@ -55,7 +60,9 @@ export function LoginPasskeySection({
 
       {offersCeremony && (
         <p className="text-xs text-muted-foreground pl-1 mb-3">
-          Sign in with your device instead of typing this key&apos;s password.
+          {native
+            ? "Sign in with your device instead of typing this key's password. Your system handles the prompt, so a security key or a passkey on your phone works too."
+            : "Sign in with your device instead of typing this key's password."}
         </p>
       )}
 

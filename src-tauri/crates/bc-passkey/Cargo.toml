@@ -78,6 +78,11 @@ uuid = { version = "1", features = ["v4", "v5"] }
 webauthn-rs = { version = "=0.6.1-dev", default-features = false }
 bc-storage = { path = "../bc-storage" }
 
+# `spawn_blocking` only. A native ceremony blocks on a modal OS dialog, which
+# must not sit on an async executor thread; `rt` is the whole of what that
+# needs, and Tauri already provides the runtime it hands the task to.
+tokio = { version = "1", default-features = false, features = ["rt"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 # In-process software authenticator (`SoftPasskey`) used to drive complete real
@@ -92,3 +97,25 @@ tokio = { version = "1", features = ["full"] }
 #     let attestation = authenticator.do_registration(origin, ccr)?;
 #     let assertion = authenticator.do_authentication(origin, rcr)?;
 webauthn-authenticator-rs = { version = "=0.6.1-dev", features = ["softpasskey"] }
+
+# ── The client half of WebAuthn, on the one platform with a native broker ────
+#
+# Pinned to exactly the version of the relying-party crate above: these two are
+# published together (`0.6.1-dev`, 2026-04-30) and exchange `webauthn-rs-proto`
+# types directly across the ceremony boundary, so a mismatch is a type error at
+# best and a silent protocol disagreement at worst. Everything the `=` pin buys
+# for `webauthn-rs` it buys here, for the same reasons — read that comment.
+#
+# `win10` is the only feature enabled, and it wraps `webauthn.dll`. Linking it
+# makes that DLL a load-time import, which sets a floor of Windows 10 1809, the
+# release it shipped in. WebView2 already requires a later build, so the floor
+# is not the binding constraint.
+#
+# `usb`, `nfc` and `cable` are deliberately NOT enabled. On Windows the system
+# credential picker already brokers security keys and phones itself, so turning
+# them on would add a second, worse implementation of what the OS is doing —
+# along with a USB HID stack and a Bluetooth stack — for no gain.
+[target.'cfg(windows)'.dependencies]
+webauthn-authenticator-rs = { version = "=0.6.1-dev", default-features = false, features = [
+    "win10",
+] }

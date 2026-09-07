@@ -74,6 +74,16 @@ export type PasskeyStatusState =
       legacyRecoveryAvailable: boolean;
       /** Non-null when the ceremony is offered with a caveat attached. */
       advisory: PasskeyAdvisory | null;
+      /**
+       * Whether the ceremony will run in the backend, against the operating
+       * system's own authenticator broker, rather than in this webview.
+       *
+       * The UI says so, because it changes what the user is about to see: the
+       * system credential picker rather than the browser's, and with it
+       * security keys and phone passkeys that the webview client could not
+       * reach here.
+       */
+      native: boolean;
     }
   | {
       kind: "unavailable";
@@ -124,15 +134,21 @@ const UNEXPLAINED_BACKEND_REASON =
  * standing in the way.
  *
  * Exactly one client-side cause still withholds the ceremony — the webview
- * having no WebAuthn client, in either of its two spellings. Everything the
- * probe reports about *authenticators* is advice, because none of it can rule
- * out a roaming key.
+ * having no WebAuthn client, in either of its two spellings — and even that is
+ * skipped when the backend reports it can run the ceremony itself, since then
+ * no webview client is involved at all. Everything the probe reports about
+ * *authenticators* is advice, because none of it can rule out a roaming key.
  */
 export function passkeyStatusState(
   status: PasskeyStatus,
   client: WebauthnClientProbe,
 ): PasskeyStatusState {
   const legacyRecoveryAvailable = status.legacyCredentialsRequireReregistration;
+  // When the backend runs the ceremony, every client-side finding below
+  // describes a client that will not be used. Reporting them anyway would be
+  // the original bug in a new place: withholding a working button on evidence
+  // about something else entirely.
+  const native = status.nativeCeremony === true;
 
   if (!status.registrationAvailable && !status.authenticationAvailable) {
     return {
@@ -145,8 +161,9 @@ export function passkeyStatusState(
   }
 
   if (
-    client.capability === "unsupported" ||
-    client.capability === "insecure-origin"
+    !native &&
+    (client.capability === "unsupported" ||
+      client.capability === "insecure-origin")
   ) {
     const insecure = client.capability === "insecure-origin";
     return {
@@ -173,8 +190,9 @@ export function passkeyStatusState(
     registration: status.registrationAvailable,
     authentication: status.authenticationAvailable,
     legacyRecoveryAvailable,
+    native,
     advisory:
-      client.capability === "no-platform-authenticator"
+      !native && client.capability === "no-platform-authenticator"
         ? {
             cause: "no-platform-authenticator",
             reason: NO_PLATFORM_AUTHENTICATOR_REASON,

@@ -10,6 +10,7 @@ use crate::session::SessionManager;
 use crate::storage::{ApiKey, Storage};
 use bc_cloudflare_api::{CloudflareError, VerificationErrorSource, VerificationFailureKind};
 use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind};
+use bc_passkey::{PasskeyError, PlatformAuthenticator};
 
 use super::log_audit;
 
@@ -1412,6 +1413,100 @@ pub async fn register_passkey(
     )
     .await;
     Ok(())
+}
+
+/// Enrol a passkey with the ceremony running in this process.
+///
+/// One call instead of the webview path's three: the challenge never leaves
+/// the backend, so there is no options round trip and no challenge-store entry
+/// to expire between them. The frontend picks this route when
+/// `get_passkey_status` reports `nativeCeremony`, and only then.
+#[tauri::command]
+pub async fn register_passkey_native(
+    storage: State<'_, Storage>,
+    passkey_mgr: State<'_, PasskeyState>,
+    id: String,
+) -> Result<(), String> {
+    let authenticator = PlatformAuthenticator::detect()
+        .ok_or_else(|| PasskeyError::NativeClientUnavailable.to_string())?;
+
+    passkey_mgr
+        .manager()
+        .register_passkey_native(&storage, &id, authenticator)
+        .await
+        .map_err(|e| e.to_string())?;
+    log_audit(
+        &storage,
+        serde_json::json!({
+            "operation": "passkey:register",
+            "resource": id,
+            "client": "native",
+        }),
+    )
+    .await;
+    Ok(())
+}
+
+/// Sign in with the ceremony running in this process.
+///
+/// Returns exactly what [`authenticate_passkey`] returns, unlock token
+/// included, so nothing downstream — `get_vault_secret` least of all — can
+/// tell which client ran the ceremony.
+#[tauri::command]
+pub async fn authenticate_passkey_native(
+    storage: State<'_, Storage>,
+    passkey_mgr: State<'_, PasskeyState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let Some(authenticator) = PlatformAuthenticator::detect() else {
+        let error = PasskeyError::NativeClientUnavailable.to_string();
+        log_audit(
+            &storage,
+            serde_json::json!({
+                "operation": "passkey:authenticate",
+                "resource": id,
+                "client": "native",
+                "success": false,
+                "error": error,
+            }),
+        )
+        .await;
+        return Err(error);
+    };
+
+    match passkey_mgr
+        .manager()
+        .authenticate_passkey_native(&storage, &id, authenticator)
+        .await
+    {
+        Ok(result) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "passkey:authenticate",
+                    "resource": id,
+                    "client": "native",
+                    "success": true
+                }),
+            )
+            .await;
+            Ok(result)
+        }
+        Err(err) => {
+            log_audit(
+                &storage,
+                serde_json::json!({
+                    "operation": "passkey:authenticate",
+                    "resource": id,
+                    "client": "native",
+                    "success": false,
+                    "error": err.to_string()
+                }),
+            )
+            .await;
+            Err(err.to_string())
+        }
+    }
 }
 
 #[tauri::command]

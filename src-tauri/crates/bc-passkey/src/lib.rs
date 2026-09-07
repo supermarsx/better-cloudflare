@@ -47,8 +47,9 @@ use serde_json::Value;
 use thiserror::Error;
 use url::Url;
 use webauthn_rs::prelude::{
-    AuthenticationResult, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, Uuid,
+    AuthenticationResult, CreationChallengeResponse, Passkey, PasskeyAuthentication,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Uuid,
 };
 
 pub use bc_storage::Storage;
@@ -57,6 +58,7 @@ mod challenge;
 pub mod config;
 pub mod credential;
 pub mod legacy;
+pub mod native;
 mod token;
 
 /// Tests that need crate-internal access: the gate, and the expiry helpers.
@@ -68,6 +70,9 @@ pub use config::{WebauthnConfig, RP_NAME};
 pub use credential::{
     classify_record, credential_storage_key, DeadCredential, DeadCredentialReason, RecordClass,
     StoredCredential, StoredCredentialSchema, VerifiedCredentials, CREDENTIAL_SCHEMA_V1,
+};
+pub use native::{
+    ensure_native_origin, NativeAuthenticator, PlatformAuthenticator, NATIVE_CEREMONY_TIMEOUT_MS,
 };
 pub use token::TOKEN_TTL;
 
@@ -126,6 +131,17 @@ pub struct PasskeyStatus {
     pub authentication_available: bool,
     pub legacy_credentials_require_reregistration: bool,
     pub unavailable_reason: &'static str,
+    /// Whether the ceremony itself can run in this process, against the
+    /// operating system's own authenticator broker, instead of in the webview.
+    ///
+    /// When true the frontend must not run its own `navigator.credentials`
+    /// ceremony: it calls one command and the backend does the whole thing.
+    /// The two paths differ only in who talks to the authenticator — the
+    /// verification, the credential store and the unlock token are identical.
+    pub native_ceremony: bool,
+    /// Which broker that is, or `None` when there is no native client. Purely
+    /// descriptive; nothing branches on the string.
+    pub native_client: Option<&'static str>,
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -168,6 +184,20 @@ pub enum PasskeyError {
     CredentialAlreadyEnrolled,
     #[error("Passkey storage error: {0}")]
     Storage(String),
+    /// This platform has no native WebAuthn client, so the ceremony cannot run
+    /// in this process. Not a fault: the webview path is still there.
+    #[error("This platform has no native passkey client, so the ceremony must run in the webview")]
+    NativeClientUnavailable,
+    /// The runtime origin is not one a native ceremony may run for. See
+    /// [`native::ensure_native_origin`].
+    #[error("{0}")]
+    NativeOriginRefused(String),
+    /// The operating system's authenticator did not complete the ceremony.
+    ///
+    /// The payload is a complete, user-facing sentence — these reach a toast
+    /// unchanged — so `Display` adds no prefix of its own.
+    #[error("{0}")]
+    NativeCeremony(String),
 }
 
 impl PasskeyError {
@@ -289,12 +319,40 @@ impl PasskeyManager {
     /// This and [`TOKEN_VERIFICATION_ENABLED`] flip together — see that
     /// constant.
     pub fn status(&self) -> PasskeyStatus {
+        let native_client = self.native_client_label();
         PasskeyStatus {
             registration_available: self.is_configured(),
             authentication_available: self.is_configured(),
             legacy_credentials_require_reregistration: true,
             unavailable_reason: self.unavailable_reason,
+            native_ceremony: native_client.is_some(),
+            native_client,
         }
+    }
+
+    /// The native broker this process can drive, or `None`.
+    ///
+    /// Every condition the native path needs is checked here, so the frontend
+    /// can never be told to take a route that would then refuse: a configured
+    /// relying party, an origin a native ceremony may run for, and a platform
+    /// client that actually exists.
+    fn native_client_label(&self) -> Option<&'static str> {
+        let config = self.config.as_deref()?;
+        let origin = Url::parse(config.origin()).ok()?;
+        native::ensure_native_origin(&origin, config.rp_id()).ok()?;
+        Some(native::PlatformAuthenticator::detect()?.label())
+    }
+
+    /// The origin to run a native ceremony at, having re-checked it.
+    ///
+    /// Re-checked rather than trusted from `status()`: that report was built
+    /// for a different call, and this is the value the ceremony is actually
+    /// scoped to.
+    fn native_origin(&self, config: &WebauthnConfig) -> Result<Url, PasskeyError> {
+        let origin =
+            Url::parse(config.origin()).map_err(|_| PasskeyError::RuntimeOriginUnavailable)?;
+        native::ensure_native_origin(&origin, config.rp_id())?;
+        Ok(origin)
     }
 
     /// The stable WebAuthn user handle for an account.
@@ -304,17 +362,21 @@ impl PasskeyManager {
 
     // ─── Registration ───────────────────────────────────────────────────────
 
-    /// Begin enrolling a passkey for `id`.
+    /// Build a registration challenge and its verification state.
     ///
     /// Credentials already enrolled under this RP ID are passed as
     /// `excludeCredentials`, so an authenticator the user has already enrolled
     /// declines rather than silently creating a second credential.
-    pub async fn get_registration_options(
+    ///
+    /// Nothing is stored here. Which of the two callers stores the state — and
+    /// in what order relative to anything else that can fail — is theirs to
+    /// decide, and they decide differently.
+    async fn build_registration(
         &self,
+        config: &WebauthnConfig,
         storage: &Storage,
         id: &str,
-    ) -> Result<Value, PasskeyError> {
-        let config = self.config_for_registration()?;
+    ) -> Result<(CreationChallengeResponse, PasskeyRegistration), PasskeyError> {
         let loaded = credential::load_credentials(storage, id).await?;
 
         let exclude: Vec<_> = loaded
@@ -328,7 +390,7 @@ impl PasskeyManager {
         // authenticator and shown in the platform's passkey list, so they carry
         // the account handle and never the API key itself.
         let label = account_label(id);
-        let (challenge, state) = config
+        config
             .webauthn()
             .start_passkey_registration(
                 Self::user_handle(id),
@@ -336,10 +398,21 @@ impl PasskeyManager {
                 &label,
                 (!exclude.is_empty()).then_some(exclude),
             )
-            .map_err(PasskeyError::verification)?;
+            .map_err(PasskeyError::verification)
+    }
 
-        // Serialise before storing the state: a serialisation failure must not
-        // leave a live challenge behind.
+    /// Begin enrolling a passkey for `id`, for the webview client.
+    ///
+    /// The challenge is serialised **before** its state is stored: a
+    /// serialisation failure must not leave a live challenge behind.
+    pub async fn get_registration_options(
+        &self,
+        storage: &Storage,
+        id: &str,
+    ) -> Result<Value, PasskeyError> {
+        let config = self.config_for_registration()?;
+        let (challenge, state) = self.build_registration(config, storage, id).await?;
+
         let options = serde_json::to_value(&challenge)
             .map_err(|error| PasskeyError::MalformedCeremonyResponse(error.to_string()))?;
         self.registrations.insert(id, state)?;
@@ -383,12 +456,12 @@ impl PasskeyManager {
     /// ceremony starts. They cannot produce a valid assertion — the client will
     /// not even offer them — so including them would turn a knowable
     /// configuration mismatch into an opaque failure at the authenticator.
-    pub async fn get_auth_options(
+    async fn build_authentication(
         &self,
+        config: &WebauthnConfig,
         storage: &Storage,
         id: &str,
-    ) -> Result<Value, PasskeyError> {
-        let config = self.config_for_authentication()?;
+    ) -> Result<(RequestChallengeResponse, PasskeyAuthentication), PasskeyError> {
         let loaded = credential::load_credentials(storage, id).await?;
         if loaded.is_empty() {
             return Err(PasskeyError::NoVerifiedCredentials);
@@ -403,10 +476,23 @@ impl PasskeyManager {
             .iter()
             .map(|credential| credential.passkey.clone())
             .collect();
-        let (challenge, state) = config
+        config
             .webauthn()
             .start_passkey_authentication(&passkeys)
-            .map_err(PasskeyError::verification)?;
+            .map_err(PasskeyError::verification)
+    }
+
+    /// Begin a sign-in for `id`, for the webview client.
+    ///
+    /// Serialised before the state is stored, for the same reason registration
+    /// is.
+    pub async fn get_auth_options(
+        &self,
+        storage: &Storage,
+        id: &str,
+    ) -> Result<Value, PasskeyError> {
+        let config = self.config_for_authentication()?;
+        let (challenge, state) = self.build_authentication(config, storage, id).await?;
 
         let options = serde_json::to_value(&challenge)
             .map_err(|error| PasskeyError::MalformedCeremonyResponse(error.to_string()))?;
@@ -440,6 +526,21 @@ impl PasskeyManager {
             .finish_passkey_authentication(&credential, &state)
             .map_err(PasskeyError::verification)?;
 
+        self.mint_unlock_token(storage, id, result).await
+    }
+
+    /// Record what a verified assertion taught us, then mint its unlock token.
+    ///
+    /// Shared by the webview and native paths so that the security-relevant
+    /// tail of a sign-in cannot come to differ between them. Only `result`
+    /// reaches here, and it exists solely because `webauthn-rs` verified an
+    /// assertion — there is no way to reach this function without one.
+    async fn mint_unlock_token(
+        &self,
+        storage: &Storage,
+        id: &str,
+        result: AuthenticationResult,
+    ) -> Result<Value, PasskeyError> {
         // Persist before minting. If the counter cannot be recorded, the next
         // ceremony would verify against a stale counter, so the assertion is
         // not converted into an unlock token.
@@ -454,6 +555,88 @@ impl PasskeyManager {
             // and must never be audited; the credential id is not secret.
             "credentialId": minted.credential_id,
         }))
+    }
+
+    // ─── Native ceremonies ──────────────────────────────────────────────────
+
+    /// Enrol a passkey with the ceremony running in **this process**, against
+    /// the operating system's own authenticator broker.
+    ///
+    /// The webview never sees a challenge on this path, so there is no
+    /// challenge store entry: the whole ceremony is one call, and single use is
+    /// therefore structural rather than enforced. Everything after the
+    /// authenticator responds is byte-for-byte the webview path — the same
+    /// `finish_passkey_registration`, the same `StoredCredential`.
+    ///
+    /// The authenticator is moved onto a blocking thread because it raises a
+    /// modal OS dialog and does not return until the user answers it.
+    pub async fn register_passkey_native<A>(
+        &self,
+        storage: &Storage,
+        id: &str,
+        mut authenticator: A,
+    ) -> Result<(), PasskeyError>
+    where
+        A: NativeAuthenticator,
+    {
+        let config = self.config_for_registration()?;
+        let origin = self.native_origin(config)?;
+        let (challenge, state) = self.build_registration(config, storage, id).await?;
+
+        let attestation = tokio::task::spawn_blocking(move || {
+            authenticator.register(&origin, challenge)
+        })
+        .await
+        .map_err(|_| {
+            PasskeyError::NativeCeremony(
+                "The passkey request ended unexpectedly. Try again.".to_string(),
+            )
+        })??;
+
+        let passkey = config
+            .webauthn()
+            .finish_passkey_registration(&attestation, &state)
+            .map_err(PasskeyError::verification)?;
+
+        let stored = StoredCredential::new(passkey, config.rp_id(), config.origin(), rfc3339_now());
+        credential::append_credential(storage, id, stored).await
+    }
+
+    /// Sign in with the ceremony running in **this process**, and mint the
+    /// unlock token on success.
+    ///
+    /// The returned shape is identical to [`Self::authenticate_passkey`], so
+    /// `get_vault_secret` and everything downstream of it cannot tell the two
+    /// paths apart — which is the point.
+    pub async fn authenticate_passkey_native<A>(
+        &self,
+        storage: &Storage,
+        id: &str,
+        mut authenticator: A,
+    ) -> Result<Value, PasskeyError>
+    where
+        A: NativeAuthenticator,
+    {
+        let config = self.config_for_authentication()?;
+        let origin = self.native_origin(config)?;
+        let (challenge, state) = self.build_authentication(config, storage, id).await?;
+
+        let assertion = tokio::task::spawn_blocking(move || {
+            authenticator.authenticate(&origin, challenge)
+        })
+        .await
+        .map_err(|_| {
+            PasskeyError::NativeCeremony(
+                "The passkey request ended unexpectedly. Try again.".to_string(),
+            )
+        })??;
+
+        let result = config
+            .webauthn()
+            .finish_passkey_authentication(&assertion, &state)
+            .map_err(PasskeyError::verification)?;
+
+        self.mint_unlock_token(storage, id, result).await
     }
 
     /// Write back what the library learned from a verified assertion.
@@ -880,6 +1063,11 @@ mod tests {
                 authentication_available: false,
                 legacy_credentials_require_reregistration: true,
                 unavailable_reason: REASON_NOT_CONFIGURED,
+                // No relying party means no native ceremony either: the
+                // platform client may well exist, but there is nothing to
+                // scope a credential to.
+                native_ceremony: false,
+                native_client: None,
             }
         );
         assert_eq!(
@@ -889,6 +1077,8 @@ mod tests {
                 authentication_available: false,
                 legacy_credentials_require_reregistration: true,
                 unavailable_reason: REASON_ORIGIN_UNRESOLVED,
+                native_ceremony: false,
+                native_client: None,
             }
         );
     }

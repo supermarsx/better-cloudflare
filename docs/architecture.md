@@ -77,23 +77,23 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 
 `src-tauri/crates/` holds 18 crates:
 
-| Crate                                                        | Responsibility                                                          |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `bc-error`                                                   | Shared error types                                                      |
-| `bc-crypto`                                                  | PBKDF2-HMAC-SHA256 → AES-256-GCM, the `bc1:` envelope                   |
-| `bc-storage`                                                 | OS keyring access, chunking, manifests                                  |
-| `bc-session`                                                 | Session lifecycle                                                       |
-| `bc-cloudflare-api`                                          | Cloudflare REST client                                                  |
-| `bc-dns-tools`                                               | Resolver helpers                                                        |
-| `bc-spf`                                                     | SPF parsing and expansion                                               |
-| `bc-domain-audit`                                            | Email, Security and Hygiene check engine                                |
-| `bc-topology`                                                | CNAME chain resolution, PTR, geolocation, service probes                |
-| `bc-passkey`                                                 | Passkey relying party — verified WebAuthn registration and auth         |
-| `bc-biometrics`                                              | macOS Touch ID; every other platform returns `PlatformNotSupported`     |
-| `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com |
-| `bc-notify`                                                  | Notification monitor: expiry milestones, snapshot diff, inbox store     |
-| `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions           |
-| `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                           |
+| Crate                                                        | Responsibility                                                                                                                           |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `bc-error`                                                   | Shared error types                                                                                                                       |
+| `bc-crypto`                                                  | PBKDF2-HMAC-SHA256 → AES-256-GCM, the `bc1:` envelope                                                                                    |
+| `bc-storage`                                                 | OS keyring access, chunking, manifests                                                                                                   |
+| `bc-session`                                                 | Session lifecycle                                                                                                                        |
+| `bc-cloudflare-api`                                          | Cloudflare REST client                                                                                                                   |
+| `bc-dns-tools`                                               | Resolver helpers                                                                                                                         |
+| `bc-spf`                                                     | SPF parsing and expansion                                                                                                                |
+| `bc-domain-audit`                                            | Email, Security and Hygiene check engine                                                                                                 |
+| `bc-topology`                                                | CNAME chain resolution, PTR, geolocation, service probes                                                                                 |
+| `bc-passkey`                                                 | Passkey relying party — verified WebAuthn registration and auth, plus the native client that runs the ceremony against the OS on Windows |
+| `bc-biometrics`                                              | macOS Touch ID; every other platform returns `PlatformNotSupported`                                                                      |
+| `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com                                                                  |
+| `bc-notify`                                                  | Notification monitor: expiry milestones, snapshot diff, inbox store                                                                      |
+| `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions                                                                            |
+| `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                                                                                            |
 
 ### The local MCP server
 

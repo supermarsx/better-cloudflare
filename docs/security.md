@@ -96,15 +96,60 @@ On macOS and Linux the backend is _not_ the thing that says no. `tauri://localho
 
 Windows production shares its RP ID, `tauri.localhost`, with every other Tauri application on the machine. That is inherent to Tauri's WebView2 origin rather than something this app chose, and it sits outside the threat model here (a single user's own machine) — recorded so it is a known property rather than a surprise.
 
-### Tauri capabilities do not gate WebAuthn
+### Where the ceremony runs
 
-Worth stating plainly, because it is the first place people look when passkeys do not work: there is nothing to add to `src-tauri/capabilities/main.json` for passkeys, and nothing missing from it. Capabilities gate Tauri's own IPC commands — `core:window:allow-close` and the like. `navigator.credentials` is a webview API and never passes through the Tauri command layer, so no permission entry can enable or disable it.
+WebAuthn has two halves, and this app now places them differently depending on the platform.
 
-What does decide whether the client half works is the origin: a secure context, which `http://tauri.localhost` and `http://localhost:3000` are and `tauri://localhost` is not. That is a property of the platform's webview, set out in the table above, and not something a config file here changes.
+The **relying party** — challenge issue, verification, credential storage, unlock-token minting — has always been here, in `bc-passkey`, and still is. Nothing below changes it.
+
+The **client**, the half that actually talks to an authenticator, used to be `navigator.credentials` in the webview on every platform. On Windows it is now `webauthn.dll`, driven from this process through `webauthn-authenticator-rs`.
+
+| Platform     | Client           | Reached through                                         |
+| ------------ | ---------------- | ------------------------------------------------------- |
+| Windows      | The OS, natively | `WebAuthNAuthenticatorMakeCredential` / `…GetAssertion` |
+| macOS, Linux | The webview      | `navigator.credentials`                                 |
+
+That move was not made for security. The renderer only ever carried an attestation or assertion that this process verified, and it holds no private key; a compromised renderer could not forge a credential or unlock the vault. It was made for availability, and it removes three distinct problems at once:
+
+- **The webview's capability report was wrong.** `isUserVerifyingPlatformAuthenticatorAvailable()` returns false on WebView2 builds where Windows Hello is enrolled and working, and the login screen believed it and withheld the button. On the native path no such probe is consulted, because no webview client is involved.
+- **Only platform authenticators were reachable.** A USB security key, an NFC key and a passkey on a nearby phone are all invisible to that probe. The Windows credential picker brokers every one of them itself — which is why the `usb`, `nfc` and `cable` features of `webauthn-authenticator-rs` are deliberately left off: the OS is already doing that job.
+- **Chromium ignored its own `timeout` field**, worked around on the frontend with an `AbortSignal` this app drives. The native path passes a timeout the OS honours.
+
+`get_passkey_status` reports `nativeCeremony` and `nativeClient`, and the frontend calls a single command — `register_passkey_native` or `authenticate_passkey_native` — instead of the three-call options/ceremony/verify dance. The challenge never leaves the backend, so there is no challenge-store entry to expire between calls: single use is structural rather than enforced. Everything after the authenticator responds is byte-for-byte the webview path, including the unlock token, so `get_vault_secret` cannot tell the two apart.
+
+#### The one check that was substituted, and why
+
+`webauthn-authenticator-rs` offers a safe wrapper trait, `WebauthnAuthenticator`, over the raw `AuthenticatorBackend`. This app calls the backend directly and applies `native::ensure_native_origin` instead. That is a substitution, not a removal, and it exists because one of the wrapper's rules is wrong here:
+
+```rust
+if origin.scheme() != "https"
+    && !(effective_domain == "localhost" && origin.scheme() == "http")
+{ return Err(WebauthnCError::Security); }
+```
+
+That is the browser secure-context rule transcribed, and it demands the effective domain be **exactly** `localhost`. Every production Windows build runs at `http://tauri.localhost`, whose effective domain is `tauri.localhost`, so the wrapper would refuse the one origin that matters. Chromium itself treats `*.localhost` as potentially trustworthy — which is precisely why the webview path works at that origin today — so `ensure_native_origin` restates the rule to match what the platform actually trusts.
+
+The wrapper's other rule, that the RP ID be a registrable suffix of the effective domain, is kept and **tightened to equality**: this relying party derives its RP ID from its own origin, so anything but equality means something went wrong upstream.
+
+Nothing else is relaxed. The origin recorded in `clientDataJSON`, the RP-ID hash, the UP/UV flags, the signature and the counter are all still checked by `webauthn-rs` on the way back in, in this process, against an origin read from the window handle and never nominated by the page. `tests/native_ceremonies.rs` drives that: it has a software authenticator sign a **genuine** assertion at `https://evil.localhost` and asserts the relying party refuses it.
+
+#### What the tests can and cannot establish
+
+`webauthn.dll` cannot be driven from a test, so `NativeAuthenticator` is a trait and `tests/native_ceremonies.rs` substitutes `SoftPasskey` for the OS broker. That covers the challenge this process builds, the origin gate, the verification of what comes back, the credential that gets stored, the unlock token and its single use — everything except the broker itself. **Windows Hello has not been driven end to end through this path**; the surrounding logic has. That gap is stated rather than papered over, in the same spirit as the macOS and Linux rows above.
+
+#### Why macOS and Linux stay on the webview
+
+There is no native provider for them, and the reasons differ. Apple's platform passkeys are reachable only through `ASAuthorization`, which requires associated domains — an `apple-app-site-association` file served over HTTPS from the RP ID's domain — and a desktop app scoped to `localhost` cannot satisfy that. Linux has no platform authenticator standard at all. Both keep the webview client and the behaviour documented in the tables above.
+
+#### A note on Tauri capabilities
+
+There is nothing to add to `src-tauri/capabilities/main.json` for passkeys, and nothing missing from it. Capabilities gate Tauri's own IPC commands; `navigator.credentials` is a webview API that never passes through the command layer, and `webauthn.dll` is called directly from Rust. Neither is reachable from a permission entry. What decides the webview half is the origin being a secure context, which is a property of the platform's webview and set out in the table above.
+
+Linking the `win10` backend makes `webauthn.dll` a load-time import, which sets a floor of Windows 10 1809 — the release it shipped in. WebView2 already requires a later build, so that floor is not the binding constraint.
 
 ### The client probe reports; it does not refuse
 
-The login screen asks this webview what it can do before offering a ceremony. It used to ask one question — `isUserVerifyingPlatformAuthenticatorAvailable()` — and treat a `false` as "no passkey is possible on this device", which withheld both buttons.
+On the platforms that still use the webview client, the login screen asks it what it can do before offering a ceremony. (On Windows this whole section is moot — the backend runs the ceremony and no probe is consulted.) It used to ask one question — `isUserVerifyingPlatformAuthenticatorAvailable()` — and treat a `false` as "no passkey is possible on this device", which withheld both buttons.
 
 That was wrong twice over. The call reports only _built-in_ authenticators, so a USB security key, an NFC key, and a passkey on the user's own phone over hybrid transport were all read as "no authenticator" — while the relying party would have accepted every one of them, because `start_passkey_registration` sets no `authenticatorAttachment` at all. And the same call returns `false` on webviews where a platform authenticator does in fact work, which left users with Windows Hello enrolled and working being told their device had none.
 

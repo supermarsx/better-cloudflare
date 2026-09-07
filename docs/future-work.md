@@ -53,7 +53,8 @@ This list has not been pruned as items landed, so a few are now historical; wher
 Three absences are deliberate, because they are limitations of the current design rather than backlog items:
 
 - **Passkey login** is implemented and enabled: both ceremonies are verified through `webauthn-rs`, and the unlock token they mint is what releases a vault secret. See [Security](security.md#passkeys). A machine with no _detected_ authenticator is no longer treated as a machine that cannot use passkeys — a security key or a phone passkey answers no probe and works anyway — so that case is now an advisory beside two live buttons rather than a refusal.
-- **Windows Hello and Linux biometrics** are [not implemented](security.md#biometrics); only macOS Touch ID is.
+- **Windows Hello and Linux biometrics** are [not implemented](security.md#biometrics) in `bc-biometrics`; only macOS Touch ID is. Windows Hello _is_ reachable as a passkey authenticator, through the native WebAuthn client described in [Security](security.md#where-the-ceremony-runs) — a different mechanism from the quick-unlock one this line is about.
+- **A native passkey client for macOS and Linux** has no route today: Apple's platform passkeys need associated domains a `localhost` desktop app cannot serve, and Linux has no platform authenticator standard. Both keep the webview client.
 - **An AI assistant in the UI.** Backend groundwork exists in four Rust crates and an unused React hook, but [nothing in the interface reaches it](architecture.md#the-ai-crates), and shipping it is not scheduled here.
 
 Signing, notarization, an enabled updater, and package-manager channels are all likewise unbuilt; see [Distribution](security.md#distribution) for the current state.

@@ -202,6 +202,7 @@ test("a working backend and a working client report availability with no advisor
     registration: true,
     authentication: true,
     legacyRecoveryAvailable: false,
+    native: false,
     advisory: null,
   });
   assert.equal(
@@ -226,9 +227,97 @@ test("registration-only availability without legacy records is still available",
       registration: true,
       authentication: false,
       legacyRecoveryAvailable: false,
+      native: false,
       advisory: null,
     },
   );
+});
+
+// ── The backend owns the ceremony ───────────────────────────────────────────
+//
+// On a platform with a native WebAuthn broker the ceremony runs in the backend,
+// against the OS, and `navigator.credentials` is never called. Every finding
+// the client probe reports then describes a client that will not run, so acting
+// on any of it would be the original bug in a new place.
+
+const nativeBackend: PasskeyStatus = { ...backendReady, nativeCeremony: true };
+
+test("a native ceremony ignores a webview with no WebAuthn client at all", () => {
+  // The macOS and Linux situation, and the one that used to be a flat refusal.
+  // If the backend can run the ceremony, an absent webview client is beside
+  // the point.
+  const state = passkeyStatusState(nativeBackend, probe("unsupported"));
+
+  assert.equal(state.kind, "available");
+  assert.equal(state.kind === "available" && state.native, true);
+  assert.equal(state.kind === "available" && state.registration, true);
+  assert.equal(state.kind === "available" && state.authentication, true);
+  assert.equal(passkeyStatusReason(state), null);
+});
+
+test("a native ceremony ignores an insecure origin too", () => {
+  const state = passkeyStatusState(nativeBackend, probe("insecure-origin"));
+  assert.equal(state.kind, "available");
+  assert.equal(state.kind === "available" && state.native, true);
+});
+
+test("a native ceremony shows no authenticator advisory", () => {
+  // The advisory describes what the *webview* client could see. Printing it
+  // beside a button that opens the system credential picker would be telling
+  // the user about the wrong thing.
+  const state = passkeyStatusState(
+    nativeBackend,
+    probe("no-platform-authenticator", { platformAuthenticator: false }),
+  );
+
+  assert.equal(state.kind, "available");
+  assert.equal(state.kind === "available" && state.advisory, null);
+  assert.equal(passkeyStatusReason(state), null);
+});
+
+test("a native ceremony does not override the backend's own refusal", () => {
+  // `nativeCeremony` says which client would run, not whether the relying
+  // party will have it. A shut gate is still shut.
+  assert.deepEqual(
+    passkeyStatusState(
+      { ...gateShut, nativeCeremony: true },
+      probe("available"),
+    ),
+    {
+      kind: "unavailable",
+      cause: "backend",
+      reason: "Platform authenticator is unavailable",
+      registration: false,
+      legacyRecoveryAvailable: true,
+    },
+  );
+});
+
+test("a native ceremony still reports legacy credentials that cannot sign in", () => {
+  // Legacy records hold no public key. Which client runs the ceremony changes
+  // nothing about that.
+  const state = passkeyStatusState(
+    {
+      ...nativeBackend,
+      authenticationAvailable: false,
+      legacyCredentialsRequireReregistration: true,
+    },
+    probe("available"),
+  );
+
+  assert.equal(state.kind, "unavailable");
+  assert.equal(
+    state.kind === "unavailable" && state.cause,
+    "legacy-credentials",
+  );
+  assert.equal(state.kind === "unavailable" && state.registration, true);
+});
+
+test("a build that predates the native field is read as having no native client", () => {
+  // `nativeCeremony` is optional on the wire; `undefined` must not read as
+  // true, or an older backend would be told to call a command it lacks.
+  const state = passkeyStatusState(backendReady, probe("available"));
+  assert.equal(state.kind === "available" && state.native, false);
 });
 
 test("every reason the UI can show is distinct from every other", () => {

@@ -97,6 +97,7 @@ test("LoginPasskeySection stops claiming unavailability once passkeys are availa
         registration: true,
         authentication: true,
         legacyRecoveryAvailable: false,
+        native: false,
         advisory: null,
       }}
     />,
@@ -119,6 +120,7 @@ const availableStatus: PasskeyStatusState = {
   registration: true,
   authentication: true,
   legacyRecoveryAvailable: false,
+  native: false,
   advisory: null,
 };
 
@@ -264,6 +266,7 @@ test("LoginPasskeySection keeps both ceremonies live under the no-authenticator 
       registration: true,
       authentication: true,
       legacyRecoveryAvailable: false,
+      native: false,
       advisory: {
         cause: "no-platform-authenticator",
         reason:
@@ -292,4 +295,38 @@ test("LoginPasskeySection keeps both ceremonies live under the no-authenticator 
       .hasAttribute("disabled"),
     false,
   );
+});
+
+test("LoginPasskeySection says when the system, not the browser, will prompt", () => {
+  // Worth saying out loud: on the native path the user is about to see the
+  // system credential picker, which reaches security keys and phone passkeys
+  // that this webview's own client could not.
+  renderSection({
+    status: {
+      kind: "available",
+      registration: true,
+      authentication: true,
+      legacyRecoveryAvailable: false,
+      native: true,
+      advisory: null,
+    },
+  });
+
+  assert.match(
+    document.body.textContent ?? "",
+    /your system handles the prompt/i,
+  );
+  // And nothing is withheld or warned about.
+  assert.equal(screen.queryByRole("alert"), null);
+  assert.equal(screen.queryByRole("status"), null);
+  assert.ok(screen.getByRole("button", { name: /register passkey/i }));
+  assert.ok(screen.getByRole("button", { name: /use passkey/i }));
+});
+
+test("LoginPasskeySection keeps the plain wording for the webview path", () => {
+  renderSection();
+
+  const text = document.body.textContent ?? "";
+  assert.match(text, /instead of typing this key's password/i);
+  assert.doesNotMatch(text, /your system handles the prompt/i);
 });

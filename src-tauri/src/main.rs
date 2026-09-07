@@ -231,6 +231,8 @@ fn main() {
             commands::get_passkey_status,
             commands::get_passkey_registration_options,
             commands::register_passkey,
+            commands::register_passkey_native,
+            commands::authenticate_passkey_native,
             commands::get_passkey_auth_options,
             commands::authenticate_passkey,
             commands::list_passkeys,
