@@ -123,8 +123,12 @@ step of the desktop build rather than a separately shipped target.
 
 The desktop window, Playwright and the screenshot harness all resolve the dev
 port through `scripts/dev-port.mjs`, following whatever port `next dev` actually
-bound, so a busy `:3000` no longer strands them. Set `PORT` to pin an exact port.
-`CI=true` pins as well, which is what keeps CI fixed.
+bound, so a busy `:3000` no longer strands them. They only ever join a dev server
+that proves it is this checkout's: every launch hands `next dev` a random identity
+token, which the root layout renders in development only, and a server is reused
+only while it serves that token on every loopback address. Another Next.js project,
+or another checkout of this one, on the same port is never joined. Set `PORT` to
+pin an exact port. `CI=true` pins as well, which is what keeps CI fixed.
 
 `npm run tauri dev` is routed to the same launcher as `npm run tauri:dev`. If you
 bypass both — `npx tauri dev`, `cargo tauri dev`, an IDE plugin — Tauri loads the

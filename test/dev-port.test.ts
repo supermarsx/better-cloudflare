@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createServer as createHttpServer } from "node:http";
-import { createServer, type AddressInfo, type Server } from "node:net";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  createServer as createHttpServer,
+  type RequestListener,
+  type Server as HttpServer,
+} from "node:http";
+import {
+  createServer,
+  type AddressInfo,
+  type Server,
+  type Socket,
+} from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
@@ -9,12 +25,18 @@ import { after, test } from "node:test";
 import {
   DEFAULT_ATTEMPTS,
   DEFAULT_BASE_PORT,
+  DEV_IDENTITY_META,
+  DEV_SERVER_STATE_FILE,
   NoFreePortError,
+  aggregateDevServerVerdicts,
   basePortFrom,
   bindPort,
+  checkLoopbackOwnership,
   classifyDevServerResponse,
   clearDevServerState,
+  createDevIdentityToken,
   devServerUrl,
+  extractDevIdentity,
   findFreePort,
   isOurDevServer,
   isPinnedPort,
@@ -22,10 +44,11 @@ import {
   parseCliArguments,
   parsePort,
   probeDevServer,
-  reservePort,
   readDevServerState,
   readRunningDevServer,
+  reservePort,
   resolveDevPort,
+  resolveDevServer,
   writeDevServerState,
 } from "../scripts/dev-port.mjs";
 
@@ -36,22 +59,45 @@ const repoRoot = path.resolve(
 const resolverCli = path.join(repoRoot, "scripts", "dev-port.mjs");
 const host = "127.0.0.1";
 
-/** Real listeners opened by the tests, torn down even when one fails. */
-const openServers = new Set<Server>();
+// ─── Harness ────────────────────────────────────────────────────────────────
 
-function closeServer(server: Server): Promise<void> {
+/** Real listeners opened by the tests, torn down even when one fails. */
+const openServers = new Set<Server | HttpServer>();
+/** Sockets held open by listeners that never answer. */
+const openSockets = new Set<Socket>();
+
+function closeServer(server: Server | HttpServer): Promise<void> {
   return new Promise((resolve) => {
     openServers.delete(server);
+    if ("closeAllConnections" in server) server.closeAllConnections();
     server.close(() => resolve());
   });
 }
 
-/** Occupies `port` for real, so the resolver has to climb past it. */
-function occupy(port: number): Promise<Server> {
+/** Whether this machine can listen on `address` at all. */
+function canListen(address: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(false));
+    probe.listen({ host: address, port: 0 }, () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+const ipv6 = await canListen("::1");
+const needsIpv6 = ipv6 ? false : "IPv6 loopback is not available here";
+
+/** Occupies `port` on `address` with a listener that never says anything. */
+function occupy(port: number, address = host): Promise<Server> {
   return new Promise((resolve, reject) => {
-    const server = createServer();
+    const server = createServer((socket) => {
+      openSockets.add(socket);
+      socket.on("error", () => {});
+      socket.once("close", () => openSockets.delete(socket));
+    });
     server.once("error", reject);
-    server.listen({ host, port, exclusive: true }, () => {
+    server.listen({ host: address, port, exclusive: true }, () => {
       server.removeListener("error", reject);
       server.on("error", () => {});
       openServers.add(server);
@@ -60,14 +106,87 @@ function occupy(port: number): Promise<Server> {
   });
 }
 
-/** A port nothing in this repository conventionally uses. */
+/** Serves `handler` on `address`, at `port` or a random one. */
+function serve(
+  handler: RequestListener,
+  address = host,
+  port = 0,
+): Promise<{ server: HttpServer; port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = createHttpServer(handler);
+    server.once("error", reject);
+    server.listen({ host: address, port }, () => {
+      server.removeListener("error", reject);
+      openServers.add(server);
+      resolve({ server, port: (server.address() as AddressInfo).port });
+    });
+  });
+}
+
+function html(body: string): RequestListener {
+  return (_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(body);
+  };
+}
+
+/** What this checkout's dev server serves: the shell, the name, and the tag. */
+function appPage(token: string): string {
+  return (
+    "<!DOCTYPE html><html><head><title>Better Cloudflare</title>" +
+    '<meta name="application-name" content="Better Cloudflare"/>' +
+    `<meta name="${DEV_IDENTITY_META}" content="${token}"/>` +
+    '<script src="/_next/static/chunks/main.js"></script>' +
+    "</head><body></body></html>"
+  );
+}
+
+/**
+ * Another Next.js application - the case that got through before. It serves
+ * `/_next/`, which every Next.js app does and which alone used to be trusted.
+ */
+const ANOTHER_NEXT_APP =
+  "<!DOCTYPE html><html><head><title>Portfolio</title>" +
+  '<script src="/_next/static/chunks/main.js"></script>' +
+  "</head><body></body></html>";
+
+/**
+ * A page carrying both of the markers that used to be trusted - `/_next/` and
+ * the application name - with no identity tag: another checkout of this
+ * repository from before identity tokens, or anything that mentions the name.
+ */
+const APP_NAME_WITHOUT_TOKEN =
+  "<!DOCTYPE html><html><head><title>Better Cloudflare</title>" +
+  '<script src="/_next/static/chunks/main.js"></script>' +
+  "</head><body></body></html>";
+
+/**
+ * A free port from a base well below Windows' dynamic range (49152-65535).
+ * Hyper-V and WSL reserve blocks of that range - 49673-49972 on the machine
+ * this was written on - and a bind there fails with EACCES, so a fixed base
+ * inside it can find no free port at all.
+ */
 async function freeBase(): Promise<number> {
   return await findFreePort({ basePort: 24_000, attempts: 500, host });
 }
 
+// The state-file tests write the real record. Keep whatever was there.
+const priorState = existsSync(DEV_SERVER_STATE_FILE)
+  ? readFileSync(DEV_SERVER_STATE_FILE, "utf8")
+  : null;
+
 after(async () => {
+  for (const socket of openSockets) socket.destroy();
   await Promise.all([...openServers].map((server) => closeServer(server)));
+  if (priorState === null) {
+    rmSync(DEV_SERVER_STATE_FILE, { force: true });
+  } else {
+    mkdirSync(path.dirname(DEV_SERVER_STATE_FILE), { recursive: true });
+    writeFileSync(DEV_SERVER_STATE_FILE, priorState, "utf8");
+  }
 });
+
+// ─── Port reservation ───────────────────────────────────────────────────────
 
 test("a reservation holds the base port when it is free", async () => {
   const base = await freeBase();
@@ -105,6 +224,60 @@ test("the search climbs past ports that are really occupied", async () => {
     await Promise.all(blockers.map((server) => closeServer(server)));
   }
 });
+
+test("a wildcard bind is not taken as proof that a port is free", async () => {
+  // The hole this module had. Windows lets a wildcard bind succeed while
+  // another process holds the same port on 127.0.0.1, and that process then
+  // receives every request to it. Only asking the loopback address tells the
+  // two apart. (Linux refuses the bind itself; the result is the same.)
+  const base = await freeBase();
+  const stranger = await occupy(base, "127.0.0.1");
+
+  try {
+    const reservation = await reservePort({
+      basePort: base,
+      host: "0.0.0.0",
+      attempts: 10,
+    });
+    try {
+      assert.notEqual(
+        reservation.port,
+        base,
+        "a port a stranger answers on is not free",
+      );
+    } finally {
+      await reservation.release();
+    }
+  } finally {
+    await closeServer(stranger);
+  }
+});
+
+test(
+  "a stranger on ::1 disqualifies a port that is free on 127.0.0.1",
+  { skip: needsIpv6 },
+  async () => {
+    // `localhost` resolves to ::1 first, so a client would reach the stranger
+    // even though 127.0.0.1 binds cleanly.
+    const base = await freeBase();
+    const stranger = await occupy(base, "::1");
+
+    try {
+      const reservation = await reservePort({
+        basePort: base,
+        host: "127.0.0.1",
+        attempts: 10,
+      });
+      try {
+        assert.notEqual(reservation.port, base);
+      } finally {
+        await reservation.release();
+      }
+    } finally {
+      await closeServer(stranger);
+    }
+  },
+);
 
 test("an exhausted range fails with a clear, bounded error", async () => {
   const base = await freeBase();
@@ -221,6 +394,10 @@ test("the resolver command line is parsed and validated", () => {
     host: "127.0.0.1",
     reuse: true,
   });
+  assert.deepEqual(parseCliArguments(["--no-reuse", "--json"]), {
+    reuse: false,
+    json: true,
+  });
   assert.throws(() => parseCliArguments(["--base", "0"]), /must be a TCP port/);
   assert.throws(() => parseCliArguments(["--attempts", "0"]), /positive/);
   assert.throws(() => parseCliArguments(["--nope"]), /Unknown option/);
@@ -243,7 +420,11 @@ test("the resolver command prints a climbed port to stdout", async () => {
         "--attempts",
         "20",
       ],
-      { cwd: repoRoot, encoding: "utf8", env: { ...process.env, CI: "" } },
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, CI: "", PORT: "" },
+      },
     ).trim();
     assert.equal(Number.parseInt(printed, 10), base + 1);
   } finally {
@@ -251,179 +432,453 @@ test("the resolver command prints a climbed port to stdout", async () => {
   }
 });
 
-test("a foreign server on the recorded port is not reused as our dev server", async () => {
-  // A recorded port can be inherited by an unrelated process after the dev
-  // server exits. Pointing the desktop shell at that would load someone else's
-  // page with this application's native command surface attached, so a TCP
-  // connect is not sufficient evidence — the response has to be ours.
-  const decoy = createHttpServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html" });
-    response.end("<html><head><title>Some Other App</title></head></html>");
-  });
-  const port = await new Promise<number>((resolve) => {
-    decoy.listen(0, "127.0.0.1", () => {
-      resolve((decoy.address() as AddressInfo).port);
-    });
-  });
+test("the resolver command reports its reuse decision as JSON", async () => {
+  // Playwright reads this form: the port alone cannot say whether the server
+  // already on it may be reused.
+  const base = await freeBase();
+  const blocker = await occupy(base);
 
   try {
-    assert.equal(await isPortListening(port), true, "the decoy is listening");
-    assert.equal(
-      await isOurDevServer(port),
-      false,
-      "a foreign response must not be accepted as ours",
-    );
-
-    writeDevServerState({ port, url: devServerUrl(port), pid: process.pid });
-    assert.equal(
-      await readRunningDevServer(),
-      null,
-      "reuse must refuse a port held by something else",
-    );
-    assert.equal(
-      readDevServerState(),
-      null,
-      "the stale record must be cleared so the next run climbs instead",
-    );
+    const printed = execFileSync(
+      process.execPath,
+      [
+        resolverCli,
+        "--base",
+        String(base),
+        "--host",
+        host,
+        "--no-reuse",
+        "--attempts",
+        "20",
+        "--json",
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, CI: "", PORT: "" },
+      },
+    ).trim();
+    assert.deepEqual(JSON.parse(printed), { port: base + 1, reuse: false });
   } finally {
-    decoy.close();
-    clearDevServerState();
+    await closeServer(blocker);
   }
 });
 
-test("a response carrying our markers is accepted", async () => {
-  const server = createHttpServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html" });
-    response.end(
-      "<html><head><title>Better Cloudflare</title>" +
-        '<script src="/_next/static/chunks/main.js"></script></head></html>',
-    );
-  });
-  const port = await new Promise<number>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      resolve((server.address() as AddressInfo).port);
-    });
-  });
+// ─── Identity ───────────────────────────────────────────────────────────────
 
-  try {
-    assert.equal(await isOurDevServer(port), true);
-  } finally {
-    server.close();
-  }
-});
-
-test("a response is judged by its markers first, then by its status", () => {
-  const ours = '<script src="/_next/static/chunks/main.js"></script>';
-  assert.equal(classifyDevServerResponse(200, ours), "ours");
-  // A Next.js error page (route still compiling, build error) keeps `/_next/`.
-  assert.equal(classifyDevServerResponse(404, ours), "ours");
-  assert.equal(classifyDevServerResponse(500, ours), "ours");
+test("only a real meta element carries identity", () => {
+  const token = createDevIdentityToken();
+  assert.equal(extractDevIdentity(appPage(token)), token);
+  // Attribute order and quoting are not part of the tag's identity.
   assert.equal(
-    classifyDevServerResponse(200, "<title>Better Cloudflare</title>"),
+    extractDevIdentity(`<meta content='${token}' name='${DEV_IDENTITY_META}'>`),
+    token,
+  );
+  // Next also serializes metadata into its flight payload, as JSON rather than
+  // as a tag. A page that merely contains the name must not pass for one that
+  // renders it.
+  const flight =
+    '<script>self.__next_f.push([1,"[\\"$\\",\\"meta\\",null,{\\"name\\":' +
+    `\\"${DEV_IDENTITY_META}\\",\\"content\\":\\"${token}\\"}]"])</script>`;
+  assert.equal(extractDevIdentity(flight), null);
+  assert.equal(extractDevIdentity(ANOTHER_NEXT_APP), null);
+  assert.equal(extractDevIdentity(APP_NAME_WITHOUT_TOKEN), null);
+});
+
+test("an identity tag that cannot vouch for one launch matches nothing", () => {
+  const first = createDevIdentityToken();
+  const second = createDevIdentityToken();
+  // Present, so the page is not mistaken for an unrelated one - but no token
+  // can ever equal it.
+  assert.equal(
+    extractDevIdentity(
+      `<meta name="${DEV_IDENTITY_META}" content="${first}">` +
+        `<meta name="${DEV_IDENTITY_META}" content="${second}">`,
+    ),
+    "",
+  );
+  assert.equal(extractDevIdentity(`<meta name="${DEV_IDENTITY_META}">`), "");
+});
+
+test("a response is ours only when it serves this launch's exact token", () => {
+  const token = createDevIdentityToken();
+  const page = appPage(token);
+
+  // The tag settles it whatever the status: an error page rendered inside the
+  // layout still carries it.
+  for (const status of [200, 404, 500]) {
+    assert.equal(classifyDevServerResponse(status, page, token), "ours");
+  }
+  // Another launch, or another checkout of this repository.
+  assert.equal(
+    classifyDevServerResponse(200, page, createDevIdentityToken()),
+    "foreign",
+  );
+  assert.equal(
+    classifyDevServerResponse(500, page, createDevIdentityToken()),
+    "foreign",
+  );
+  // A caller with no token of its own can prove nothing, so nothing is ours.
+  assert.equal(classifyDevServerResponse(200, page, undefined), "foreign");
+  assert.equal(classifyDevServerResponse(200, page, "not-a-token"), "foreign");
+});
+
+test("the markers that used to be trusted are never enough", () => {
+  const token = createDevIdentityToken();
+  assert.equal(
+    classifyDevServerResponse(200, ANOTHER_NEXT_APP, token),
+    "foreign",
+  );
+  assert.equal(
+    classifyDevServerResponse(200, APP_NAME_WITHOUT_TOKEN, token),
+    "foreign",
+  );
+  // Without a tag, a failure proves nothing yet: worth another try.
+  assert.equal(
+    classifyDevServerResponse(500, ANOTHER_NEXT_APP, token),
+    "unclear",
+  );
+  assert.equal(classifyDevServerResponse(502, "Bad Gateway", token), "unclear");
+  assert.equal(classifyDevServerResponse(404, "", token), "unclear");
+});
+
+test("one stranger on any loopback address disqualifies the port", () => {
+  assert.equal(aggregateDevServerVerdicts(["ours", "absent"]), "ours");
+  assert.equal(aggregateDevServerVerdicts(["ours", "ours"]), "ours");
+  assert.equal(aggregateDevServerVerdicts(["ours", "foreign"]), "foreign");
+  assert.equal(aggregateDevServerVerdicts(["absent", "foreign"]), "foreign");
+  assert.equal(
+    aggregateDevServerVerdicts(["ours", "unresponsive"]),
+    "unresponsive",
+  );
+  assert.equal(aggregateDevServerVerdicts(["absent", "absent"]), "absent");
+  assert.equal(aggregateDevServerVerdicts([]), "absent");
+});
+
+// ─── The probe, against real sockets ────────────────────────────────────────
+
+test("a server serving this launch's token is ours", async () => {
+  const token = createDevIdentityToken();
+  const { port } = await serve(html(appPage(token)));
+
+  assert.equal(
+    await probeDevServer(port, { expectedToken: token, deadlineMs: 10_000 }),
     "ours",
   );
-  // A successful page without markers is conclusively someone else.
-  assert.equal(classifyDevServerResponse(200, "<h1>Other App</h1>"), "foreign");
-  // A failure without markers proves nothing yet: worth another try.
-  assert.equal(classifyDevServerResponse(502, "Bad Gateway"), "unclear");
-  assert.equal(classifyDevServerResponse(404, ""), "unclear");
+  assert.equal(
+    await isOurDevServer(port, { expectedToken: token, deadlineMs: 10_000 }),
+    true,
+  );
 });
 
+test("another Next.js application is never ours", async () => {
+  // The collision that let a different project into the desktop window.
+  const { port } = await serve(html(ANOTHER_NEXT_APP));
+  assert.equal(
+    await probeDevServer(port, {
+      expectedToken: createDevIdentityToken(),
+      deadlineMs: 10_000,
+    }),
+    "foreign",
+  );
+});
+
+test("another checkout of this application is never ours", async () => {
+  const { port } = await serve(html(appPage(createDevIdentityToken())));
+  assert.equal(
+    await probeDevServer(port, {
+      expectedToken: createDevIdentityToken(),
+      deadlineMs: 10_000,
+    }),
+    "foreign",
+  );
+});
+
+test(
+  "a stranger on ::1 makes a genuine server on 127.0.0.1 unsafe",
+  { skip: needsIpv6 },
+  async () => {
+    const token = createDevIdentityToken();
+    const { port } = await serve(html(appPage(token)), "127.0.0.1");
+    await serve(html(ANOTHER_NEXT_APP), "::1", port);
+
+    assert.equal(
+      await probeDevServer(port, { expectedToken: token, deadlineMs: 10_000 }),
+      "foreign",
+    );
+  },
+);
+
 test("the probe reports a free port as absent without waiting", async () => {
-  const port = await findFreePort({ basePort: 49_600, host });
+  const port = await freeBase();
   const started = Date.now();
   assert.equal(
-    await probeDevServer(port, { host, deadlineMs: 10_000 }),
+    await probeDevServer(port, {
+      expectedToken: createDevIdentityToken(),
+      deadlineMs: 10_000,
+    }),
     "absent",
   );
   assert.ok(
     Date.now() - started < 3_000,
     "a refused connection must settle immediately",
   );
-  assert.equal(await isOurDevServer(port, { host, deadlineMs: 10_000 }), false);
 });
 
 test("the probe waits out a slow first response instead of misjudging it", async () => {
   // The first request to a Next.js 16 dev server triggers Turbopack's compile
-  // of the route, which takes seconds; the launcher used to give up after one
-  // short attempt and refuse its own server.
+  // of the route, which takes seconds.
+  const token = createDevIdentityToken();
   let requests = 0;
-  const server = createHttpServer((_request, response) => {
+  const { port } = await serve((_request, response) => {
     requests += 1;
     const respond = () => {
       response.writeHead(200, { "content-type": "text/html" });
-      response.end('<script src="/_next/static/chunks/main.js"></script>');
+      response.end(appPage(token));
     };
     // The first two requests outlive the per-attempt budget; the third is quick.
     if (requests < 3) setTimeout(respond, 1_500);
     else respond();
   });
-  const port = await new Promise<number>((resolve) => {
-    server.listen(0, host, () =>
-      resolve((server.address() as AddressInfo).port),
-    );
-  });
 
-  try {
-    assert.equal(
-      await probeDevServer(port, {
-        host,
-        deadlineMs: 10_000,
-        attemptTimeoutMs: 400,
-      }),
-      "ours",
-    );
-    assert.ok(requests >= 3, `expected retries, saw ${requests} request(s)`);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
+  assert.equal(
+    await probeDevServer(port, {
+      expectedToken: token,
+      deadlineMs: 10_000,
+      attemptTimeoutMs: 400,
+    }),
+    "ours",
+  );
+  assert.ok(requests >= 3, `expected retries, saw ${requests} request(s)`);
 });
 
-test("the probe follows a redirect to the app", async () => {
-  const server = createHttpServer((request, response) => {
+test("the probe follows a same-origin redirect to the app", async () => {
+  const token = createDevIdentityToken();
+  const { port } = await serve((request, response) => {
     if (request.url === "/") {
       response.writeHead(307, { location: "/login" });
       response.end();
       return;
     }
     response.writeHead(200, { "content-type": "text/html" });
-    response.end("<title>Better Cloudflare</title>");
+    response.end(appPage(token));
   });
-  const port = await new Promise<number>((resolve) => {
-    server.listen(0, host, () =>
-      resolve((server.address() as AddressInfo).port),
-    );
+
+  assert.equal(
+    await probeDevServer(port, { expectedToken: token, deadlineMs: 10_000 }),
+    "ours",
+  );
+});
+
+test("a redirect to somewhere else is not the server vouching for itself", async () => {
+  const { port } = await serve((_request, response) => {
+    response.writeHead(307, { location: "https://example.test/" });
+    response.end();
   });
-  try {
-    assert.equal(await probeDevServer(port, { host }), "ours");
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
+
+  assert.equal(
+    await probeDevServer(port, {
+      expectedToken: createDevIdentityToken(),
+      deadlineMs: 1_500,
+      attemptTimeoutMs: 300,
+    }),
+    "unresponsive",
+  );
 });
 
 test("a socket that accepts but never answers is unresponsive, not ours", async () => {
-  const sockets = new Set<import("node:net").Socket>();
-  const silent = createServer((socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  const port = await new Promise<number>((resolve) => {
-    silent.listen(0, host, () =>
-      resolve((silent.address() as AddressInfo).port),
-    );
-  });
-  try {
+  const silent = await occupy(0);
+  const port = (silent.address() as AddressInfo).port;
+
+  assert.equal(
+    await probeDevServer(port, {
+      expectedToken: createDevIdentityToken(),
+      deadlineMs: 1_200,
+      attemptTimeoutMs: 300,
+    }),
+    "unresponsive",
+  );
+});
+
+// ─── Proving a spawned child ────────────────────────────────────────────────
+
+test("a child alone on its exact loopback address is ours without a page", async () => {
+  // No identity tag at all: the structural proof does not wait for a compile,
+  // and holds even while the app fails to render.
+  const { port } = await serve(html("<!DOCTYPE html><title>compiling</title>"));
+  assert.equal(
+    await checkLoopbackOwnership(port, { bindHost: "127.0.0.1" }),
+    "ours",
+  );
+});
+
+test(
+  "a child that shares its port with a stranger on ::1 is foreign",
+  { skip: needsIpv6 },
+  async () => {
+    const { port } = await serve(html(""), "127.0.0.1");
+    await occupy(port, "::1");
     assert.equal(
-      await probeDevServer(port, {
-        host,
-        deadlineMs: 1_200,
-        attemptTimeoutMs: 300,
+      await checkLoopbackOwnership(port, { bindHost: "127.0.0.1" }),
+      "foreign",
+    );
+  },
+);
+
+test("a child that is not listening yet is absent", async () => {
+  const port = await freeBase();
+  assert.equal(
+    await checkLoopbackOwnership(port, { bindHost: "127.0.0.1" }),
+    "absent",
+  );
+});
+
+// ─── Reusing a recorded server ──────────────────────────────────────────────
+
+test("a recorded server that still serves its token is joined", async () => {
+  const token = createDevIdentityToken();
+  const { port } = await serve(html(appPage(token)));
+  writeDevServerState({
+    port,
+    url: devServerUrl(port),
+    pid: process.pid,
+    token,
+  });
+
+  try {
+    const running = await readRunningDevServer({ deadlineMs: 10_000 });
+    assert.equal(running?.port, port);
+    assert.equal(running?.token, token);
+    assert.deepEqual(
+      await resolveDevServer({
+        env: {},
+        basePort: port,
+        reuse: true,
+        probeDeadlineMs: 10_000,
       }),
-      "unresponsive",
+      { port, reuse: true },
     );
   } finally {
-    // Aborted requests leave their sockets open; `close()` would wait forever.
-    for (const socket of sockets) socket.destroy();
-    await new Promise((resolve) => silent.close(resolve));
+    clearDevServerState();
+  }
+});
+
+test("a recorded port now held by another Next.js app is dropped, not joined", async () => {
+  // The record outlived its server, and a different application took the port.
+  const { port } = await serve(html(ANOTHER_NEXT_APP));
+  writeDevServerState({
+    port,
+    url: devServerUrl(port),
+    pid: process.pid,
+    token: createDevIdentityToken(),
+  });
+
+  try {
+    assert.equal(await readRunningDevServer({ deadlineMs: 10_000 }), null);
+    assert.equal(
+      readDevServerState(),
+      null,
+      "the stale record must be cleared so the next run climbs instead",
+    );
+  } finally {
+    clearDevServerState();
+  }
+});
+
+test("a record from before identity tokens is dropped unverified", async () => {
+  // Such a record could only be vouched for by the old markers, which any
+  // Next.js application satisfies.
+  const { port } = await serve(html(appPage(createDevIdentityToken())));
+  writeDevServerState({ port, url: devServerUrl(port), pid: process.pid });
+
+  try {
+    assert.equal(await readRunningDevServer({ deadlineMs: 10_000 }), null);
+    assert.equal(readDevServerState(), null);
+  } finally {
+    clearDevServerState();
+  }
+});
+
+test("a recorded server that has stopped is dropped", async () => {
+  const port = await freeBase();
+  writeDevServerState({
+    port,
+    url: devServerUrl(port),
+    pid: process.pid,
+    token: createDevIdentityToken(),
+  });
+
+  try {
+    assert.equal(await readRunningDevServer({ deadlineMs: 10_000 }), null);
+    assert.equal(readDevServerState(), null);
+  } finally {
+    clearDevServerState();
+  }
+});
+
+test("with nothing verified, resolution starts fresh on a free port", async () => {
+  clearDevServerState();
+  const base = await freeBase();
+  const blocker = await occupy(base);
+
+  try {
+    assert.deepEqual(
+      await resolveDevServer({ env: {}, basePort: base, host, reuse: true }),
+      { port: base + 1, reuse: false },
+    );
+  } finally {
+    await closeServer(blocker);
+  }
+});
+
+test("a record whose server process has exited is dropped, whatever holds its port", async () => {
+  // The port is now held by something that accepts and answers 404 with no
+  // identity tag - inconclusive for as long as it runs. Without a liveness
+  // check this record would never clear, and every tool would wait out the
+  // probe deadline on it.
+  const { port } = await serve((_request, response) => {
+    response.writeHead(404);
+    response.end();
+  });
+  const exited = spawnSync(process.execPath, ["-e", ""]);
+  writeDevServerState({
+    port,
+    url: devServerUrl(port),
+    pid: exited.pid,
+    token: createDevIdentityToken(),
+  });
+
+  try {
+    assert.equal(await readRunningDevServer({ deadlineMs: 1_500 }), null);
+    assert.equal(
+      readDevServerState(),
+      null,
+      "a record whose server process has exited is stale",
+    );
+  } finally {
+    clearDevServerState();
+  }
+});
+
+test("a live record that has not answered yet is kept, not reused", async () => {
+  // Accepting but inconclusive, with its process still alive: it may well be
+  // this checkout's server, still compiling. Not joined - and not forgotten.
+  const token = createDevIdentityToken();
+  const { port } = await serve((_request, response) => {
+    response.writeHead(404);
+    response.end();
+  });
+  writeDevServerState({
+    port,
+    url: devServerUrl(port),
+    pid: process.pid,
+    token,
+  });
+
+  try {
+    assert.equal(await readRunningDevServer({ deadlineMs: 1_500 }), null);
+    assert.equal(readDevServerState()?.token, token);
+  } finally {
+    clearDevServerState();
   }
 });

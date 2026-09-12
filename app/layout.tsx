@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { devIdentityMetadata } from "@/lib/dev-identity";
 import "../src/index.css";
 
 export const metadata: Metadata = {
@@ -8,6 +9,9 @@ export const metadata: Metadata = {
   },
   applicationName: "Better Cloudflare",
   description: "Cloudflare DNS management for the web and Tauri desktop app.",
+  // Development only: proves to the dev tooling that the server on a port is
+  // this checkout's. Renders nothing in a static export. See the helper.
+  ...devIdentityMetadata(),
 };
 
 export default function RootLayout({
