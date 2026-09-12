@@ -525,10 +525,13 @@ test("CI changed-source lint uses the event base with complete history", () => {
 
 test("Playwright structurally separates CI static export from local development", () => {
   // CI resolves its port with no probing at all, so the fixed address below is
-  // exactly what a CI run sees. Local runs are handed a resolved port instead.
+  // exactly what a CI run sees. Local runs are handed a resolved port, and are
+  // only told to reuse a server the resolver verified as this checkout's.
   assert.equal(resolveDevServerPort(true), 3000);
   const ciConfig = createPlaywrightConfig(true, 3000);
   const localConfig = createPlaywrightConfig(false, 4123);
+  const verifiedLocalConfig = createPlaywrightConfig(false, 4123, true);
+  const ciToldToReuse = createPlaywrightConfig(true, 3000, true);
   const ciServer = Array.isArray(ciConfig.webServer)
     ? ciConfig.webServer[0]
     : ciConfig.webServer;
@@ -553,7 +556,19 @@ test("Playwright structurally separates CI static export from local development"
   assert.equal(ciServer?.url, "http://localhost:3000/");
   assert.equal(ciServer?.reuseExistingServer, false);
   assert.equal(localServer?.command, "npm run dev");
-  assert.equal(localServer?.reuseExistingServer, true);
+  // Playwright's own reuse check is an HTTP status and nothing else, so it would
+  // adopt any application answering on the port. Reuse is decided before
+  // Playwright sees the config, and only for a verified server.
+  assert.equal(localServer?.reuseExistingServer, false);
+  const verifiedLocalServer = Array.isArray(verifiedLocalConfig.webServer)
+    ? verifiedLocalConfig.webServer[0]
+    : verifiedLocalConfig.webServer;
+  assert.equal(verifiedLocalServer?.reuseExistingServer, true);
+  // CI never reuses, whatever it is told: its runners start clean.
+  const ciToldToReuseServer = Array.isArray(ciToldToReuse.webServer)
+    ? ciToldToReuse.webServer[0]
+    : ciToldToReuse.webServer;
+  assert.equal(ciToldToReuseServer?.reuseExistingServer, false);
 
   // Every consumer of a run must agree on one port: the browser, the web server
   // Playwright starts, and the environment that server is pinned with.
