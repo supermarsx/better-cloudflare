@@ -342,6 +342,10 @@ test("package scripts expose truthful lint and reliability gates", () => {
   assert.equal(scripts.preview, "node test/ci-static-export-server.mjs");
   const devLauncher = read("scripts/dev-server.mjs");
   assert.match(devLauncher, /"dev",\r?\n\s*"--turbo",/);
+  // What makes a dev server provably this checkout's: one exact loopback
+  // address, and a per-launch identity token handed to `next dev`.
+  assert.match(devLauncher, /"-H", DEV_SERVER_HOST/);
+  assert.match(devLauncher, /\[DEV_IDENTITY_ENV\]: options\.token/);
   // The Tauri CLI only accepts a config patch through `--config`; it ignores the
   // `TAURI_CONFIG` environment variable that CI uses for bare cargo invocations.
   const desktopLauncher = read("scripts/tauri-dev.mjs");

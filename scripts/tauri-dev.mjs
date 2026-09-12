@@ -1,6 +1,6 @@
 /**
- * `npm run tauri:dev` - opens the desktop window against the dev server that is
- * actually running, whatever port it landed on.
+ * `npm run tauri:dev` - opens the desktop window against this checkout's dev
+ * server, whatever port it landed on.
  *
  *   node scripts/tauri-dev.mjs [extra tauri dev arguments]
  *
@@ -9,13 +9,13 @@
  * up on 3001 the window loads nothing. Rather than mutate tracked configuration,
  * this launcher:
  *
- *  1. starts Next.js itself and waits until the port it *actually bound* is
- *     known (see `scripts/dev-server.mjs`) - unless this application's dev
- *     server already answers on the base port, in which case it is joined
- *     instead (Next.js 16 refuses to run two dev servers from one project
- *     directory, so a second one would abort anyway). Anything *else* on the
- *     base port is simply climbed past: Next.js takes the next free port and
- *     the window follows it. Then it
+ *  1. joins a dev server only when it is provably this checkout's - recorded in
+ *     the dev-server state file *and* still serving the identity token recorded
+ *     with it, on every loopback address (see `scripts/dev-port.mjs`). Nothing
+ *     else is ever joined: not another Next.js project, not another checkout of
+ *     this one, and not whatever inherited a stale record's port. Otherwise it
+ *     starts Next.js itself and waits until the child is proven to be what a
+ *     `localhost` client reaches (see `scripts/dev-server.mjs`). Then it
  *  2. hands Tauri a config patch that repoints `devUrl` and clears
  *     `beforeDevCommand`, so Tauri does not start a second dev server on a
  *     different port.
@@ -30,9 +30,8 @@
  * `TAURI_CONFIG` here would also risk `tauri-build` reading this partial patch
  * as a whole configuration.
  *
- * Because the URL is derived after the fact from a server that is already
- * listening, there is no window in which the port could be taken by someone
- * else: Tauri is told where the server *is*, never where it is expected to be.
+ * The window is loaded with this application's native command surface attached,
+ * so it is only ever pointed at a server that passed one of those two proofs.
  */
 
 import { spawn } from "node:child_process";
@@ -43,9 +42,9 @@ import {
   REPO_ROOT,
   basePortFrom,
   clearDevServerState,
-  devServerUrl,
   isPinnedPort,
   probeDevServer,
+  readRunningDevServer,
   writeDevServerState,
 } from "./dev-port.mjs";
 import { startNextDev, terminateChild } from "./dev-server.mjs";
@@ -57,6 +56,14 @@ const TAURI_BIN = path.join(
   "cli",
   "tauri.js",
 );
+
+/**
+ * Budget for the one probe this launcher makes without a token. With nothing
+ * verified on record, nothing on the base port can be proven to be ours, so
+ * that probe only decides what to tell the user - not worth waiting out a
+ * compile for.
+ */
+const UNVERIFIED_PROBE_DEADLINE_MS = 3_000;
 
 /**
  * Builds the `--config` patch, merging on top of any patch the caller already
@@ -99,11 +106,14 @@ export function buildTauriConfigOverride(existing, devUrl) {
 }
 
 /**
- * Decides whether to join a dev server that is already up or start a new one.
+ * Decides what to do about the base port once no verified server was found.
  *
- * Only *this* application's server is ever joined. Anything else on the base
- * port - a stranger's server, or a socket that accepts and says nothing - is
- * left alone and Next.js climbs past it to the next free port (unless `PORT`
+ * Only a server proven to be this checkout's is ever joined, and that proof
+ * needs the token recorded at launch. A caller holding one can still pass an
+ * `ours` verdict here; without one, `ours` is unreachable. A free base port is
+ * the plain start path. Anything else on it - another application, another
+ * checkout, a socket that accepts and says nothing - is climbed past: Next.js
+ * takes the next port that is free on every loopback address (unless `PORT`
  * pins it, in which case `startNextDev` retries that exact port and fails
  * loudly). Kept pure so the decision is unit-testable without sockets.
  *
@@ -121,13 +131,15 @@ export function planTauriDev({ ourServer, verdict }) {
 }
 
 /**
- * Judges the server the launcher itself just spawned, once it has reported a
- * bound port. That process is ours by construction - Next.js bound the port
- * exclusively from this project directory - so the marker probe is a sanity
- * check, not a gatekeeper: an inconclusive answer (still compiling, slow disk)
- * is worth a warning, never a refusal. Only a *conclusive* stranger's page on
- * that port stops the launch, because that is the one outcome the desktop
- * window must never load.
+ * Judges the server the launcher itself just spawned.
+ *
+ * `startNextDev` has already refused a child that shares its port with a
+ * stranger on another loopback address, so on the default bind `foreign` never
+ * reaches this function; it stays in the table so the table is total. What is
+ * left is the inconclusive case, reachable only when the child's address could
+ * not be proven exclusive and its page never answered. That is a warning, not a
+ * refusal: no stranger answered on any address, so the worst outcome is a
+ * window with nothing to show yet.
  *
  * @param {import("./dev-port.mjs").DevServerVerdict} verdict
  * @returns {"proceed" | "warn" | "refuse"}
@@ -147,44 +159,56 @@ export function judgeSpawnedDevServer(verdict) {
  * @property {() => void} stop
  */
 
+/** Whether this process wrote the state file, and so owns removing it. */
+let publishedState = false;
+
 /**
  * @returns {Promise<DevTarget>}
  */
 async function resolveDevTarget() {
-  const basePort = basePortFrom();
-  const plan = planTauriDev({ verdict: await probeDevServer(basePort) });
-  if (plan === "reuse") {
-    const url = devServerUrl(basePort);
+  const running = await readRunningDevServer();
+  if (running !== null) {
     process.stdout.write(
-      `[tauri-dev] joining the dev server already on ${url}\n`,
+      `[tauri-dev] joining this checkout's dev server on ${running.url} ` +
+        "(identity verified)\n",
     );
-    return { port: basePort, url, owned: false, child: null, stop: () => {} };
+    return {
+      port: running.port,
+      url: running.url,
+      owned: false,
+      child: null,
+      stop: () => {},
+    };
   }
-  if (plan === "climb") {
+
+  const basePort = basePortFrom();
+  const plan = planTauriDev({
+    verdict: await probeDevServer(basePort, {
+      deadlineMs: UNVERIFIED_PROBE_DEADLINE_MS,
+    }),
+  });
+  if (plan !== "start") {
     process.stdout.write(
       isPinnedPort()
-        ? `[tauri-dev] port ${basePort} is busy with something that is not ` +
-            `this app's dev server, and PORT pins it; waiting for it to free up.\n`
-        : `[tauri-dev] port ${basePort} is busy with something that is not ` +
-            `this app's dev server; Next.js will take the next free port.\n`,
+        ? `[tauri-dev] port ${basePort} is busy with something that could not ` +
+            `be verified as this checkout's dev server, and PORT pins it; ` +
+            `waiting for it to free up.\n`
+        : `[tauri-dev] port ${basePort} is busy with something that could not ` +
+            `be verified as this checkout's dev server; Next.js will take the ` +
+            `next free port.\n`,
     );
   }
 
   const dev = await startNextDev();
 
-  // The desktop shell is about to load this URL with the application's native
-  // command surface attached to it. The server there is the child this process
-  // spawned, on the port it reported binding, so it is ours by construction;
-  // the marker probe is a sanity check. Only a conclusive stranger's page can
-  // stop the launch - see `judgeSpawnedDevServer`.
-  const judgement = judgeSpawnedDevServer(await probeDevServer(dev.port));
+  const judgement = judgeSpawnedDevServer(dev.verification.verdict);
   if (judgement === "refuse") {
     terminateChild(dev.child);
     throw new Error(
-      `Refusing to start: ${dev.url} answered with a page that is not this ` +
-        `application's, even though Next.js (pid ${dev.child.pid}) reported ` +
-        `binding port ${dev.port}. Something else is intercepting that port. ` +
-        `Stop it, or set PORT to a different port, then try again.`,
+      `Refusing to start: ${dev.url} answered as something other than this ` +
+        `application's dev server, even though Next.js (pid ${dev.child.pid}) ` +
+        `reported binding port ${dev.port}. Something else is intercepting that ` +
+        `port. Stop it, or set PORT to a different port, then try again.`,
     );
   }
   if (judgement === "warn") {
@@ -194,7 +218,15 @@ async function resolveDevTarget() {
     );
   }
 
-  writeDevServerState({ port: dev.port, url: dev.url, pid: dev.child.pid });
+  if (dev.verification.verdict === "ours") {
+    writeDevServerState({
+      port: dev.port,
+      url: dev.url,
+      pid: dev.child.pid,
+      token: dev.token,
+    });
+    publishedState = true;
+  }
   process.stdout.write(
     `\n[tauri-dev] Next.js is serving ${dev.url}; pointing the desktop window at it.\n`,
   );
@@ -234,7 +266,7 @@ async function main() {
     terminateChild(tauri);
     dev.stop();
     // A joined server's state record belongs to the process that started it.
-    if (dev.owned) clearDevServerState();
+    if (publishedState) clearDevServerState();
   };
 
   for (const signal of /** @type {NodeJS.Signals[]} */ ([
@@ -269,7 +301,7 @@ async function main() {
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    clearDevServerState();
+    if (publishedState) clearDevServerState();
     process.stderr.write(
       `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );

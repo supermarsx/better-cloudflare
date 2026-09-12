@@ -57,8 +57,10 @@ test("the tauri:dev override rejects a patch that is not a JSON object", () => {
 });
 
 test("the tauri:dev launcher joins this app's running dev server", () => {
-  // Next.js 16 refuses a second dev server per project directory, so a
-  // server of ours already on the base port is joined, not duplicated.
+  // A verified server of ours is joined, never duplicated: a second dev server
+  // for the same checkout would compete for the same build output, and
+  // `scripts/dev-server.mjs` refuses to start one while a verified server runs.
+  // Next.js itself was measured not to refuse a second `next dev` here.
   assert.equal(planTauriDev({ verdict: "ours" }), "reuse");
   assert.equal(planTauriDev({ ourServer: true }), "reuse");
   // A free base port is the plain start path.

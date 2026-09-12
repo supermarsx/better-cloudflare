@@ -133,9 +133,10 @@ pin an exact port. `CI=true` pins as well, which is what keeps CI fixed.
 `npm run tauri dev` is routed to the same launcher as `npm run tauri:dev`. If you
 bypass both — `npx tauri dev`, `cargo tauri dev`, an IDE plugin — Tauri loads the
 static `devUrl` (`:3000`), so a guard (`scripts/tauri-before-dev.mjs`) runs
-first: it joins a dev server of this app already on that port, starts one pinned
-there if the port is free, and otherwise exits with an error instead of opening
-the window on a stranger's server.
+first: it joins this checkout's dev server if that is what holds the port and it
+proves its identity token, starts one pinned there if the port is free on every
+loopback address, and otherwise exits with an error instead of opening the window
+on a stranger's server.
 
 There is no package-manager distribution: no Homebrew, Chocolatey, WinGet, Flathub or Snap. Bundles are unsigned and un-notarized, and the Tauri updater is disabled. See [Security](#security).
 

@@ -16,14 +16,20 @@
  *
  * So this command never lets the static `devUrl` and the real server disagree:
  *
- *  - reuse:  something on the `devUrl` port already answers as *this* app's
- *            dev server - join it and exit 0, so Tauri proceeds.
- *  - start:  the port is free - start Next.js pinned to exactly that port and
- *            stay alive with it, because Tauri stops the `beforeDevCommand`
- *            process tree when it exits.
- *  - refuse: the port is taken by something else - exit 1 with a pointer at
+ *  - reuse:  the recorded dev server of *this checkout* is on the `devUrl`
+ *            port and still serves the identity token recorded with it, on
+ *            every loopback address - join it and exit 0, so Tauri proceeds.
+ *  - start:  the port is free on every loopback address - start Next.js pinned
+ *            to exactly that port and stay alive with it, because Tauri stops
+ *            the `beforeDevCommand` process tree when it exits.
+ *  - refuse: anything else holds the port - exit 1 with a pointer at
  *            `npm run tauri:dev`. Tauri aborts when `beforeDevCommand` fails,
  *            so a stranger's server can never end up inside the window.
+ *
+ * "Anything else" is meant literally. Another Next.js project on port 3000
+ * serves `/_next/` just as this one does, and another checkout of this
+ * repository serves the same application name; neither can produce the token.
+ * Before identity tokens, this guard joined both.
  *
  * Nothing here is imported from `tauri-dev.mjs`: that launcher clears
  * `beforeDevCommand` through `--config`, so the two never run together, and
@@ -36,12 +42,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_BASE_PORT,
+  NoFreePortError,
   REPO_ROOT,
-  bindPort,
   clearDevServerState,
-  devServerUrl,
-  isOurDevServer,
   parsePort,
+  readRunningDevServer,
+  reservePort,
   writeDevServerState,
 } from "./dev-port.mjs";
 import { startNextDev } from "./dev-server.mjs";
@@ -57,8 +63,8 @@ const LOG_PREFIX = "[tauri-before-dev]";
  * second server.
  *
  * @param {object} state
- * @param {boolean} state.portFree Whether a listener could be bound there.
- * @param {boolean} state.ourServer Whether this app's dev server answers there.
+ * @param {boolean} state.portFree Whether the port is free on every loopback address.
+ * @param {boolean} state.ourServer Whether this checkout's verified dev server is there.
  * @returns {"start" | "reuse" | "refuse"}
  */
 export function planBeforeDev({ portFree, ourServer }) {
@@ -97,22 +103,46 @@ export function devUrlPortFromConfig(configText) {
  */
 export function refusalMessage(port) {
   return (
-    `Port ${port} is in use by something that is not this app's dev server. ` +
-    `Run "npm run tauri:dev" (it picks a free port automatically) or free ` +
-    `port ${port}.`
+    `Port ${port} is in use by something that could not be verified as this ` +
+    `checkout's dev server. Run "npm run tauri:dev" (it picks a free port ` +
+    `automatically) or free port ${port}.`
   );
 }
 
 /**
+ * @param {string} runningUrl
  * @param {number} port
- * @returns {Promise<boolean>} Whether `port` could be bound just now.
+ * @returns {string}
+ */
+export function runningElsewhereMessage(runningUrl, port) {
+  return (
+    `This checkout's dev server is already running on ${runningUrl}, but ` +
+    `src-tauri/tauri.conf.json loads port ${port}, and this guard will not start ` +
+    `a second dev server for the same checkout. Run "npm run tauri:dev", which ` +
+    `points the window at the running server, or stop that server first.`
+  );
+}
+
+/**
+ * Whether `port` is genuinely free for a `localhost` client: bindable on the
+ * address Next.js will use, with no stranger on any other loopback address.
+ *
+ * @param {number} port
+ * @returns {Promise<boolean>}
  */
 async function isPortFree(port) {
-  const probe = await bindPort(port);
-  if (probe === null) return false;
-  await new Promise((resolve) => probe.close(() => resolve(undefined)));
-  return true;
+  try {
+    const reservation = await reservePort({ basePort: port, attempts: 1 });
+    await reservation.release();
+    return true;
+  } catch (error) {
+    if (error instanceof NoFreePortError) return false;
+    throw error;
+  }
 }
+
+/** Whether this process wrote the state file, and so owns removing it. */
+let publishedState = false;
 
 async function main() {
   const port = devUrlPortFromConfig(readFileSync(TAURI_CONFIG_PATH, "utf8"));
@@ -129,13 +159,21 @@ async function main() {
     );
   }
 
-  const ourServer = await isOurDevServer(port);
+  const running = await readRunningDevServer();
+  if (running !== null && running.port !== port) {
+    process.stderr.write(`${runningElsewhereMessage(running.url, port)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const ourServer = running !== null;
   const portFree = ourServer ? false : await isPortFree(port);
   const plan = planBeforeDev({ portFree, ourServer });
 
   if (plan === "reuse") {
     process.stdout.write(
-      `${LOG_PREFIX} joining the dev server already on ${devServerUrl(port)}\n`,
+      `${LOG_PREFIX} joining this checkout's dev server on ${running?.url} ` +
+        "(identity verified)\n",
     );
     return;
   }
@@ -147,11 +185,15 @@ async function main() {
   }
 
   const handle = await startNextDev({ basePort: port, pinned: true });
-  writeDevServerState({
-    port: handle.port,
-    url: handle.url,
-    pid: handle.child.pid,
-  });
+  if (handle.verification.verdict === "ours") {
+    writeDevServerState({
+      port: handle.port,
+      url: handle.url,
+      pid: handle.child.pid,
+      token: handle.token,
+    });
+    publishedState = true;
+  }
   process.stdout.write(
     `\n${LOG_PREFIX} Next.js is serving ${handle.url} (port ${handle.port})\n`,
   );
@@ -165,7 +207,7 @@ async function main() {
 
   await new Promise((resolve) => {
     handle.child.once("exit", (code, signal) => {
-      clearDevServerState();
+      if (publishedState) clearDevServerState();
       process.exitCode =
         code ?? (signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 1);
       resolve(undefined);
@@ -176,7 +218,7 @@ async function main() {
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    clearDevServerState();
+    if (publishedState) clearDevServerState();
     process.stderr.write(
       `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );

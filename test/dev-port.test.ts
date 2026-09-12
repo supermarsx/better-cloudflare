@@ -51,6 +51,10 @@ import {
   resolveDevServer,
   writeDevServerState,
 } from "../scripts/dev-port.mjs";
+import {
+  hostnameFromArguments,
+  verifySpawnedDevServer,
+} from "../scripts/dev-server.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -731,6 +735,68 @@ test("a child that is not listening yet is absent", async () => {
     await checkLoopbackOwnership(port, { bindHost: "127.0.0.1" }),
     "absent",
   );
+});
+
+test("the launcher proves a default-bound child structurally", async () => {
+  const { port } = await serve(html("<!DOCTYPE html><title>compiling</title>"));
+  assert.deepEqual(
+    await verifySpawnedDevServer({
+      port,
+      token: createDevIdentityToken(),
+      hostname: null,
+    }),
+    { verdict: "ours", method: "structural" },
+  );
+});
+
+test(
+  "the launcher refuses a default-bound child sharing its port with a stranger",
+  { skip: needsIpv6 },
+  async () => {
+    const token = createDevIdentityToken();
+    const { port } = await serve(html(appPage(token)), "127.0.0.1");
+    await occupy(port, "::1");
+    assert.deepEqual(
+      await verifySpawnedDevServer({ port, token, hostname: null }),
+      { verdict: "foreign", method: "structural" },
+    );
+  },
+);
+
+test("a child on a caller-chosen hostname has to prove its token", async () => {
+  // A caller's -H may not be exclusive, so structure proves nothing; the page
+  // has to.
+  const token = createDevIdentityToken();
+  const { port } = await serve(html(appPage(token)));
+  assert.deepEqual(
+    await verifySpawnedDevServer({
+      port,
+      token,
+      hostname: "0.0.0.0",
+      deadlineMs: 10_000,
+    }),
+    { verdict: "ours", method: "identity" },
+  );
+
+  const { port: otherPort } = await serve(html(ANOTHER_NEXT_APP));
+  assert.deepEqual(
+    await verifySpawnedDevServer({
+      port: otherPort,
+      token,
+      hostname: "0.0.0.0",
+      deadlineMs: 10_000,
+    }),
+    { verdict: "foreign", method: "identity" },
+  );
+});
+
+test("a caller's hostname is found however it is spelled", () => {
+  assert.equal(hostnameFromArguments([]), null);
+  assert.equal(hostnameFromArguments(["--turbo"]), null);
+  assert.equal(hostnameFromArguments(["-H", "0.0.0.0"]), "0.0.0.0");
+  assert.equal(hostnameFromArguments(["--hostname", "::"]), "::");
+  assert.equal(hostnameFromArguments(["--hostname=localhost"]), "localhost");
+  assert.equal(hostnameFromArguments(["-H=192.168.1.20"]), "192.168.1.20");
 });
 
 // ─── Reusing a recorded server ──────────────────────────────────────────────
