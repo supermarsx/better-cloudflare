@@ -1,8 +1,16 @@
 import type { ReactNode } from "react";
-import { ShieldCheck } from "lucide-react";
+import { Activity, ShieldCheck } from "lucide-react";
 
 import { Tooltip } from "@/components/ui/tooltip";
+import {
+  useCloudflareLatency,
+  type CloudflareLatencyState,
+} from "@/hooks/dns/use-cloudflare-latency";
 import { useI18n } from "@/hooks/use-i18n";
+import { isDesktop } from "@/lib/environment";
+import { cn } from "@/lib/utils";
+
+type TranslateFunction = ReturnType<typeof useI18n>["t"];
 
 interface DnsConnectionBarProps {
   zoneSelector: ReactNode;
@@ -10,6 +18,125 @@ interface DnsConnectionBarProps {
   activeStatus?: string;
   recordCount?: number;
   visibleCount?: number;
+  /**
+   * Credentials the latency probe authenticates with. Without them the readout
+   * stays hidden rather than showing a number it cannot stand behind.
+   */
+  apiKey?: string;
+  email?: string;
+}
+
+export interface CloudflareLatencyDescription {
+  /** Compact chip text. */
+  value: string;
+  /** The whole meaning, for anyone who cannot see the colour. */
+  ariaLabel: string;
+  /** Tooltip text: what was actually timed. */
+  detail: string;
+  /** Tone classes for the chip. */
+  toneClassName: string;
+}
+
+const LATENCY_TONE_CLASSNAMES = {
+  good: "border-emerald-500/25 bg-emerald-500/10 text-emerald-500",
+  fair: "border-amber-500/25 bg-amber-500/10 text-amber-500",
+  poor: "border-red-500/25 bg-red-500/10 text-red-500",
+  unknown: "border-border/70 bg-card/70 text-muted-foreground",
+} as const;
+
+/**
+ * Turn a latency reading into the four strings the chip needs.
+ *
+ * Every wording here has to survive the question "is that what you measured?".
+ * The app never sends an ICMP packet: it times one of its own authenticated
+ * Cloudflare reads, which travels through the desktop bridge or through the
+ * app's API server on its way out. The detail text says so in both modes, so
+ * nobody reads the number as a raw network ping.
+ *
+ * Returns `null` when there is nothing to report, which keeps the bar exactly
+ * as it was before the readout existed.
+ */
+export function describeCloudflareLatency(
+  state: CloudflareLatencyState,
+  t: TranslateFunction,
+  { desktop }: { desktop: boolean },
+): CloudflareLatencyDescription | null {
+  if (state.status === "disabled") return null;
+
+  const measuredVia = desktop
+    ? t(
+        "Timed on one of this app's own authenticated Cloudflare reads, from the desktop app out to the Cloudflare API and back. It is an API round trip, not a network ping.",
+        "Timed on one of this app's own authenticated Cloudflare reads, from the desktop app out to the Cloudflare API and back. It is an API round trip, not a network ping.",
+      )
+    : t(
+        "Timed on one of this app's own authenticated Cloudflare reads, from this browser through the app's API server to Cloudflare and back. It is an API round trip, not a network ping.",
+        "Timed on one of this app's own authenticated Cloudflare reads, from this browser through the app's API server to Cloudflare and back. It is an API round trip, not a network ping.",
+      );
+
+  if (state.status === "ready" && state.latencyMs !== null) {
+    const quality =
+      state.grade === "good"
+        ? t("good", "good")
+        : state.grade === "fair"
+          ? t("fair", "fair")
+          : t("poor", "poor");
+    return {
+      value: t("{{latency}} ms", {
+        latency: state.latencyMs,
+        defaultValue: `${state.latencyMs} ms`,
+      }),
+      ariaLabel: t("Cloudflare API round trip: {{latency}} ms ({{quality}})", {
+        latency: state.latencyMs,
+        quality,
+        defaultValue: `Cloudflare API round trip: ${state.latencyMs} ms (${quality})`,
+      }),
+      detail: measuredVia,
+      toneClassName: LATENCY_TONE_CLASSNAMES[state.grade ?? "good"],
+    };
+  }
+
+  if (state.status === "measuring") {
+    return {
+      value: "…",
+      ariaLabel: t(
+        "Cloudflare API round trip: measuring",
+        "Cloudflare API round trip: measuring",
+      ),
+      detail: `${t(
+        "Measuring the round trip to the Cloudflare API.",
+        "Measuring the round trip to the Cloudflare API.",
+      )} ${measuredVia}`,
+      toneClassName: LATENCY_TONE_CLASSNAMES.unknown,
+    };
+  }
+
+  if (state.status === "offline") {
+    return {
+      value: "—",
+      ariaLabel: t(
+        "Cloudflare API round trip: this device is offline",
+        "Cloudflare API round trip: this device is offline",
+      ),
+      detail: t(
+        "This device reports no network connection, so the Cloudflare API was not contacted.",
+        "This device reports no network connection, so the Cloudflare API was not contacted.",
+      ),
+      toneClassName: LATENCY_TONE_CLASSNAMES.unknown,
+    };
+  }
+
+  return {
+    value: "—",
+    ariaLabel: t(
+      "Cloudflare API round trip: no reading",
+      "Cloudflare API round trip: no reading",
+    ),
+    detail: `${t(
+      "The last check did not finish, so there is no current reading. The next one runs shortly.",
+      "The last check did not finish, so there is no current reading. The next one runs shortly.",
+    )} ${measuredVia}`,
+    toneClassName: LATENCY_TONE_CLASSNAMES.unknown,
+  };
 }
 
 export function DnsConnectionBar({
@@ -18,8 +145,14 @@ export function DnsConnectionBar({
   activeStatus,
   recordCount,
   visibleCount,
+  apiKey,
+  email,
 }: DnsConnectionBarProps) {
   const { t } = useI18n();
+  const latency = useCloudflareLatency({ apiKey, email });
+  const latencyDescription = describeCloudflareLatency(latency, t, {
+    desktop: isDesktop(),
+  });
   const authenticatedSessionLabel = t(
     "Authenticated session",
     "Authenticated session",
@@ -55,6 +188,31 @@ export function DnsConnectionBar({
             <ShieldCheck aria-hidden="true" className="h-3.5 w-3.5" />
           </span>
         </Tooltip>
+        {latencyDescription ? (
+          <Tooltip
+            tip={latencyDescription.detail}
+            side="top"
+            className="shrink-0 self-start"
+          >
+            <span
+              role="status"
+              // A new reading lands every minute. Announcing each one would
+              // talk over whatever the user is actually doing, so the chip
+              // stays a status they can read on focus, not a live region.
+              aria-live="off"
+              tabIndex={0}
+              aria-label={latencyDescription.ariaLabel}
+              data-testid="cloudflare-latency"
+              className={cn(
+                "inline-flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] whitespace-nowrap tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                latencyDescription.toneClassName,
+              )}
+            >
+              <Activity aria-hidden="true" className="h-3 w-3" />
+              <span aria-hidden="true">{latencyDescription.value}</span>
+            </span>
+          </Tooltip>
+        ) : null}
         <div className="min-w-36 flex-1 sm:max-w-sm">{zoneSelector}</div>
       </div>
 
