@@ -1,12 +1,18 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installTauriEventPluginInternals } from "./fixtures/tauri-event-plugin";
+import {
+  DEMO_NOTIFICATIONS,
+  DEMO_NOTIFICATION_SETTINGS,
+  DEMO_NOTIFICATION_STATUS,
+  DEMO_NOTIFICATION_ZONE_SUMMARY,
+} from "./fixtures/demo-panels";
 
 const nativeSecret = "cf-native-secret-must-not-render";
 
 async function installAuthenticatedDesktop(page: Page) {
   await installTauriEventPluginInternals(page);
   await page.addInitScript(
-    ({ secret }) => {
+    ({ secret, notifications }) => {
       type Callback = (...args: unknown[]) => unknown;
       type NativeCall = {
         command: string;
@@ -178,6 +184,21 @@ async function installAuthenticatedDesktop(page: Page) {
               case "plugin:window|is_minimized":
               case "plugin:window|is_focused":
                 return false;
+              // The authenticated shell starts the notification service on
+              // login, reads its settings and backlog, and stops it on logout.
+              case "notifications_start":
+              case "notifications_status":
+                return notifications.status;
+              case "notifications_get_settings":
+                return notifications.settings;
+              case "notifications_list":
+                return notifications.list;
+              case "notifications_unread_count":
+                return notifications.unreadCount;
+              case "notifications_zone_summary":
+                return notifications.zoneSummary;
+              case "notifications_stop":
+                return undefined;
               case "plugin:event|listen":
                 return 1;
               case "plugin:event|unlisten":
@@ -197,7 +218,16 @@ async function installAuthenticatedDesktop(page: Page) {
         },
       });
     },
-    { secret: nativeSecret },
+    {
+      secret: nativeSecret,
+      notifications: {
+        status: DEMO_NOTIFICATION_STATUS,
+        settings: DEMO_NOTIFICATION_SETTINGS,
+        list: DEMO_NOTIFICATIONS,
+        unreadCount: DEMO_NOTIFICATION_STATUS.unread,
+        zoneSummary: DEMO_NOTIFICATION_ZONE_SUMMARY,
+      },
+    },
   );
 }
 
