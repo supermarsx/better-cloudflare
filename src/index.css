@@ -812,6 +812,34 @@
     padding: 0.25rem 0.5rem;
   }
 
+  /* The global controls scroll horizontally so a narrow window can still reach
+     every one of them, which computes this row's `overflow-y` to `auto` as well,
+     for the reason spelled out on `.ui-segment-group` below. An `auto` axis
+     clips at the padding box, and these buttons deliberately paint outside
+     their own border box on three counts:
+       - `.notifications-unread-badge` hangs 0.2rem above the bell,
+       - every `.ui-icon-button` lifts 3px on hover -- 2px of `translate` from
+         `hover:-translate-y-0.5` plus 1px of `transform` from the class itself,
+         which compose rather than override, and
+       - `.ui-focus:focus-visible` draws its ring 1px wide at a 3px offset.
+     All three were being cut off. The padding moves the clip edge past the
+     furthest of them; the matching negative margin hands that space straight
+     back to the layout, so the bar stays exactly as tall as it was and only the
+     clipping rectangle grows. The soft hover glow blurs wider than any padding
+     worth spending on it, and is still clipped. */
+  .app-command-toolbar {
+    padding-block: 0.375rem;
+    margin-block: -0.375rem;
+  }
+
+  /* One row of controls can never want a vertical scrollbar, so
+     `.scrollbar-themed`'s `scrollbar-gutter: stable` only reserved a gutter
+     nothing would ever fill, stealing ~10px of button room at every window
+     width -- the same reservation `.ui-segment-group` has to undo below. */
+  .app-command-toolbar.scrollbar-themed {
+    scrollbar-gutter: auto;
+  }
+
   /* The shell clips horizontally (`overflow-x-hidden`), so a strip that does not
      own a scroller silently hides its trailing segments for good. */
   .ui-segment-group {

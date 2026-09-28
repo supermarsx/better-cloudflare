@@ -130,6 +130,42 @@ test("authenticated command-bar controls remain labelled and clickable", () => {
   assert.deepEqual(clicks, ["audit", "registry", "settings", "tags", "logout"]);
 });
 
+test("the command-bar scroller carries the class that stops it clipping", () => {
+  render(
+    <DnsAppCommandBar
+      accountLabel="operator@example.com"
+      sessionLabel="Primary session"
+      showAudit
+      showNotifications
+      unreadCount={3}
+      onOpenNotifications={() => {}}
+      onOpenAudit={() => {}}
+      onOpenRegistry={() => {}}
+      onOpenSettings={() => {}}
+      onOpenTags={() => {}}
+      onLogout={() => {}}
+    />,
+  );
+
+  const toolbar = screen.getByRole("toolbar", {
+    name: "Global application controls",
+  });
+
+  // Scrolling the row horizontally is what makes CSS clip it vertically, so the
+  // two classes only make sense together: `overflow-x-auto` reaches the trailing
+  // buttons in a narrow window, and `.app-command-toolbar` pads the box that
+  // clipping happens at so the unread badge, the hover lift and the focus ring
+  // all stay inside it. Either one alone is a bug.
+  assert.match(toolbar.className, /\boverflow-x-auto\b/);
+  assert.match(toolbar.className, /\bapp-command-toolbar\b/);
+
+  // The badge is positioned against this wrapper, not the button, so it is the
+  // wrapper's box that the padding has to clear.
+  const badge = screen.getByTestId("notifications-unread-badge");
+  assert.match(badge.parentElement?.className ?? "", /\brelative\b/);
+  assert.ok(toolbar.contains(badge));
+});
+
 test("bottom connection bar labels authenticated session and current workspace context", () => {
   render(
     <DnsConnectionBar

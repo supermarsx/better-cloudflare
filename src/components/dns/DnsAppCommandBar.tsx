@@ -83,7 +83,7 @@ export function DnsAppCommandBar({
           "Global application controls",
           "Global application controls",
         )}
-        className="scrollbar-themed flex max-w-full items-center gap-1 overflow-x-auto"
+        className="app-command-toolbar scrollbar-themed flex max-w-full items-center gap-1 overflow-x-auto"
       >
         {showNotifications && onOpenNotifications ? (
           <span className="relative inline-flex shrink-0">
