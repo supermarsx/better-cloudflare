@@ -1014,7 +1014,7 @@ export async function checkLoopbackOwnership(port, options = {}) {
  * @param {number | undefined} pid
  * @returns {boolean}
  */
-function isProcessAlive(pid) {
+export function isProcessAlive(pid) {
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
     return false;
   }
@@ -1093,8 +1093,21 @@ export async function resolveDevServer(options = {}) {
     const running = await readRunningDevServer({
       deadlineMs: options.probeDeadlineMs,
     });
-    if (running !== null && (!pinned || running.port === basePort)) {
-      return { port: running.port, reuse: true };
+    if (running !== null) {
+      if (!pinned || running.port === basePort) {
+        return { port: running.port, reuse: true };
+      }
+      // Pinned to a port this checkout's own running server does not hold.
+      // Returning `basePort` would hand back a port nobody can serve: the
+      // launcher permits one dev server per checkout, so it would refuse, and
+      // the caller - Playwright's `webServer` - would fail with a message
+      // naming a port the run never asked for. Say what is actually wrong.
+      throw new Error(
+        `PORT is pinned to ${basePort}, but this checkout's dev server is ` +
+          `already running on port ${running.port} (${running.url}). Only one ` +
+          `dev server per checkout is allowed: stop that one, or pin PORT to ` +
+          `${running.port} to reuse it.`,
+      );
     }
   }
 

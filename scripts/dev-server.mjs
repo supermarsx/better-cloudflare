@@ -54,6 +54,8 @@ import {
   readRunningDevServer,
   reservePort,
   writeDevServerState,
+  isProcessAlive,
+  readDevServerState,
 } from "./dev-port.mjs";
 
 const NEXT_BIN = path.join(
@@ -442,6 +444,24 @@ async function main() {
     return;
   }
 
+  // A verified server is not the only one worth refusing for.
+  // `readRunningDevServer` answers null for a server that is alive but has not
+  // served a page yet - a cold first route compiles in around eight seconds
+  // here - so refusing only on a verified server leaves a window in which a
+  // second launch starts, overwrites the first one's record, and puts two
+  // `next dev` processes on one `.next/` build output. That is the exact
+  // outcome this guard exists to prevent, so a live pid is enough to refuse.
+  const starting = readDevServerState();
+  if (starting !== null && isProcessAlive(starting.pid)) {
+    process.stderr.write(
+      `[dev-server] a dev server for this checkout (pid ${starting.pid}) is starting on ` +
+        `${starting.url} and has not answered yet. Wait for it, or stop it ` +
+        "before starting another.\n",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const handle = await startNextDev({
     extraArguments: process.argv.slice(2),
   });
@@ -499,10 +519,8 @@ async function main() {
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    // Only a record this process wrote is this process's to remove. A launch
-    // that fails before publishing - most often because this checkout's dev
-    // server is already running, which Next.js refuses to duplicate - must
-    // leave that server's record alone.
+    // Only a record this process wrote is this process's to remove: a launch
+    // that fails before publishing must leave another server's record alone.
     if (publishedState) clearDevServerState();
     process.stderr.write(
       `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
