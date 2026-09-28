@@ -195,7 +195,15 @@ mod windows_hello {
     /// failure should not read differently depending on it.
     fn describe(error: WebauthnCError, registering: bool) -> PasskeyError {
         let message = match error {
-            WebauthnCError::Cancelled => {
+            // `Internal` shares this arm because the Windows backend collapses
+            // every `webauthn.dll` failure into it - `win10/mod.rs` maps each
+            // one the same way, under a `TODO: map error codes` - so on the only
+            // platform that takes the native path, a dismissed prompt, a
+            // timeout, a missing PIN and an unreachable authenticator all arrive
+            // here. Reporting that as "an internal failure has occurred" names
+            // nothing the user can act on, and the arms below stay for whenever
+            // upstream fills that TODO in.
+            WebauthnCError::Cancelled | WebauthnCError::Internal => {
                 if registering {
                     "Registration was dismissed, timed out, or refused by your device. If no prompt appeared, no authenticator was reachable — try a security key, or your phone."
                 } else {
@@ -330,9 +338,7 @@ mod tests {
         // The whole reason the wrapper trait is not used. `tauri.localhost` is
         // where every production Windows build runs, and the wrapper's own rule
         // would refuse it.
-        assert!(
-            ensure_native_origin(&origin("http://tauri.localhost"), "tauri.localhost").is_ok()
-        );
+        assert!(ensure_native_origin(&origin("http://tauri.localhost"), "tauri.localhost").is_ok());
     }
 
     #[test]
