@@ -583,15 +583,14 @@ impl PasskeyManager {
         let origin = self.native_origin(config)?;
         let (challenge, state) = self.build_registration(config, storage, id).await?;
 
-        let attestation = tokio::task::spawn_blocking(move || {
-            authenticator.register(&origin, challenge)
-        })
-        .await
-        .map_err(|_| {
-            PasskeyError::NativeCeremony(
-                "The passkey request ended unexpectedly. Try again.".to_string(),
-            )
-        })??;
+        let attestation =
+            tokio::task::spawn_blocking(move || authenticator.register(&origin, challenge))
+                .await
+                .map_err(|_| {
+                    PasskeyError::NativeCeremony(
+                        "The passkey request ended unexpectedly. Try again.".to_string(),
+                    )
+                })??;
 
         let passkey = config
             .webauthn()
@@ -621,15 +620,14 @@ impl PasskeyManager {
         let origin = self.native_origin(config)?;
         let (challenge, state) = self.build_authentication(config, storage, id).await?;
 
-        let assertion = tokio::task::spawn_blocking(move || {
-            authenticator.authenticate(&origin, challenge)
-        })
-        .await
-        .map_err(|_| {
-            PasskeyError::NativeCeremony(
-                "The passkey request ended unexpectedly. Try again.".to_string(),
-            )
-        })??;
+        let assertion =
+            tokio::task::spawn_blocking(move || authenticator.authenticate(&origin, challenge))
+                .await
+                .map_err(|_| {
+                    PasskeyError::NativeCeremony(
+                        "The passkey request ended unexpectedly. Try again.".to_string(),
+                    )
+                })??;
 
         let result = config
             .webauthn()

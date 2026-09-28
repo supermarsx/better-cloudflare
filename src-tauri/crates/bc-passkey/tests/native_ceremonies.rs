@@ -265,9 +265,9 @@ async fn a_dismissed_prompt_stores_nothing_and_keeps_its_reason() {
         "the broker's own reason must survive to the caller, got {error:?}"
     );
     assert!(load_credentials(&storage, ACCOUNT)
-            .await
-            .expect("verified credentials")
-            .is_empty());
+        .await
+        .expect("verified credentials")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -301,9 +301,9 @@ async fn a_manager_with_no_relying_party_refuses_both_native_ceremonies() {
         PasskeyError::SecureVerificationUnavailable
     );
     assert!(load_credentials(&storage, ACCOUNT)
-            .await
-            .expect("verified credentials")
-            .is_empty());
+        .await
+        .expect("verified credentials")
+        .is_empty());
 }
 
 // ─── The origin gate ────────────────────────────────────────────────────────
