@@ -280,11 +280,21 @@ export function PasskeyManagerDialog({
                           <div className="font-mono text-xs text-muted-foreground truncate">
                             ID: {it.id.substring(0, 32)}...
                           </div>
-                          <div className="text-xs text-destructive mt-1">
-                            {it.requiresReregistration !== false
-                              ? "Re-enrollment required"
-                              : "Cannot authenticate"}
-                          </div>
+                          {/* `list_passkeys` reports `requiresReregistration:
+                              false` for a verified, usable credential, so the
+                              false branch is the one that fires only for a
+                              passkey that works. It used to read "Cannot
+                              authenticate", in destructive red, beside a
+                              permanent Remove button. */}
+                          {it.requiresReregistration !== false ? (
+                            <div className="text-xs text-destructive mt-1">
+                              Re-enrollment required
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Active
+                            </div>
+                          )}
                         </div>
                       </div>
                       <Button
