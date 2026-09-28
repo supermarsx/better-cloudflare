@@ -26,7 +26,7 @@ import { chromium, type Browser, type Page } from "@playwright/test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import sharp from "sharp";
+import sharp, { type PngOptions } from "sharp";
 
 import { readRunningDevServer } from "./dev-port.mjs";
 import { startNextDev } from "./dev-server.mjs";
@@ -78,7 +78,7 @@ const OUTPUT_MAX_WIDTH = VIEWPORT.width;
  * records table, the topology graph, and the add-record dialog before this
  * was adopted - re-check those three if this ever looks blurry or banded.
  */
-const PNG_ENCODE_OPTIONS: sharp.PngOptions = {
+const PNG_ENCODE_OPTIONS: PngOptions = {
   compressionLevel: 9,
   effort: 10,
   adaptiveFiltering: true,

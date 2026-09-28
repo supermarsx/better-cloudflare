@@ -108,7 +108,8 @@ test("migration fails closed within a bounded startup window and ignores late hy
     timeoutMs: 5,
   });
 
-  await assert.rejects(storage.ready?.(), /timed out/i);
+  assert.ok(storage.ready, "migrating storage exposes ready()");
+  await assert.rejects(storage.ready(), /timed out/i);
   release(new Map([["saved", "late-value"]]));
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -131,7 +132,8 @@ test("migration refuses unexpected or oversized legacy key sets", async () => {
     },
   );
 
-  await assert.rejects(storage.ready?.(), /unexpected legacy storage key/i);
+  assert.ok(storage.ready, "migrating storage exposes ready()");
+  await assert.rejects(storage.ready(), /unexpected legacy storage key/i);
   assert.equal(durable.values.size, 0);
 
   const oversized = createMigratingStorage(
@@ -139,7 +141,8 @@ test("migration refuses unexpected or oversized legacy key sets", async () => {
     async () =>
       new Map([["cloudflare-dns-manager", "x".repeat(3 * 1024 * 1024)]]),
   );
-  await assert.rejects(oversized.ready?.(), /migration byte limit/i);
+  assert.ok(oversized.ready, "migrating storage exposes ready()");
+  await assert.rejects(oversized.ready(), /migration byte limit/i);
   assert.equal(durable.values.size, 0);
 });
 
@@ -161,7 +164,8 @@ test("migration rolls back partial writes and keeps the adapter failed closed", 
       ]),
   );
 
-  await assert.rejects(storage.ready?.(), /forced migration write failure/);
+  assert.ok(storage.ready, "migrating storage exposes ready()");
+  await assert.rejects(storage.ready(), /forced migration write failure/);
   assert.equal(durable.getItem("first"), null);
   assert.equal(durable.getItem("second"), null);
   assert.throws(() => storage.setItem("later", "value"));

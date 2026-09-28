@@ -134,7 +134,7 @@ test("IP access-rule methods preserve the public server-client contract in deskt
       mode: "block",
       notes: "abuse source",
       configuration: { target: "ip", value: "203.0.113.7" },
-    };
+    } as Awaited<ReturnType<typeof TauriClient.createIpAccessRule>>;
   };
   TauriClient.deleteIpAccessRule = async (...args: unknown[]) => {
     calls.push({ method: "delete", args });
@@ -199,7 +199,7 @@ test("getSPFGraph routes to Tauri in desktop mode", async () => {
     return { nodes: [], edges: [], lookups: 0, cyclic: false };
   };
   const client = new ServerClient("token", "http://example.com");
-  const res = await client.getSPFGraph("example.com");
+  const res = (await client.getSPFGraph("example.com")) as { cyclic: boolean };
   assert.equal(res.cyclic, false);
   assert.deepEqual(params, ["example.com"]);
 });

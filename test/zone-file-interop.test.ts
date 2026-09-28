@@ -146,7 +146,7 @@ test("a Route 53 BIND export imports every record with its RDATA intact", () => 
     unquoteCharacterString(dmarc?.content ?? ""),
     "v=DMARC1;p=quarantine;rua=mailto:reports@example.com;pct=100",
   );
-  const dkim = records.find((r) => r.name.startsWith("selector1."));
+  const dkim = records.find((r) => r.name?.startsWith("selector1."));
   assert.match(unquoteCharacterString(dkim?.content ?? ""), /p=MIIBIjANBgkq/u);
 
   assert.equal(only(records, "SRV").content, "10 60 5060 sip.example.com.");
@@ -179,7 +179,7 @@ test("a Cloudflare export imports past its banner and section headings", () => {
 
   // A DKIM key exported as two adjacent character-strings stays two strings and
   // concatenates to the single logical key.
-  const dkim = records.find((r) => r.name.startsWith("default."));
+  const dkim = records.find((r) => r.name?.startsWith("default."));
   assert.equal(
     dkim?.content,
     '"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQ" "EFAAOCAQ8AMIIBCgKCAQEAtest=="',
@@ -193,7 +193,7 @@ test("a Cloudflare export imports past its banner and section headings", () => {
   const saved = normalizeRecordListCharacterStrings(records);
   assert.equal(
     unquoteCharacterString(
-      saved.find((r) => r.name.startsWith("default."))?.content ?? "",
+      saved.find((r) => r.name?.startsWith("default."))?.content ?? "",
     ),
     "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest==",
   );

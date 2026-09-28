@@ -18,7 +18,7 @@ test("openSqlite should return a sqlite wrapper and support basic calls", async 
   assert.ok(wrapper, "openSqlite returned a wrapper");
   assert.ok(
     ["better-sqlite3", "sqlite3", "sql.js"].includes(
-      (wrapper as unknown as { type?: string }).type,
+      (wrapper as unknown as { type?: string }).type ?? "",
     ),
     "driver type should be known",
   );
@@ -40,7 +40,7 @@ test("openSqlite should return a sqlite wrapper and support basic calls", async 
     "insert returns lastInsertRowid",
   );
   const row = await wrapper.get("SELECT id, v FROM tmp WHERE id = ?", [1]);
-  assert.equal(row.v, "x");
+  assert.equal((row as { v?: unknown }).v, "x");
   const rows = await wrapper.all("SELECT id, v FROM tmp");
   assert.ok(Array.isArray(rows));
   if (wrapper.close) await wrapper.close();

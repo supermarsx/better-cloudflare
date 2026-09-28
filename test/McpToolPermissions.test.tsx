@@ -734,7 +734,7 @@ test("confirmation makes surrounding search, bulk controls, and checkboxes genui
   assert.equal(surrounding.style.pointerEvents, "");
 
   await waitFor(() => {
-    assert.equal(highRiskTrigger.disabled, false);
+    assert.equal((highRiskTrigger as HTMLButtonElement).disabled, false);
     assert.equal(document.activeElement === highRiskTrigger, true);
     assert.equal(triggerFocusCalls, 1);
     assert.deepEqual(saveCalls, [[]]);
@@ -1129,7 +1129,7 @@ test("controlled changes use onApplied as the single parent synchronization cont
   );
   await waitUntilReady();
   assert.deepEqual(callbacks, [
-    { enabledTools: [], status: appliedStatuses[0] },
+    { enabledTools: [] as string[], status: appliedStatuses[0] },
   ]);
 
   rerender(
@@ -1806,7 +1806,7 @@ for (const [label, nonAuthoritativeStatus] of [
         saveCalls.push([...enabledTools]);
         saves += 1;
         if (saves === 1) return status([]);
-        if (saves === 2) return nonAuthoritativeStatus;
+        if (saves === 2) return nonAuthoritativeStatus as McpServerStatus;
         return status([]);
       },
     };

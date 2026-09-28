@@ -131,7 +131,7 @@ test("LoginForm shows the passkey security notice and recovery path when status 
 });
 
 test("LoginForm ignores a stale web key load after switching to desktop", async () => {
-  let resolveWebKeys: (
+  let resolveWebKeys!: (
     keys: ReturnType<typeof storageManager.getApiKeys>,
   ) => void;
   const webKeys = new Promise<ReturnType<typeof storageManager.getApiKeys>>(

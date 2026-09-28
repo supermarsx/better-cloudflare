@@ -7,16 +7,21 @@ import { CloudflareAPI } from "../src/lib/api/cloudflare.ts";
 
 interface FetchCall {
   url: string;
-  options: RequestInit & { body?: string };
+  // `RequestInit & { body?: string }` would intersect to `(BodyInit | null) &
+  // string`, which nothing inhabits; the narrowed field has to replace it.
+  options: Omit<RequestInit, "body"> & { body?: string };
 }
+
+// `fetch` is overloaded and no single stub signature satisfies the whole
+// overload set, so stubs are installed through a narrowed view of the global.
+const globalFetch = globalThis as unknown as {
+  fetch: (url: string, options: FetchCall["options"]) => Promise<Response>;
+};
 
 test("createDNSRecord strips unknown fields", async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: typeof fetch }).fetch = async (
-    url: string,
-    options: RequestInit & { body?: string },
-  ) => {
+  globalFetch.fetch = async (url: string, options: FetchCall["options"]) => {
     calls.push({ url, options });
     return new Response(JSON.stringify({ result: {} }), {
       status: 200,
@@ -39,7 +44,9 @@ test("createDNSRecord strips unknown fields", async () => {
   });
 
   assert.equal(calls[0].url, "http://example.com/zones/zone/dns_records");
-  const body = JSON.parse(calls[0].options.body);
+  const rawBody = calls[0].options.body;
+  assert.ok(rawBody, "the request carried a JSON body");
+  const body = JSON.parse(rawBody);
   assert.deepEqual(body, {
     type: "A",
     name: "test",
@@ -54,10 +61,7 @@ test("createDNSRecord strips unknown fields", async () => {
 test("updateDNSRecord strips unknown fields", async () => {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
-  (globalThis as unknown as { fetch: typeof fetch }).fetch = async (
-    url: string,
-    options: RequestInit & { body?: string },
-  ) => {
+  globalFetch.fetch = async (url: string, options: FetchCall["options"]) => {
     calls.push({ url, options });
     return new Response(JSON.stringify({ result: {} }), {
       status: 200,
@@ -80,7 +84,9 @@ test("updateDNSRecord strips unknown fields", async () => {
   });
 
   assert.equal(calls[0].url, "http://example.com/zones/zone/dns_records/rec");
-  const body = JSON.parse(calls[0].options.body);
+  const rawBody = calls[0].options.body;
+  assert.ok(rawBody, "the request carried a JSON body");
+  const body = JSON.parse(rawBody);
   assert.deepEqual(body, {
     type: "A",
     name: "test",

@@ -79,13 +79,17 @@ test("language persistence rolls back visibly on failure and remains retryable w
 
   const originalChangeLanguage = i18n.changeLanguage.bind(i18n);
   let rejectPortuguese = true;
-  mock.method(i18n, "changeLanguage", async (...args) => {
-    if (args[0] === "pt-PT" && rejectPortuguese) {
-      rejectPortuguese = false;
-      throw new Error("translation load failed token=language-secret");
-    }
-    return originalChangeLanguage(...args);
-  });
+  mock.method(
+    i18n,
+    "changeLanguage",
+    async (...args: Parameters<typeof i18n.changeLanguage>) => {
+      if (args[0] === "pt-PT" && rejectPortuguese) {
+        rejectPortuguese = false;
+        throw new Error("translation load failed token=language-secret");
+      }
+      return originalChangeLanguage(...args);
+    },
+  );
 
   render(
     <>

@@ -13,6 +13,17 @@ interface FakeDBState {
   lastID: number;
   tables?: DBTables;
 }
+/** `this` inside a sqlite3 `run` callback. */
+type RunResult = { lastID: number; changes: number };
+type RunCallback = (this: RunResult, err: Error | null) => void;
+type RowCallback = (err: Error | null, row?: DBRow | null) => void;
+type RowsCallback = (err: Error | null, rows?: DBRow[]) => void;
+interface FakeDatabase {
+  run(sql: string, params?: unknown, cb?: RunCallback): void;
+  get(sql: string, params?: unknown, cb?: RowCallback): void;
+  all(sql: string, params?: unknown, cb?: RowsCallback): void;
+  close(cb?: (err?: unknown) => void): void;
+}
 import { openSqlite } from "../src/lib/storage/sqlite-driver.ts";
 import { createRequire } from "module";
 const requireCJS = createRequire(import.meta.url);
@@ -20,10 +31,10 @@ const fakeSqlite3 = {
   verbose() {
     return fakeSqlite3;
   },
-  Database: function (file?: string) {
+  Database: function (this: FakeDatabase, file?: string) {
     void file;
     const dbState: FakeDBState = { credentials: [], audit_log: [], lastID: 0 };
-    this.run = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
+    this.run = (sql: string, params?: unknown, cb?: RunCallback) => {
       const s = String(sql).trim().toUpperCase();
       const p = Array.isArray(params)
         ? params
@@ -109,7 +120,7 @@ const fakeSqlite3 = {
       // default fallback
       if (cb) cb.call({ lastID: dbState.lastID, changes: 0 }, null);
     };
-    this.get = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
+    this.get = (sql: string, params?: unknown, cb?: RowCallback) => {
       const s = String(sql).trim().toUpperCase();
       const p = Array.isArray(params) ? params : [params];
       // generic SELECT id... FROM table WHERE id = ?
@@ -142,7 +153,7 @@ const fakeSqlite3 = {
       }
       if (cb) cb(null, null);
     };
-    this.all = (sql: string, params?: unknown[] | unknown, cb?: unknown) => {
+    this.all = (sql: string, params?: unknown, cb?: RowsCallback) => {
       const s = String(sql).trim().toUpperCase();
       // generic SELECT id... FROM table WHERE id = ?
       const m = sql.match(/FROM\s+([\w.]+)\s+WHERE\s+id\s*=\s*\?/i);
@@ -212,7 +223,7 @@ test("openSqlite falls back to sqlite3 when better-sqlite3 is not available", as
   );
   await wrapper.run("INSERT INTO t(name) VALUES(?)", ["x"]);
   const row = await wrapper.get("SELECT id, name FROM t WHERE id = ?", [1]);
-  assert.equal(row.name, "x");
+  assert.equal((row as { name?: unknown }).name, "x");
   if (wrapper.close) await wrapper.close();
   try {
     fs.unlinkSync(tmp);
@@ -249,16 +260,10 @@ test("SqliteCredentialStore works with injected sqlite3 wrapper", async () => {
     tmp,
     requireFn as unknown as (name: string) => unknown,
   );
-  const store = new SqliteCredentialStore(
-    tmp,
-    wrapper as unknown as {
-      all: (...a: unknown[]) => Promise<unknown[]>;
-      close?: () => Promise<void>;
-      run: (...a: unknown[]) => Promise<unknown> | unknown;
-      get: (...a: unknown[]) => Promise<unknown> | unknown;
-    },
-  );
-  await store.initPromise;
+  const store = new SqliteCredentialStore(tmp, wrapper);
+  // `initPromise` is private: the test sequences on it deliberately, rather
+  // than widening the store's API for a test's benefit.
+  await (store as unknown as { initPromise: Promise<unknown> }).initPromise;
   const id = "u-test-fb";
   await store.addCredential(id, {
     credentialID: "c1",

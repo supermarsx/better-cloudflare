@@ -60,8 +60,7 @@ test("zone tabs hide normalized active statuses and retain every other status", 
       closeOnMiddleClick={false}
       onActivate={() => {}}
       onClose={() => {}}
-      onReorder={() => {}}
-      onMoveToEnd={() => {}}
+      onOrderChange={() => {}}
     />,
   );
 

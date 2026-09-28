@@ -58,7 +58,7 @@ test("verifyToken calls server endpoint", async () => {
       });
     };
 
-    let api: ReturnType<typeof useCloudflareAPI>;
+    let api!: ReturnType<typeof useCloudflareAPI>;
     function Wrapper() {
       api = useCloudflareAPI();
       return null;
@@ -93,7 +93,7 @@ test("verifyToken uses email headers when provided", async () => {
       });
     };
 
-    let api: ReturnType<typeof useCloudflareAPI>;
+    let api!: ReturnType<typeof useCloudflareAPI>;
     function Wrapper() {
       api = useCloudflareAPI(undefined, "user@example.com");
       return null;
@@ -133,7 +133,7 @@ test("createDNSRecord posts record for provided key", async () => {
       });
     };
 
-    let api: ReturnType<typeof useCloudflareAPI>;
+    let api!: ReturnType<typeof useCloudflareAPI>;
     function Wrapper() {
       api = useCloudflareAPI("abc");
       return null;
@@ -173,7 +173,7 @@ test("createDNSRecord posts record using email auth", async () => {
       });
     };
 
-    let api: ReturnType<typeof useCloudflareAPI>;
+    let api!: ReturnType<typeof useCloudflareAPI>;
     function Wrapper() {
       api = useCloudflareAPI("abc", "me@example.com");
       return null;
@@ -225,7 +225,7 @@ test("checkDnsPropagation forwards caller cancellation through the hook and Serv
         );
       });
 
-    let api: ReturnType<typeof useCloudflareAPI>;
+    let api!: ReturnType<typeof useCloudflareAPI>;
     function Wrapper() {
       api = useCloudflareAPI("abc");
       return null;

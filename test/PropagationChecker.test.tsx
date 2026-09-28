@@ -410,7 +410,7 @@ test("watch polling is single-flight and stop prevents timers and stale writes",
     return originalSetTimeout(() => {
       if (typeof callback === "function") callback(...args);
     }, delay);
-  }) as typeof setTimeout;
+  }) as unknown as typeof setTimeout;
   globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
     if (id !== (701 as unknown as ReturnType<typeof setTimeout>)) {
       originalClearTimeout(id);
@@ -421,7 +421,7 @@ test("watch polling is single-flight and stop prevents timers and stale writes",
       scheduledWatchIntervals.push(callback as () => void);
     }
     return 702 as unknown as ReturnType<typeof setInterval>;
-  }) as typeof setInterval;
+  }) as unknown as typeof setInterval;
   globalThis.clearInterval = (() => undefined) as typeof clearInterval;
 
   let calls = 0;

@@ -19,6 +19,11 @@ import {
   type TauriDNSRecord,
   type TauriZone,
 } from "../src/lib/api/tauri-client";
+
+// The mocks below stand in for real TauriClient methods, so they take their
+// parameter types from the real signatures rather than restating them.
+type RecordInput = Parameters<typeof TauriClient.createDNSRecord>[3];
+type BulkRecordInputs = Parameters<typeof TauriClient.createBulkDNSRecords>[3];
 import { storageManager } from "../src/lib/storage/storage";
 
 const originalFetch = globalThis.fetch;
@@ -138,19 +143,25 @@ function mockCopyRuntime(options: CopyHarnessOptions = {}): {
     pastePreviewWrites.push(enabled);
   });
   mock.method(TauriClient, "getPreferences", async () => preferences);
-  mock.method(TauriClient, "updatePreferences", async (next) => {
+  mock.method(TauriClient, "updatePreferences", async (next: unknown) => {
     preferenceUpdates.push(next as Record<string, unknown>);
   });
   mock.method(TauriClient, "getZones", async () => zones);
   mock.method(
     TauriClient,
     "getDNSRecords",
-    async (_apiKey, _email, zoneId) => recordsByZone[zoneId] ?? [],
+    async (_apiKey: string, _email: string | undefined, zoneId: string) =>
+      recordsByZone[zoneId] ?? [],
   );
   mock.method(
     TauriClient,
     "createDNSRecord",
-    async (_apiKey, _email, zoneId, input) =>
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      zoneId: string,
+      input: RecordInput,
+    ) =>
       ({
         id: "created-single",
         zone_id: zoneId,
@@ -163,7 +174,13 @@ function mockCopyRuntime(options: CopyHarnessOptions = {}): {
   mock.method(
     TauriClient,
     "createBulkDNSRecords",
-    async (_apiKey, _email, zoneId, records, dryRun) => {
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      zoneId: string,
+      records: BulkRecordInputs,
+      dryRun?: boolean,
+    ) => {
       const callIndex = bulkCalls.length;
       bulkCalls.push({ zoneId, records, dryRun });
       if (options.bulkHandler) {
@@ -188,7 +205,12 @@ function mockCopyRuntime(options: CopyHarnessOptions = {}): {
   mock.method(
     TauriClient,
     "deleteDNSRecord",
-    async (_apiKey, _email, zoneId, recordId) => {
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      zoneId: string,
+      recordId: string,
+    ) => {
       deletedRecordIds.push(recordId);
       if (options.deleteHandler) await options.deleteHandler(zoneId, recordId);
     },

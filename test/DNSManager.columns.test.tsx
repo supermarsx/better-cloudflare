@@ -129,12 +129,15 @@ function mockRuntime(options: HarnessOptions = {}): Harness {
     },
   );
   mock.method(TauriClient, "getPreferences", async () => preferences);
-  mock.method(TauriClient, "updatePreferences", async (next) => {
+  mock.method(TauriClient, "updatePreferences", async (next: unknown) => {
     preferenceUpdates.push(next as Record<string, unknown>);
   });
   mock.method(TauriClient, "getZones", async () => zones);
-  mock.method(TauriClient, "getDNSRecords", async (_apiKey, _email, zoneId) =>
-    zoneId === ZONE.id ? (options.records ?? RECORDS) : [],
+  mock.method(
+    TauriClient,
+    "getDNSRecords",
+    async (_apiKey: string, _email: string | undefined, zoneId: string) =>
+      zoneId === ZONE.id ? (options.records ?? RECORDS) : [],
   );
   mock.method(
     TauriClient,

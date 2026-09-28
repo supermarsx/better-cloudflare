@@ -17,6 +17,11 @@ import {
   type TauriDNSRecord,
   type TauriZone,
 } from "../src/lib/api/tauri-client";
+
+// The mocks below stand in for real TauriClient methods, so they take their
+// parameter types from the real signatures rather than restating them.
+type RecordInput = Parameters<typeof TauriClient.createDNSRecord>[3];
+type BulkRecordInputs = Parameters<typeof TauriClient.createBulkDNSRecords>[3];
 import { storageManager } from "../src/lib/storage/storage";
 
 const originalFetch = globalThis.fetch;
@@ -72,7 +77,12 @@ function mockNormalizeRuntime(records: TauriDNSRecord[] = []): {
   mock.method(
     TauriClient,
     "createDNSRecord",
-    async (_apiKey, _email, zoneId, input) => {
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      zoneId: string,
+      input: RecordInput,
+    ) => {
       createCalls.push(input);
       return {
         id: `created-${createCalls.length}`,
@@ -87,7 +97,13 @@ function mockNormalizeRuntime(records: TauriDNSRecord[] = []): {
   mock.method(
     TauriClient,
     "createBulkDNSRecords",
-    async (_apiKey, _email, zoneId, bulkRecords, dryRun) => {
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      zoneId: string,
+      bulkRecords: BulkRecordInputs,
+      dryRun?: boolean,
+    ) => {
       bulkCalls.push({ records: bulkRecords, dryRun });
       return {
         created: bulkRecords.map(
@@ -108,7 +124,12 @@ function mockNormalizeRuntime(records: TauriDNSRecord[] = []): {
   mock.method(
     TauriClient,
     "deleteDNSRecord",
-    async (_apiKey, _email, _zoneId, recordId) => {
+    async (
+      _apiKey: string,
+      _email: string | undefined,
+      _zoneId: string,
+      recordId: string,
+    ) => {
       deletedRecordIds.push(recordId);
     },
   );

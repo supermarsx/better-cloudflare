@@ -319,7 +319,7 @@ test("opens and creates a normalized domain-audit suggestion", async () => {
         name: zoneName,
         status: "active",
         name_servers: [],
-      } as TauriZone,
+      } as unknown as TauriZone,
     ],
     getDNSRecords: async () => [mxRecord],
     createDNSRecord: async (_apiKey, _email, receivedZoneId, record) => {
@@ -1851,7 +1851,9 @@ test("rejected MCP tool mutation rolls back selection and shows sanitized contex
     "the rejected mutation owns an open diagnostic toast",
   );
   fireEvent.click(
-    within(mutationToast).getByRole("button", { name: "More info" }),
+    within(mutationToast as HTMLElement).getByRole("button", {
+      name: "More info",
+    }),
   );
   const diagnosticDialog = await screen.findByRole("dialog", {
     name: "Error details",

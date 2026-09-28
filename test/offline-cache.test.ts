@@ -1091,7 +1091,7 @@ test("later rollback retry cleans an already-restored stale value exactly", (t) 
     }, delay);
     if ((delay ?? 0) > 0) pendingRollbackTimers.add(timer);
     return timer;
-  }) as typeof setTimeout;
+  }) as unknown as typeof setTimeout;
   globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
     pendingRollbackTimers.delete(timer);
     fakeClearTimeout(timer);
@@ -1297,7 +1297,7 @@ test("permanent rollback failure stops at the retry ceiling with no timer work",
     }, delay);
     if ((delay ?? 0) > 0) pendingRollbackTimers.add(timer);
     return timer;
-  }) as typeof setTimeout;
+  }) as unknown as typeof setTimeout;
   globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
     pendingRollbackTimers.delete(timer);
     fakeClearTimeout(timer);
@@ -1427,7 +1427,7 @@ test("clear yields with a hard per-turn inspection bound across 20,000 unrelated
       if (typeof callback === "function") callback(...args);
     });
     return scheduledTurns.length as unknown as ReturnType<typeof setTimeout>;
-  }) as typeof setTimeout;
+  }) as unknown as typeof setTimeout;
 
   for (let index = 0; index < unrelatedCount; index += 1) {
     localStorage.setItem(`huge-origin-${index}`, "unrelated");
@@ -1518,7 +1518,7 @@ test("clear contains asynchronous storage access failures and leaves no retry ti
       if (typeof callback === "function") callback(...args);
     });
     return scheduledTurns.length as unknown as ReturnType<typeof setTimeout>;
-  }) as typeof setTimeout;
+  }) as unknown as typeof setTimeout;
 
   try {
     clearOfflineCache();

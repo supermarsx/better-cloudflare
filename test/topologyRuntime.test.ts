@@ -318,8 +318,14 @@ test("cancels idle and timer yields without returning a partial model", async ()
   );
   assert.equal(cancelledIdleId, 73);
 
-  delete browserWindow.requestIdleCallback;
-  delete browserWindow.cancelIdleCallback;
+  // Not optional on the DOM lib type, but removing them is the point: this
+  // exercises the path where the platform has no idle-callback API.
+  const idleWindow = browserWindow as {
+    requestIdleCallback?: unknown;
+    cancelIdleCallback?: unknown;
+  };
+  delete idleWindow.requestIdleCallback;
+  delete idleWindow.cancelIdleCallback;
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   let clearedTimer: ReturnType<typeof setTimeout> | undefined;

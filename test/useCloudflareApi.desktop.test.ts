@@ -38,7 +38,7 @@ test("useCloudflareAPI routes getZones to Tauri in desktop mode", async () => {
     return [{ id: "1", name: "zone" }] as any;
   };
 
-  let api: ReturnType<typeof useCloudflareAPI>;
+  let api!: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI("token", "user@example.com");
     return null;
@@ -61,7 +61,7 @@ test("useCloudflareAPI routes simulateSPF to Tauri in desktop mode", async () =>
     return { result: "pass", reasons: [], lookups: 1 };
   };
 
-  let api: ReturnType<typeof useCloudflareAPI>;
+  let api!: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI("token");
     return null;
@@ -84,7 +84,7 @@ test("useCloudflareAPI routes getVaultSecret to Tauri in desktop mode", async ()
     return "secret";
   };
 
-  let api: ReturnType<typeof useCloudflareAPI>;
+  let api!: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI("token");
     return null;
@@ -125,7 +125,7 @@ test("useCloudflareAPI routes passkey commands to Tauri in desktop mode", async 
     calls.deletePasskey = args;
   };
 
-  let api: ReturnType<typeof useCloudflareAPI>;
+  let api!: ReturnType<typeof useCloudflareAPI>;
   function Wrapper() {
     api = useCloudflareAPI("token");
     return null;

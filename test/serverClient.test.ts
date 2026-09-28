@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { RequestError } from "../src/lib/api/request-error.ts";
 import { ServerClient } from "../src/lib/api/server-client.ts";
+
+// `fetch` is overloaded; a stub implements one signature, not all of them.
+// Installing through this narrowed view keeps the stubs honest about what
+// they accept without a cast at every site.
+const globalFetch = globalThis as unknown as {
+  fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
+};
 import { RESOURCE_LIMITS } from "../src/lib/resource-limits.ts";
 import { TauriClient } from "../src/lib/api/tauri-client.ts";
 
@@ -77,7 +84,7 @@ test("constructs without a static web backend and fails before fetch", async () 
   const previous = process.env.NEXT_PUBLIC_SERVER_API_BASE;
   delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
   let fetchCalls = 0;
-  globalThis.fetch = async () => {
+  globalFetch.fetch = async () => {
     fetchCalls += 1;
     throw new Error("fetch must not be called");
   };
@@ -100,7 +107,7 @@ test("constructs without a static web backend and fails before fetch", async () 
       /absolute HTTP\(S\) URL/,
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
     if (previous === undefined) {
       delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
     } else {
@@ -122,7 +129,7 @@ test("uses an explicitly configured Next public backend", async () => {
       "https://configured.example.test/api/verify-token",
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
     if (previous === undefined) {
       delete process.env.NEXT_PUBLIC_SERVER_API_BASE;
     } else {
@@ -141,7 +148,7 @@ function mockFetch(response: {
 }) {
   let called: { url: string | URL; init?: RequestInit } | undefined;
   let bodyReads = 0;
-  globalThis.fetch = async (url: string | URL, init?: RequestInit) => {
+  globalFetch.fetch = async (url: string | URL, init?: RequestInit) => {
     called = { url, init };
     const responseText =
       response.text ??
@@ -174,7 +181,7 @@ function mockFetch(response: {
     return actualResponse;
   };
   return () => {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
     return { ...called!, bodyReads };
   };
 }
@@ -494,7 +501,7 @@ test("includes Cloudflare JSON error details", async () => {
 test("aborts request after timeout", async () => {
   const client = new ServerClient("key", "http://example.com", undefined, 5);
   let aborted = false;
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+  globalFetch.fetch = async (_url: string | URL, init?: RequestInit) =>
     new Promise<never>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
         aborted = true;
@@ -517,7 +524,7 @@ test("aborts request after timeout", async () => {
     );
     assert.equal(aborted, true);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -525,7 +532,7 @@ test("keeps the timeout active when a caller supplies an AbortSignal", async () 
   const client = new ServerClient("key", "http://example.com", undefined, 5);
   const caller = new AbortController();
   let requestSignal: AbortSignal | undefined;
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+  globalFetch.fetch = async (_url: string | URL, init?: RequestInit) =>
     new Promise<never>((_resolve, reject) => {
       requestSignal = init?.signal ?? undefined;
       init?.signal?.addEventListener("abort", () => {
@@ -546,7 +553,7 @@ test("keeps the timeout active when a caller supplies an AbortSignal", async () 
     assert.equal(caller.signal.aborted, false);
     assert.equal(requestSignal?.aborted, true);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -555,7 +562,7 @@ test("checkDnsPropagation preserves caller cancellation when rejection follows t
   const caller = new AbortController();
   let requestSignal: AbortSignal | null | undefined;
   let rejectFetch: ((reason?: unknown) => void) | undefined;
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+  globalFetch.fetch = async (_url: string | URL, init?: RequestInit) =>
     new Promise<never>((_resolve, reject) => {
       requestSignal = init?.signal;
       rejectFetch = reject;
@@ -588,7 +595,7 @@ test("checkDnsPropagation preserves caller cancellation when rejection follows t
       },
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -596,7 +603,7 @@ test("checkDnsPropagation removes caller listeners and clears its timeout after 
   const client = new ServerClient("key", "http://example.com", undefined, 20);
   const caller = new AbortController();
   let requestSignal: AbortSignal | null | undefined;
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) => {
+  globalFetch.fetch = async (_url: string | URL, init?: RequestInit) => {
     requestSignal = init?.signal;
     return new Response(JSON.stringify({ resolvers: [] }), {
       status: 200,
@@ -618,14 +625,14 @@ test("checkDnsPropagation removes caller listeners and clears its timeout after 
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(requestSignal.aborted, false);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
 test("normalizes network failures and explicit cancellation", async () => {
   const client = new ServerClient("key", "http://example.com");
   try {
-    globalThis.fetch = async () => {
+    globalFetch.fetch = async () => {
       throw new TypeError("Failed to fetch");
     };
     await assert.rejects(
@@ -645,7 +652,7 @@ test("normalizes network failures and explicit cancellation", async () => {
     );
 
     const controller = new AbortController();
-    globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+    globalFetch.fetch = async (_url: string | URL, init?: RequestInit) =>
       new Promise<never>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           reject(new DOMException("cancelled", "AbortError"));
@@ -670,14 +677,14 @@ test("normalizes network failures and explicit cancellation", async () => {
       },
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
 test("rejects successful HTML and summarizes failed HTML responses", async () => {
   const client = new ServerClient("key", "http://example.com");
   try {
-    globalThis.fetch = async () =>
+    globalFetch.fetch = async () =>
       new Response(
         "<!doctype html><html><head><title>Proxy login</title></head><body>password=hidden-value</body></html>",
         {
@@ -699,7 +706,7 @@ test("rejects successful HTML and summarizes failed HTML responses", async () =>
       },
     );
 
-    globalThis.fetch = async () =>
+    globalFetch.fetch = async () =>
       new Response(
         "<html><head><title>Bad gateway</title></head><body>Proxy unavailable api_key=hidden-value</body></html>",
         {
@@ -721,7 +728,7 @@ test("rejects successful HTML and summarizes failed HTML responses", async () =>
       },
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -781,7 +788,7 @@ test("listPasskeys forwards cancellation to fetch", async () => {
   const client = new ServerClient("key", "http://example.com");
   const controller = new AbortController();
   let receivedSignal: AbortSignal | null | undefined;
-  globalThis.fetch = async (_url: string | URL, init?: RequestInit) =>
+  globalFetch.fetch = async (_url: string | URL, init?: RequestInit) =>
     new Promise<never>((_resolve, reject) => {
       receivedSignal = init?.signal;
       init?.signal?.addEventListener("abort", () => {
@@ -807,7 +814,7 @@ test("listPasskeys forwards cancellation to fetch", async () => {
     assert.notEqual(receivedSignal, controller.signal);
     assert.equal(receivedSignal.aborted, true);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -851,7 +858,7 @@ test("oversized responses preserve request context, retryability, and reader can
     );
 
   try {
-    globalThis.fetch = async () =>
+    globalFetch.fetch = async () =>
       oversizedResponse(503, "Service Unavailable");
     await assert.rejects(
       () => client.getZones(),
@@ -871,7 +878,7 @@ test("oversized responses preserve request context, retryability, and reader can
       },
     );
 
-    globalThis.fetch = async () => oversizedResponse(200, "OK");
+    globalFetch.fetch = async () => oversizedResponse(200, "OK");
     await assert.rejects(
       () => client.getZones(),
       (error: unknown) => {
@@ -883,7 +890,7 @@ test("oversized responses preserve request context, retryability, and reader can
     );
     assert.equal(cancellations, 2);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });
 
@@ -893,7 +900,7 @@ test("preserves caller cancellation while a bounded response body is streaming",
   let requestSignal: AbortSignal | null | undefined;
 
   try {
-    globalThis.fetch = async (_url: string | URL, init?: RequestInit) => {
+    globalFetch.fetch = async (_url: string | URL, init?: RequestInit) => {
       requestSignal = init?.signal;
       return new Response(
         new ReadableStream<Uint8Array>({
@@ -927,6 +934,6 @@ test("preserves caller cancellation while a bounded response body is streaming",
     );
     assert.equal(requestSignal?.aborted, true);
   } finally {
-    globalThis.fetch = originalFetch;
+    globalFetch.fetch = originalFetch;
   }
 });

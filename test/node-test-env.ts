@@ -1,4 +1,4 @@
-import { JSDOM } from "jsdom";
+import { JSDOM, type DOMWindow } from "jsdom";
 import React from "react";
 import { createRequire } from "module";
 
@@ -12,9 +12,16 @@ const dom = new JSDOM(`<!doctype html><html><body></body></html>`, {
 });
 
 const jsdomWindow = dom.window;
-const browserWindow = jsdomWindow as unknown as Window & {
+// jsdom's own window type. The DOM constructors this harness copies onto
+// `globalThis` (Element, Document, DocumentFragment, MutationObserver,
+// NodeFilter) live on it, as do the three Tauri probes the application reads.
+// The hand-rolled `Window & { __TAURI__?: unknown }` this replaces declared
+// none of them, which is most of why this file went unchecked for so long.
+const browserWindow: DOMWindow & {
   __TAURI__?: unknown;
-};
+  __TAURI_INTERNALS__?: unknown;
+  isTauri?: boolean;
+} = jsdomWindow;
 
 function setGlobalDescriptor(
   key: string,
@@ -466,7 +473,17 @@ try {
   // If compose-refs internals change, continue with default behavior.
 }
 
-React.createElement = (
+// This shim re-dispatches arbitrary Radix component types to plain tags, so it
+// cannot satisfy any single `createElement` overload - being looser than all of
+// them is the point. The looseness is named here instead of spread across three
+// inline casts.
+const createElementLoose = originalCreateElement as (
+  type: unknown,
+  props?: unknown,
+  ...children: unknown[]
+) => React.ReactElement;
+
+React.createElement = ((
   type: React.ElementType,
   props: object | null,
   ...children: unknown[]
@@ -474,7 +491,7 @@ React.createElement = (
   const displayName = getDisplayName(type);
   if (displayName && isRadixDisplayName(displayName)) {
     const tag = tagForDisplayName(displayName);
-    return originalCreateElement(
+    return createElementLoose(
       tag,
       {
         ...stripDialogProps(props as Record<string, unknown> | null),
@@ -483,8 +500,8 @@ React.createElement = (
       ...children,
     );
   }
-  return originalCreateElement(type, props as never, ...children);
-};
+  return createElementLoose(type, props, ...children);
+}) as typeof React.createElement;
 
 const requireReactDom = createRequire(import.meta.url);
 const reactDom = requireReactDom("react-dom");
@@ -499,7 +516,12 @@ const createNodeMockForType = (type: unknown) =>
     typeof type === "string" && type.length > 0 ? type : "div",
   );
 
-if (!browserWindow.document.body.createNodeMock) {
+// `createNodeMock` is react-test-renderer's hook, installed here onto the DOM
+// prototypes; it is not part of any standard interface.
+if (
+  !(browserWindow.document.body as HTMLElement & { createNodeMock?: unknown })
+    .createNodeMock
+) {
   Object.defineProperty(browserWindow.Element.prototype, "createNodeMock", {
     configurable: true,
     writable: true,

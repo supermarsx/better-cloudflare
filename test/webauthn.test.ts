@@ -657,7 +657,7 @@ test("create passes an AbortSignal and gives up on its own deadline", async () =
       createPasskeyCredential(
         {
           challenge: new Uint8Array([1]),
-        } as PublicKeyCredentialCreationOptions,
+        } as unknown as PublicKeyCredentialCreationOptions,
         20,
       ),
       (error: unknown) => {

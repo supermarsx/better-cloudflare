@@ -108,9 +108,13 @@ test("Void persists locally and hydrates with the expected desktop update", asyn
   setTauriInternals({});
   window.localStorage.setItem("theme", "sunset");
   const desktopUpdates: Array<Record<string, unknown>> = [];
-  mock.method(TauriClient, "updatePreferenceFields", async (fields) => {
-    desktopUpdates.push(fields as Record<string, unknown>);
-  });
+  mock.method(
+    TauriClient,
+    "updatePreferenceFields",
+    async (fields: Record<string, unknown>) => {
+      desktopUpdates.push(fields);
+    },
+  );
 
   const initialRender = render(<ThemeToggle />);
   fireEvent.keyDown(screen.getByRole("button", { name: "Select theme" }), {

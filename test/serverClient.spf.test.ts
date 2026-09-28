@@ -8,8 +8,8 @@ test("ServerClient simulateSPF and getSPFGraph", async () => {
     .fetch;
   const fakeFetch: (
     ...args: Parameters<typeof fetch>
-  ) => ReturnType<typeof fetch> = async (url: string) => {
-    if (url.includes("/api/spf/simulate")) {
+  ) => ReturnType<typeof fetch> = async (url) => {
+    if (String(url).includes("/api/spf/simulate")) {
       return new Response(
         JSON.stringify({
           result: "pass",
@@ -19,7 +19,7 @@ test("ServerClient simulateSPF and getSPFGraph", async () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
-    if (url.includes("/api/spf/graph")) {
+    if (String(url).includes("/api/spf/graph")) {
       return new Response(
         JSON.stringify({
           nodes: [{ domain: "example.com" }],

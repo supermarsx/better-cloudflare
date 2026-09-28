@@ -75,7 +75,7 @@ test("root boundary keeps a recovery surface and returns to a fresh child tree",
 test("a failing custom fallback and error callback cannot take down the boundary", () => {
   mock.method(console, "error", () => {});
 
-  function Broken() {
+  function Broken(): React.ReactElement {
     throw new Error("primary failure");
   }
 

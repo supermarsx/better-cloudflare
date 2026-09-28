@@ -17,7 +17,8 @@ function createNodeMock({ type }: { type: unknown }) {
   const mockNode = document.createElement(
     typeof type === "string" && type.length > 0 ? type : "div",
   );
-  (mockNode as Record<string, unknown>).__testMockId = nodeMockLog.count;
+  (mockNode as unknown as Record<string, unknown>).__testMockId =
+    nodeMockLog.count;
 
   try {
     Object.defineProperty(mockNode, "children", {

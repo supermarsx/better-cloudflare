@@ -38,7 +38,7 @@ function createFakeRuntimeHost() {
       return id;
     },
     clearTimeout(id) {
-      timeouts.delete(id);
+      if (id !== undefined) timeouts.delete(id);
     },
     requestAnimationFrame(callback) {
       const id = nextId++;

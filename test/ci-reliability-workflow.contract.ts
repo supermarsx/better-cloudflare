@@ -505,8 +505,8 @@ test("changed source types have unconditional CI coverage", () => {
     assert.throws(
       () =>
         assertChangedSourceGateCoverage(
-          { ...fixture, ...mutation, sources: changedSources },
-          changedSources,
+          { ...fixture, ...mutation, sources: [...changedSources] },
+          [...changedSources],
         ),
       expected,
     );

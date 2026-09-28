@@ -62,7 +62,7 @@ test("RecordRow edit flow calls onSave with updated record", async () => {
   fireEvent.change(nameInput, { target: { value: "changed" } });
   const saveButton = screen.getByRole("button", { name: /save/i });
   fireEvent.click(saveButton);
-  assert.equal(saved?.name, "changed");
+  assert.equal((saved as DNSRecord | null)?.name, "changed");
 });
 
 test("Ctrl/Meta click and Ctrl/Meta+Enter open the record owner without editing", () => {
@@ -214,7 +214,7 @@ test("RecordRow normalizes character-string content on save", () => {
 
   fireEvent.click(screen.getByRole("button", { name: /save/i }));
   // The unmatched quote is repaired into a valid quoted <character-string>.
-  assert.equal(saved?.content, '"v=DMARC1; p=none"');
+  assert.equal((saved as DNSRecord | null)?.content, '"v=DMARC1; p=none"');
 });
 
 test("RecordRow leaves non character-string content untouched on save", () => {
@@ -235,7 +235,7 @@ test("RecordRow leaves non character-string content untouched on save", () => {
   );
 
   fireEvent.click(screen.getByRole("button", { name: /save/i }));
-  assert.equal(saved?.content, "edge.example.com");
+  assert.equal((saved as DNSRecord | null)?.content, "edge.example.com");
 });
 
 /*
