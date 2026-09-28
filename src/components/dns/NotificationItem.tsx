@@ -18,6 +18,7 @@ import {
   Trash2,
 } from "lucide-react";
 
+import { RegistrarSiteLink } from "@/components/registrar/RegistrarSiteLink";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useI18n } from "@/hooks/use-i18n";
@@ -25,12 +26,14 @@ import type { AppNotification } from "@/lib/api/tauri-client";
 import {
   changedFields,
   fullTimestamp,
+  isDomainExpiryPayload,
   isRecordChangePayload,
   isUnread,
   kindLabel,
   relativeTime,
   severityLabel,
 } from "@/lib/notifications/notifications-view";
+import type { RegistrarSite } from "@/lib/registrar/registrar-site";
 import { cn } from "@/lib/utils";
 
 export interface NotificationItemProps {
@@ -42,6 +45,18 @@ export interface NotificationItemProps {
   onDismiss: (id: string) => void;
   onOpenZone: (zoneId: string) => void;
   onRevealRecord: (zoneId: string, recordId: string) => void;
+  /**
+   * Opens the in-app registry workspace on a domain. Omitted (the web build,
+   * where there is no registry workspace) drops the action rather than
+   * rendering a button that goes nowhere.
+   */
+  onOpenRegistry?: (domain: string) => void;
+  /**
+   * The registrar site for this item's domain, resolved by the caller from the
+   * configured registrar credentials. `null`/omitted means the app does not
+   * know who the registrar is, and no link is offered.
+   */
+  registrarSite?: RegistrarSite | null;
 }
 
 function KindIcon({ kind }: { kind: AppNotification["kind"] }) {
@@ -87,6 +102,8 @@ export function NotificationItem({
   onDismiss,
   onOpenZone,
   onRevealRecord,
+  onOpenRegistry,
+  registrarSite,
 }: NotificationItemProps) {
   const { t } = useI18n();
   const unread = isUnread(item);
@@ -96,6 +113,13 @@ export function NotificationItem({
   const diffs = change ? changedFields(change.before, change.after) : [];
   const canReveal =
     change !== null && item.zoneId !== null && change.change !== "removed";
+  // Every `domain_expiry` item is a milestone warning, so the renewal actions
+  // belong on all of them — including the ones past the date, where a registrar
+  // may still be holding the name.
+  const expiry =
+    item.kind === "domain_expiry" && isDomainExpiryPayload(payload)
+      ? payload
+      : null;
 
   return (
     <article
@@ -169,6 +193,25 @@ export function NotificationItem({
           </ul>
         ) : null}
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          {expiry && onOpenRegistry ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              aria-label={t("Check {{domain}} in the registry", {
+                domain: expiry.domain,
+                defaultValue: `Check ${expiry.domain} in the registry`,
+              })}
+              onClick={() => onOpenRegistry(expiry.domain)}
+            >
+              <CalendarClock aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("Check registration", "Check registration")}
+            </Button>
+          ) : null}
+          {expiry && registrarSite ? (
+            <RegistrarSiteLink domain={expiry.domain} site={registrarSite} />
+          ) : null}
           {canReveal && item.zoneId ? (
             <Button
               type="button"

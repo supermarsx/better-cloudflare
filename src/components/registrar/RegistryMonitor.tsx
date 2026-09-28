@@ -14,6 +14,10 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { useI18n } from "@/hooks/use-i18n";
 import { useToast } from "@/hooks/use-toast";
 import type { UseRegistrarMonitorResult } from "@/hooks/registrar/use-registrar-monitor";
+import {
+  normalizeDomainKey,
+  registrarSite,
+} from "@/lib/registrar/registrar-site";
 import { REGISTRAR_LABELS } from "@/types/registrar";
 import type {
   DomainInfo,
@@ -21,6 +25,7 @@ import type {
   RegistrarCredential,
 } from "@/types/registrar";
 import { AddRegistrarDialog } from "./AddRegistrarDialog";
+import { RegistrarSiteLink } from "./RegistrarSiteLink";
 import {
   Copy,
   Globe,
@@ -41,6 +46,14 @@ import {
 
 interface RegistryMonitorProps {
   monitor: UseRegistrarMonitorResult;
+  /**
+   * A domain to single out on arrival — set when something elsewhere in the
+   * app (an expiry notice) sent the user here about one name. It seeds the
+   * search and opens that row's details.
+   */
+  focusDomain?: string | null;
+  /** Called once `focusDomain` has been applied, so the caller can clear it. */
+  onFocusHandled?: () => void;
 }
 
 /** Calculate days until a date string. */
@@ -108,18 +121,44 @@ function HealthIcon({
   }
 }
 
-export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
+export function RegistryMonitor({
+  monitor,
+  focusDomain,
+  onFocusHandled,
+}: RegistryMonitorProps) {
   const { t } = useI18n();
   const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState("");
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
+  /**
+   * Compared case-insensitively: a focus target arrives from a notification
+   * payload, which need not use the same spelling the registrar reported. It is
+   * also set before the domain list has necessarily loaded, so the comparison
+   * has to survive the row appearing later.
+   */
+  const isExpanded = (name: string) =>
+    expandedDomain !== null &&
+    normalizeDomainKey(expandedDomain) === normalizeDomainKey(name);
 
   // Load credentials and domains on mount
   useEffect(() => {
     void monitor.refreshCredentials();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Applied once and handed back, so the same domain can be targeted again
+  // later and so typing in the search box afterwards is never overridden. The
+  // search term is normalised because the filter is a substring match: a
+  // fully-qualified `labs.test.` would otherwise match nothing at all.
+  useEffect(() => {
+    if (!focusDomain) return;
+    const key = normalizeDomainKey(focusDomain);
+    if (!key) return;
+    setSearchTerm(key);
+    setExpandedDomain(key);
+    onFocusHandled?.();
+  }, [focusDomain, onFocusHandled]);
 
   useEffect(() => {
     if (monitor.credentials.length > 0) {
@@ -319,6 +358,21 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
             </div>
           )}
 
+          {/* Search matched nothing. Reachable by typing, and by arriving here
+              from an expiry notice for a domain no configured registrar
+              lists — saying so beats an empty card. */}
+          {monitor.domains.length > 0 && sortedDomains.length === 0 && (
+            <p
+              data-testid="registry-no-matches"
+              className="rounded-md border border-dashed border-border/60 px-4 py-8 text-center text-sm text-muted-foreground"
+            >
+              {t("No domain matches {{search}}.", {
+                search: searchTerm,
+                defaultValue: `No domain matches ${searchTerm}.`,
+              })}
+            </p>
+          )}
+
           {/* Domain list */}
           {sortedDomains.length > 0 && (
             <div className="space-y-2">
@@ -365,10 +419,10 @@ export function RegistryMonitor({ monitor }: RegistryMonitorProps) {
                   key={`${domain.registrar}:${domain.domain}`}
                   domain={domain}
                   health={healthMap.get(domain.domain)}
-                  expanded={expandedDomain === domain.domain}
+                  expanded={isExpanded(domain.domain)}
                   onToggle={() =>
                     setExpandedDomain(
-                      expandedDomain === domain.domain ? null : domain.domain,
+                      isExpanded(domain.domain) ? null : domain.domain,
                     )
                   }
                   t={t}
@@ -401,6 +455,8 @@ interface DomainRowProps {
 function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
   const { toast } = useToast();
   const days = daysUntil(domain.expires_at);
+  // Null for a provider with no known site; the row then offers no link.
+  const site = registrarSite(domain.registrar);
   const created = formatHumanDate(domain.created_at);
   const expires = formatHumanDate(domain.expires_at);
   const updated = formatHumanDate(domain.updated_at ?? "");
@@ -504,7 +560,10 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
       {/* Expanded details */}
       {expanded && (
         <div className="border-t border-border/40 px-4 py-3 space-y-3 text-xs fade-in-up">
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {site ? (
+              <RegistrarSiteLink domain={domain.domain} site={site} />
+            ) : null}
             <Button
               size="sm"
               variant="outline"

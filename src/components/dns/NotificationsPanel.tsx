@@ -34,11 +34,17 @@ import type {
 import {
   filterNotifications,
   groupByDay,
+  isDomainExpiryPayload,
   NOTIFICATION_KINDS,
   NOTIFICATION_SCOPES,
   relativeTime,
   zoneOptions,
 } from "@/lib/notifications/notifications-view";
+import {
+  findRegistrarSite,
+  type RegistrarSite,
+} from "@/lib/registrar/registrar-site";
+import type { DomainInfo } from "@/types/registrar";
 
 import { NotificationItem } from "./NotificationItem";
 import { NotificationsSettings } from "./NotificationsSettings";
@@ -48,6 +54,15 @@ export type NotificationsView = "inbox" | "settings";
 export interface NotificationsPanelProps {
   onOpenZone: (zoneId: string) => void;
   onRevealRecord: (zoneId: string, recordId: string) => void;
+  /** Opens the registry workspace on a domain; enables the expiry call to action. */
+  onOpenRegistry?: (domain: string) => void;
+  /**
+   * Domains the configured registrar credentials report. This is the only
+   * source of registrar identity the app has, so an expiry notice gets a
+   * "Renew at …" link exactly when its domain appears here under a provider
+   * whose site is known.
+   */
+  registrarDomains?: readonly DomainInfo[];
   initialView?: NotificationsView;
   /** Injectable clock for deterministic relative times in tests. */
   now?: Date;
@@ -122,6 +137,8 @@ function describeServiceStatus(
 export function NotificationsPanel({
   onOpenZone,
   onRevealRecord,
+  onOpenRegistry,
+  registrarDomains,
   initialView = "inbox",
   now,
 }: NotificationsPanelProps) {
@@ -152,6 +169,19 @@ export function NotificationsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filtered],
   );
+  /** Resolved once per inbox load rather than per row, keyed by payload domain. */
+  const registrarSites = useMemo(() => {
+    const sites = new Map<string, RegistrarSite>();
+    if (!registrarDomains || registrarDomains.length === 0) return sites;
+    for (const item of inbox.items) {
+      const payload = item.payload;
+      if (!isDomainExpiryPayload(payload)) continue;
+      if (sites.has(payload.domain)) continue;
+      const site = findRegistrarSite(payload.domain, registrarDomains);
+      if (site) sites.set(payload.domain, site);
+    }
+    return sites;
+  }, [inbox.items, registrarDomains]);
 
   if (!inbox.available) {
     return (
@@ -409,6 +439,13 @@ export function NotificationsPanel({
                             onDismiss={(id) => void inbox.dismiss([id])}
                             onOpenZone={onOpenZone}
                             onRevealRecord={onRevealRecord}
+                            onOpenRegistry={onOpenRegistry}
+                            registrarSite={
+                              isDomainExpiryPayload(item.payload)
+                                ? (registrarSites.get(item.payload.domain) ??
+                                  null)
+                                : null
+                            }
                           />
                         </li>
                       ))}

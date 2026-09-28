@@ -778,5 +778,10 @@
   "Teal": "Teal",
   "Blue": "Blue",
   "Violet": "Violet",
-  "Pink": "Pink"
+  "Pink": "Pink",
+  "Check registration": "Check registration",
+  "Check {{domain}} in the registry": "Check {{domain}} in the registry",
+  "Renew at {{registrar}}": "Renew at {{registrar}}",
+  "Renew {{domain}} at {{registrar}} ({{host}})": "Renew {{domain}} at {{registrar}} ({{host}})",
+  "No domain matches {{search}}.": "No domain matches {{search}}."
 }

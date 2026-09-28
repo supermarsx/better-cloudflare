@@ -12,6 +12,7 @@ import {
 
 import { NotificationsPanel } from "../src/components/dns/NotificationsPanel";
 import { resetNotificationSettingsCache } from "../src/hooks/dns/use-notification-settings";
+import i18n from "../src/i18n";
 import {
   TauriClient,
   type AppNotification,
@@ -19,6 +20,7 @@ import {
   type NotificationServiceStatus,
 } from "../src/lib/api/tauri-client";
 import { clampNotificationSettings } from "../src/lib/notifications/notification-settings";
+import type { DomainInfo, RegistrarProvider } from "../src/types/registrar";
 
 /** Accessible name from the naming sources these controls actually use. */
 function computeAccessibleName(element: Element): string {
@@ -449,5 +451,170 @@ test("every control in the inbox has an accessible name", async () => {
         `${role} without a name: ${control.outerHTML.slice(0, 160)}`,
       );
     }
+  }
+});
+
+// ── The expiry call to action ───────────────────────────────────────────────
+//
+// A "expires in 3 days" notice is only useful if it leads somewhere. Two
+// destinations: the in-app Registry workspace, and — when the app genuinely
+// knows who the registrar is — that registrar's own site. The payload carries
+// no registrar identity at all, so the link's presence is decided entirely by
+// whether the domain turns up among the configured registrar's domains.
+
+async function waitForI18nInitialization(): Promise<void> {
+  if (i18n.isInitialized) return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      i18n.off("initialized", onInitialized);
+      reject(new Error("Timed out waiting for i18n initialization"));
+    }, 5_000);
+    const onInitialized = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    i18n.on("initialized", onInitialized);
+  });
+}
+
+function registrarDomain(
+  name: string,
+  provider: RegistrarProvider,
+): DomainInfo {
+  return {
+    domain: name,
+    registrar: provider,
+    status: "active",
+    created_at: "2020-01-01T00:00:00Z",
+    expires_at: "2026-08-10T00:00:00Z",
+    nameservers: { current: [], is_custom: false },
+    locks: { transfer_lock: true, auto_renew: false },
+    dnssec: { enabled: false },
+    privacy: { enabled: true },
+  };
+}
+
+/** The expiry row seeded by `seedInbox`, for `labs.test`. */
+function expiryItem(): HTMLElement {
+  const row = document.querySelector('[data-notification-id="ntf-expiry"]');
+  assert.ok(
+    row instanceof HTMLElement,
+    "the expiry notification should render",
+  );
+  return row;
+}
+
+test("an expiry notice offers the registry action, and hands it the domain", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  const checked: string[] = [];
+  renderPanel({ onOpenRegistry: (domain) => checked.push(domain) });
+  await screen.findAllByTestId("notification-item");
+
+  const action = within(expiryItem()).getByRole("button", {
+    name: "Check labs.test in the registry",
+  });
+  fireEvent.click(action);
+  assert.deepEqual(checked, ["labs.test"]);
+});
+
+test("only expiry notices get the registry action", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  renderPanel({ onOpenRegistry: () => {} });
+  await screen.findAllByTestId("notification-item");
+
+  const change = document.querySelector(
+    '[data-notification-id="ntf-change"]',
+  ) as HTMLElement;
+  assert.ok(change, "the record-change notification should render");
+  assert.equal(
+    within(change).queryByText("Check registration"),
+    null,
+    "a record change is not a registration problem",
+  );
+  // It keeps its own action.
+  assert.ok(within(change).getByText("Go to record"));
+});
+
+test("the registry action stays away when there is nowhere to send the user", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  renderPanel();
+  await screen.findAllByTestId("notification-item");
+
+  assert.equal(within(expiryItem()).queryByText("Check registration"), null);
+});
+
+test("no registrar link when no configured registrar lists the domain", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  // Credentials exist and report a domain — just not this one. Guessing a
+  // renewal URL from the name alone is exactly what must not happen.
+  renderPanel({
+    onOpenRegistry: () => {},
+    registrarDomains: [registrarDomain("unrelated.test", "porkbun")],
+  });
+  await screen.findAllByTestId("notification-item");
+
+  assert.equal(screen.queryByTestId("registrar-site-link"), null);
+  // The in-app route is still offered; it needs no registrar identity.
+  assert.ok(within(expiryItem()).getByText("Check registration"));
+});
+
+test("no registrar link when the listing names a provider with no known site", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  renderPanel({
+    onOpenRegistry: () => {},
+    registrarDomains: [registrarDomain("labs.test", "google")],
+  });
+  await screen.findAllByTestId("notification-item");
+
+  assert.equal(screen.queryByTestId("registrar-site-link"), null);
+});
+
+test("the registrar link appears with the real URL once the registrar is known", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  renderPanel({
+    onOpenRegistry: () => {},
+    registrarDomains: [registrarDomain("labs.test", "porkbun")],
+  });
+  await screen.findAllByTestId("notification-item");
+
+  const link = within(expiryItem()).getByRole("button", {
+    name: "Renew labs.test at Porkbun (porkbun.com)",
+  });
+  assert.equal(link.getAttribute("data-registrar-url"), "https://porkbun.com/");
+  // Scoped to the one notice whose domain matched.
+  assert.equal(screen.getAllByTestId("registrar-site-link").length, 1);
+});
+
+test("both expiry actions carry accessible names naming the domain", async () => {
+  await waitForI18nInitialization();
+  installBackend();
+  renderPanel({
+    onOpenRegistry: () => {},
+    registrarDomains: [registrarDomain("labs.test", "porkbun")],
+  });
+  await screen.findAllByTestId("notification-item");
+
+  for (const control of within(expiryItem()).getAllByRole("button")) {
+    const name = computeAccessibleName(control).trim();
+    assert.ok(
+      name,
+      `button without a name: ${control.outerHTML.slice(0, 160)}`,
+    );
+  }
+  // "Renew" alone would be ambiguous across several expiring domains.
+  for (const name of [
+    "Check labs.test in the registry",
+    "Renew labs.test at Porkbun (porkbun.com)",
+  ]) {
+    assert.ok(
+      within(expiryItem()).getByRole("button", { name }),
+      `missing: ${name}`,
+    );
   }
 });

@@ -2750,6 +2750,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setSelectedZoneId("");
   }, []);
 
+  /**
+   * "Check registration" from an expiry notice: open the Registry workspace
+   * and let it single the domain out. `RegistryMonitor` clears the target once
+   * applied, so the same domain can be targeted again later.
+   */
+  const [registryFocusDomain, setRegistryFocusDomain] = useState<string | null>(
+    null,
+  );
+  const openRegistryForDomain = useCallback(
+    (domain: string) => {
+      setRegistryFocusDomain(domain);
+      openActionTab("registry");
+    },
+    [openActionTab],
+  );
+  const clearRegistryFocus = useCallback(
+    () => setRegistryFocusDomain(null),
+    [],
+  );
+
   // ── Notifications (t9) ─────────────────────────────────────────────────
   // Start the desktop background monitor with the unlocked token, keep the
   // bell badge in sync with `notifications://changed`, toast new items that
@@ -10252,12 +10272,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 </Card>
               )}
               {activeTab.kind === "registry" && (
-                <RegistryMonitor monitor={registrarMonitor} />
+                <RegistryMonitor
+                  monitor={registrarMonitor}
+                  focusDomain={registryFocusDomain}
+                  onFocusHandled={clearRegistryFocus}
+                />
               )}
               {activeTab.kind === "notifications" && (
                 <NotificationsPanel
                   onOpenZone={openZoneTab}
                   onRevealRecord={revealNotificationRecord}
+                  onOpenRegistry={openRegistryForDomain}
+                  registrarDomains={registrarMonitor.domains}
                 />
               )}
               {activeTab.kind === "assistant" && <AiAssistantPanel />}
