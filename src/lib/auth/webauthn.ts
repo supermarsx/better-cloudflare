@@ -55,13 +55,19 @@ export function bufferToBase64url(data: ArrayBuffer | Uint8Array): string {
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-type RegistrationOptions = PublicKeyCredentialCreationOptions & {
+type RegistrationOptions = Omit<
+  PublicKeyCredentialCreationOptions,
+  "challenge" | "user" | "excludeCredentials"
+> & {
   challenge: BinaryLike;
-  user: { id: BinaryLike };
+  user: Omit<PublicKeyCredentialUserEntity, "id"> & { id: BinaryLike };
   excludeCredentials?: { id: BinaryLike; type: PublicKeyCredentialType }[];
 };
 
-type AuthenticationOptions = PublicKeyCredentialRequestOptions & {
+type AuthenticationOptions = Omit<
+  PublicKeyCredentialRequestOptions,
+  "challenge" | "allowCredentials"
+> & {
   challenge: BinaryLike;
   allowCredentials?: { id: BinaryLike; type: PublicKeyCredentialType }[];
 };
