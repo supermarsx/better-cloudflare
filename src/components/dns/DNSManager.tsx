@@ -32,6 +32,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { Tag } from "@/components/ui/tag";
+import { TagChip } from "@/components/tags/TagChip";
+import { TagColorPicker } from "@/components/tags/TagColorPicker";
+import {
+  DEFAULT_TAG_COLOR_ID,
+  TAG_COLOR_LABELS,
+  type TagColorId,
+  resolveTagColorId,
+} from "@/components/tags/tag-colors";
 import { useCloudflareAPI } from "@/hooks/dns/use-cloudflare-api";
 import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
@@ -1614,6 +1622,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, []);
   const [tagsZoneId, setTagsZoneId] = useState<string>("");
   const [newTag, setNewTag] = useState("");
+  const [newTagColor, setNewTagColor] =
+    useState<TagColorId>(DEFAULT_TAG_COLOR_ID);
   const [renameTagFrom, setRenameTagFrom] = useState<string | null>(null);
   const [renameTagTo, setRenameTagTo] = useState("");
   const [tagsVersion, setTagsVersion] = useState(0);
@@ -4883,6 +4893,55 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     // `storageManager` tag store, which ESLint cannot track.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagsZoneId, tagsVersion]);
+
+  const tagColorsByName = useMemo(() => {
+    if (!tagsZoneId) return {};
+    return storageManager.getTagColors(tagsZoneId);
+    // `tagsVersion` is a manual invalidation counter for the imperative
+    // `storageManager` tag store, which ESLint cannot track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagsZoneId, tagsVersion]);
+
+  const tagColorId = useCallback(
+    (tag: string) => resolveTagColorId(tagColorsByName[tag]),
+    [tagColorsByName],
+  );
+
+  /** Name the colour for a toast, in the user's language. */
+  const tagColorName = useCallback(
+    (colorId: TagColorId) =>
+      t(TAG_COLOR_LABELS[colorId], TAG_COLOR_LABELS[colorId]),
+    [t],
+  );
+
+  const recolorTag = useCallback(
+    (tag: string, colorId: TagColorId) => {
+      if (!tagsZoneId) return;
+      storageManager.setTagColor(tagsZoneId, tag, colorId);
+      notifySaved(
+        t("Tag color set: {{tag}} -> {{color}}", {
+          tag,
+          color: tagColorName(colorId),
+          defaultValue: `Tag color set: ${tag} -> ${tagColorName(colorId)}`,
+        }),
+      );
+    },
+    [notifySaved, t, tagColorName, tagsZoneId],
+  );
+
+  const addTagFromForm = useCallback(() => {
+    if (!tagsZoneId) return;
+    const next = newTag.trim();
+    if (!next) return;
+    storageManager.addZoneTag(tagsZoneId, next, newTagColor);
+    notifySaved(
+      t("Tag added: {{tag}}", {
+        tag: next,
+        defaultValue: `Tag added: ${next}`,
+      }),
+    );
+    setNewTag("");
+  }, [newTag, newTagColor, notifySaved, t, tagsZoneId]);
 
   const tagManagerRecordsByTag = useMemo(() => {
     const byTag: Record<string, DNSRecord[]> = {};
@@ -9779,33 +9838,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             onKeyDown={(e) => {
                               if (e.key !== "Enter") return;
                               e.preventDefault();
-                              const next = newTag.trim();
-                              if (!next) return;
-                              storageManager.addZoneTag(tagsZoneId, next);
-                              notifySaved(
-                                t("Tag added: {{tag}}", {
-                                  tag: next,
-                                  defaultValue: `Tag added: ${next}`,
-                                }),
-                              );
-                              setNewTag("");
+                              addTagFromForm();
                             }}
+                          />
+                          <TagColorPicker
+                            value={newTagColor}
+                            onChange={setNewTagColor}
                           />
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => {
-                              const next = newTag.trim();
-                              if (!next) return;
-                              storageManager.addZoneTag(tagsZoneId, next);
-                              notifySaved(
-                                t("Tag added: {{tag}}", {
-                                  tag: next,
-                                  defaultValue: `Tag added: ${next}`,
-                                }),
-                              );
-                              setNewTag("");
-                            }}
+                            onClick={addTagFromForm}
                           >
                             {t("Add tag", "Add tag")}
                           </Button>
@@ -9818,8 +9861,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </div>
 
                         <div className="glass-surface glass-sheen glass-fade rounded-xl overflow-hidden">
-                          <div className="grid grid-cols-[1fr_90px_1fr_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
+                          <div className="grid grid-cols-[1fr_210px_70px_1fr_160px] gap-2 px-3 py-2 text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border/60">
                             <div>{t("Tag", "Tag")}</div>
+                            <div>{t("Color", "Color")}</div>
                             <div className="text-right">
                               {t("Used", "Used")}
                             </div>
@@ -9848,7 +9892,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 return (
                                   <div
                                     key={tag}
-                                    className="grid grid-cols-[1fr_90px_1fr_160px] items-center gap-2 px-3 py-2"
+                                    className="grid grid-cols-[1fr_210px_70px_1fr_160px] items-center gap-2 px-3 py-2"
                                   >
                                     <div className="min-w-0">
                                       {renameTagFrom === tag ? (
@@ -9884,11 +9928,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                           }}
                                         />
                                       ) : (
-                                        <Tag className="text-[9px] px-2 py-0.5">
+                                        <TagChip colorId={tagColorId(tag)}>
                                           {tag}
-                                        </Tag>
+                                        </TagChip>
                                       )}
                                     </div>
+                                    <TagColorPicker
+                                      value={tagColorId(tag)}
+                                      tagName={tag}
+                                      onChange={(next) => recolorTag(tag, next)}
+                                    />
                                     <div className="text-right text-sm text-muted-foreground">
                                       {tagCounts[tag] ?? 0}
                                     </div>
@@ -10082,9 +10131,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                             key={tag}
                                             className="inline-flex items-center gap-1"
                                           >
-                                            <Tag className="text-[9px] px-2 py-0.5">
+                                            <TagChip colorId={tagColorId(tag)}>
                                               {tag}
-                                            </Tag>
+                                            </TagChip>
                                             <button
                                               type="button"
                                               className="ui-icon-button h-5 w-5"

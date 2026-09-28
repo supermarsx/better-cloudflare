@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
+import { TagChip } from "@/components/tags/TagChip";
+import { resolveTagColorId } from "@/components/tags/tag-colors";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
@@ -440,7 +442,14 @@ export function RecordRow({
   const [zoneTags, setZoneTags] = useState<string[]>(() =>
     storageManager.getZoneTags(zoneId),
   );
+  const [tagColors, setTagColors] = useState<Record<string, string>>(() =>
+    storageManager.getTagColors(zoneId),
+  );
   const [tagDraft, setTagDraft] = useState("");
+  const tagColorId = useCallback(
+    (tag: string) => resolveTagColorId(tagColors[tag]),
+    [tagColors],
+  );
 
   const recordBrowserUrl = getRecordBrowserUrl(record, zoneName);
   const openRecordInBrowser = useCallback(() => {
@@ -562,6 +571,7 @@ export function RecordRow({
   useEffect(() => {
     setTags(storageManager.getRecordTags(zoneId, record.id));
     setZoneTags(storageManager.getZoneTags(zoneId));
+    setTagColors(storageManager.getTagColors(zoneId));
     setTagDraft("");
   }, [record.id, zoneId]);
 
@@ -780,6 +790,7 @@ export function RecordRow({
       if (!detail?.zoneId) return;
       if (detail.zoneId !== zoneId) return;
       setZoneTags(storageManager.getZoneTags(zoneId));
+      setTagColors(storageManager.getTagColors(zoneId));
       if (detail.recordId && detail.recordId !== record.id) return;
       setTags(storageManager.getRecordTags(zoneId, record.id));
     };
@@ -946,7 +957,7 @@ export function RecordRow({
             {tags.length ? (
               tags.map((tag) => (
                 <span key={tag} className="inline-flex items-center gap-1">
-                  <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                  <TagChip colorId={tagColorId(tag)}>{tag}</TagChip>
                   <button
                     type="button"
                     className="ui-icon-button h-5 w-5"
@@ -1614,9 +1625,9 @@ export function RecordRow({
                     {preview.length ? (
                       <>
                         {preview.map((t) => (
-                          <Tag key={t} className="text-[8px] px-1.5 py-0.5">
+                          <TagChip key={t} size="table" colorId={tagColorId(t)}>
                             {t}
-                          </Tag>
+                          </TagChip>
                         ))}
                         {remaining > 0 && (
                           <span className="text-[10px] text-muted-foreground">
@@ -1794,7 +1805,7 @@ export function RecordRow({
                         key={tag}
                         className="inline-flex items-center gap-1"
                       >
-                        <Tag className="text-[9px] px-2 py-0.5">{tag}</Tag>
+                        <TagChip colorId={tagColorId(tag)}>{tag}</TagChip>
                         <button
                           type="button"
                           className="ui-icon-button h-5 w-5"

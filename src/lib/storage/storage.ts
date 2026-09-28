@@ -43,6 +43,14 @@ const MAX_CRYPTO_METADATA_BYTES = 64 * 1024;
 const MAX_TAG_ZONES = 256;
 const MAX_TAG_RECORDS = 5_000;
 const MAX_TAG_BYTES = 128;
+/**
+ * A tag colour is stored as an opaque palette id, not as a colour value: the
+ * renderer owns the palette (`src/components/tags/tag-colors.ts`) and maps
+ * anything it does not recognise onto the default. That keeps the palette free
+ * to gain entries without a data migration, and keeps this layer from having to
+ * know what "amber" looks like -- it only has to bound the string.
+ */
+const MAX_TAG_COLOR_BYTES = 32;
 
 export class StoragePersistenceError extends Error {
   readonly name = "StoragePersistenceError";
@@ -203,6 +211,63 @@ function parseTagCatalog(value: unknown): Record<string, string[]> | undefined {
   return result;
 }
 
+/**
+ * Define `key` as an own property even when it is `__proto__`.
+ *
+ * Tag names and zone ids are user data, so both can be `__proto__`; plain
+ * assignment on an object that still has `Object.prototype` would hit the
+ * inherited setter and silently drop the write. The maps here start out
+ * null-prototype, but `structuredClone` (used on every save) hands back ordinary
+ * objects, so the guarantee has to come from the write, not from the map.
+ */
+function defineOwn<T>(target: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+function ownEntry<T>(
+  target: Record<string, T> | undefined,
+  key: string,
+): T | undefined {
+  if (!target) return undefined;
+  return Object.prototype.hasOwnProperty.call(target, key)
+    ? target[key]
+    : undefined;
+}
+
+function parseTagColors(
+  value: unknown,
+): Record<string, Record<string, string>> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const byZone = value as Record<string, unknown>;
+  const result = Object.create(null) as Record<string, Record<string, string>>;
+  for (const [zoneId, colorsValue] of Object.entries(byZone).slice(
+    0,
+    MAX_TAG_ZONES,
+  )) {
+    if (!assertStringWithin(zoneId, MAX_API_KEY_ID_BYTES, "zone id")) continue;
+    if (!colorsValue || typeof colorsValue !== "object") continue;
+    const zoneResult = Object.create(null) as Record<string, string>;
+    for (const [tag, colorId] of Object.entries(
+      colorsValue as Record<string, unknown>,
+    ).slice(0, 256)) {
+      if (!assertStringWithin(tag, MAX_TAG_BYTES, "tag colour name")) continue;
+      if (!assertStringWithin(colorId, MAX_TAG_COLOR_BYTES, "tag colour id"))
+        continue;
+      const trimmedTag = tag.trim();
+      const trimmedColor = colorId.trim();
+      if (!trimmedTag || !trimmedColor) continue;
+      defineOwn(zoneResult, trimmedTag, trimmedColor);
+    }
+    defineOwn(result, zoneId, zoneResult);
+  }
+  return result;
+}
+
 function parseApiKey(value: unknown): ApiKey | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const key = value as Record<string, unknown>;
@@ -278,6 +343,7 @@ function parseStorageDataValue(
     const result = Object.assign({ apiKeys }, preferences) as StorageData;
     result.recordTags = parseRecordTags(preferences.recordTags);
     result.tagCatalog = parseTagCatalog(preferences.tagCatalog);
+    result.tagColors = parseTagColors(preferences.tagColors);
     if (typeof obj.currentSession === "string")
       result.currentSession = obj.currentSession;
     assertBoundedStorageValue(result);
@@ -567,24 +633,93 @@ export class StorageManager {
 
   private ensureTagInCatalog(zoneId: string, tag: string): void {
     const catalog = (this.data.tagCatalog ??= {});
-    const zoneTags = (catalog[zoneId] ??= []);
+    // `?? []` rather than `??= []`, and `defineOwn` rather than assignment: a
+    // zone id of `__proto__` would otherwise read `Object.prototype` here (so
+    // `.includes` is not a function) and write through its inherited setter.
+    const zoneTags = ownEntry(catalog, zoneId) ?? [];
     if (zoneTags.includes(tag)) return;
     zoneTags.push(tag);
     zoneTags.sort((a, b) =>
       a.localeCompare(b, undefined, { sensitivity: "base" }),
     );
-    catalog[zoneId] = zoneTags.slice(0, 256);
+    defineOwn(catalog, zoneId, zoneTags.slice(0, 256));
   }
 
   getZoneTags(zoneId: string): string[] {
-    const tags = this.data.tagCatalog?.[zoneId];
+    const tags = ownEntry(this.data.tagCatalog, zoneId);
     return Array.isArray(tags) ? [...tags] : [];
   }
 
-  addZoneTag(zoneId: string, tag: string): void {
+  /** In-memory only; callers batch the `save()` and the change event. */
+  private assignTagColor(zoneId: string, tag: string, colorId: string): void {
+    const byZone = (this.data.tagColors ??= Object.create(null) as Record<
+      string,
+      Record<string, string>
+    >);
+    let zone = ownEntry(byZone, zoneId);
+    if (!zone) {
+      zone = Object.create(null) as Record<string, string>;
+      defineOwn(byZone, zoneId, zone);
+    }
+    defineOwn(zone, tag, colorId);
+  }
+
+  /** In-memory only; prunes the zone entry once its last colour is gone. */
+  private dropTagColor(zoneId: string, tag: string): string | undefined {
+    const zone = ownEntry(this.data.tagColors, zoneId);
+    const previous = ownEntry(zone, tag);
+    if (!zone || previous === undefined) return undefined;
+    delete zone[tag];
+    if (Object.keys(zone).length === 0) delete this.data.tagColors?.[zoneId];
+    return previous;
+  }
+
+  /**
+   * Palette ids by tag name for one zone. Tags with no chosen colour are simply
+   * absent -- the renderer supplies the default -- so this is not a complete
+   * list of the zone's tags.
+   */
+  getTagColors(zoneId: string): Record<string, string> {
+    const zone = ownEntry(this.data.tagColors, zoneId);
+    if (!zone) return {};
+    return { ...zone };
+  }
+
+  /** `undefined` when the user has never picked a colour for this tag. */
+  getTagColor(zoneId: string, tag: string): string | undefined {
+    return ownEntry(ownEntry(this.data.tagColors, zoneId), tag.trim());
+  }
+
+  /**
+   * Set a tag's colour. An empty `colorId` clears the choice, which is how the
+   * tag goes back to rendering in the default colour. The catalog is left alone:
+   * recolouring is not a way to create a tag.
+   */
+  setTagColor(zoneId: string, tag: string, colorId: string): void {
+    const target = tag.trim();
+    if (!target) return;
+    const next = colorId.trim();
+    if (!next) {
+      if (this.dropTagColor(zoneId, target) === undefined) return;
+    } else {
+      if (this.getTagColor(zoneId, target) === next) return;
+      this.assignTagColor(zoneId, target, next);
+    }
+    this.save();
+    this.dispatchRecordTagsChanged(zoneId);
+  }
+
+  /**
+   * Add a tag to the zone's catalog, optionally with a colour. Adding a tag that
+   * already exists still applies `colorId`, so the Tag manager's add form
+   * doubles as a way to recolour by re-adding.
+   */
+  addZoneTag(zoneId: string, tag: string, colorId?: string): void {
     const next = tag.trim();
     if (!next) return;
     this.ensureTagInCatalog(zoneId, next);
+    const color = colorId?.trim();
+    if (color) this.assignTagColor(zoneId, next, color);
     this.save();
     this.dispatchRecordTagsChanged(zoneId);
   }
@@ -689,6 +824,15 @@ export class StorageManager {
     } else {
       this.ensureTagInCatalog(zoneId, next);
     }
+    // Renaming onto a tag that already exists merges the two, so the surviving
+    // name keeps the colour it already had; only an unclaimed name inherits the
+    // renamed tag's colour.
+    const movedColor = this.dropTagColor(zoneId, prev);
+    if (
+      movedColor !== undefined &&
+      this.getTagColor(zoneId, next) === undefined
+    )
+      this.assignTagColor(zoneId, next, movedColor);
     this.save();
     this.dispatchRecordTagsChanged(zoneId);
   }
@@ -718,6 +862,7 @@ export class StorageManager {
         [zoneId]: catalog.filter((t) => t !== target),
       };
     }
+    this.dropTagColor(zoneId, target);
     this.save();
     this.dispatchRecordTagsChanged(zoneId);
   }

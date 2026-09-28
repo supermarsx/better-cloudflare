@@ -91,6 +91,12 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   lastOpenTabs?: string[];
   recordTags?: Record<string, Record<string, string[]>>;
   tagCatalog?: Record<string, string[]>;
+  /**
+   * Palette ids keyed by zone id then tag name. A tag with no entry here --
+   * every tag saved before colours existed -- renders in the default colour,
+   * so the key stays absent until the user actually picks one.
+   */
+  tagColors?: Record<string, Record<string, string>>;
   mcpPendingHighRiskTools?: string[];
   mcpRemovedImportedToolIds?: string[];
   mcpPermissionPolicyVersion?: number;
@@ -216,7 +222,9 @@ type PreferenceKind =
   | "strings"
   | "number-map"
   | "boolean-map"
+  | "string-map"
   | "string-array-map"
+  | "nested-string-map"
   | "nested-string-array-map"
   | "categories"
   | "profiles"
@@ -287,6 +295,7 @@ const BROWSER_PREFERENCE_SCHEMA = {
   lastOpenTabs: "strings",
   recordTags: "nested-string-array-map",
   tagCatalog: "string-array-map",
+  tagColors: "nested-string-map",
   mcpPendingHighRiskTools: "strings",
   mcpRemovedImportedToolIds: "strings",
   mcpPermissionPolicyVersion: "number",
@@ -367,7 +376,7 @@ function parseStringArray(value: unknown): string[] | undefined {
 
 function parseLeafMap(
   value: unknown,
-  kind: "number" | "boolean" | "strings",
+  kind: "number" | "boolean" | "string" | "strings",
 ): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const result = Object.create(null) as Record<string, unknown>;
@@ -378,13 +387,14 @@ function parseLeafMap(
   return result;
 }
 
-function parseNestedStringArrayMap(
+function parseNestedMap(
   value: unknown,
+  kind: "string" | "strings",
 ): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const result = Object.create(null) as Record<string, unknown>;
   for (const [key, child] of Object.entries(value)) {
-    const parsed = parseLeafMap(child, "strings");
+    const parsed = parseLeafMap(child, kind);
     if (parsed !== undefined) result[key] = parsed;
   }
   return result;
@@ -427,9 +437,11 @@ function parsePreference(value: unknown, kind: PreferenceKind): unknown {
   if (kind === "strings") return parseStringArray(value);
   if (kind === "number-map") return parseLeafMap(value, "number");
   if (kind === "boolean-map") return parseLeafMap(value, "boolean");
+  if (kind === "string-map") return parseLeafMap(value, "string");
   if (kind === "string-array-map") return parseLeafMap(value, "strings");
+  if (kind === "nested-string-map") return parseNestedMap(value, "string");
   if (kind === "nested-string-array-map")
-    return parseNestedStringArrayMap(value);
+    return parseNestedMap(value, "strings");
   if (kind === "categories")
     return parseSchemaObject(value, {
       email: "boolean",
