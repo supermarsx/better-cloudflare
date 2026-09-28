@@ -6803,6 +6803,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       connectionBar={
         <DnsConnectionBar
+          apiKey={apiKey}
+          email={email}
           zoneSelector={
             <>
               <Label className="sr-only" htmlFor="zone-select">
