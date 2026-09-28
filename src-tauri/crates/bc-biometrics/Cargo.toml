@@ -2,7 +2,7 @@
 name = "bc-biometrics"
 version = "0.1.0"
 edition = "2021"
-description = "Platform biometric authentication (Touch ID, Windows Hello) for Better Cloudflare"
+description = "Platform biometric authentication (Touch ID, Windows Hello, fprintd) for Better Cloudflare"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -13,3 +13,60 @@ thiserror = "2"
 security-framework-sys = "2"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+
+# ── Windows Hello ────────────────────────────────────────────────────────────
+#
+# 0.61 is the line already in this workspace's graph (`src-tauri` reaches
+# `ICoreWebView2` through it, and tauri/wry pull the same one). Adding a second
+# major here would mean two copies of `windows-core` and two incompatible
+# `HWND` types in one binary, so this pin deliberately follows that one.
+#
+# `windows-future` is where `IAsyncOperation` lives since 0.61 split it out of
+# the `windows` crate. It is not re-exported from `windows`, and
+# `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` is generic
+# over the interface it returns, so the name has to be reachable to call it.
+# `windows` 0.61.3 already depends on exactly this version.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    # UserConsentVerifier: the availability probe and the result enums.
+    "Security_Credentials_UI",
+    # HWND, ERROR_NOT_FOUND, RPC_E_CHANGED_MODE.
+    "Win32_Foundation",
+    # CredWriteW / CredReadW / CredDeleteW / CredFree.
+    "Win32_Security_Credentials",
+    # CoInitializeEx: WinRT activation needs an apartment. See windows.rs.
+    "Win32_System_Com",
+    # IUserConsentVerifierInterop, the only way a desktop process can raise the
+    # Hello prompt.
+    "Win32_System_WinRT",
+    # GetForegroundWindow (owner window for that prompt).
+    "Win32_UI_WindowsAndMessaging",
+    # GetActiveWindow lives here, not next to GetForegroundWindow.
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+windows-future = "0.2"
+# Credential Manager hands back a heap block holding the plaintext; it is
+# scrubbed before `CredFree` rather than left in a freed page.
+zeroize = "1"
+
+# ── Linux fingerprint ────────────────────────────────────────────────────────
+#
+# Every crate here is pure Rust, which is what makes `cargo check --target
+# x86_64-unknown-linux-gnu` possible from a Windows machine: no C toolchain,
+# no libdbus, no OpenSSL. That constraint is why `secret-service` is taken with
+# `crypto-rust` rather than `crypto-openssl`, and why zbus's `async-io` backend
+# is used instead of `tokio`.
+#
+# All four are already in this workspace's `Cargo.lock` — zbus and
+# secret-service arrive via `keyring` (bc-storage) and tauri-plugin-notification,
+# async-io and futures-lite via zbus itself. Nothing new is downloaded.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+secret-service = { version = "5", default-features = false, features = [
+    "rt-async-io-crypto-rust",
+] }
+# `Timer` is the whole reason for this dependency: every fprintd and
+# secret-service call is given a deadline, because two of the six entry points
+# are reachable from a synchronous Tauri command running on the window thread.
+async-io = "2"
+futures-lite = "2"

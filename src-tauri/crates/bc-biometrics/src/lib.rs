@@ -1,16 +1,49 @@
 //! Platform biometric authentication for Better Cloudflare.
 //!
-//! Provides native biometric authentication (Touch ID on macOS, Windows Hello
-//! on Windows) and biometric-protected secret storage via the OS keychain.
+//! Native biometric prompts and secret storage. Three platforms have a backend;
+//! everything else gets a fallback that refuses every operation:
 //!
-//! This crate is **separate** from [`bc_passkey`] (WebAuthn) — it handles
+//! | Platform | Prompt | Secret store |
+//! |----------|--------|--------------|
+//! | macOS    | Touch ID / Face ID via Security.framework | Keychain, item bound to the biometric by a `SecAccessControl` ACL |
+//! | Windows  | Windows Hello via `UserConsentVerifier` | Credential Manager generic credential |
+//! | Linux    | Fingerprint via `fprintd` over D-Bus | Secret Service (`org.freedesktop.secrets`) |
+//! | other    | unsupported — every operation returns [`BiometricError::PlatformNotSupported`] | — |
+//!
+//! # The guarantee is not the same on every platform
+//!
+//! Only macOS binds the secret to the biometric *in the OS*: the keychain will
+//! not decrypt the item until Touch ID succeeds, no matter which process asks.
+//!
+//! On Windows and Linux there is no equivalent for an ordinary desktop app, so
+//! [`BiometricAuth::get_protected_secret`] composes two separate things: it
+//! raises the platform prompt, and only on success reads from a store that would
+//! have answered anyway. The gate is enforced by **this process**. It stops
+//! someone at an unlocked, unattended machine using this app; it does not stop
+//! code already running as the user, which can read the credential directly. The
+//! per-platform module docs spell out exactly what each store does and does not
+//! protect.
+//!
+//! Two smaller honesty notes, because the UI reports these:
+//!
+//! - On Windows, `available: true` means a Hello verifier is configured, and
+//!   Windows counts the **PIN** as one. It is not proof of biometric hardware.
+//! - On Linux, `reason` cannot be shown to the user: fprintd has no prompt UI of
+//!   its own, so the scan is silent and the calling window is the only place the
+//!   reason can appear.
+//!
+//! This crate is **separate** from `bc-passkey` (WebAuthn) — it handles
 //! OS-level biometric prompts for local app security (quick unlock, protecting
 //! stored API keys) rather than web-standard FIDO2 authentication.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Default keychain service name used by Tauri commands.
+/// Default service name used by the Tauri commands.
+///
+/// Namespaces this app's secrets inside whichever store the platform uses: a
+/// keychain service attribute on macOS, half of the credential target name on
+/// Windows, an item attribute on Linux.
 pub const DEFAULT_SERVICE: &str = "com.bettercloudflare.biometric";
 
 // ─── Public types ───────────────────────────────────────────────────────────
@@ -63,8 +96,10 @@ pub enum BiometricError {
 /// Main entry point for platform biometric operations.
 ///
 /// All methods are synchronous because they call blocking OS APIs (e.g.
-/// Security.framework on macOS). Tauri sync commands run on a thread pool,
-/// so this is safe to call from command handlers.
+/// Security.framework on macOS). [`Self::authenticate`] and
+/// [`Self::get_protected_secret`] block for as long as the user leaves the
+/// prompt unanswered, so call those from a blocking worker rather than an async
+/// task — which is what `commands::auth` does.
 pub struct BiometricAuth;
 
 impl BiometricAuth {
@@ -82,11 +117,15 @@ impl BiometricAuth {
         platform::authenticate(reason)
     }
 
-    /// Store a secret protected by biometric authentication.
+    /// Store a secret for later biometric-gated retrieval.
     ///
-    /// The secret is stored in the OS keychain/credential store with an access
-    /// control policy requiring biometric authentication to retrieve it. Any
-    /// existing secret with the same `service`/`account` is replaced.
+    /// Does not prompt: enrolling a secret is not a release of one. Any existing
+    /// secret with the same `service`/`account` is replaced.
+    ///
+    /// On macOS the item is written with an access-control policy that makes the
+    /// OS require biometric authentication before it will decrypt. On Windows and
+    /// Linux no such policy exists for a desktop app, and the gate is the
+    /// [`Self::get_protected_secret`] call path instead — see the crate docs.
     pub fn store_protected_secret(
         service: &str,
         account: &str,
@@ -97,8 +136,10 @@ impl BiometricAuth {
 
     /// Retrieve a biometric-protected secret.
     ///
-    /// This triggers the OS biometric prompt (Touch ID / Windows Hello).
-    /// `reason` is displayed in the system authentication dialog.
+    /// Triggers the platform prompt — Touch ID, Windows Hello, or an fprintd
+    /// fingerprint scan — and reads the secret only if it succeeds. `reason` is
+    /// shown in the system dialog on macOS and Windows; Linux has no dialog to
+    /// show it in.
     pub fn get_protected_secret(
         service: &str,
         account: &str,
@@ -107,13 +148,19 @@ impl BiometricAuth {
         platform::get_protected_secret(service, account, reason)
     }
 
-    /// Delete a biometric-protected secret from the OS keychain.
+    /// Delete a stored secret from the platform's secret store.
+    ///
+    /// A secret that is already absent is success, not an error: the caller asked
+    /// for it to not exist, and it does not.
     pub fn delete_protected_secret(service: &str, account: &str) -> Result<(), BiometricError> {
         platform::delete_protected_secret(service, account)
     }
 
-    /// Check if a biometric-protected secret exists without triggering
-    /// the biometric prompt.
+    /// Check whether a secret is stored, without prompting.
+    ///
+    /// Every backend answers this without a biometric gesture. On Windows that
+    /// costs a plaintext read inside the process, because Credential Manager has
+    /// no existence query — the `windows` module says what is done about it.
     pub fn has_protected_secret(service: &str, account: &str) -> Result<bool, BiometricError> {
         platform::has_protected_secret(service, account)
     }
@@ -121,15 +168,35 @@ impl BiometricAuth {
 
 // ─── Platform modules ───────────────────────────────────────────────────────
 
+/// Raw-code translations shared by the backends, compiled everywhere so its
+/// tests run everywhere. See [`mapping`] for why that is worth the `dead_code`
+/// allowance it costs.
+mod mapping;
+
+// The four predicates below are mutually exclusive and exhaustive: exactly one
+// `platform` alias exists on any target. `self::` on each alias is not optional
+// — `use windows as platform` would be ambiguous between this module and the
+// `windows` crate in the extern prelude.
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-use macos as platform;
+use self::macos as platform;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+use self::windows as platform;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use self::linux as platform;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod fallback;
-#[cfg(not(target_os = "macos"))]
-use fallback as platform;
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+use self::fallback as platform;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

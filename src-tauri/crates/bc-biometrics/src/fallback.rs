@@ -1,7 +1,9 @@
-//! Fallback implementation for platforms without native biometric support.
+//! Fallback implementation for platforms with no backend in this crate.
 //!
-//! Returns [`BiometricError::PlatformNotSupported`] for all operations and
-//! reports biometrics as unavailable.
+//! Reached only on targets that are neither macOS, Windows, nor Linux — the BSDs,
+//! say. Every operation returns [`BiometricError::PlatformNotSupported`] and
+//! [`status`] reports biometrics as unavailable, so a caller can offer the feature
+//! or not without special-casing the platform.
 
 use crate::{BiometricError, BiometricStatus, BiometricType};
 

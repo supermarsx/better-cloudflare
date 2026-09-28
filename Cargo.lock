@@ -519,12 +519,19 @@ dependencies = [
 name = "bc-biometrics"
 version = "0.1.0"
 dependencies = [
+ "async-io",
  "core-foundation 0.10.1",
  "core-foundation-sys",
+ "futures-lite",
+ "secret-service",
  "security-framework-sys",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "windows 0.61.3",
+ "windows-future",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
