@@ -186,10 +186,19 @@ export function parsePort(value) {
 }
 
 /**
- * @param {string | undefined} value
+ * Whether `CI` is set to something that means "bounded shared runner".
+ *
+ * This is the one definition in the repository. `0`, `false` and the empty
+ * string never count, so `CI=0` is a local run for every consumer - including
+ * the Playwright config, which used to read a bare `Boolean(process.env.CI)`
+ * and so pinned the port and refused reuse where the rest of the tooling saw a
+ * developer machine.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
  * @returns {boolean}
  */
-function isTruthyFlag(value) {
+export function isContinuousIntegration(env = process.env) {
+  const value = env.CI;
   if (typeof value !== "string") return false;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 && normalized !== "0" && normalized !== "false";
@@ -204,7 +213,7 @@ function isTruthyFlag(value) {
  * @returns {boolean}
  */
 export function isPinnedPort(env = process.env) {
-  return parsePort(env.PORT) !== null || isTruthyFlag(env.CI);
+  return parsePort(env.PORT) !== null || isContinuousIntegration(env);
 }
 
 /**

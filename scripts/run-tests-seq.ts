@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isContinuousIntegration } from "./dev-port.mjs";
+
 const APP_TEST_FILE_PATTERN = /^test\/[^/]+\.test\.(?:ts|tsx)$/u;
 const RUNNER_CONTRACT_FILE = "scripts/run-tests-seq.contract.test.ts";
 const WATCHDOG_RESULT_PATTERN =
@@ -229,20 +231,11 @@ function signalExitCode(reason: unknown): number | null {
 }
 
 /**
- * `CI` is the repository-wide signal for "bounded shared runner". `dev-port.mjs`
- * and `next.config.mjs` read it exactly the same way, so a value of `0`, `false`
- * or the empty string never counts as CI.
+ * `CI` is the repository-wide signal for "bounded shared runner", defined once
+ * in `dev-port.mjs` and re-exported here for the callers that already import it
+ * from this module. A value of `0`, `false` or the empty string never counts.
  */
-export function isContinuousIntegration(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  const value = env.CI;
-  if (typeof value !== "string") {
-    return false;
-  }
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 && normalized !== "0" && normalized !== "false";
-}
+export { isContinuousIntegration };
 
 /**
  * How many one-file batches may run at once.

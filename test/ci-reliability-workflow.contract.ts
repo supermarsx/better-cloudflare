@@ -9,6 +9,7 @@ import {
   createPlaywrightConfig,
   resolveDevServerPort,
 } from "../playwright.config.ts";
+import { isContinuousIntegration } from "../scripts/dev-port.mjs";
 import { discoverTestFiles } from "../scripts/run-tests-seq.ts";
 
 const root = new URL("../", import.meta.url);
@@ -346,6 +347,16 @@ test("package scripts expose truthful lint and reliability gates", () => {
   // address, and a per-launch identity token handed to `next dev`.
   assert.match(devLauncher, /"-H", DEV_SERVER_HOST/);
   assert.match(devLauncher, /\[DEV_IDENTITY_ENV\]: options\.token/);
+  // One definition of what `CI` means. A bare `Boolean(process.env.CI)` here
+  // made `CI=0` a CI run for Playwright alone: it pinned the port, refused
+  // reuse and switched to the static-export server, while `dev-port.mjs` and
+  // the sequential runner all read the same value as a developer machine.
+  const playwrightConfig = read("playwright.config.ts");
+  assert.match(playwrightConfig, /isCI = isContinuousIntegration\(\)/);
+  assert.doesNotMatch(playwrightConfig, /Boolean\(process\.env\.CI\)/);
+  assert.equal(isContinuousIntegration({ CI: "0" }), false);
+  assert.equal(isContinuousIntegration({ CI: "false" }), false);
+  assert.equal(isContinuousIntegration({ CI: "1" }), true);
   // The Tauri CLI only accepts a config patch through `--config`; it ignores the
   // `TAURI_CONFIG` environment variable that CI uses for bare cargo invocations.
   const desktopLauncher = read("scripts/tauri-dev.mjs");

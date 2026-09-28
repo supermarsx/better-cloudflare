@@ -3,7 +3,11 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { basePortFrom, parsePort } from "./scripts/dev-port.mjs";
+import {
+  basePortFrom,
+  isContinuousIntegration,
+  parsePort,
+} from "./scripts/dev-port.mjs";
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -99,7 +103,7 @@ export function resolveDevServerPort(isCI: boolean): number {
  *   reused.
  */
 export function createPlaywrightConfig(
-  isCI = Boolean(process.env.CI),
+  isCI = isContinuousIntegration(),
   port?: number,
   reuse = false,
 ) {
