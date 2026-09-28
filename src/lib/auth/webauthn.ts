@@ -532,6 +532,22 @@ async function runCeremony(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
 
+  // The browser reports our abort as a generic `AbortError`, which is
+  // indistinguishable from the user dismissing the prompt. Replace it so the
+  // UI can say which of the two actually happened.
+  //
+  // This starts before the deadline timer deliberately. `call` can throw
+  // synchronously - `navigator.credentials.create` missing or not a function is
+  // exactly the condition the capability signals exist to describe - and a timer
+  // armed before that throw is never cleared, because the throw leaves this
+  // function without entering the `try` whose `finally` clears it. The timer
+  // would then fire into a `deadline` promise nobody is racing any more, one
+  // budget later, as an unhandled rejection.
+  const request = call(controller.signal).catch((error: unknown) => {
+    if (timedOut) throw new WebauthnCeremonyTimeoutError(ceremony, budget);
+    throw error;
+  });
+
   // The deadline both aborts the ceremony and settles this call. Aborting alone
   // would be enough for a platform that honours the signal — but a client that
   // can hang past its own `timeout` field has already shown it may not, and a
@@ -544,14 +560,6 @@ async function runCeremony(
       controller.abort();
       reject(new WebauthnCeremonyTimeoutError(ceremony, budget));
     }, budget);
-  });
-
-  // The browser reports our abort as a generic `AbortError`, which is
-  // indistinguishable from the user dismissing the prompt. Replace it so the
-  // UI can say which of the two actually happened.
-  const request = call(controller.signal).catch((error: unknown) => {
-    if (timedOut) throw new WebauthnCeremonyTimeoutError(ceremony, budget);
-    throw error;
   });
 
   try {
