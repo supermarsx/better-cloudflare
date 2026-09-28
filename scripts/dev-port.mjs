@@ -164,7 +164,11 @@ export class NoFreePortError extends Error {
     super(
       `No free TCP port was found in ${basePort}-${basePort + attempts - 1} on ` +
         `${host ?? "all interfaces"} after ${attempts} attempt(s). ` +
-        "Free a port in that range, or set PORT to choose a different base.",
+        "Free a port in that range, or set PORT to choose a different base. " +
+        "On Windows a port can also be unavailable with nothing listening on " +
+        "it: Hyper-V and WSL reserve dynamic port ranges, and binding inside " +
+        "one fails with EACCES. `netsh int ipv4 show excludedportrange " +
+        "protocol=tcp` lists them.",
     );
     this.name = "NoFreePortError";
     this.basePort = basePort;
