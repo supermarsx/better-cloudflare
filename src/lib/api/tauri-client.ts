@@ -40,6 +40,15 @@ const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   ai_export_conversation: 60_000,
   ai_list_models: 60_000,
   ai_test_provider: 60_000,
+  // Both native passkey ceremonies block on a modal OS dialog for up to
+  // `NATIVE_CEREMONY_TIMEOUT_MS` (60 s, `bc-passkey/src/native.rs`) while the
+  // user finds a security key or scans a phone. Under the default 15 s UI
+  // deadline the frontend abandoned a ceremony that then completed anyway -
+  // storing a credential, or minting an unlock token - and reported it as a
+  // failure, after which re-registration collided with its own
+  // `excludeCredentials` entry.
+  authenticate_passkey_native: 90_000,
+  register_passkey_native: 90_000,
   check_dns_propagation: 60_000,
   create_bulk_dns_records: 60_000,
   export_dns_records: 60_000,
