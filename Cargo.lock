@@ -466,6 +466,7 @@ dependencies = [
  "bc-ai-chat",
  "bc-ai-provider",
  "bc-ai-tools",
+ "bc-mcp",
  "chrono",
  "serde",
  "serde_json",
