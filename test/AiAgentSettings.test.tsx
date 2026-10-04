@@ -262,7 +262,7 @@ test("the advanced parameters are collapsed, and all of them are there", () => {
   }
 });
 
-test("an advanced control the provider does not accept is marked and locked", () => {
+test("an advanced control the provider ignores is marked and locked", () => {
   renderSettings({ protocol: "openai", providerLabel: "OpenAI" });
 
   // OpenAI has no `topK`; the map says so, and that is the only reason this
@@ -275,13 +275,13 @@ test("an advanced control the provider does not accept is marked and locked", ()
   );
   assert.match(
     within(topK).getByTestId("ai-agent-marking").textContent ?? "",
-    /Not sent to OpenAI: the openai protocol does not accept this parameter\./,
+    /OpenAI ignores this: the openai protocol has no such parameter, so it is left out of the request rather than refused\./,
   );
   // And it says the value survives, because it does: the config is sent back
   // unchanged rather than blanked.
   assert.match(
     within(topK).getByTestId("ai-agent-marking").textContent ?? "",
-    /The value is kept, and applies to a provider that does\./,
+    /The value is kept, and applies to a provider that does use it\./,
   );
 
   // A parameter the same provider does accept is left alone entirely.
@@ -313,12 +313,12 @@ test("the marking follows the provider rather than a list in the frontend", () =
     assert.match(
       within(field(parameter)).getByTestId("ai-agent-marking").textContent ??
         "",
-      /Not sent to Claude via proxy: the anthropic protocol does not accept/,
+      /Claude via proxy ignores this: the anthropic protocol has no such parameter/,
     );
   }
   // The summary on the closed disclosure says how many, so the marking is
   // discoverable without opening it.
-  assert.ok(screen.getByText("Advanced (3 not accepted by this provider)"));
+  assert.ok(screen.getByText("Advanced (3 not sent to this provider)"));
 });
 
 test("a parameter no protocol advertises is never marked against one", () => {
@@ -356,7 +356,7 @@ test("a parameter no protocol advertises is never marked against one", () => {
     false,
   );
   // The three Anthropic genuinely refuses are still the only ones counted.
-  assert.ok(screen.getByText("Advanced (3 not accepted by this provider)"));
+  assert.ok(screen.getByText("Advanced (3 not sent to this provider)"));
 });
 
 test("topP is capability-checked even though it sits with the common controls", () => {
@@ -375,7 +375,7 @@ test("topP is capability-checked even though it sits with the common controls", 
   );
   assert.match(
     within(field("topP")).getByTestId("ai-agent-marking").textContent ?? "",
-    /does not accept this parameter/,
+    /ignores this: the openai protocol has no such parameter/,
   );
   // Temperature is not in the map at all, because it is not provider-dependent
   // — it reaches every protocol — so it is neither marked nor locked.
@@ -442,7 +442,7 @@ test("a map that is still being read says so rather than reporting a failure", (
 
   assert.match(
     screen.getByTestId("ai-agent-advanced-notice").textContent ?? "",
-    /Checking which of these parameters your provider accepts…/,
+    /Checking which of these parameters reach your provider…/,
   );
   // Nothing to retry while the read is in flight.
   assert.equal(screen.queryByRole("button", { name: "Try again" }), null);
@@ -486,7 +486,7 @@ test("the notice names the provider the parameters were checked against", () => 
   // The honest caveat: this is one provider, and a conversation can use any.
   assert.match(
     screen.getByTestId("ai-agent-advanced-notice").textContent ?? "",
-    /A conversation started with a different provider accepts a different set\./,
+    /A conversation started with a different provider reaches a different set\./,
   );
 });
 

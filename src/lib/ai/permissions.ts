@@ -55,17 +55,20 @@ export const AI_TOOL_PERMISSIONS: readonly AiToolPermission[] = [
 /**
  * Agent-loop bounds, taken from the Rust validators rather than guessed.
  *
- * Every pair here is the pair `AgentConfig::validate` enforces, and
- * `test/aiPermissions.contract.test.ts` reads the Rust constants to prove it:
+ * **This table is a hand-maintained duplicate of Rust constants, so it can
+ * drift.** That is a build-time problem, not a runtime one: `RUST_BOUNDS` in
+ * `test/aiPermissions.contract.test.ts` pairs every pair below with the
+ * constant it mirrors and fails naming the field if the two disagree, so CI
+ * catches the drift instead of a round trip on every settings open. Edit a
+ * number here only to follow a Rust change, and read that table for which
+ * constant owns which bound.
  *
- * - `maxToolRounds` — `bc_ai_agent::config::MAX_TOOL_ROUNDS`
- * - `maxTokensPerTurn` — `bc_ai_provider::limits::MAX_COMPLETION_TOKENS`
- * - `temperature`, `topP`, `topK` — the matching `MIN_`/`MAX_` pair in
- *   `bc_ai_provider::limits`
- * - `frequencyPenalty`, `presencePenalty` — both are
- *   `MIN_SAMPLING_PENALTY`…`MAX_SAMPLING_PENALTY`
- * - `maxContextTokens` — `bc_ai_agent::config::MIN_CONTEXT_TOKENS`…`MAX_`
- * - `requestTimeoutMs` — `bc_ai_provider::limits::MIN_REQUEST_TIMEOUT_MS`…`MAX_`
+ * Nearly all of them live in `bc_ai_provider::limits`, because the provider
+ * crate cannot depend on the agent crate and the request validator is the last
+ * gate before the wire. Only `maxToolRounds` and `maxContextTokens` are
+ * agent-only concepts. `bc_ai_agent::config` re-exports two of the provider
+ * bounds as aliases; the contract test deliberately never reads an alias,
+ * since an alias is not a literal.
  *
  * `seed` is the one exception, and it is excluded from that contract test on
  * purpose: its range is the **`u32` type**, not a validated bound. Rust types
